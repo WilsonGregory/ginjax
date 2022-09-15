@@ -90,6 +90,54 @@ def test_group(operators):
     print("group operators are the transposes of their inverses")
     return True
 
+
+# ------------------------------------------------------------------------------
+# PART 1.5: Define the Levi Civita symbol to be used in Levi Civita contractions
+
+def permutation_parity(pi):
+    """
+    Code taken from Sympy Permutations: https://github.com/sympy/sympy/blob/26f7bdbe3f860e7b4492e102edec2d6b429b5aaf/sympy/combinatorics/permutations.py#L114
+    Slightly modified to return 1 for even permutations, -1 for odd permutations, and 0 for repeated digits
+    """
+    if (len(np.unique(pi)) != len(pi)):
+        return 0
+
+    n = len(pi)
+    a = [0] * n
+    c = 0
+    for j in range(n):
+        if a[j] == 0:
+            c += 1
+            a[j] = 1
+            i = j
+            while pi[i] != j:
+                i = pi[i]
+                a[i] = 1
+
+    # code originally returned 1 for odd permutations (we want -1) and 0 for even permutations (we want 1)
+    return -2*((n - c) % 2)+1
+
+class levi_civita_symbol:
+
+    #we only want to create each dimension of levi civita symbol once, so we cache them in this dictionary
+    symbol_dict = {}
+
+    @classmethod
+    def get(cls, D):
+        """
+        Get the Levi Civita symbol for dimension D from the cache, or creating it on a cache miss
+        args:
+            D (int): dimension of the Levi Civita symbol
+        """
+        assert D > 1
+        if D not in cls.symbol_dict:
+            arr = np.zeros((D * (D,)), dtype=int)
+            for index in it.product(range(D), repeat=D):
+                arr[index] = permutation_parity(index)
+            cls.symbol_dict[D] = jnp.array(arr)
+
+        return cls.symbol_dict[D]
+
 # ------------------------------------------------------------------------------
 # PART 2: Define a k-tensor.
 
@@ -113,13 +161,13 @@ class ktensor:
         assert self.D > 1, \
         "ktensor: geometry makes no sense if D<2."
         self.parity = parity % 2
-        if len(np.atleast_1d(data)) == 1:
+        if len(jnp.atleast_1d(data)) == 1:
             self.data = data
             self.k = 0
         else:
-            self.data = np.array(data)
+            self.data = jnp.array(data)
             self.k = len(data.shape)
-            assert np.all(np.array(data.shape) == self.D), \
+            assert jnp.all(jnp.array(data.shape) == self.D), \
             "ktensor: shape must be (D, D, D, ...), but instead it's {}".format(data.shape)
 
     def __getitem__(self, key):
@@ -130,6 +178,8 @@ class ktensor:
         "ktensor: can't add objects of different k"
         assert self.parity == other.parity, \
         "ktensor: can't add objects of different parity"
+        assert self.D == other.D, \
+        "ktensor: can't add objects of different dimension D"
         return ktensor(self.data + other.data, self.parity, self.D)
 
     def __mul__(self, other):
@@ -173,6 +223,7 @@ class ktensor:
         return ktensor(newdata, self.parity, self.D)
 
     def contract(self, i, j):
+        #this is kinda a dirty hack, but I'm going to leave it for now
         assert self.k < 27
         assert self.k >= 2
         assert i < j
@@ -183,26 +234,19 @@ class ktensor:
         return ktensor(np.einsum(einstr, self.data), self.parity, self.D)
 
     def levi_civita_contract(self, index):
-        assert self.D in [2, 3] # BECAUSE WE SUCK
-        assert (self.k + 1) >= self.D # so we have enough indices work on
-        if self.D == 2:
-            otherdata = np.zeros_like(self.data)
-            otherdata[..., 0] =  1. * np.take(self.data, 1, axis=index)
-            otherdata[..., 1] = -1. * np.take(self.data, 0, axis=index)
-            return ktensor(otherdata, self.parity + 1, self.D)
-        if self.D == 3:
-            assert len(index) == 2
-            i, j = index
-            assert i < j
-            otherdata = np.zeros_like(self.data[..., 0])
-            otherdata[..., 0] = np.take(np.take(self.data, 2, axis=j), 1, axis=i) \
-                              - np.take(np.take(self.data, 1, axis=j), 2, axis=i)
-            otherdata[..., 1] = np.take(np.take(self.data, 0, axis=j), 2, axis=i) \
-                              - np.take(np.take(self.data, 2, axis=j), 0, axis=i)
-            otherdata[..., 2] = np.take(np.take(self.data, 1, axis=j), 0, axis=i) \
-                              - np.take(np.take(self.data, 0, axis=j), 1, axis=i)
-            return ktensor(otherdata, self.parity + 1, self.D)
-        return
+        """
+        Possibly naive implementation of levi_civita contraction
+        """
+        assert (self.k+1) >= self.D # so we have enough indices to work on
+        if self.D == 2 and not isinstance(index, tuple):
+            index = (index,)
+        assert len(index) == self.D - 1
+
+        levi_civita = levi_civita_symbol.get(self.D)
+        outer = ktensor(jnp.tensordot(self.data, levi_civita, axes=((),())), self.parity + 1, self.D)
+        for idx in np.flip(np.sort(index)): #contract indices in reverse order so they don't get messed up (i want to be able to test reverse order indices, so I may need to change this)
+            outer = outer.contract(idx, len(outer.data.shape) - 1)
+        return outer
 
 # Now test group actions on k-tensors:
 def test_group_actions(operators):
@@ -326,6 +370,21 @@ class geometric_image:
         shape = D * (N, ) + k * (D, )
         return cls(jnp.zeros(shape), parity, D)
 
+    def hash_list(self, indices, extra_indices=None):
+        """
+        Could probably be combined with hash in some clever fashion
+        """
+        if extra_indices is not None:
+            lst = [self.hash(key1, key2) for key1, key2 in zip(indices, extra_indices)]
+        else:
+            lst = [self.hash(key) for key in indices]
+
+        coords = self.D*[[]]
+        for i in range(self.D):
+            coords[i] = [key[i] for key in lst]
+
+        return tuple(coords)
+
     def hash(self, indices, extra_indices=None):
         """
         Deals with torus by modding (with `np.remainder()`).
@@ -373,7 +432,7 @@ class geometric_image:
         """
         Jax arrays are immutable, so this reconstructs the data object with copying, and is potentially slow
         """
-        val = thing.data if type(thing) == ktensor.__class__ else thing
+        val = thing.data if isinstance(thing, ktensor) else thing
         self.data = self.data.at[key].set(val)
         return self
 
@@ -383,6 +442,15 @@ class geometric_image:
         """
         assert len(key) == self.D
         return ktensor(self[key], self.parity, self.D)
+
+    def shape(self):
+        return self.data.shape
+
+    def image_shape(self):
+        return self.D*(self.N,)
+
+    def pixel_shape(self):
+        return self.k*(self.D,)
 
     def __add__(self, other):
         """
@@ -397,12 +465,15 @@ class geometric_image:
         return geometric_image(self.data + other.data, self.parity, self.D)
 
     def __mul__(self, other):
+        """
+        Return the ktensor product of each pixel as a new geometric_image
+        """
         assert self.D == other.D
         assert self.N == other.N
         newimage = geometric_image.zeros(self.N, self.k + other.k,
                                          self.parity + other.parity, self.D)
         for key in self.keys():
-            newimage[kk] = (self.ktensor(key) * other.ktensor(key)).data # handled by ktensor
+            newimage[key] = self.ktensor(key) * other.ktensor(key) # handled by ktensor
         return newimage
 
     def __str__(self):
@@ -435,6 +506,22 @@ class geometric_image:
             else:
                 yield (key, self[key])
 
+    def conv_subimage(self, center_key, filter_image, filter_image_keys=None):
+        """
+        Get the subimage (on the torus) centered on center_idx that will be convolved with filter_image
+        args:
+            center_key (index tuple): tuple index of the center of this convolution
+            filter_image (geometric_filter): the geometric_filter we are convolving with
+            filter_image_keys (list): For efficiency, the key offsets of the filter_image. Defaults to None.
+        """
+        if filter_image_keys is None:
+            filter_image_keys = [key for key in filter_image.keys(centered=True)]
+
+        key_list = self.hash_list(len(filter_image_keys)*[center_key], filter_image_keys) #key list on the torus
+        #values, reshaped to the correct shape, which is the filter_image shape, while still having the ktensor shape
+        vals = self[key_list].reshape(filter_image.image_shape() + self.pixel_shape())
+        return self.__class__(vals, self.parity, self.D)
+
     def convolve_with(self, filter_image):
         """
         Apply the convolution filter_image to this geometric image
@@ -444,9 +531,10 @@ class geometric_image:
         newimage = self.__class__.zeros(self.N, self.k + filter_image.k,
                                          self.parity + filter_image.parity, self.D)
 
+        filter_image_keys = [key for key in filter_image.keys(centered=True)]
         for key in self.keys():
-            for filter_key, filter_pixel in filter_image.items(centered=True):
-                newimage[key] = newimage[key] + (self.ktensor(self.hash(key, filter_key)) * filter_pixel).data
+            subimage = self.conv_subimage(key, filter_image, filter_image_keys)
+            newimage[key] = jnp.sum((subimage * filter_image).data)
         return newimage
 
     def times_scalar(self, scalar):
@@ -513,15 +601,28 @@ class geometric_filter(geometric_image):
             denominator += ktensor.norm()
         return numerator / denominator
 
+    def keys(self, centered=False):
+        """
+        Enumerate over all the keys in the geometric filter. Use centered=True when using the keys as adjustments
+        args:
+            centered (bool): if true, the keys range from -m to m rather than 0 to N. Defaults to false.
+        """
+        for key in super().keys():
+            if (centered):
+                #subtract m from all the elements of key
+                yield tuple([a+b for a,b in zip(key, len(key) * (-self.m,))])
+            else:
+                yield key
+
     def items(self, ktensor=True, centered=False):
         """
-        Enumerate over all the key, pixel pairs in the geometric image. Use centered=True when using the keys as
+        Enumerate over all the key, pixel pairs in the geometric filter. Use centered=True when using the keys as
         adjustments
         args:
             ktensor (bool): if true, return the values as ktensors, otherwise return as raw data. Defaults to true.
             centered (bool): if true, the keys range from -m to m rather than 0 to N. Defaults to false.
         """
-        for key in self.keys():
+        for key in self.keys(): #dont pass centered along because we need the un-centered keys to access the vals
             value = self.ktensor(key) if ktensor else self[key]
             if (centered):
                 #subtract m from all the elements of key

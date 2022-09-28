@@ -12,16 +12,11 @@ See the file `LICENSE` for more details.
 
 ## To-do items:
 - Fix the norm() operations so they are makeable with index summations! Duh. sqrt(a_hij a_hij / d^(k-2)) maybe??
-- Drop the k-tensor and geometric filter classes; there can be only one class. Or have filter inherit from image with a few extras.
 - Move over to jax.
-- Make the geometric_filter inherit geometric_image to reduce repeated code.
-- Is it possible to make the data a big block (not a dictionary) but have the block addressable with keys()? I bet it is...?
 - Create tests for group operations on k-tensor images.
 - Fix sizing of multi-filter plots.
 - Switch over to jax so this is useful for ML people.
-- Switch the structure of the image and filter so they make better use of jax.numpy array objects.
 - Need to implement index permutation operation.
-- Need to implement Levi-Civita contraction for general dimensions.
 - Need to build tests for the contractions.
 - Need to implement bin-down and bin-up operators.
 """
@@ -42,29 +37,29 @@ TINY = 1.e-5
 def make_all_generators(D):
 
     # Make the flip operator
-    foo = np.ones(D).astype(int)
-    foo[0] = -1
-    gg = np.diag(foo).astype(int)
+    vec = jnp.ones(D, dtype=int)
+    vec.at[0].set(-1)
+    gg = jnp.diag(vec).astype(int)
     generators = [gg, ]
 
     # Make the 90-degree rotation operators
     for i in range(D):
         for j in range(i + 1, D):
-            gg = np.eye(D).astype(int)
-            gg[i, i] = 0
-            gg[j, j] = 0
-            gg[i, j] = -1
-            gg[j, i] = 1
+            gg = jnp.eye(D, dtype=int)
+            gg.at[i, i].set(0)
+            gg.at[j, j].set(0)
+            gg.at[i, j].set(-1)
+            gg.at[j, i].set(1)
             generators.append(gg)
 
-    return np.array(generators)
+    return jnp.array(generators)
 
 def make_all_operators(D):
     generators = make_all_generators(D)
-    operators = np.array([np.eye(D).astype(int), ])
-    foo = 0
-    while len(operators) != foo:
-        foo = len(operators)
+    operators = jnp.array([jnp.eye(D).astype(int), ])
+    num_operators = 0
+    while len(operators) != num_operators:
+        num_operators = len(operators)
         operators = make_new_operators(operators, generators)
     return(operators)
 
@@ -72,23 +67,8 @@ def make_new_operators(operators, generators):
     for op in operators:
         for gg in generators:
             op2 = (gg @ op).astype(int)
-            operators = np.unique(np.append(operators, op2[None, :, :], axis=0), axis=0)
+            operators = jnp.unique(jnp.append(operators, op2[None, :, :], axis=0), axis=0)
     return operators
-
-def test_group(operators):
-    D = len(operators[0])
-    # Check that the list of group operators is closed
-    for gg in operators:
-        for gg2 in operators:
-            if ((gg @ gg2).astype(int) not in operators):
-                return False
-    print("group is closed under multiplication")
-    # Check that gg.T is gg.inv for all gg in group?
-    for gg in operators:
-        if not np.allclose(gg @ gg.T, np.eye(D)):
-            return False
-    print("group operators are the transposes of their inverses")
-    return True
 
 
 # ------------------------------------------------------------------------------
@@ -98,6 +78,7 @@ def permutation_parity(pi):
     """
     Code taken from Sympy Permutations: https://github.com/sympy/sympy/blob/26f7bdbe3f860e7b4492e102edec2d6b429b5aaf/sympy/combinatorics/permutations.py#L114
     Slightly modified to return 1 for even permutations, -1 for odd permutations, and 0 for repeated digits
+    Permutations of length n must consist of numbers {0, 1, ..., n-1}
     """
     if (len(np.unique(pi)) != len(pi)):
         return 0
@@ -233,68 +214,29 @@ class ktensor:
         einstr = letters[:i] + "a" + letters[i:j-1] + "a" + letters[j-1:self.k-2]
         return ktensor(np.einsum(einstr, self.data), self.parity, self.D)
 
-    def levi_civita_contract(self, index):
+    def levi_civita_contract(self, indices):
         """
         Possibly naive implementation of levi_civita contraction
+        args:
+            indices (array-like): can be list or tuple, indices in order that you want them contracted
         """
         assert (self.k+1) >= self.D # so we have enough indices to work on
-        if self.D == 2 and not isinstance(index, tuple):
-            index = (index,)
-        assert len(index) == self.D - 1
+        if self.D == 2 and not (isinstance(indices, tuple) or isinstance(indices, list)):
+            indices = (indices,)
+        assert len(indices) == self.D - 1
 
         levi_civita = levi_civita_symbol.get(self.D)
         outer = ktensor(jnp.tensordot(self.data, levi_civita, axes=((),())), self.parity + 1, self.D)
-        for idx in np.flip(np.sort(index)): #contract indices in reverse order so they don't get messed up (i want to be able to test reverse order indices, so I may need to change this)
-            outer = outer.contract(idx, len(outer.data.shape) - 1)
+
+        indices_removed = 0
+        while len(indices) > 0:
+            idx, *indices = indices
+            outer = outer.contract(idx, self.k - indices_removed)
+            indices = [x if x < idx else x-1 for x in indices]
+            #^ decrement indices larger than the one we just contracted, leave smaller ones alone
+            indices_removed += 1
+
         return outer
-
-# Now test group actions on k-tensors:
-def test_group_actions(operators):
-    """
-    # Notes:
-    - This only does minimal tests!
-    """
-    D = len(operators[0])
-
-    for parity in [0, 1]:
-
-        # vector dot vector
-        v1 = ktensor(np.random.normal(size=D), parity, D)
-        v2 = ktensor(np.random.normal(size=D), parity, D)
-        dots = [(v1.times_group_element(gg)
-                 * v2.times_group_element(gg)).contract(0, 1).data
-                for gg in operators]
-        dots = np.array(dots)
-        if not np.allclose(dots, np.mean(dots)):
-            print("failed (parity = {}) vector dot test.".format(parity))
-            return False
-        print("passed (parity = {}) vector dot test.".format(parity))
-
-        # tensor times tensor
-        T3 = ktensor(np.random.normal(size=(D, D)), parity, D)
-        T4 = ktensor(np.random.normal(size=(D, D)), parity, D)
-        dots = [(T3.times_group_element(gg)
-                 * T4.times_group_element(gg)).contract(1, 2).contract(0, 1).data
-                for gg in operators]
-        dots = np.array(dots)
-        if not np.allclose(dots, np.mean(dots)):
-            print("failed (parity = {}) tensor times tensor test".format(parity))
-            return False
-        print("passed (parity = {}) tensor times tensor test".format(parity))
-
-        # vectors dotted through tensor
-        v5 = ktensor(np.random.normal(size=D), 0, D)
-        dots = [(v5.times_group_element(gg) * T3.times_group_element(gg)
-                 * v2.times_group_element(gg)).contract(1, 2).contract(0, 1).data
-                for gg in operators]
-        dots = np.array(dots)
-        if not np.allclose(dots, np.mean(dots)):
-            print("failed (parity = {}) v T v test.".format(parity))
-            return False
-        print("passed (parity = {}) v T v test.".format(parity))
-    
-    return True
-
 
 # ------------------------------------------------------------------------------
 # PART 4: Use group averaging to find unique invariant filters.
@@ -491,20 +433,14 @@ class geometric_image:
         Iterate over the pixels of geometric_image. If ktensor=True, return the pixels as ktensor objects
         """
         for key in self.keys():
-            if ktensor:
-                yield self.ktensor(key)
-            else:
-                yield self[key]
+            yield self.ktensor(key) if ktensor else self[key]
 
     def items(self, ktensor=True):
         """
         Iterate over the key, pixel pairs of geometric_image. If ktensor=True, return the pixels as ktensor objects
         """
         for key in self.keys():
-            if ktensor:
-                yield (key, self.ktensor(key))
-            else:
-                yield (key, self[key])
+            yield (key, self.ktensor(key)) if ktensor else (key, self[key])
 
     def conv_subimage(self, center_key, filter_image, filter_image_keys=None):
         """
@@ -526,10 +462,13 @@ class geometric_image:
         """
         Apply the convolution filter_image to this geometric image
         args:
-            filter_image (geometric_filter): convolution that we are applying
+            filter_image (geometric_filter-like): convolution that we are applying, can be an image or a filter
         """
         newimage = self.__class__.zeros(self.N, self.k + filter_image.k,
                                          self.parity + filter_image.parity, self.D)
+
+        if (isinstance(filter_image, geometric_image)):
+            filter_image = geometric_filter.from_image(filter_image) #will break if N is not odd
 
         filter_image_keys = [key for key in filter_image.keys(centered=True)]
         for key in self.keys():
@@ -589,6 +528,12 @@ class geometric_filter(geometric_image):
         assert self.N == 2 * self.m + 1, \
         "geometric_filter: N needs to be odd."
 
+    @classmethod
+    def from_image(cls, geometric_image):
+        """
+        Constructor that copies a geometric_image and returns a geometric_filter
+        """
+        return cls(geometric_image.data, geometric_image.parity, geometric_image.D)
 
     def __str__(self):
         return "<geometric filter object in D={} with N={} (m={}), k={}, and parity={}>".format(

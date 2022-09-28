@@ -20,8 +20,8 @@ def levi_civita_contract_old(ktensor_obj, index):
         if ktensor_obj.D == 2:
             index = index[0]
             otherdata = jnp.zeros_like(ktensor_obj.data)
-            otherdata = otherdata.at[..., 0].set(1. * jnp.take(ktensor_obj.data, 1, axis=index))
-            otherdata = otherdata.at[..., 1].set(-1. * jnp.take(ktensor_obj.data, 0, axis=index))
+            otherdata = otherdata.at[..., 0].set(-1. * jnp.take(ktensor_obj.data, 1, axis=index))
+            otherdata = otherdata.at[..., 1].set(1. * jnp.take(ktensor_obj.data, 0, axis=index)) #i swapped the -1 and 1
             return ktensor(otherdata, ktensor_obj.parity + 1, ktensor_obj.D)
         if ktensor_obj.D == 3:
             assert len(index) == 2
@@ -115,18 +115,18 @@ class TestGeometricImage:
         assert (result2.data == 3.4).all()
         assert (ktensor1.data == 1).all()
 
-    # def testGetItem(self):
-    #     #note we are not actually relying on randomness in this function, just filling values
-    #     key = random.PRNGKey(0)
+    def testGetItem(self):
+        #note we are not actually relying on randomness in this function, just filling values
+        key = random.PRNGKey(0)
 
-    #     random_vals = random.uniform(key, shape=(10,10,2,2,2))
-    #     image1 = geometric_image(random_vals, 0, 2)
+        random_vals = random.uniform(key, shape=(4,4,4))
+        image1 = ktensor(random_vals, 0, 4)
 
-    #     assert image1[0,5,0,1,1] == random_vals[0,5,0,1,1]
-    #     assert image1[4,3,0,0,1] == random_vals[4,3,0,0,1]
-    #     assert (image1[0] == random_vals[0]).all()
-    #     assert (image1[4:,2:3] == random_vals[4:,2:3]).all()
-    #     assert image1[4:, 2:3].shape == random_vals[4:, 2:3].shape
+        assert image1[0,1,1] == random_vals[0,1,1]
+        assert image1[0,0,1] == random_vals[0,0,1]
+        assert (image1[0] == random_vals[0]).all()
+        assert (image1[1:,2:3] == random_vals[1:,2:3]).all()
+        assert image1[1:, 2:3].shape == random_vals[1:, 2:3].shape
 
     # def testNormalize(self):
     #     key = random.PRNGKey(0)
@@ -179,10 +179,9 @@ class TestGeometricImage:
         for D in range(2,4):
             for k in range(D-1, D+2):
                 key, subkey = random.split(key)
-                ktensor1 = ktensor(random.uniform(key, shape=k*(D,)), 0, D)
+                ktensor1 = ktensor(random.uniform(subkey, shape=k*(D,)), 0, D)
 
                 for indices in it.combinations(range(k), D-1):
-                    print(D,k,indices)
                     ktensor1_contracted = ktensor1.levi_civita_contract(indices)
                     assert (ktensor1_contracted.data == levi_civita_contract_old(ktensor1, indices).data).all()
                     assert ktensor1_contracted.k == (ktensor1.k - ktensor1.D + 2)

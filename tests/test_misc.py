@@ -4,7 +4,7 @@ sys.path.insert(0,'src/geometricconvolutions/')
 from geometric import levi_civita_symbol, permutation_parity, make_all_operators, ktensor
 import pytest
 import jax.numpy as jnp
-import numpy as np
+import jax.random as random
 
 TINY = 1.e-5
 
@@ -15,40 +15,47 @@ def do_group_actions(operators):
     - This only does minimal tests!
     """
     D = len(operators[0])
+    key = random.PRNGKey(0)
 
     for parity in [0, 1]:
 
+        key, subkey = random.split(key)
+
         # vector dot vector
-        v1 = ktensor(np.random.normal(size=D), parity, D)
-        v2 = ktensor(np.random.normal(size=D), parity, D)
+        v1 = ktensor(random.normal(subkey, shape=(D,)), parity, D)
+        key, subkey = random.split(key)
+        v2 = ktensor(random.normal(subkey, shape=(D,)), parity, D)
         dots = [(v1.times_group_element(gg)
                  * v2.times_group_element(gg)).contract(0, 1).data
                 for gg in operators]
-        dots = np.array(dots)
-        if not np.allclose(dots, np.mean(dots)):
+        dots = jnp.array(dots)
+        if not jnp.allclose(dots, jnp.mean(dots)):
             print("failed (parity = {}) vector dot test.".format(parity))
             return False
         print("passed (parity = {}) vector dot test.".format(parity))
 
         # tensor times tensor
-        T3 = ktensor(np.random.normal(size=(D, D)), parity, D)
-        T4 = ktensor(np.random.normal(size=(D, D)), parity, D)
+        key, subkey = random.split(key)
+        T3 = ktensor(random.normal(subkey, shape=(D, D)), parity, D)
+        key, subkey = random.split(key)
+        T4 = ktensor(random.normal(subkey, shape=(D, D)), parity, D)
         dots = [(T3.times_group_element(gg)
                  * T4.times_group_element(gg)).contract(1, 2).contract(0, 1).data
                 for gg in operators]
-        dots = np.array(dots)
-        if not np.allclose(dots, np.mean(dots)):
+        dots = jnp.array(dots)
+        if not jnp.allclose(dots, jnp.mean(dots)):
             print("failed (parity = {}) tensor times tensor test".format(parity))
             return False
         print("passed (parity = {}) tensor times tensor test".format(parity))
 
         # vectors dotted through tensor
-        v5 = ktensor(np.random.normal(size=D), 0, D)
+        key, subkey = random.split(key)
+        v5 = ktensor(random.normal(subkey, shape=(D,)), 0, D)
         dots = [(v5.times_group_element(gg) * T3.times_group_element(gg)
                  * v2.times_group_element(gg)).contract(1, 2).contract(0, 1).data
                 for gg in operators]
-        dots = np.array(dots)
-        if not np.allclose(dots, np.mean(dots)):
+        dots = jnp.array(dots)
+        if not jnp.allclose(dots, jnp.mean(dots)):
             print("failed (parity = {}) v T v test.".format(parity))
             return False
         print("passed (parity = {}) v T v test.".format(parity))

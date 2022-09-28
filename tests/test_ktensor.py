@@ -179,7 +179,7 @@ class TestGeometricImage:
         for D in range(2,4):
             for k in range(D-1, D+2):
                 key, subkey = random.split(key)
-                ktensor1 = ktensor(random.uniform(key, shape=k*(D,)), 0, D)
+                ktensor1 = ktensor(random.uniform(subkey, shape=k*(D,)), 0, D)
 
                 for indices in it.combinations(range(k), D-1):
                     ktensor1_contracted = ktensor1.levi_civita_contract(indices)

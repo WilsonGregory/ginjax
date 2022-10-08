@@ -2,71 +2,60 @@ import sys
 sys.path.insert(0,'src/geometricconvolutions/')
 import itertools as it
 
-from geometric import ktensor, geometric_filter, geometric_image
+import geometric as geom
 import jax.numpy as jnp
 import jax.random as random
 
-def levi_civita_contract_old(ktensor_obj, index):
-    assert ktensor_obj.D in [2, 3] # BECAUSE WE SUCK
-    assert (ktensor_obj.k + 1) >= ktensor_obj.D # so we have enough indices work on
-    if ktensor_obj.D == 2 and not isinstance(index, tuple):
-        index = (index,)
+def testIK0_FK1():
+    image1 = geom.geometric_image(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
+    filter_image = geom.geometric_filter(jnp.array([
+        [[0,0], [0,1], [0,0]],
+        [[-1,0],[0,0], [1,0]],
+        [[0,0], [0,-1],[0,0]],
+    ], dtype=int), 0, 2) #this is an invariant filter, hopefully not relevant?
 
-    if ktensor_obj.D == 2:
-        index = index[0]
-        otherdata = jnp.zeros_like(ktensor_obj.data)
-        otherdata = otherdata.at[..., 0].set(-1. * jnp.take(ktensor_obj.data, 1, axis=index))
-        otherdata = otherdata.at[..., 1].set(1. * jnp.take(ktensor_obj.data, 0, axis=index))
-        return ktensor(otherdata, ktensor_obj.parity + 1, ktensor_obj.D)
-    if ktensor_obj.D == 3:
-        assert len(index) == 2
-        i, j = index
-        assert i < j
-        otherdata = jnp.zeros_like(ktensor_obj.data[..., 0])
-        otherdata = otherdata.at[..., 0].set(jnp.take(jnp.take(ktensor_obj.data, 2, axis=j), 1, axis=i) \
-                          - jnp.take(jnp.take(ktensor_obj.data, 1, axis=j), 2, axis=i))
-        otherdata = otherdata.at[..., 1].set(jnp.take(jnp.take(ktensor_obj.data, 0, axis=j), 2, axis=i) \
-                          - jnp.take(jnp.take(ktensor_obj.data, 2, axis=j), 0, axis=i))
-        otherdata = otherdata.at[..., 2].set(jnp.take(jnp.take(ktensor_obj.data, 1, axis=j), 0, axis=i) \
-                          - jnp.take(jnp.take(ktensor_obj.data, 0, axis=j), 1, axis=i))
-        return ktensor(otherdata, ktensor_obj.parity + 1, ktensor_obj.D)
-    return
+    convolved_image = image1.convolve_with(filter_image)
+    assert convolved_image.D == image1.D
+    assert convolved_image.N == image1.N
+    assert convolved_image.k == image1.k + filter_image.k
+    assert convolved_image.parity == (image1.parity + filter_image.parity) % 2
+    assert (convolved_image.data == jnp.array([
+        [[1,2],[-2,0],[1,4]],
+        [[3,0],[-3,1],[0,-1]],
+        [[-1,-2],[-1,-1],[2,-3]]
+    ], dtype=int)).all()
 
-def testCrossProduct():
-        a = ktensor(jnp.array([0,1,3]), 0, 3)
-        b = ktensor(jnp.array([1,2,-1]), 0, 3)
-
-        ab = a*b
-        cross = ab.levi_civita_contract((0,1))
-        assert (cross.data == jnp.array([-7,3,-1])).all()
-        assert cross.parity == (ab.parity + 1) % 2
-        assert cross.D == ab.D == a.D == b.D
-        assert cross.k == (ab.k - ab.D + 2)
-
-def testLeviCivitaContract():
+def testUniqueInvariantFilters():
+    # ensure that all the filters are actually invariant
     key = random.PRNGKey(0)
 
-    for D in range(2,4):
-        for k in range(D-1, D+2):
+    for D in [2]: #image dimension
+        operators = geom.make_all_operators(D)
+        for N in [3]: #filter size
             key, subkey = random.split(key)
-            ktensor1 = ktensor(random.uniform(key, shape=k*(D,)), 0, D)
-            print(ktensor1.data)
+            image = geom.geometric_image(random.uniform(key, shape=(N,N)), 0, D)
+            for k in [1]: #tensor order of filter
+                for parity in [0,1]:
+                    filters = geom.get_unique_invariant_filters(N, k, parity, D, operators)
 
-            for indices in it.combinations(range(k), D-1):
-                print(indices)
-                ktensor1_contracted = ktensor1.levi_civita_contract(indices)
-                print(ktensor1_contracted.data)
-                print(levi_civita_contract_old(ktensor1, indices).data)
-                assert (ktensor1_contracted.data == levi_civita_contract_old(ktensor1, indices).data).all()
-                assert ktensor1_contracted.k == (ktensor1.k - ktensor1.D + 2)
-                assert ktensor1_contracted.parity == (ktensor1.parity + 1) % 2
-                assert ktensor1_contracted.D == ktensor1.D
+                    for gg in operators:
+                        for geom_filter in filters:
+                            print(gg)
+                            print(geom_filter.data)
 
+                            # test that the filters are invariant to the group operators
+                            assert jnp.allclose(geom_filter.data, geom_filter.times_group_element(gg).data)
 
-# testLeviCivitaContract()
-testCrossProduct()
+                            # test that the convolution with the invariant filters is equivariant to gg
+                            img1 = image.convolve_with(geom_filter).times_group_element(gg).data
+                            img2 = image.times_group_element(gg).convolve_with(geom_filter).data
+                            print(img1)
+                            print(img2)
 
+                            assert jnp.allclose(img1, img2)
 
-# res = ktensor(jnp.array([2,1]),0,2).levi_civita_contract(0)
-# print(res.data)
+# testUniqueInvariantFilters()
+
+testIK0_FK1()
+
 

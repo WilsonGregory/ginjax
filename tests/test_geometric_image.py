@@ -265,7 +265,10 @@ class TestGeometricImage:
             ],
         dtype=int)).all()
 
-    def testConvolveWithK0(self):
+    def testConvolveWithIK0_FK0(self):
+        """
+        Convolve with where the input is k=0, and the filter is k=0
+        """
         #did these out by hand, hopefully, my arithmetic is correct...
         image1 = geometric_image(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
         filter_image = geometric_filter(jnp.array([[1,0,1], [0,0,0], [1,0,1]], dtype=int), 0, 2)
@@ -293,6 +296,28 @@ class TestGeometricImage:
                 [8,23,11,13,29],
             ],
         dtype=int)).all()
+
+    def testConvolveWithIK1_FK1(self):
+        """
+        Convolve with where the input is k=0, and the filter is k=1
+        """
+        image1 = geometric_image(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
+        filter_image = geometric_filter(jnp.array([
+            [[0,0], [0,1], [0,0]],
+            [[-1,0],[0,0], [1,0]],
+            [[0,0], [0,-1],[0,0]],
+        ], dtype=int), 0, 2) #this is an invariant filter, hopefully not a problem?
+
+        convolved_image = image1.convolve_with(filter_image)
+        assert convolved_image.D == image1.D
+        assert convolved_image.N == image1.N
+        assert convolved_image.k == image1.k + filter_image.k
+        assert convolved_image.parity == (image1.parity + filter_image.parity) % 2
+        assert (convolved_image.data == jnp.array([
+            [[1,2],[-2,0],[1,4]],
+            [[3,0],[-3,1],[0,-1]],
+            [[-1,-2],[-1,-1],[2,-3]]
+        ], dtype=int)).all()
 
     # def testConvolveCommutativity(self):
     #     image1 = geometric_image(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)

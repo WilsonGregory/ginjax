@@ -291,7 +291,7 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
     filters = [filters[i] for i in I]
 
     # now do k-dependent rectification:
-    # filters = [ff.rectify() for ff in filters]
+    filters = [ff.rectify() for ff in filters]
 
     return filters
 
@@ -478,7 +478,7 @@ class geometric_image:
         filter_image_keys = [key for key in filter_image.keys(centered=True)]
         for key in self.keys():
             subimage = self.conv_subimage(key, filter_image, filter_image_keys)
-            newimage[key] = jnp.sum((subimage * filter_image).data)
+            newimage[key] = jnp.sum((subimage * filter_image).data, axis=tuple(range(self.D)))
         return newimage
 
     def times_scalar(self, scalar):
@@ -520,7 +520,7 @@ class geometric_image:
         args:
             gg (jnp array-like): group operation
         """
-        key_array = jnp.array([np.array(key) - (self.N-1) / 2 for key in self.keys()])
+        key_array = self.key_array() - ((self.N-1) / 2)
         return jnp.rint((key_array @ gg) + (self.N-1) / 2).astype(int)
 
     def times_group_element(self, gg, m=None):
@@ -529,14 +529,6 @@ class geometric_image:
         rotated_vals = [ktensor.times_group_element(gg).data for ktensor in ktensor_vals]
 
         return self.__class__(jnp.array(rotated_vals, dtype=self.data.dtype).reshape(self.shape()), self.parity, self.D)
-
-    # def times_group_element(self, gg):
-    #     #untested
-    #     newfilter = self.copy()
-    #     for key, ktensor in self.items():
-    #         print(key)
-    #         newfilter[key] = self[self.hash(gg.T @ key)].times_group_element(gg)
-    #     return newfilter
 
 
 # ------------------------------------------------------------------------------
@@ -604,19 +596,19 @@ class geometric_filter(geometric_image):
         key_array = jnp.array([np.array(key) - self.m for key in self.keys()], dtype=int)
         return (key_array @ gg) + self.m
 
-    # def rectify(self):
-    #     if self.k == 0:
-    #         if np.sum([self[kk].data for kk in self.keys()]) < 0:
-    #             return self.times_scalar(-1)
-    #         return self
-    #     if self.k == 1:
-    #         if self.parity % 2 == 0:
-    #             if np.sum([np.dot(pp, self[kk].data) for kk, pp in zip(self.keys(), self.pixels())]) < 0:
-    #                 return self.times_scalar(-1)
-    #             return self
-    #         elif self.D == 2:
-    #             if np.sum([np.cross(pp, self[kk].data) for kk, pp in zip(self.keys(), self.pixels())]) < 0:
-    #                 return self.times_scalar(-1)
-    #             return self
-    #     return self
+    def rectify(self):
+        """
+        Filters form an equivalence class up to multiplication by a scalar, so if its negative we want to flip the sign
+        """
+        if self.k == 0:
+            if jnp.sum(self.data) < 0:
+                return self.times_scalar(-1)
+        elif self.k == 1:
+            if self.parity % 2 == 0:
+                if np.sum([np.dot(np.array(key), self[key]) for key in self.keys()]) < 0:
+                    return self.times_scalar(-1)
+            elif self.D == 2:
+                if np.sum([np.cross(np.array(key), self[key]) for key in self.keys()]) < 0:
+                    return self.times_scalar(-1)
+        return self
 

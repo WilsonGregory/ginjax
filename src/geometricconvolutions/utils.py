@@ -1,4 +1,4 @@
-import numpy as np #removing this
+import numpy as np
 import pylab as plt
 import matplotlib.cm as cm
 from matplotlib.colors import ListedColormap

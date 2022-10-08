@@ -1,12 +1,19 @@
 import sys
 sys.path.insert(0,'src/geometricconvolutions/')
 
-from geometric import levi_civita_symbol, permutation_parity, make_all_operators, ktensor
+from geometric import (
+    geometric_image,
+    get_unique_invariant_filters,
+    ktensor,
+    levi_civita_symbol,
+    make_all_operators,
+    permutation_parity,
+    TINY,
+)
 import pytest
 import jax.numpy as jnp
 import jax.random as random
-
-TINY = 1.e-5
+import math
 
 # Now test group actions on k-tensors:
 def do_group_actions(operators):
@@ -93,11 +100,18 @@ class TestMisc:
 
         assert levi_civita_symbol.get(2) is levi_civita_symbol.get(2) #test that we aren't remaking them
 
+    def testGroupSize(self):
+        for d in range(2,7):
+            operators = make_all_operators(d)
+
+            # test the group size
+            assert len(operators) == 2*(2**(d-1))*math.factorial(d)
+
     def testGroup(self):
-        for d in [2,3,4]: #could go longer, but it gets slow to test the closure
+        for d in [2,3]: #could go longer, but it gets slow to test the closure
             operators = make_all_operators(d)
             D = len(operators[0])
-            # Check that the list of group operators is closed
+            # Check that the list of group operators is closed, O(d^3)
             for gg in operators:
                 for gg2 in operators:
                     product = (gg @ gg2).astype(int)
@@ -105,6 +119,7 @@ class TestMisc:
                     for gg3 in operators:
                         if jnp.allclose(gg3, product):
                             found = True
+                            break
 
                     assert found
 
@@ -114,3 +129,28 @@ class TestMisc:
 
             assert do_group_actions(operators)
 
+    def testUniqueInvariantFilters(self):
+        # ensure that all the filters are actually invariant
+        key = random.PRNGKey(0)
+
+        for D in [2]: #image dimension
+            operators = make_all_operators(D)
+            for N in [3]: #filter size
+                key, subkey = random.split(key)
+                image = geometric_image(random.uniform(key, shape=(2*N,2*N)), 0, D)
+                for k in [0,1,2]: #tensor order of filter
+                    for parity in [0,1]:
+                        filters = get_unique_invariant_filters(N, k, parity, D, operators)
+
+                        for gg in operators:
+                            for geom_filter in filters:
+
+                                # test that the filters are invariant to the group operators
+                                assert jnp.allclose(geom_filter.data, geom_filter.times_group_element(gg).data)
+
+                                # test that the convolution with the invariant filters is equivariant to gg
+                                # convolutions are currently too slow to test this every time, but should be tested
+                                # assert jnp.allclose(
+                                #     image.convolve_with(geom_filter).times_group_element(gg).data,
+                                #     image.times_group_element(gg).convolve_with(geom_filter).data,
+                                # )

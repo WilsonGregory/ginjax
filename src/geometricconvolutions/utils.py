@@ -1,4 +1,9 @@
-
+import numpy as np #removing this
+import pylab as plt
+import matplotlib.cm as cm
+from matplotlib.colors import ListedColormap
+import cmastro
+from geometric import TINY
 
 # Visualize the filters.
 
@@ -61,25 +66,25 @@ def plot_scalars(ax, M, xs, ys, ws, boxes=True, fill=True, symbols=True,
                    s=ss[ws < -TINY], zorder=100)
     return
 
-def plot_scalar_filter(filter, title, ax=None):
-    assert filter.k == 0
-    if filter.D not in [2, 3]:
+def plot_scalar_filter(geom_filter, title, ax=None):
+    assert geom_filter.k == 0
+    if geom_filter.D not in [2, 3]:
         print("plot_scalar_filter(): Only works for D in [2, 3].")
         return
     if ax is None:
         fig = setup_plot()
         ax = fig.gca()
-    MtotheD = filter.M ** filter.D
+    MtotheD = geom_filter.N ** geom_filter.D
     xs, ys, zs = np.zeros(MtotheD), np.zeros(MtotheD), np.zeros(MtotheD)
     ws = np.zeros(MtotheD)
-    for i, (kk, pp) in enumerate(zip(filter.keys(), filter.pixels())):
-        ws[i] = filter[kk].data
-        if filter.D == 2:
-            xs[i], ys[i] = pp
-        elif filter.D == 3:
-            xs[i], ys[i] = pp[0] + XOFF * pp[2], pp[1] + XOFF * pp[2]
-    plot_scalars(ax, filter.M, xs, ys, ws, vmin=-3., vmax=3.)
-    finish_plot(ax, title, filter.pixels(), filter.D)
+    for i, key in enumerate(geom_filter.keys()):
+        ws[i] = geom_filter[key]
+        if geom_filter.D == 2:
+            xs[i], ys[i] = np.array(key)
+        elif geom_filter.D == 3:
+            xs[i], ys[i] = key[0] + XOFF * key[2], key[1] + XOFF * key[2]
+    plot_scalars(ax, geom_filter.N, xs, ys, ws, vmin=-3., vmax=3.)
+    finish_plot(ax, title, geom_filter.key_array(), geom_filter.D)
     return ax
 
 def plot_vectors(ax, xs, ys, ws, boxes=True, fill=True,
@@ -99,25 +104,25 @@ def plot_vectors(ax, xs, ys, ws, boxes=True, fill=True,
                      color="k", zorder=100)
     return
 
-def plot_vector_filter(filter, title, ax=None):
-    assert filter.k == 1
-    if filter.D not in [2, 3]:
+def plot_vector_filter(geom_filter, title, ax=None):
+    assert geom_filter.k == 1
+    if geom_filter.D not in [2, 3]:
         print("plot_vector_filter(): Only works for D in [2, 3].")
         return
     if ax is None:
         fig = setup_plot()
         ax = fig.gca()
-    MtotheD = filter.M ** filter.D
+    MtotheD = geom_filter.N ** geom_filter.D
     xs, ys, zs = np.zeros(MtotheD), np.zeros(MtotheD), np.zeros(MtotheD)
-    ws = np.zeros((MtotheD, filter.D))
-    for i, (kk, pp) in enumerate(zip(filter.keys(), filter.pixels())):
-        ws[i] = filter[kk].data
-        if filter.D == 2:
-            xs[i], ys[i] = pp
-        elif filter.D == 3:
-            xs[i], ys[i] = pp[0] + XOFF * pp[2], pp[1] + YOFF * pp[2]
+    ws = np.zeros((MtotheD, geom_filter.D))
+    for i, key in enumerate(geom_filter.keys()):
+        ws[i] = geom_filter[key]
+        if geom_filter.D == 2:
+            xs[i], ys[i] = np.array(key)
+        elif geom_filter.D == 3:
+            xs[i], ys[i] = key[0] + XOFF * key[2], key[1] + YOFF * key[2]
     plot_vectors(ax, xs, ys, ws, vmin=0., vmax=3.)
-    finish_plot(ax, title, filter.pixels(), filter.D)
+    finish_plot(ax, title, geom_filter.key_array(), geom_filter.D)
     return ax
 
 Rx = np.array([[-1.0, -1.0, 1.0, 1.0, -1.0, 0.0,  1.0],
@@ -140,25 +145,25 @@ def plot_tensors(ax, xs, ys, ws, boxes=True, fill=True,
             plot_one_tensor(ax, x, y, w, color="k", zorder=100)
     return
 
-def plot_tensor_filter(filter, title, ax=None):
-    assert filter.k == 2, "plot_tensor_filter(): Only 2-tensors (for now)."
-    if filter.D not in [2, ]:
+def plot_tensor_filter(geom_filter, title, ax=None):
+    assert geom_filter.k == 2, "plot_tensor_filter(): Only 2-tensors (for now)."
+    if geom_filter.D not in [2, ]:
         print("plot_vector_filter(): Only works for D in [2, ].")
         return
     if ax is None:
         fig = setup_plot()
         ax = fig.gca()
-    MtotheD = filter.M ** filter.D
+    MtotheD = geom_filter.N ** geom_filter.D
     xs, ys = np.zeros(MtotheD), np.zeros(MtotheD)
-    ws = np.zeros((MtotheD, filter.D, filter.D))
-    for i, (kk, pp) in enumerate(zip(filter.keys(), filter.pixels())):
-        ws[i] = filter[kk].data
-        if filter.D == 2:
-            xs[i], ys[i] = pp
-        elif filter.D == 3:
-            xs[i], ys[i] = pp[0] + XOFF * pp[2], pp[1] + YOFF * pp[2]
+    ws = np.zeros((MtotheD, geom_filter.D, geom_filter.D))
+    for i, key in enumerate(geom_filter.keys()):
+        ws[i] = geom_filter[key]
+        if geom_filter.D == 2:
+            xs[i], ys[i] = np.array(key)
+        elif geom_filter.D == 3:
+            xs[i], ys[i] = key[0] + XOFF * key[2], key[1] + YOFF * key[2]
     plot_tensors(ax, xs, ys, ws, vmin=0., vmax=3.)
-    finish_plot(ax, title, filter.pixels(), filter.D)
+    finish_plot(ax, title, geom_filter.key_array(), geom_filter.D)
     return ax
 
 def plot_nothing(ax):
@@ -199,8 +204,8 @@ def plot_scalar_image(image, vmin=-1., vmax=1., ax=None, colorbar=False):
     if ax is None:
         ff = setup_image_plot()
         ax = ff.gca()
-    plotdata = np.array([[pp[0], pp[1], image[kk].data]
-                         for kk, pp in zip(image.keys(), image.pixels())])
+    plotdata = np.array([[key[0], key[1], image[key]]
+                         for key in image.keys()])
     ax.set_aspect("equal", adjustable="box")
     if vmin is None:
         vmin = np.percentile(plotdata[:, 2],  2.5)
@@ -224,8 +229,8 @@ def plot_vector_image(image, ax=None):
     if ax is None:
         ff = setup_image_plot()
         ax = ff.gca()
-    plotdata = np.array([[pp[0], pp[1], image[kk].data[0], image[kk].data[1]]
-                         for kk, pp in zip(image.keys(), image.pixels())])
+    plotdata = np.array([[key[0], key[1], image[key][0], image[key][1]]
+                         for key in image.keys()])
     plot_vectors(ax, plotdata[:, 0], plotdata[:, 1], plotdata[:, 2:4],
                  boxes=True, fill=True, scaling=0.5)
     image_axis(ax, plotdata)
@@ -255,7 +260,7 @@ def plot_images(images):
                         bottom=0.001, top=0.999-0.07/m, hspace=0.2/m)
     for ax, (image, latex) in zip(axes, images):
         plot_image(image, ax=ax)
-        finish_plot(ax, "$" + latex + "$", image.pixels(), image.D)
+        finish_plot(ax, "$" + latex + "$", image.key_array(), image.D)
     for i in range(nim, n * m):
         plot_nothing(axes[i])
     return fig

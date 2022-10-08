@@ -188,6 +188,16 @@ class TestGeometricImage:
                     assert ktensor1_contracted.parity == (ktensor1.parity + 1) % 2
                     assert ktensor1_contracted.D == ktensor1.D
 
+    def testTimesGroupElement(self):
+        a = ktensor(jnp.array([2,1], dtype=int), 0, 2)
+
+        x_reflection = jnp.array([[1, 0], [0, -1]], dtype=int)
+        y_reflection = jnp.array([[-1, 0], [0, 1]], dtype=int)
+        counterclockwise_rotation = jnp.array([[0, -1], [1, 0]], dtype=int)
+
+        assert jnp.allclose(a.times_group_element(x_reflection).data, jnp.array([2, -1], dtype=int))
+        assert jnp.allclose(a.times_group_element(y_reflection).data, jnp.array([-2, 1], dtype=int))
+        assert jnp.allclose(a.times_group_element(counterclockwise_rotation).data, jnp.array([-1, 2], dtype=int))
 
 
 

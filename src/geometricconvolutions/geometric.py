@@ -34,41 +34,33 @@ TINY = 1.e-5
 # ------------------------------------------------------------------------------
 # PART 1: Make and test a complete group
 
-def make_all_generators(D):
-
-    # Make the flip operator
-    vec = jnp.ones(D, dtype=int)
-    vec.at[0].set(-1)
-    gg = jnp.diag(vec).astype(int)
-    generators = [gg, ]
-
-    # Make the 90-degree rotation operators
-    for i in range(D):
-        for j in range(i + 1, D):
-            gg = jnp.eye(D, dtype=int)
-            gg.at[i, i].set(0)
-            gg.at[j, j].set(0)
-            gg.at[i, j].set(-1)
-            gg.at[j, i].set(1)
-            generators.append(gg)
-
-    return jnp.array(generators)
+def permutation_matrix_from_sequence(seq):
+    """
+    Give a sequence tuple, return the permutation matrix for that sequence
+    """
+    D = len(seq)
+    permutation_matrix = []
+    for num in seq:
+        row = [0]*D
+        row[num] = 1
+        permutation_matrix.append(row)
+    return jnp.array(permutation_matrix)
 
 def make_all_operators(D):
-    generators = make_all_generators(D)
-    operators = jnp.array([jnp.eye(D).astype(int), ])
-    num_operators = 0
-    while len(operators) != num_operators:
-        num_operators = len(operators)
-        operators = make_new_operators(operators, generators)
-    return(operators)
+    """
+    Construct all operators of dimension D that are rotations of 90 degrees, or reflections, or a combination of the
+    two. This is equivalent to all the permutation matrices where each entry can either be +1 or -1
+    args:
+        D (int): dimension of the operator
+    """
 
-def make_new_operators(operators, generators):
-    for op in operators:
-        for gg in generators:
-            op2 = (gg @ op).astype(int)
-            operators = jnp.unique(jnp.append(operators, op2[None, :, :], axis=0), axis=0)
-    return operators
+    # permutation matrices, one for each permutation of length D
+    permutation_matrices = [permutation_matrix_from_sequence(seq) for seq in it.permutations(range(D))]
+    # possible entries, e.g. for D=2: (1,1), (-1,1), (1,-1), (-1,-1)
+    possible_entries = [np.diag(prod) for prod in it.product([1,-1], repeat=D)]
+
+    #combine all the permutation matrices with the possible entries, then flatten to a single array of operators
+    return list(it.chain(*list(map(lambda matrix: [matrix @ prod for prod in possible_entries], permutation_matrices))))
 
 
 # ------------------------------------------------------------------------------
@@ -184,23 +176,23 @@ class ktensor:
 
     def times_group_element(self, gg):
         """
-        # Notes / Bugs:
-        - THIS IS UNTESTED.
-        - This is incomprehensible.
+        Multiply ktensor by group element, performing necessary adjustments if its a pseudo-tensor
+        args:
+            gg (jnp array-like): group element
         """
         assert self.k < 14
         assert gg.shape == (self.D, self.D)
         sign, logdet = np.linalg.slogdet(gg)
-        assert logdet == 0.
+        assert logdet == 0. #determinant is +- 1, so abs(log(det)) should be 0
         if self.k == 0:
-            newdata = 1. * self.data * sign ** self.parity
+            newdata = 1. * self.data * (sign ** self.parity)
         else:
             firstletters  = "abcdefghijklm"
             secondletters = "nopqrstuvwxyz"
             einstr = "".join([firstletters[i] for i in range(self.k)]) +"," + \
             ",".join([secondletters[i] + firstletters[i] for i in range(self.k)])
             foo = (self.data, ) + self.k * (gg, )
-            newdata = np.einsum(einstr, *foo) * sign ** self.parity
+            newdata = np.einsum(einstr, *foo) * (sign ** self.parity)
         return ktensor(newdata, self.parity, self.D)
 
     def contract(self, i, j):
@@ -242,10 +234,19 @@ class ktensor:
 # PART 4: Use group averaging to find unique invariant filters.
 
 def get_unique_invariant_filters(M, k, parity, D, operators):
+    """
+    Use group averaging to generate all the unique invariant filters
+    args:
+        M (int): filter side length
+        k (int): tensor order
+        parity (int):  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
+        D (int): image dimension
+        operators (jnp-array): array of operators of a group
+    """
 
     # make the seed filters
     tmp = geometric_filter.zeros(M, k, parity, D)
-    M, D, keys, shape = tmp.N, tmp.D, tmp.keys(), tmp.data.shape
+    keys, shape = tmp.keys(), tmp.data.shape
     allfilters = []
     if k == 0:
         for kk in keys:
@@ -256,7 +257,7 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
         for kk in keys:
             thisfilter = geometric_filter.zeros(M, k, parity, D)
             for indices in it.product(range(D), repeat=k):
-                thisfilter[kk][indices] = 1
+                thisfilter[kk] = thisfilter[kk].at[indices].set(1) #is this even right?
                 allfilters.append(thisfilter)
 
     # do the group averaging
@@ -290,7 +291,7 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
     filters = [filters[i] for i in I]
 
     # now do k-dependent rectification:
-    filters = [ff.rectify() for ff in filters]
+    # filters = [ff.rectify() for ff in filters]
 
     return filters
 
@@ -428,6 +429,10 @@ class geometric_image:
         """
         return it.product(range(self.N), repeat=self.D)
 
+    def key_array(self):
+        # equivalent to the old pixels function
+        return jnp.array([key for key in self.keys()])
+
     def pixels(self, ktensor=True):
         """
         Iterate over the pixels of geometric_image. If ktensor=True, return the pixels as ktensor objects
@@ -509,12 +514,29 @@ class geometric_image:
             newimage[key] = ktensor.levi_civita_contract(index)
         return newimage
 
-    def times_group_element(self, gg):
-        #untested
-        newfilter = self.copy()
-        for key, ktensor in self.items():
-            newfilter[key] = self[self.hash(gg.T @ ktensor)].times_group_element(gg)
-        return newfilter
+    def get_rotated_keys(self, gg):
+        """
+        Slightly messier than with geometric_filter because self.N-1 / 2 might not be an integer, but should work
+        args:
+            gg (jnp array-like): group operation
+        """
+        key_array = jnp.array([np.array(key) - (self.N-1) / 2 for key in self.keys()])
+        return jnp.rint((key_array @ gg) + (self.N-1) / 2).astype(int)
+
+    def times_group_element(self, gg, m=None):
+        rotated_keys = self.get_rotated_keys(gg)
+        ktensor_vals = [ktensor(val, self.parity, self.D) for val in  self[self.hash_list(rotated_keys)]]
+        rotated_vals = [ktensor.times_group_element(gg).data for ktensor in ktensor_vals]
+
+        return self.__class__(jnp.array(rotated_vals, dtype=self.data.dtype).reshape(self.shape()), self.parity, self.D)
+
+    # def times_group_element(self, gg):
+    #     #untested
+    #     newfilter = self.copy()
+    #     for key, ktensor in self.items():
+    #         print(key)
+    #         newfilter[key] = self[self.hash(gg.T @ key)].times_group_element(gg)
+    #     return newfilter
 
 
 # ------------------------------------------------------------------------------
@@ -540,9 +562,12 @@ class geometric_filter(geometric_image):
             self.D, self.N, self.m, self.k, self.parity)
 
     def bigness(self):
+        """
+        Gives an idea of size for a filter, sparser filters are smaller while less sparse filters are larger
+        """
         numerator, denominator = 0., 0.
         for key, ktensor in self.items():
-            numerator += jnp.linalg.norm(ktensor * ktensor.norm(), ord=2)
+            numerator += jnp.linalg.norm(jnp.array(key) * ktensor.norm(), ord=2)
             denominator += ktensor.norm()
         return numerator / denominator
 
@@ -574,6 +599,10 @@ class geometric_filter(geometric_image):
                 yield (tuple([a+b for a,b in zip(key, len(key) * (-self.m,))]), value)
             else:
                 yield (key, value)
+
+    def get_rotated_keys(self, gg):
+        key_array = jnp.array([np.array(key) - self.m for key in self.keys()], dtype=int)
+        return (key_array @ gg) + self.m
 
     # def rectify(self):
     #     if self.k == 0:

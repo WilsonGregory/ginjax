@@ -1,12 +1,17 @@
 import sys
 sys.path.insert(0,'src/geometricconvolutions/')
 
-from geometric import levi_civita_symbol, permutation_parity, make_all_operators, ktensor
+from geometric import (
+    levi_civita_symbol,
+    permutation_parity,
+    make_all_operators,
+    ktensor,
+    TINY,
+)
 import pytest
 import jax.numpy as jnp
 import jax.random as random
-
-TINY = 1.e-5
+import math
 
 # Now test group actions on k-tensors:
 def do_group_actions(operators):
@@ -93,11 +98,18 @@ class TestMisc:
 
         assert levi_civita_symbol.get(2) is levi_civita_symbol.get(2) #test that we aren't remaking them
 
+    def testGroupSize(self):
+        for d in range(2,7):
+            operators = make_all_operators(d)
+
+            # test the group size
+            assert len(operators) == 2*(2**(d-1))*math.factorial(d)
+
     def testGroup(self):
-        for d in [2,3,4]: #could go longer, but it gets slow to test the closure
+        for d in [2,3]: #could go longer, but it gets slow to test the closure
             operators = make_all_operators(d)
             D = len(operators[0])
-            # Check that the list of group operators is closed
+            # Check that the list of group operators is closed, O(d^3)
             for gg in operators:
                 for gg2 in operators:
                     product = (gg @ gg2).astype(int)
@@ -105,6 +117,7 @@ class TestMisc:
                     for gg3 in operators:
                         if jnp.allclose(gg3, product):
                             found = True
+                            break
 
                     assert found
 

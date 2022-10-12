@@ -150,7 +150,7 @@ class TestMisc:
 
                                 # test that the convolution with the invariant filters is equivariant to gg
                                 # convolutions are currently too slow to test this every time, but should be tested
-                                # assert jnp.allclose(
-                                #     image.convolve_with(geom_filter).times_group_element(gg).data,
-                                #     image.times_group_element(gg).convolve_with(geom_filter).data,
-                                # )
+                                assert jnp.allclose(
+                                    image.convolve_with(geom_filter).times_group_element(gg).data,
+                                    image.times_group_element(gg).convolve_with(geom_filter).data,
+                                )

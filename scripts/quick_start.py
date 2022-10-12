@@ -7,14 +7,18 @@ import jax.numpy as jnp
 import jax.random as random
 
 def testIK0_FK1():
+    """
+    Convolve with where the input is k=0, and the filter is k=1
+    """
     image1 = geom.geometric_image(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
     filter_image = geom.geometric_filter(jnp.array([
         [[0,0], [0,1], [0,0]],
         [[-1,0],[0,0], [1,0]],
         [[0,0], [0,-1],[0,0]],
-    ], dtype=int), 0, 2) #this is an invariant filter, hopefully not relevant?
+    ], dtype=int), 0, 2) #this is an invariant filter, hopefully not a problem?
 
     convolved_image = image1.convolve_with(filter_image)
+
     assert convolved_image.D == image1.D
     assert convolved_image.N == image1.N
     assert convolved_image.k == image1.k + filter_image.k
@@ -24,6 +28,7 @@ def testIK0_FK1():
         [[3,0],[-3,1],[0,-1]],
         [[-1,-2],[-1,-1],[2,-3]]
     ], dtype=int)).all()
+
 
 def testUniqueInvariantFilters():
     # ensure that all the filters are actually invariant
@@ -57,5 +62,8 @@ def testUniqueInvariantFilters():
 # testUniqueInvariantFilters()
 
 testIK0_FK1()
+
+
+
 
 

@@ -297,7 +297,7 @@ class TestGeometricImage:
             ],
         dtype=int)).all()
 
-    def testConvolveWithIK1_FK1(self):
+    def testConvolveWithIK0_FK1(self):
         """
         Convolve with where the input is k=0, and the filter is k=1
         """
@@ -318,6 +318,30 @@ class TestGeometricImage:
             [[3,0],[-3,1],[0,-1]],
             [[-1,-2],[-1,-1],[2,-3]]
         ], dtype=int)).all()
+
+    def testConvolveWithRandoms(self):
+        # this test uses convolve_with_slow to test convolve_with, possibly the blind leading the blind
+        key = random.PRNGKey(0)
+        N=3
+
+        for D in [2,3]:
+            for k_img in range(3):
+                key, subkey = random.split(key)
+                image = geometric_image(random.uniform(subkey, shape=((N,)*D + (D,)*k_img)), 0, D)
+
+                for k_filter in range(3):
+                    key, subkey = random.split(key)
+                    geom_filter = geometric_filter(random.uniform(subkey, shape=((3,)*D + (D,)*k_filter)), 0, D)
+
+                    convolved_image = image.convolve_with(geom_filter)
+                    convolved_image_slow = image.convolve_with_slow(geom_filter)
+
+                    assert convolved_image.D == convolved_image_slow.D == image.D
+                    assert convolved_image.N == convolved_image_slow.N == image.N
+                    assert convolved_image.k == convolved_image_slow.k == image.k + geom_filter.k
+                    assert convolved_image.parity == convolved_image_slow.parity == (image.parity + geom_filter.parity) %2
+                    assert jnp.allclose(convolved_image.data, convolved_image_slow.data)
+
 
     # def testConvolveCommutativity(self):
     #     image1 = geometric_image(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)

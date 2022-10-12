@@ -24,10 +24,13 @@ See the file `LICENSE` for more details.
 import itertools as it
 import numpy as np #removing this
 import jax.numpy as jnp
+import jax.lax
+import jax.scipy as jsp
 import pylab as plt
 import matplotlib.cm as cm
 from matplotlib.colors import ListedColormap
 import cmastro
+import time
 
 TINY = 1.e-5
 
@@ -318,15 +321,11 @@ class geometric_image:
         Could probably be combined with hash in some clever fashion
         """
         if extra_indices is not None:
-            lst = [self.hash(key1, key2) for key1, key2 in zip(indices, extra_indices)]
+            lst = jnp.remainder(jnp.array(indices) + jnp.array(extra_indices), self.N)
         else:
-            lst = [self.hash(key) for key in indices]
+            lst = jnp.remainder(indices, self.N)
 
-        coords = self.D*[[]]
-        for i in range(self.D):
-            coords[i] = [key[i] for key in lst]
-
-        return tuple(coords)
+        return tuple(lst.transpose())
 
     def hash(self, indices, extra_indices=None):
         """
@@ -463,9 +462,9 @@ class geometric_image:
         vals = self[key_list].reshape(filter_image.image_shape() + self.pixel_shape())
         return self.__class__(vals, self.parity, self.D)
 
-    def convolve_with(self, filter_image):
+    def convolve_with_slow(self, filter_image):
         """
-        Apply the convolution filter_image to this geometric image
+        Apply the convolution filter_image to this geometric image. Keeping this around for testing.
         args:
             filter_image (geometric_filter-like): convolution that we are applying, can be an image or a filter
         """
@@ -480,6 +479,85 @@ class geometric_image:
             subimage = self.conv_subimage(key, filter_image, filter_image_keys)
             newimage[key] = jnp.sum((subimage * filter_image).data, axis=tuple(range(self.D)))
         return newimage
+
+    def convolve_with(self, filter_image, warnings=True):
+        """
+        Here is how this function works:
+        1. Expand the geom_image to its torus shape, i.e. add filter.m cells all around the perimeter of the image
+        2. Do the tensor product (with 1s) to each image.k, filter.k so that they are both image.k + filter.k tensors.
+        That is if image.k=2, filter.k=1, do (D,D) => (D,D) x (D,) and (D,) => (D,D) x (D,) with tensors of 1s
+        3. Now we shape the inputs to work with jax.lax.conv_general_dilated
+        4. Put image in NHWC (batch, height, width, channel). Thus we vectorize the tensor
+        5. Put filter in HWIO (height, width, input, output). Input is 1, output is the vectorized tensor
+        6. Plug all that stuff in to conv_general_dilated, and feature_group_count is the length of the vectorized
+        tensor, and it is basically saying that each part of the vectorized tensor is treated separately in the filter.
+        It must be the case that channel = input * feature_group_count
+        See: https://jax.readthedocs.io/en/latest/notebooks/convolutions.html#id1 and
+        https://www.tensorflow.org/xla/operation_semantics#conv_convolution
+
+        args:
+            filter_image (geometric_filter): the filter we are performing the convolution with
+            warnings (bool): display warnings, defaults to True currently
+        """
+        if (self.data.dtype != filter_image.data.dtype):
+            dtype = 'float32'
+            if (warnings):
+                print('geometric_image::convolve_with_fastest: geometric_image dtype and filter_image dtype mismatch, converting to float32')
+        else:
+            dtype = self.data.dtype
+
+        output_k = self.k + filter_image.k
+        torus_expand_img = self.torus_expand_data(filter_image).astype(dtype)
+        if (len(filter_image.pixel_shape())):
+            img_expanded = np.multiply.outer(
+                torus_expand_img,
+                np.ones(filter_image.pixel_shape(), dtype=dtype),
+            )
+        else:
+            img_expanded = torus_expand_img
+
+        if len(self.pixel_shape()):
+            filter_expanded = np.moveaxis(
+                np.multiply.outer(np.ones(self.pixel_shape(), dtype=dtype), filter_image.data.astype(dtype)),
+                0,
+                self.D,
+            )
+        else:
+            filter_expanded = filter_image.data.astype(dtype)
+
+        if output_k != 0:
+            channel_length = np.multiply.reduce(self.pixel_shape() + filter_image.pixel_shape())
+        else:
+            channel_length = 1
+
+        # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
+        img_formatted = img_expanded.reshape((1,) + torus_expand_img.shape[:self.D] + (channel_length,))
+
+        # convert filter to HWIO (or HWDIO)
+        filter_formatted = filter_expanded.reshape(filter_image.image_shape() + (1,channel_length))
+
+        if self.D == 2:
+            dimension_numbers = ('NHWC','HWIO','NHWC')
+            window_strides = (1,1)
+        elif self.D == 3:
+            dimension_numbers = ('NHWDC','HWDIO','NHWDC')
+            window_strides = (1,1,1)
+
+        convolved_array = jax.lax.conv_general_dilated(
+            img_formatted, #lhs
+            filter_formatted, #rhs
+            window_strides, #window strides
+            'VALID', #padding mode, we can do valid because we already expanded on the torus
+            dimension_numbers=dimension_numbers,
+            feature_group_count=channel_length, #allows us to have separate filters for separate channels
+        ).reshape(self.image_shape() + (self.D,)*output_k) #reshape the pixel to the correct tensor shape
+        return self.__class__(convolved_array, self.parity + filter_image.parity, self.D)
+
+    def torus_expand_data(self, filter_image):
+        #hmm this is slow? takes about 6s for 1000 x 1000
+        new_N = self.N + 2 * filter_image.m
+        indices = jnp.array([key for key in it.product(range(new_N), repeat=self.D)], dtype=int) - filter_image.m
+        return self[self.hash_list(indices)].reshape((new_N,) * self.D + self.pixel_shape())
 
     def times_scalar(self, scalar):
         """

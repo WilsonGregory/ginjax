@@ -213,57 +213,57 @@ class TestGeometricImage:
                 assert jnp.linalg.norm(pixel) < (1 + TINY)
 
 
-    def testConvSubimage(self):
-        image1 = geometric_image(jnp.arange(25).reshape((5,5)), 0, 2)
-        filter1 = geometric_filter(jnp.zeros(25).reshape((5,5)), 0, 2)
-        subimage1 = image1.conv_subimage((0,0), filter1)
-        assert subimage1.shape() == (5,5)
-        assert subimage1.D == image1.D
-        assert subimage1.N == filter1.N
-        assert subimage1.k == image1.k
-        assert subimage1.parity == image1.parity
-        assert (subimage1.data == jnp.array(
-            [
-                [18,19,15,16,17],
-                [23,24,20,21,22],
-                [3,4,0,1,2],
-                [8,9,5,6,7],
-                [13,14,10,11,12],
-            ],
-        dtype=int)).all()
+    # def testConvSubimage(self):
+    #     image1 = geometric_image(jnp.arange(25).reshape((5,5)), 0, 2)
+    #     filter1 = geometric_filter(jnp.zeros(25).reshape((5,5)), 0, 2)
+    #     subimage1 = image1.conv_subimage((0,0), filter1)
+    #     assert subimage1.shape() == (5,5)
+    #     assert subimage1.D == image1.D
+    #     assert subimage1.N == filter1.N
+    #     assert subimage1.k == image1.k
+    #     assert subimage1.parity == image1.parity
+    #     assert (subimage1.data == jnp.array(
+    #         [
+    #             [18,19,15,16,17],
+    #             [23,24,20,21,22],
+    #             [3,4,0,1,2],
+    #             [8,9,5,6,7],
+    #             [13,14,10,11,12],
+    #         ],
+    #     dtype=int)).all()
 
-        subimage2 = image1.conv_subimage((4,4), filter1)
-        assert subimage2.shape() == (5,5)
-        assert subimage2.D == image1.D
-        assert subimage2.N == filter1.N
-        assert subimage2.k == image1.k
-        assert subimage2.parity == image1.parity
-        assert (subimage2.data == jnp.array(
-            [
-                [12,13,14,10,11],
-                [17,18,19,15,16],
-                [22,23,24,20,21],
-                [2,3,4,0,1],
-                [7,8,9,5,6],
-            ],
-        dtype=int)).all()
+    #     subimage2 = image1.conv_subimage((4,4), filter1)
+    #     assert subimage2.shape() == (5,5)
+    #     assert subimage2.D == image1.D
+    #     assert subimage2.N == filter1.N
+    #     assert subimage2.k == image1.k
+    #     assert subimage2.parity == image1.parity
+    #     assert (subimage2.data == jnp.array(
+    #         [
+    #             [12,13,14,10,11],
+    #             [17,18,19,15,16],
+    #             [22,23,24,20,21],
+    #             [2,3,4,0,1],
+    #             [7,8,9,5,6],
+    #         ],
+    #     dtype=int)).all()
 
-        image2 = geometric_image(jnp.arange(25).reshape((5,5)), 0, 2)*geometric_image(jnp.ones((5,5,2)), 0, 2)
-        subimage3 = image2.conv_subimage((0,0), filter1)
-        assert subimage3.shape() == (5,5,2)
-        assert subimage3.D == image2.D
-        assert subimage3.N == filter1.N
-        assert subimage3.k == image2.k
-        assert subimage3.parity == image2.parity
-        assert (subimage3.data == jnp.array(
-            [
-                [x*jnp.array([1,1]) for x in [18,19,15,16,17]],
-                [x*jnp.array([1,1]) for x in [23,24,20,21,22]],
-                [x*jnp.array([1,1]) for x in [3,4,0,1,2]],
-                [x*jnp.array([1,1]) for x in [8,9,5,6,7]],
-                [x*jnp.array([1,1]) for x in [13,14,10,11,12]],
-            ],
-        dtype=int)).all()
+    #     image2 = geometric_image(jnp.arange(25).reshape((5,5)), 0, 2)*geometric_image(jnp.ones((5,5,2)), 0, 2)
+    #     subimage3 = image2.conv_subimage((0,0), filter1)
+    #     assert subimage3.shape() == (5,5,2)
+    #     assert subimage3.D == image2.D
+    #     assert subimage3.N == filter1.N
+    #     assert subimage3.k == image2.k
+    #     assert subimage3.parity == image2.parity
+    #     assert (subimage3.data == jnp.array(
+    #         [
+    #             [x*jnp.array([1,1]) for x in [18,19,15,16,17]],
+    #             [x*jnp.array([1,1]) for x in [23,24,20,21,22]],
+    #             [x*jnp.array([1,1]) for x in [3,4,0,1,2]],
+    #             [x*jnp.array([1,1]) for x in [8,9,5,6,7]],
+    #             [x*jnp.array([1,1]) for x in [13,14,10,11,12]],
+    #         ],
+    #     dtype=int)).all()
 
     def testConvolveWithIK0_FK0(self):
         """
@@ -297,7 +297,7 @@ class TestGeometricImage:
             ],
         dtype=int)).all()
 
-    def testConvolveWithIK1_FK1(self):
+    def testConvolveWithIK0_FK1(self):
         """
         Convolve with where the input is k=0, and the filter is k=1
         """

@@ -25,12 +25,10 @@ import itertools as it
 import numpy as np #removing this
 import jax.numpy as jnp
 import jax.lax
-import jax.scipy as jsp
 import pylab as plt
 import matplotlib.cm as cm
 from matplotlib.colors import ListedColormap
 import cmastro
-import time
 
 TINY = 1.e-5
 

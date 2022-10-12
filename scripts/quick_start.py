@@ -18,7 +18,6 @@ def testIK0_FK1():
     ], dtype=int), 0, 2) #this is an invariant filter, hopefully not a problem?
 
     convolved_image = image1.convolve_with(filter_image)
-    # print(convolved_image.data)
 
     assert convolved_image.D == image1.D
     assert convolved_image.N == image1.N
@@ -30,63 +29,6 @@ def testIK0_FK1():
         [[-1,-2],[-1,-1],[2,-3]]
     ], dtype=int)).all()
 
-def testIK0_FK0():
-    #did these out by hand, hopefully, my arithmetic is correct...
-    image1 = geom.geometric_image(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
-    filter_image = geom.geometric_filter(jnp.array([[1,0,1], [0,0,0], [1,0,1]], dtype=int), 0, 2)
-
-    convolved_image = image1.convolve_with(filter_image)
-    assert convolved_image.D == image1.D
-    assert convolved_image.N == image1.N
-    assert convolved_image.k == image1.k + filter_image.k
-    assert convolved_image.parity == (image1.parity + filter_image.parity) % 2
-    assert (convolved_image.data == jnp.array([[-2,0,2], [2,5,5], [-2,-1,3]], dtype=int)).all()
-
-    key = random.PRNGKey(0)
-    image2 = geom.geometric_image(jnp.floor(10*random.uniform(key, shape=(5,5))), 0, 2)
-    convolved_image2 = image2.convolve_with(filter_image)
-    assert convolved_image2.D == image2.D
-    assert convolved_image2.N == image2.N
-    assert convolved_image2.k == image2.k + filter_image.k
-    assert convolved_image2.parity == (image2.parity + filter_image.parity) % 2
-    assert (convolved_image2.data == jnp.array(
-        [
-            [16,9,16,11,10],
-            [15,19,15,13,28],
-            [17,19,15,16,17],
-            [16,12,13,13,18],
-            [8,23,11,13,29],
-        ],
-    dtype=int)).all()
-
-def testConvolveWithRandoms():
-        # this test uses convolve_with_slow to test convolve_with, possibly the blind leading the blind
-        key = random.PRNGKey(0)
-        N=3
-
-        for D in [2,3]:
-            for k_img in range(3):
-                key, subkey = random.split(key)
-                image = geom.geometric_image(random.uniform(subkey, shape=((N,)*D + (D,)*k_img)), 0, D)
-
-                for k_filter in range(3):
-                    key, subkey = random.split(key)
-                    geom_filter = geom.geometric_filter(random.uniform(subkey, shape=((3,)*D + (D,)*k_filter)), 0, D)
-
-                    convolved_image = image.convolve_with(geom_filter)
-                    convolved_image_slow = image.convolve_with_slow(geom_filter)
-
-                    assert convolved_image.D == convolved_image_slow.D == image.D
-                    assert convolved_image.N == convolved_image_slow.N == image.N
-                    assert convolved_image.k == convolved_image_slow.k == image.k + geom_filter.k
-                    assert convolved_image.parity == convolved_image_slow.parity == (image.parity + geom_filter.parity) %2
-
-                    # print(image.shape())
-                    # print(geom_filter.shape())
-                    # print(convolved_image.shape())
-                    # print(convolved_image_slow.shape())
-                    print(D,k_img,k_filter)
-                    assert jnp.allclose(convolved_image.data, convolved_image_slow.data)
 
 def testUniqueInvariantFilters():
     # ensure that all the filters are actually invariant
@@ -119,22 +61,7 @@ def testUniqueInvariantFilters():
 
 # testUniqueInvariantFilters()
 
-# testIK0_FK0()
-# testIK0_FK1()
-
-testConvolveWithRandoms()
-
-# key = random.PRNGKey(0)
-
-# #N=10, D=2, parity=0, k=2
-# rand_img = geom.geometric_image(random.uniform(key, shape=(1000,1000,2)), parity=0, D=2)
-
-# #N=3, D=2, parity=0, k=0
-# geom_filter = geom.geometric_filter(jnp.array([[[1,1], [0,0], [1,1]], [[0,0],[0,0],[0,0]], [[1,1],[0,0],[1,1]]]), parity=0, D=2)
-
-# convolved_img = rand_img.convolve_with(geom_filter)
-# # print(convolved_img.data)
-# print(convolved_img.shape())
+testIK0_FK1()
 
 
 

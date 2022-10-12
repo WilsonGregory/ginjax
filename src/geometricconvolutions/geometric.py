@@ -316,30 +316,6 @@ class geometric_image:
         shape = D * (N, ) + k * (D, )
         return cls(jnp.zeros(shape), parity, D)
 
-    def hash_list(self, indices, extra_indices=None):
-        """
-        Could probably be combined with hash in some clever fashion
-        """
-        if extra_indices is not None:
-            lst = jnp.remainder(jnp.array(indices) + jnp.array(extra_indices), self.N)
-        else:
-            lst = jnp.remainder(indices, self.N)
-
-        return tuple(lst.transpose())
-
-    def hash(self, indices, extra_indices=None):
-        """
-        Deals with torus by modding (with `np.remainder()`).
-        args:
-            indices (tuple of ints): indices to apply the remainder to
-            extra_indices (tuple of ints): indices to add, defaults to None
-        """
-        indices = jnp.array(list(indices), dtype=int)
-        if extra_indices is not None:
-            indices = indices + jnp.array(list(extra_indices), dtype=int)
-
-        return tuple(jnp.remainder(indices, self.N).astype(int))
-
     def __init__(self, data, parity, D):
         """
         Construct the geometric_image. It will be (N^D x D^k), so if N=100, D=2, k=1, then it's (100 x 100 x 2)
@@ -356,10 +332,18 @@ class geometric_image:
         assert data.shape[D:] == self.k * (self.D, ), \
         "geometric_image: each pixel must be D cross D, k times"
         self.parity = parity % 2
-        self.data = jnp.copy(data)
+        self.data = jnp.copy(data) #TODO: don't need to copy if data is already an immutable jnp array
 
     def copy(self):
         return self.__class__(self.data, self.parity, self.D)
+
+    def hash(self, indices):
+        """
+        Deals with torus by modding (with `np.remainder()`).
+        args:
+            indices (tuple of ints): indices to apply the remainder to
+        """
+        return tuple(jnp.remainder(indices, self.N).transpose().astype(int))
 
     def __getitem__(self, key):
         """
@@ -430,7 +414,7 @@ class geometric_image:
 
     def key_array(self):
         # equivalent to the old pixels function
-        return jnp.array([key for key in self.keys()])
+        return jnp.array([key for key in self.keys()], dtype=int)
 
     def pixels(self, ktensor=True):
         """
@@ -455,9 +439,9 @@ class geometric_image:
             filter_image_keys (list): For efficiency, the key offsets of the filter_image. Defaults to None.
         """
         if filter_image_keys is None:
-            filter_image_keys = [key for key in filter_image.keys(centered=True)]
+            filter_image_keys = filter_image.key_array(centered=True) #centered key array
 
-        key_list = self.hash_list(len(filter_image_keys)*[center_key], filter_image_keys) #key list on the torus
+        key_list = self.hash(filter_image_keys + jnp.array(center_key)) #key list on the torus
         #values, reshaped to the correct shape, which is the filter_image shape, while still having the ktensor shape
         vals = self[key_list].reshape(filter_image.image_shape() + self.pixel_shape())
         return self.__class__(vals, self.parity, self.D)
@@ -474,7 +458,7 @@ class geometric_image:
         if (isinstance(filter_image, geometric_image)):
             filter_image = geometric_filter.from_image(filter_image) #will break if N is not odd
 
-        filter_image_keys = [key for key in filter_image.keys(centered=True)]
+        filter_image_keys = filter_image.key_array(centered=True)
         for key in self.keys():
             subimage = self.conv_subimage(key, filter_image, filter_image_keys)
             newimage[key] = jnp.sum((subimage * filter_image).data, axis=tuple(range(self.D)))
@@ -517,10 +501,14 @@ class geometric_image:
             img_expanded = torus_expand_img
 
         if len(self.pixel_shape()):
-            filter_expanded = np.moveaxis(
-                np.multiply.outer(np.ones(self.pixel_shape(), dtype=dtype), filter_image.data.astype(dtype)),
-                0,
-                self.D,
+            break1 = self.k + self.D #after outer product, end of image N^D axes
+            #after outer product: [D^ki, N^D, D^kf], convert to [N^D, D^ki, D^kf]
+            # we are trying to expand the ones in the middle (D^ki), so we add them on the front, then move to middle
+            filter_expanded = jnp.transpose(
+                np.multiply.outer(jnp.ones(self.pixel_shape(), dtype=dtype), filter_image.data.astype(dtype)),
+                list(
+                    tuple(range(self.k, break1)) + tuple(range(self.k)) + tuple(range(break1, break1 + filter_image.k))
+                ),
             )
         else:
             filter_expanded = filter_image.data.astype(dtype)
@@ -557,7 +545,7 @@ class geometric_image:
         #hmm this is slow? takes about 6s for 1000 x 1000
         new_N = self.N + 2 * filter_image.m
         indices = jnp.array([key for key in it.product(range(new_N), repeat=self.D)], dtype=int) - filter_image.m
-        return self[self.hash_list(indices)].reshape((new_N,) * self.D + self.pixel_shape())
+        return self[self.hash(indices)].reshape((new_N,) * self.D + self.pixel_shape())
 
     def times_scalar(self, scalar):
         """
@@ -603,7 +591,7 @@ class geometric_image:
 
     def times_group_element(self, gg, m=None):
         rotated_keys = self.get_rotated_keys(gg)
-        ktensor_vals = [ktensor(val, self.parity, self.D) for val in  self[self.hash_list(rotated_keys)]]
+        ktensor_vals = [ktensor(val, self.parity, self.D) for val in  self[self.hash(rotated_keys)]]
         rotated_vals = [ktensor.times_group_element(gg).data for ktensor in ktensor_vals]
 
         return self.__class__(jnp.array(rotated_vals, dtype=self.data.dtype).reshape(self.shape()), self.parity, self.D)
@@ -641,6 +629,13 @@ class geometric_filter(geometric_image):
             denominator += ktensor.norm()
         return numerator / denominator
 
+    def key_array(self, centered=False):
+        # equivalent to the old pixels function
+        if centered:
+            return jnp.array([key for key in self.keys()], dtype=int) - self.m
+        else:
+            return jnp.array([key for key in self.keys()], dtype=int)
+
     def keys(self, centered=False):
         """
         Enumerate over all the keys in the geometric filter. Use centered=True when using the keys as adjustments
@@ -671,7 +666,7 @@ class geometric_filter(geometric_image):
                 yield (key, value)
 
     def get_rotated_keys(self, gg):
-        key_array = jnp.array([np.array(key) - self.m for key in self.keys()], dtype=int)
+        key_array = self.key_array(centered=True)
         return (key_array @ gg) + self.m
 
     def rectify(self):

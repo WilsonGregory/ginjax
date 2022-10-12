@@ -59,6 +59,35 @@ def testIK0_FK0():
         ],
     dtype=int)).all()
 
+def testConvolveWithRandoms():
+        # this test uses convolve_with_slow to test convolve_with, possibly the blind leading the blind
+        key = random.PRNGKey(0)
+        N=3
+
+        for D in [2,3]:
+            for k_img in range(3):
+                key, subkey = random.split(key)
+                image = geom.geometric_image(random.uniform(subkey, shape=((N,)*D + (D,)*k_img)), 0, D)
+
+                for k_filter in range(3):
+                    key, subkey = random.split(key)
+                    geom_filter = geom.geometric_filter(random.uniform(subkey, shape=((3,)*D + (D,)*k_filter)), 0, D)
+
+                    convolved_image = image.convolve_with(geom_filter)
+                    convolved_image_slow = image.convolve_with_slow(geom_filter)
+
+                    assert convolved_image.D == convolved_image_slow.D == image.D
+                    assert convolved_image.N == convolved_image_slow.N == image.N
+                    assert convolved_image.k == convolved_image_slow.k == image.k + geom_filter.k
+                    assert convolved_image.parity == convolved_image_slow.parity == (image.parity + geom_filter.parity) %2
+
+                    # print(image.shape())
+                    # print(geom_filter.shape())
+                    # print(convolved_image.shape())
+                    # print(convolved_image_slow.shape())
+                    print(D,k_img,k_filter)
+                    assert jnp.allclose(convolved_image.data, convolved_image_slow.data)
+
 def testUniqueInvariantFilters():
     # ensure that all the filters are actually invariant
     key = random.PRNGKey(0)
@@ -90,8 +119,10 @@ def testUniqueInvariantFilters():
 
 # testUniqueInvariantFilters()
 
-testIK0_FK0()
-testIK0_FK1()
+# testIK0_FK0()
+# testIK0_FK1()
+
+testConvolveWithRandoms()
 
 # key = random.PRNGKey(0)
 

@@ -160,7 +160,7 @@ class ktensor:
         if self.k == 0 or other.k == 0:
             return ktensor(self.data * other.data,
                            self.parity + other.parity, self.D)
-        return ktensor(np.multiply.outer(self.data, other.data),
+        return ktensor(jnp.tensordot(self.data, other.data, axes=0),
                        self.parity + other.parity, self.D)
 
     def __str__(self):
@@ -197,12 +197,22 @@ class ktensor:
         return ktensor(newdata, self.parity, self.D)
 
     def contract(self, i, j):
-        #this is kinda a dirty hack, but I'm going to leave it for now
+        """
+        Use einsum to perform a kronecker contraction on two dimensions
+        args:
+            i (int): first index
+            j (int): second index
+        """
         assert self.k < 27
         assert self.k >= 2
-        assert i < j
+        assert i != j
         assert i < self.k
         assert j < self.k
+        if (j < i): #order of indices does not matter for kronecker contraction
+            tmp = i
+            i = j
+            j = tmp
+
         letters  = "bcdefghijklmnopqrstuvwxyz"
         einstr = letters[:i] + "a" + letters[i:j-1] + "a" + letters[j-1:self.k-2]
         return ktensor(np.einsum(einstr, self.data), self.parity, self.D)
@@ -301,6 +311,8 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
 
 class geometric_image:
 
+    # Constructors
+
     @classmethod
     def zeros(cls, N, k, parity, D):
         """
@@ -334,6 +346,8 @@ class geometric_image:
 
     def copy(self):
         return self.__class__(self.data, self.parity, self.D)
+
+    # Getters, setters, basic info
 
     def hash(self, indices):
         """
@@ -376,30 +390,6 @@ class geometric_image:
     def pixel_shape(self):
         return self.k*(self.D,)
 
-    def __add__(self, other):
-        """
-        Addition operator for geometric_images. Both must be the same size and parity. Returns a new geometric_image.
-        args:
-            other (geometric_image): other image to add the the first one
-        """
-        assert self.D == other.D
-        assert self.N == other.N
-        assert self.k == other.k
-        assert self.parity == other.parity
-        return geometric_image(self.data + other.data, self.parity, self.D)
-
-    def __mul__(self, other):
-        """
-        Return the ktensor product of each pixel as a new geometric_image
-        """
-        assert self.D == other.D
-        assert self.N == other.N
-        newimage = geometric_image.zeros(self.N, self.k + other.k,
-                                         self.parity + other.parity, self.D)
-        for key in self.keys():
-            newimage[key] = self.ktensor(key) * other.ktensor(key) # handled by ktensor
-        return newimage
-
     def __str__(self):
         return "<{} object in D={} with N={}, k={}, and parity={}>".format(
             self.__class__, self.D, self.N, self.k, self.parity)
@@ -427,6 +417,31 @@ class geometric_image:
         """
         for key in self.keys():
             yield (key, self.ktensor(key)) if ktensor else (key, self[key])
+
+    # Binary Operators, Complicated functions
+
+    def __add__(self, other):
+        """
+        Addition operator for geometric_images. Both must be the same size and parity. Returns a new geometric_image.
+        args:
+            other (geometric_image): other image to add the the first one
+        """
+        assert self.D == other.D
+        assert self.N == other.N
+        assert self.k == other.k
+        assert self.parity == other.parity
+        return self.__class__(self.data + other.data, self.parity, self.D)
+
+    def __mul__(self, other):
+        """
+        Return the ktensor product of each pixel as a new geometric_image
+        """
+        assert self.D == other.D
+        assert self.N == other.N
+
+        image_a_data, image_b_data = geometric_image.pre_tensor_product_expand(self, other)
+        #now that the shapes match, we can do elementwise multiplication
+        return self.__class__(image_a_data * image_b_data, self.parity + other.parity, self.D)
 
     def conv_subimage(self, center_key, filter_image, filter_image_keys=None):
         """
@@ -462,6 +477,40 @@ class geometric_image:
             newimage[key] = jnp.sum((subimage * filter_image).data, axis=tuple(range(self.D)))
         return newimage
 
+    @classmethod
+    def pre_tensor_product_expand(cls, image_a, image_b):
+        """
+        Rather than take a tensor product of two tensors, we can first take a tensor product of each with a tensor of
+        ones with the shape of the other. Then we have two matching shapes, and we can then do whatever operations.
+        This is a class method that takes in two images and returns the expanded data
+        args:
+            image_a (geometric_image like): one geometric image whose tensors we will later be doing tensor products on
+            image_b (geometric_image like): other geometric image
+        """
+        if (len(image_b.pixel_shape())):
+            image_a_expanded = jnp.tensordot(
+                image_a.data,
+                jnp.ones(image_b.pixel_shape()),
+                axes=0,
+            )
+        else:
+            image_a_expanded = image_a.data
+
+        if len(image_a.pixel_shape()):
+            break1 = image_a.k + image_a.D #after outer product, end of image N^D axes
+            #after outer product: [D^ki, N^D, D^kf], convert to [N^D, D^ki, D^kf]
+            # we are trying to expand the ones in the middle (D^ki), so we add them on the front, then move to middle
+            image_b_expanded = jnp.transpose(
+                jnp.tensordot(jnp.ones(image_a.pixel_shape()), image_b.data, axes=0),
+                list(
+                    tuple(range(image_a.k, break1)) + tuple(range(image_a.k)) + tuple(range(break1, break1 + image_b.k))
+                ),
+            )
+        else:
+            image_b_expanded = image_b.data
+
+        return image_a_expanded, image_b_expanded
+
     def convolve_with(self, filter_image, warnings=True):
         """
         Here is how this function works:
@@ -489,27 +538,11 @@ class geometric_image:
             dtype = self.data.dtype
 
         output_k = self.k + filter_image.k
-        torus_expand_img = self.torus_expand_data(filter_image).astype(dtype)
-        if (len(filter_image.pixel_shape())):
-            img_expanded = np.multiply.outer(
-                torus_expand_img,
-                np.ones(filter_image.pixel_shape(), dtype=dtype),
-            )
-        else:
-            img_expanded = torus_expand_img
+        torus_expand_img = self.get_torus_expanded(filter_image)
 
-        if len(self.pixel_shape()):
-            break1 = self.k + self.D #after outer product, end of image N^D axes
-            #after outer product: [D^ki, N^D, D^kf], convert to [N^D, D^ki, D^kf]
-            # we are trying to expand the ones in the middle (D^ki), so we add them on the front, then move to middle
-            filter_expanded = jnp.transpose(
-                np.multiply.outer(jnp.ones(self.pixel_shape(), dtype=dtype), filter_image.data.astype(dtype)),
-                list(
-                    tuple(range(self.k, break1)) + tuple(range(self.k)) + tuple(range(break1, break1 + filter_image.k))
-                ),
-            )
-        else:
-            filter_expanded = filter_image.data.astype(dtype)
+        img_expanded, filter_expanded = geometric_image.pre_tensor_product_expand(torus_expand_img, filter_image)
+        img_expanded = img_expanded.astype(dtype)
+        filter_expanded = filter_expanded.astype(dtype)
 
         if output_k != 0:
             channel_length = np.multiply.reduce(self.pixel_shape() + filter_image.pixel_shape())
@@ -517,7 +550,7 @@ class geometric_image:
             channel_length = 1
 
         # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
-        img_formatted = img_expanded.reshape((1,) + torus_expand_img.shape[:self.D] + (channel_length,))
+        img_formatted = img_expanded.reshape((1,) + torus_expand_img.shape()[:self.D] + (channel_length,))
 
         # convert filter to HWIO (or HWDIO)
         filter_formatted = filter_expanded.reshape(filter_image.image_shape() + (1,channel_length))
@@ -539,11 +572,20 @@ class geometric_image:
         ).reshape(self.image_shape() + (self.D,)*output_k) #reshape the pixel to the correct tensor shape
         return self.__class__(convolved_array, self.parity + filter_image.parity, self.D)
 
-    def torus_expand_data(self, filter_image):
-        #hmm this is slow? takes about 6s for 1000 x 1000
+    def get_torus_expanded(self, filter_image):
+        """
+        For a particular filter, expand the image so that we no longer have to do convolutions on the torus, we are
+        just doing convolutions on the expanded image and will get the same result. Return a new geometric_image
+        args:
+            filter_image (geometric_filter): filter, how much is expanded depends on filter_image.m
+        """
         new_N = self.N + 2 * filter_image.m
         indices = jnp.array([key for key in it.product(range(new_N), repeat=self.D)], dtype=int) - filter_image.m
-        return self[self.hash(indices)].reshape((new_N,) * self.D + self.pixel_shape())
+        return self.__class__(
+            self[self.hash(indices)].reshape((new_N,) * self.D + self.pixel_shape()),
+            self.parity,
+            self.D,
+        )
 
     def times_scalar(self, scalar):
         """
@@ -564,11 +606,27 @@ class geometric_image:
             return self.times_scalar(1.)
 
     def contract(self, i, j):
+        """
+        Use einsum to perform a kronecker contraction on two dimensions
+        args:
+            i (int): first index of tensor
+            j (int): second index of tensor
+        """
+        assert self.k < 27
         assert self.k >= 2
-        newimage = self.__class__.zeros(self.N, self.k - 2, self.parity, self.D)
-        for key, ktensor in self.items():
-            newimage[key] = ktensor.contract(i, j)
-        return newimage
+        assert i != j
+        assert i < self.k
+        assert j < self.k
+        if (j < i): #order of indices does not matter for kronecker contraction
+            tmp = i
+            i = j
+            j = tmp
+
+        i += self.D
+        j += self.D
+        letters  = "bcdefghijklmnopqrstuvwxyz"
+        einstr = letters[:i] + "a" + letters[i:j-1] + "a" + letters[j-1:self.D + self.k-2]
+        return self.__class__(np.einsum(einstr, self.data), self.parity, self.D)
 
     def levi_civita_contract(self, index):
         assert (self.k + 1) >= self.D

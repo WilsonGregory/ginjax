@@ -128,29 +128,3 @@ class TestMisc:
                 assert jnp.allclose(gg @ gg.T, jnp.eye(D))
 
             assert do_group_actions(operators)
-
-    def testUniqueInvariantFilters(self):
-        # ensure that all the filters are actually invariant
-        key = random.PRNGKey(0)
-
-        for D in [2]: #image dimension
-            operators = make_all_operators(D)
-            for N in [3]: #filter size
-                key, subkey = random.split(key)
-                image = geometric_image(random.uniform(key, shape=(2*N,2*N)), 0, D)
-                for k in [0,1,2]: #tensor order of filter
-                    for parity in [0,1]:
-                        filters = get_unique_invariant_filters(N, k, parity, D, operators)
-
-                        for gg in operators:
-                            for geom_filter in filters:
-
-                                # test that the filters are invariant to the group operators
-                                assert jnp.allclose(geom_filter.data, geom_filter.times_group_element(gg).data)
-
-                                # test that the convolution with the invariant filters is equivariant to gg
-                                # convolutions are currently too slow to test this every time, but should be tested
-                                assert jnp.allclose(
-                                    image.convolve_with(geom_filter).times_group_element(gg).data,
-                                    image.times_group_element(gg).convolve_with(geom_filter).data,
-                                )

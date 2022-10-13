@@ -190,6 +190,53 @@ class TestGeometricImage:
         assert (image1[4:,2:3] == random_vals[4:,2:3]).all()
         assert image1[4:, 2:3].shape == random_vals[4:, 2:3].shape
 
+    def testContract(self):
+        img1 = geometric_image(jnp.arange(36).reshape((3,3,2,2)), 0, 2)
+
+        img1_contracted = img1.contract(0,1)
+        assert img1_contracted.shape() == (3,3)
+        assert (img1_contracted.data == jnp.array([[3,11,19], [27,35,43], [51,59,67]])).all()
+        assert (img1.contract(1,0).data == img1_contracted.data).all()
+
+        img2 = geometric_image(jnp.arange(72).reshape((3,3,2,2,2)), 0, 2)
+
+        img2_contracted_1 = img2.contract(0,1)
+        assert img2_contracted_1.shape() == (3,3,2)
+        assert (img2_contracted_1.data == jnp.array([
+            [[6, 8], [22, 24], [38, 40]],
+            [[54, 56], [70, 72], [86, 88]],
+            [[102, 104], [118, 120], [134, 136]],
+        ])).all()
+        assert (img2.contract(1,0).data == img2_contracted_1.data).all()
+
+        img2_contracted_2 = img2.contract(0,2)
+        assert img2_contracted_2.shape() == (3,3,2)
+        assert (img2_contracted_2.data == jnp.array([
+            [[5, 9], [21, 25], [37, 41]],
+            [[53, 57], [69, 73], [85, 89]], #nice
+            [[101, 105], [117, 121], [133, 137]],
+        ])).all()
+        assert (img2.contract(2,0).data == img2_contracted_2.data).all()
+
+        img2_contracted_3 = img2.contract(1,2)
+        assert img2_contracted_3.shape() == (3,3,2)
+        assert (img2_contracted_3.data == jnp.array([
+            [[3, 11], [19, 27], [35, 43]],
+            [[51, 59], [67, 75], [83, 91]], #nice
+            [[99, 107], [115, 123], [131, 139]],
+        ])).all()
+        assert (img2.contract(2,1).data == img2_contracted_3.data).all()
+
+        with pytest.raises(AssertionError):
+            img1.contract(0,0) #same indices
+
+        with pytest.raises(AssertionError):
+            img1.contract(2,3) #out of bounds indices
+
+        img3 = geometric_image(jnp.ones((3,3)), 0, 2)
+        with pytest.raises(AssertionError):
+            img3.contract(0,1) #k < 2
+
     def testNormalize(self):
         key = random.PRNGKey(0)
         image1 = geometric_image(random.uniform(key, shape=(10,10)), 0, 2)
@@ -318,30 +365,6 @@ class TestGeometricImage:
             [[3,0],[-3,1],[0,-1]],
             [[-1,-2],[-1,-1],[2,-3]]
         ], dtype=int)).all()
-
-    def testConvolveWithRandoms(self):
-        # this test uses convolve_with_slow to test convolve_with, possibly the blind leading the blind
-        key = random.PRNGKey(0)
-        N=3
-
-        for D in [2,3]:
-            for k_img in range(3):
-                key, subkey = random.split(key)
-                image = geometric_image(random.uniform(subkey, shape=((N,)*D + (D,)*k_img)), 0, D)
-
-                for k_filter in range(3):
-                    key, subkey = random.split(key)
-                    geom_filter = geometric_filter(random.uniform(subkey, shape=((3,)*D + (D,)*k_filter)), 0, D)
-
-                    convolved_image = image.convolve_with(geom_filter)
-                    convolved_image_slow = image.convolve_with_slow(geom_filter)
-
-                    assert convolved_image.D == convolved_image_slow.D == image.D
-                    assert convolved_image.N == convolved_image_slow.N == image.N
-                    assert convolved_image.k == convolved_image_slow.k == image.k + geom_filter.k
-                    assert convolved_image.parity == convolved_image_slow.parity == (image.parity + geom_filter.parity) %2
-                    assert jnp.allclose(convolved_image.data, convolved_image_slow.data)
-
 
     # def testConvolveCommutativity(self):
     #     image1 = geometric_image(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)

@@ -1,7 +1,7 @@
 import sys
 sys.path.insert(0,'src/geometricconvolutions/')
 
-from geometric import geometric_image, geometric_filter, make_all_operators, get_unique_invariant_filters
+from geometric import GeometricImage, GeometricFilter, make_all_operators, get_unique_invariant_filters
 import pytest
 import jax.numpy as jnp
 from jax import random
@@ -20,11 +20,11 @@ class TestSlowTests:
         for D in [2,3]:
             for k_img in range(3):
                 key, subkey = random.split(key)
-                image = geometric_image(random.uniform(subkey, shape=((N,)*D + (D,)*k_img)), 0, D)
+                image = GeometricImage(random.uniform(subkey, shape=((N,)*D + (D,)*k_img)), 0, D)
 
                 for k_filter in range(3):
                     key, subkey = random.split(key)
-                    geom_filter = geometric_filter(random.uniform(subkey, shape=((3,)*D + (D,)*k_filter)), 0, D)
+                    geom_filter = GeometricFilter(random.uniform(subkey, shape=((3,)*D + (D,)*k_filter)), 0, D)
 
                     convolved_image = image.convolve_with(geom_filter)
                     convolved_image_slow = image.convolve_with_slow(geom_filter)
@@ -43,7 +43,7 @@ class TestSlowTests:
             operators = make_all_operators(D)
             for N in [3]: #filter size
                 key, subkey = random.split(key)
-                image = geometric_image(random.uniform(key, shape=(2*N,2*N)), 0, D)
+                image = GeometricImage(random.uniform(key, shape=(2*N,2*N)), 0, D)
                 for k in [0,1,2]: #tensor order of filter
                     for parity in [0,1]:
                         filters = get_unique_invariant_filters(N, k, parity, D, operators)

@@ -4,7 +4,7 @@ sys.path.insert(0,'src/geometricconvolutions/')
 import math
 import itertools as it
 
-from geometric import geometric_image, ktensor
+from geometric import GeometricImage, Ktensor
 import pytest
 import jax.numpy as jnp
 from jax import random
@@ -22,7 +22,7 @@ def levi_civita_contract_old(ktensor_obj, index):
             otherdata = jnp.zeros_like(ktensor_obj.data)
             otherdata = otherdata.at[..., 0].set(-1. * jnp.take(ktensor_obj.data, 1, axis=index))
             otherdata = otherdata.at[..., 1].set(1. * jnp.take(ktensor_obj.data, 0, axis=index)) #i swapped the -1 and 1
-            return ktensor(otherdata, ktensor_obj.parity + 1, ktensor_obj.D)
+            return Ktensor(otherdata, ktensor_obj.parity + 1, ktensor_obj.D)
         if ktensor_obj.D == 3:
             assert len(index) == 2
             i, j = index
@@ -34,7 +34,7 @@ def levi_civita_contract_old(ktensor_obj, index):
                               - jnp.take(jnp.take(ktensor_obj.data, 2, axis=j), 0, axis=i))
             otherdata = otherdata.at[..., 2].set(jnp.take(jnp.take(ktensor_obj.data, 1, axis=j), 0, axis=i) \
                               - jnp.take(jnp.take(ktensor_obj.data, 0, axis=j), 1, axis=i))
-            return ktensor(otherdata, ktensor_obj.parity + 1, ktensor_obj.D)
+            return Ktensor(otherdata, ktensor_obj.parity + 1, ktensor_obj.D)
         return
 
 class TestGeometricImage:
@@ -43,24 +43,24 @@ class TestGeometricImage:
         #note we are not actually relying on randomness in this function, just filling values
         key = random.PRNGKey(0)
 
-        image1 = ktensor(jnp.array([5]), 0, 2)
+        image1 = Ktensor(jnp.array([5]), 0, 2)
         assert image1.data.shape == (1,)
         assert image1.k == 0
         assert image1.parity == 0
 
-        image2 = ktensor(jnp.array([1,1]), 1, 2)
+        image2 = Ktensor(jnp.array([1,1]), 1, 2)
         assert image2.data.shape == (2,)
         assert image2.D == 2
         assert image2.k == 1
         assert image2.parity == 1
 
-        image3 = ktensor(random.uniform(key, shape=(2,2)), 3, 2)
+        image3 = Ktensor(random.uniform(key, shape=(2,2)), 3, 2)
         assert image3.data.shape == (2,2)
         assert image3.D == 2
         assert image3.k == 2
         assert image3.parity == 1
 
-        image4 = ktensor(random.uniform(key, shape=(2,2,2)), 1, 2)
+        image4 = Ktensor(random.uniform(key, shape=(2,2,2)), 1, 2)
         assert image4.data.shape == (2,2,2)
         assert image4.D == 2
         assert image4.k == 3
@@ -68,15 +68,15 @@ class TestGeometricImage:
 
         #D does not match dimensions
         with pytest.raises(AssertionError):
-            ktensor(random.uniform(key, shape=(10,10)), 0, 3)
+            Ktensor(random.uniform(key, shape=(10,10)), 0, 3)
 
         #non square
         with pytest.raises(AssertionError):
-            geometric_image(random.uniform(key, shape=(10,20)), 0, 10)
+            GeometricImage(random.uniform(key, shape=(10,20)), 0, 10)
 
     def testAdd(self):
-        ktensor1 = ktensor(jnp.ones((2,2,2), dtype=int), 0, 2)
-        ktensor2 = ktensor(5*jnp.ones((2,2,2), dtype=int), 0, 2)
+        ktensor1 = Ktensor(jnp.ones((2,2,2), dtype=int), 0, 2)
+        ktensor2 = Ktensor(5*jnp.ones((2,2,2), dtype=int), 0, 2)
 
         result = ktensor1 + ktensor2
         assert (result.data == 6).all()
@@ -87,9 +87,9 @@ class TestGeometricImage:
         assert (ktensor1.data == 1).all()
         assert (ktensor2.data == 5).all()
 
-        ktensor3 = ktensor(jnp.ones((3,3,3)), 0, 3)
-        ktensor4 = ktensor(jnp.ones((2,2,2)), 1, 2)
-        ktensor5 = ktensor(jnp.ones((2,2)), 0, 2)
+        ktensor3 = Ktensor(jnp.ones((3,3,3)), 0, 3)
+        ktensor4 = Ktensor(jnp.ones((2,2,2)), 1, 2)
+        ktensor5 = Ktensor(jnp.ones((2,2)), 0, 2)
 
         with pytest.raises(AssertionError): #D not equal
             result = ktensor1 + ktensor3
@@ -101,7 +101,7 @@ class TestGeometricImage:
             result = ktensor1 + ktensor5 #k
 
     def testTimeScalar(self):
-        ktensor1 = ktensor(jnp.ones((2,2,2), dtype=int), 0, 2)
+        ktensor1 = Ktensor(jnp.ones((2,2,2), dtype=int), 0, 2)
         assert (ktensor1.data == 1).all()
 
         result = ktensor1.times_scalar(5)
@@ -120,7 +120,7 @@ class TestGeometricImage:
         key = random.PRNGKey(0)
 
         random_vals = random.uniform(key, shape=(4,4,4))
-        image1 = ktensor(random_vals, 0, 4)
+        image1 = Ktensor(random_vals, 0, 4)
 
         assert image1[0,1,1] == random_vals[0,1,1]
         assert image1[0,0,1] == random_vals[0,0,1]
@@ -130,20 +130,20 @@ class TestGeometricImage:
 
     # def testNormalize(self):
     #     key = random.PRNGKey(0)
-    #     image1 = geometric_image(random.uniform(key, shape=(10,10)), 0, 2)
+    #     image1 = GeometricImage(random.uniform(key, shape=(10,10)), 0, 2)
 
     #     normed_image1 = image1.normalize()
     #     assert math.isclose(jnp.max(jnp.abs(normed_image1.data)), 1.)
     #     assert image1.data.shape == normed_image1.data.shape == (10,10)
 
-    #     image2 = geometric_image(random.uniform(key, shape=(10,10,2)), 0, 2)
+    #     image2 = GeometricImage(random.uniform(key, shape=(10,10,2)), 0, 2)
     #     normed_image2 = image2.normalize()
     #     assert image2.data.shape == normed_image2.data.shape == (10,10,2)
     #     for row in normed_image2.data:
     #         for pixel in row:
     #             assert jnp.linalg.norm(pixel) < (1 + TINY)
 
-    #     image3 = geometric_image(random.uniform(key, shape=(10,10,2,2)), 0, 2)
+    #     image3 = GeometricImage(random.uniform(key, shape=(10,10,2,2)), 0, 2)
     #     normed_image3 = image3.normalize()
     #     assert image3.data.shape == normed_image3.data.shape == (10,10,2,2)
     #     for row in normed_image3.data:
@@ -152,8 +152,8 @@ class TestGeometricImage:
 
 
     def testDotProduct(self):
-        a = ktensor(jnp.array([0,1,3]), 0, 3)
-        b = ktensor(jnp.array([1,2,-1]), 0, 3)
+        a = Ktensor(jnp.array([0,1,3]), 0, 3)
+        b = Ktensor(jnp.array([1,2,-1]), 0, 3)
 
         ab = (a*b)
         dot = ab.contract(0,1)
@@ -163,8 +163,8 @@ class TestGeometricImage:
         assert dot.k == ab.k - 2
 
     def testCrossProduct(self):
-        a = ktensor(jnp.array([0,1,3]), 0, 3)
-        b = ktensor(jnp.array([1,2,-1]), 0, 3)
+        a = Ktensor(jnp.array([0,1,3]), 0, 3)
+        b = Ktensor(jnp.array([1,2,-1]), 0, 3)
 
         ab = a*b
         cross = ab.levi_civita_contract((0,1))
@@ -179,7 +179,7 @@ class TestGeometricImage:
         for D in range(2,4):
             for k in range(D-1, D+2):
                 key, subkey = random.split(key)
-                ktensor1 = ktensor(random.uniform(subkey, shape=k*(D,)), 0, D)
+                ktensor1 = Ktensor(random.uniform(subkey, shape=k*(D,)), 0, D)
 
                 for indices in it.combinations(range(k), D-1):
                     ktensor1_contracted = ktensor1.levi_civita_contract(indices)
@@ -189,7 +189,7 @@ class TestGeometricImage:
                     assert ktensor1_contracted.D == ktensor1.D
 
     def testTimesGroupElement(self):
-        a = ktensor(jnp.array([2,1], dtype=int), 0, 2)
+        a = Ktensor(jnp.array([2,1], dtype=int), 0, 2)
 
         x_reflection = jnp.array([[1, 0], [0, -1]], dtype=int)
         y_reflection = jnp.array([[-1, 0], [0, 1]], dtype=int)

@@ -10,8 +10,8 @@ def testIK0_FK1():
     """
     Convolve with where the input is k=0, and the filter is k=1
     """
-    image1 = geom.geometric_image(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
-    filter_image = geom.geometric_filter(jnp.array([
+    image1 = geom.GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
+    filter_image = geom.GeometricFilter(jnp.array([
         [[0,0], [0,1], [0,0]],
         [[-1,0],[0,0], [1,0]],
         [[0,0], [0,-1],[0,0]],
@@ -38,7 +38,7 @@ def testUniqueInvariantFilters():
         operators = geom.make_all_operators(D)
         for N in [3]: #filter size
             key, subkey = random.split(key)
-            image = geom.geometric_image(random.uniform(key, shape=(N,N)), 0, D)
+            image = geom.GeometricImage(random.uniform(key, shape=(N,N)), 0, D)
             for k in [1]: #tensor order of filter
                 for parity in [0,1]:
                     filters = geom.get_unique_invariant_filters(N, k, parity, D, operators)

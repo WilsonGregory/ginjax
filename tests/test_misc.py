@@ -2,10 +2,9 @@ import sys
 sys.path.insert(0,'src/geometricconvolutions/')
 
 from geometric import (
-    geometric_image,
     get_unique_invariant_filters,
-    ktensor,
-    levi_civita_symbol,
+    Ktensor,
+    LeviCivitaSymbol,
     make_all_operators,
     permutation_parity,
     TINY,
@@ -29,9 +28,9 @@ def do_group_actions(operators):
         key, subkey = random.split(key)
 
         # vector dot vector
-        v1 = ktensor(random.normal(subkey, shape=(D,)), parity, D)
+        v1 = Ktensor(random.normal(subkey, shape=(D,)), parity, D)
         key, subkey = random.split(key)
-        v2 = ktensor(random.normal(subkey, shape=(D,)), parity, D)
+        v2 = Ktensor(random.normal(subkey, shape=(D,)), parity, D)
         dots = [(v1.times_group_element(gg)
                  * v2.times_group_element(gg)).contract(0, 1).data
                 for gg in operators]
@@ -43,9 +42,9 @@ def do_group_actions(operators):
 
         # tensor times tensor
         key, subkey = random.split(key)
-        T3 = ktensor(random.normal(subkey, shape=(D, D)), parity, D)
+        T3 = Ktensor(random.normal(subkey, shape=(D, D)), parity, D)
         key, subkey = random.split(key)
-        T4 = ktensor(random.normal(subkey, shape=(D, D)), parity, D)
+        T4 = Ktensor(random.normal(subkey, shape=(D, D)), parity, D)
         dots = [(T3.times_group_element(gg)
                  * T4.times_group_element(gg)).contract(1, 2).contract(0, 1).data
                 for gg in operators]
@@ -57,7 +56,7 @@ def do_group_actions(operators):
 
         # vectors dotted through tensor
         key, subkey = random.split(key)
-        v5 = ktensor(random.normal(subkey, shape=(D,)), 0, D)
+        v5 = Ktensor(random.normal(subkey, shape=(D,)), 0, D)
         dots = [(v5.times_group_element(gg) * T3.times_group_element(gg)
                  * v2.times_group_element(gg)).contract(1, 2).contract(0, 1).data
                 for gg in operators]
@@ -87,10 +86,10 @@ class TestMisc:
 
     def testLeviCivitaSymbol(self):
         with pytest.raises(AssertionError):
-            levi_civita_symbol.get(1)
+            LeviCivitaSymbol.get(1)
 
-        assert (levi_civita_symbol.get(2) == jnp.array([[0, 1], [-1, 0]], dtype=int)).all()
-        assert (levi_civita_symbol.get(3) == jnp.array(
+        assert (LeviCivitaSymbol.get(2) == jnp.array([[0, 1], [-1, 0]], dtype=int)).all()
+        assert (LeviCivitaSymbol.get(3) == jnp.array(
             [
                 [[0,0,0], [0,0,1], [0,-1,0]],
                 [[0,0,-1], [0,0,0], [1,0,0]],
@@ -98,7 +97,7 @@ class TestMisc:
             ],
             dtype=int)).all()
 
-        assert levi_civita_symbol.get(2) is levi_civita_symbol.get(2) #test that we aren't remaking them
+        assert LeviCivitaSymbol.get(2) is LeviCivitaSymbol.get(2) #test that we aren't remaking them
 
     def testGroupSize(self):
         for d in range(2,7):

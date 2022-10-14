@@ -91,7 +91,7 @@ def permutation_parity(pi):
     # code originally returned 1 for odd permutations (we want -1) and 0 for even permutations (we want 1)
     return -2*((n - c) % 2)+1
 
-class levi_civita_symbol:
+class LeviCivitaSymbol:
 
     #we only want to create each dimension of levi civita symbol once, so we cache them in this dictionary
     symbol_dict = {}
@@ -115,7 +115,7 @@ class levi_civita_symbol:
 # ------------------------------------------------------------------------------
 # PART 2: Define a k-tensor.
 
-class ktensor:
+class Ktensor:
 
     def name(k, parity):
         nn = "tensor"
@@ -133,7 +133,7 @@ class ktensor:
         self.levi_civita = None
         self.D = D
         assert self.D > 1, \
-        "ktensor: geometry makes no sense if D<2."
+        "Ktensor: geometry makes no sense if D<2."
         self.parity = parity % 2
         if len(jnp.atleast_1d(data)) == 1:
             self.data = data
@@ -142,25 +142,25 @@ class ktensor:
             self.data = jnp.array(data)
             self.k = len(data.shape)
             assert jnp.all(jnp.array(data.shape) == self.D), \
-            "ktensor: shape must be (D, D, D, ...), but instead it's {}".format(data.shape)
+            "Ktensor: shape must be (D, D, D, ...), but instead it's {}".format(data.shape)
 
     def __getitem__(self, key):
         return self.data[key]
 
     def __add__(self, other):
         assert self.k == other.k, \
-        "ktensor: can't add objects of different k"
+        "Ktensor: can't add objects of different k"
         assert self.parity == other.parity, \
-        "ktensor: can't add objects of different parity"
+        "Ktensor: can't add objects of different parity"
         assert self.D == other.D, \
-        "ktensor: can't add objects of different dimension D"
-        return ktensor(self.data + other.data, self.parity, self.D)
+        "Ktensor: can't add objects of different dimension D"
+        return Ktensor(self.data + other.data, self.parity, self.D)
 
     def __mul__(self, other):
         if self.k == 0 or other.k == 0:
-            return ktensor(self.data * other.data,
+            return Ktensor(self.data * other.data,
                            self.parity + other.parity, self.D)
-        return ktensor(jnp.tensordot(self.data, other.data, axes=0),
+        return Ktensor(jnp.tensordot(self.data, other.data, axes=0),
                        self.parity + other.parity, self.D)
 
     def __str__(self):
@@ -173,11 +173,11 @@ class ktensor:
         return np.linalg.norm(self.data)
 
     def times_scalar(self, scalar):
-        return ktensor(scalar * self.data, self.parity, self.D)
+        return Ktensor(scalar * self.data, self.parity, self.D)
 
     def times_group_element(self, gg):
         """
-        Multiply ktensor by group element, performing necessary adjustments if its a pseudo-tensor
+        Multiply Ktensor by group element, performing necessary adjustments if its a pseudo-tensor
         args:
             gg (jnp array-like): group element
         """
@@ -194,7 +194,7 @@ class ktensor:
             ",".join([secondletters[i] + firstletters[i] for i in range(self.k)])
             foo = (self.data, ) + self.k * (gg, )
             newdata = np.einsum(einstr, *foo) * (sign ** self.parity)
-        return ktensor(newdata, self.parity, self.D)
+        return Ktensor(newdata, self.parity, self.D)
 
     def contract(self, i, j):
         """
@@ -215,7 +215,7 @@ class ktensor:
 
         letters  = "bcdefghijklmnopqrstuvwxyz"
         einstr = letters[:i] + "a" + letters[i:j-1] + "a" + letters[j-1:self.k-2]
-        return ktensor(np.einsum(einstr, self.data), self.parity, self.D)
+        return Ktensor(np.einsum(einstr, self.data), self.parity, self.D)
 
     def levi_civita_contract(self, indices):
         """
@@ -228,8 +228,8 @@ class ktensor:
             indices = (indices,)
         assert len(indices) == self.D - 1
 
-        levi_civita = levi_civita_symbol.get(self.D)
-        outer = ktensor(jnp.tensordot(self.data, levi_civita, axes=((),())), self.parity + 1, self.D)
+        levi_civita = LeviCivitaSymbol.get(self.D)
+        outer = Ktensor(jnp.tensordot(self.data, levi_civita, axes=((),())), self.parity + 1, self.D)
 
         indices_removed = 0
         while len(indices) > 0:
@@ -256,17 +256,17 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
     """
 
     # make the seed filters
-    tmp = geometric_filter.zeros(M, k, parity, D)
+    tmp = GeometricFilter.zeros(M, k, parity, D)
     keys, shape = tmp.keys(), tmp.data.shape
     allfilters = []
     if k == 0:
         for kk in keys:
-            thisfilter = geometric_filter.zeros(M, k, parity, D)
+            thisfilter = GeometricFilter.zeros(M, k, parity, D)
             thisfilter[kk] = 1
             allfilters.append(thisfilter)
     else:
         for kk in keys:
-            thisfilter = geometric_filter.zeros(M, k, parity, D)
+            thisfilter = GeometricFilter.zeros(M, k, parity, D)
             for indices in it.product(range(D), repeat=k):
                 thisfilter[kk] = thisfilter[kk].at[indices].set(1) #is this even right?
                 allfilters.append(thisfilter)
@@ -275,7 +275,7 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
     bigshape = (len(allfilters), ) + thisfilter.data.flatten().shape
     filter_matrix = np.zeros(bigshape)
     for i, f1 in enumerate(allfilters):
-        ff = geometric_filter.zeros(M, k, parity, D)
+        ff = GeometricFilter.zeros(M, k, parity, D)
         for gg in operators:
             ff = ff + f1.times_group_element(gg)
         filter_matrix[i] = ff.data.flatten()
@@ -296,7 +296,7 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
     amps[np.abs(amps) < TINY] = 0.
 
     # order them
-    filters = [geometric_filter(aa.reshape(shape), parity, D).normalize() for aa in amps]
+    filters = [GeometricFilter(aa.reshape(shape), parity, D).normalize() for aa in amps]
     norms = [ff.bigness() for ff in filters]
     I = np.argsort(norms)
     filters = [filters[i] for i in I]
@@ -309,7 +309,7 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
 # ------------------------------------------------------------------------------
 # PART 5: Define geometric (k-tensor, torus) images.
 
-class geometric_image:
+class GeometricImage:
 
     # Constructors
 
@@ -328,7 +328,7 @@ class geometric_image:
 
     def __init__(self, data, parity, D):
         """
-        Construct the geometric_image. It will be (N^D x D^k), so if N=100, D=2, k=1, then it's (100 x 100 x 2)
+        Construct the GeometricImage. It will be (N^D x D^k), so if N=100, D=2, k=1, then it's (100 x 100 x 2)
         args:
             data (array-like):
             parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
@@ -338,9 +338,9 @@ class geometric_image:
         self.N = len(data)
         self.k = len(data.shape) - D
         assert data.shape[:D] == self.D * (self.N, ), \
-        "geometric_image: data must be square."
+        "GeometricImage: data must be square."
         assert data.shape[D:] == self.k * (self.D, ), \
-        "geometric_image: each pixel must be D cross D, k times"
+        "GeometricImage: each pixel must be D cross D, k times"
         self.parity = parity % 2
         self.data = jnp.copy(data) #TODO: don't need to copy if data is already an immutable jnp array
 
@@ -370,16 +370,16 @@ class geometric_image:
         """
         Jax arrays are immutable, so this reconstructs the data object with copying, and is potentially slow
         """
-        val = thing.data if isinstance(thing, ktensor) else thing
+        val = thing.data if isinstance(thing, Ktensor) else thing
         self.data = self.data.at[key].set(val)
         return self
 
     def ktensor(self, key):
         """
-        Return the ktensor at the location key. Equivalent to image[key] but returns ktensor instead of raw data.
+        Return the Ktensor at the location key. Equivalent to image[key] but returns Ktensor instead of raw data.
         """
         assert len(key) == self.D
-        return ktensor(self[key], self.parity, self.D)
+        return Ktensor(self[key], self.parity, self.D)
 
     def shape(self):
         return self.data.shape
@@ -396,7 +396,7 @@ class geometric_image:
 
     def keys(self):
         """
-        Iterate over the keys of geometric_image
+        Iterate over the keys of GeometricImage
         """
         return it.product(range(self.N), repeat=self.D)
 
@@ -406,14 +406,14 @@ class geometric_image:
 
     def pixels(self, ktensor=True):
         """
-        Iterate over the pixels of geometric_image. If ktensor=True, return the pixels as ktensor objects
+        Iterate over the pixels of GeometricImage. If ktensor=True, return the pixels as Ktensor objects
         """
         for key in self.keys():
             yield self.ktensor(key) if ktensor else self[key]
 
     def items(self, ktensor=True):
         """
-        Iterate over the key, pixel pairs of geometric_image. If ktensor=True, return the pixels as ktensor objects
+        Iterate over the key, pixel pairs of GeometricImage. If ktensor=True, return the pixels as Ktensor objects
         """
         for key in self.keys():
             yield (key, self.ktensor(key)) if ktensor else (key, self[key])
@@ -422,9 +422,9 @@ class geometric_image:
 
     def __add__(self, other):
         """
-        Addition operator for geometric_images. Both must be the same size and parity. Returns a new geometric_image.
+        Addition operator for GeometricImages. Both must be the same size and parity. Returns a new GeometricImage.
         args:
-            other (geometric_image): other image to add the the first one
+            other (GeometricImage): other image to add the the first one
         """
         assert self.D == other.D
         assert self.N == other.N
@@ -434,12 +434,12 @@ class geometric_image:
 
     def __mul__(self, other):
         """
-        Return the ktensor product of each pixel as a new geometric_image
+        Return the Ktensor product of each pixel as a new GeometricImage
         """
         assert self.D == other.D
         assert self.N == other.N
 
-        image_a_data, image_b_data = geometric_image.pre_tensor_product_expand(self, other)
+        image_a_data, image_b_data = GeometricImage.pre_tensor_product_expand(self, other)
         #now that the shapes match, we can do elementwise multiplication
         return self.__class__(image_a_data * image_b_data, self.parity + other.parity, self.D)
 
@@ -448,7 +448,7 @@ class geometric_image:
         Get the subimage (on the torus) centered on center_idx that will be convolved with filter_image
         args:
             center_key (index tuple): tuple index of the center of this convolution
-            filter_image (geometric_filter): the geometric_filter we are convolving with
+            filter_image (GeometricFilter): the GeometricFilter we are convolving with
             filter_image_keys (list): For efficiency, the key offsets of the filter_image. Defaults to None.
         """
         if filter_image_keys is None:
@@ -463,13 +463,13 @@ class geometric_image:
         """
         Apply the convolution filter_image to this geometric image. Keeping this around for testing.
         args:
-            filter_image (geometric_filter-like): convolution that we are applying, can be an image or a filter
+            filter_image (GeometricFilter-like): convolution that we are applying, can be an image or a filter
         """
         newimage = self.__class__.zeros(self.N, self.k + filter_image.k,
                                          self.parity + filter_image.parity, self.D)
 
-        if (isinstance(filter_image, geometric_image)):
-            filter_image = geometric_filter.from_image(filter_image) #will break if N is not odd
+        if (isinstance(filter_image, GeometricImage)):
+            filter_image = GeometricFilter.from_image(filter_image) #will break if N is not odd
 
         filter_image_keys = filter_image.key_array(centered=True)
         for key in self.keys():
@@ -484,8 +484,8 @@ class geometric_image:
         ones with the shape of the other. Then we have two matching shapes, and we can then do whatever operations.
         This is a class method that takes in two images and returns the expanded data
         args:
-            image_a (geometric_image like): one geometric image whose tensors we will later be doing tensor products on
-            image_b (geometric_image like): other geometric image
+            image_a (GeometricImage like): one geometric image whose tensors we will later be doing tensor products on
+            image_b (GeometricImage like): other geometric image
         """
         if (len(image_b.pixel_shape())):
             image_a_expanded = jnp.tensordot(
@@ -527,20 +527,20 @@ class geometric_image:
         https://www.tensorflow.org/xla/operation_semantics#conv_convolution
 
         args:
-            filter_image (geometric_filter): the filter we are performing the convolution with
+            filter_image (GeometricFilter): the filter we are performing the convolution with
             warnings (bool): display warnings, defaults to True currently
         """
         if (self.data.dtype != filter_image.data.dtype):
             dtype = 'float32'
             if (warnings):
-                print('geometric_image::convolve_with_fastest: geometric_image dtype and filter_image dtype mismatch, converting to float32')
+                print('GeometricImage::convolve_with_fastest: GeometricImage dtype and filter_image dtype mismatch, converting to float32')
         else:
             dtype = self.data.dtype
 
         output_k = self.k + filter_image.k
         torus_expand_img = self.get_torus_expanded(filter_image)
 
-        img_expanded, filter_expanded = geometric_image.pre_tensor_product_expand(torus_expand_img, filter_image)
+        img_expanded, filter_expanded = GeometricImage.pre_tensor_product_expand(torus_expand_img, filter_image)
         img_expanded = img_expanded.astype(dtype)
         filter_expanded = filter_expanded.astype(dtype)
 
@@ -575,9 +575,9 @@ class geometric_image:
     def get_torus_expanded(self, filter_image):
         """
         For a particular filter, expand the image so that we no longer have to do convolutions on the torus, we are
-        just doing convolutions on the expanded image and will get the same result. Return a new geometric_image
+        just doing convolutions on the expanded image and will get the same result. Return a new GeometricImage
         args:
-            filter_image (geometric_filter): filter, how much is expanded depends on filter_image.m
+            filter_image (GeometricFilter): filter, how much is expanded depends on filter_image.m
         """
         new_N = self.N + 2 * filter_image.m
         indices = jnp.array([key for key in it.product(range(new_N), repeat=self.D)], dtype=int) - filter_image.m
@@ -589,7 +589,7 @@ class geometric_image:
 
     def times_scalar(self, scalar):
         """
-        Scale the data by a scalar, returning a new geometric_image object
+        Scale the data by a scalar, returning a new GeometricImage object
         args:
             scalar (number): number to scale everything by
         """
@@ -638,7 +638,7 @@ class geometric_image:
 
     def get_rotated_keys(self, gg):
         """
-        Slightly messier than with geometric_filter because self.N-1 / 2 might not be an integer, but should work
+        Slightly messier than with GeometricFilter because self.N-1 / 2 might not be an integer, but should work
         args:
             gg (jnp array-like): group operation
         """
@@ -647,7 +647,7 @@ class geometric_image:
 
     def times_group_element(self, gg, m=None):
         rotated_keys = self.get_rotated_keys(gg)
-        ktensor_vals = [ktensor(val, self.parity, self.D) for val in  self[self.hash(rotated_keys)]]
+        ktensor_vals = [Ktensor(val, self.parity, self.D) for val in  self[self.hash(rotated_keys)]]
         rotated_vals = [ktensor.times_group_element(gg).data for ktensor in ktensor_vals]
 
         return self.__class__(jnp.array(rotated_vals, dtype=self.data.dtype).reshape(self.shape()), self.parity, self.D)
@@ -656,18 +656,18 @@ class geometric_image:
 # ------------------------------------------------------------------------------
 # PART 3: Define a geometric (k-tensor) filter.
 
-class geometric_filter(geometric_image):
+class GeometricFilter(GeometricImage):
 
     def __init__(self, data, parity, D):
-        super(geometric_filter, self).__init__(data, parity, D)
+        super(GeometricFilter, self).__init__(data, parity, D)
         self.m = (self.N - 1) // 2
         assert self.N == 2 * self.m + 1, \
-        "geometric_filter: N needs to be odd."
+        "GeometricFilter: N needs to be odd."
 
     @classmethod
     def from_image(cls, geometric_image):
         """
-        Constructor that copies a geometric_image and returns a geometric_filter
+        Constructor that copies a GeometricImage and returns a GeometricFilter
         """
         return cls(geometric_image.data, geometric_image.parity, geometric_image.D)
 
@@ -710,7 +710,7 @@ class geometric_filter(geometric_image):
         Enumerate over all the key, pixel pairs in the geometric filter. Use centered=True when using the keys as
         adjustments
         args:
-            ktensor (bool): if true, return the values as ktensors, otherwise return as raw data. Defaults to true.
+            ktensor (bool): if true, return the values as Ktensors, otherwise return as raw data. Defaults to true.
             centered (bool): if true, the keys range from -m to m rather than 0 to N. Defaults to false.
         """
         for key in self.keys(): #dont pass centered along because we need the un-centered keys to access the vals

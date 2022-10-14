@@ -378,5 +378,75 @@ class TestGeometricImage:
     #     assert convolveA.parity == convolveB.parity
     #     assert (convolveA.data == convolveB.data).all()
 
+    def testTimesGroupElement(self):
+        left90 = jnp.array([[0,-1],[1,0]])
+        flipX = jnp.array([[-1, 0], [0,1]])
+
+        img1 = GeometricImage(jnp.arange(9).reshape((3,3)), 0, 2)
+
+        #basic rotate
+        img1_left90 = img1.times_group_element(left90)
+        assert img1_left90.D == img1.D
+        assert img1_left90.parity == img1.parity
+        assert img1_left90.k == img1.k
+        assert (img1_left90.data == jnp.array([[2,5,8], [1,4,7], [0,3,6]])).all()
+
+        #basic flip
+        img1_flipX = img1.times_group_element(flipX)
+        assert img1_flipX.parity == img1.parity
+        assert img1_flipX.k == img1.k
+        assert (img1_flipX.data == jnp.array([[6,7,8], [3,4,5], [0,1,2]])).all()
+
+        img2 = GeometricImage(jnp.arange(9).reshape((3,3)), 1, 2)
+
+        #rotate, no sign changes
+        img2_left90 = img2.times_group_element(left90)
+        assert (img1_left90.data == img2_left90.data).all()
+        assert img2_left90.parity == img2.parity
+
+        #rotate and parity 1, sign is flipped from img1
+        img2_flipX = img2.times_group_element(flipX)
+        assert img2_flipX.parity == img2.parity
+        assert (img2_flipX.data == img1_flipX.times_scalar(-1).data).all()
+
+        img3 = GeometricImage(jnp.arange(18).reshape((3,3,2)), 1, 2)
+
+        #k=1 rotate
+        img3_left90 = img3.times_group_element(left90)
+        assert img3_left90.D == img3.D
+        assert img3_left90.parity == img3.parity
+        assert img3_left90.k == img3.k
+        assert (img3_left90.data == jnp.array([
+            [[-5,4], [-11,10], [-17,16]],
+            [[-3,2], [-9,8], [-15,14]],
+            [[-1,0], [-7,6], [-13,12]],
+        ])).all()
+
+        img4 = GeometricImage(jnp.arange(36).reshape((3,3,2,2)), 0, 2)
+
+        #k=2 flip
+        img4_flipX = img4.times_group_element(flipX)
+        assert img4_flipX.D == img4.D
+        assert img4_flipX.parity == img4.parity
+        assert img4_flipX.k == img4.k
+        print(img4.data)
+        print(img4_flipX.data)
+        assert (img4_flipX.data == jnp.array([
+            [ #first row
+                [[24,-25], [-26,27]],
+                [[28,-29], [-30,31]],
+                [[32,-33], [-34,35]],
+            ],
+            [ #second row
+                [[12,-13], [-14,15]],
+                [[16,-17], [-18,19]],
+                [[20,-21], [-22,23]],
+            ],
+            [ #third row
+                [[0,-1], [-2,3]],
+                [[4,-5], [-6,7]],
+                [[8,-9], [-10,11]],
+            ],
+        ])).all()
 
 

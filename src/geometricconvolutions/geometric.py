@@ -229,7 +229,7 @@ class Ktensor:
         assert len(indices) == self.D - 1
 
         levi_civita = LeviCivitaSymbol.get(self.D)
-        outer = Ktensor(jnp.tensordot(self.data, levi_civita, axes=((),())), self.parity + 1, self.D)
+        outer = Ktensor(jnp.tensordot(self.data, levi_civita, axes=0), self.parity + 1, self.D)
 
         indices_removed = 0
         while len(indices) > 0:
@@ -599,7 +599,9 @@ class GeometricImage:
         """
         Normalize so that the max norm of each pixel is 1, and all other ktensors are scaled appropriately
         """
-        max_norm = jnp.max(jnp.array([ktensor.norm() for ktensor in self.pixels()]))
+        norm_ord = jnp.inf if self.k == 0 else None #jnp.inf does the infinity norm, or absolute value
+        vectorized_pixels = self.data.reshape(((self.N**self.D,) + self.pixel_shape()))
+        max_norm = jnp.max(jnp.linalg.norm(vectorized_pixels, axis=0, ord=norm_ord))
         if max_norm > TINY:
             return self.times_scalar(1. / max_norm)
         else:
@@ -629,12 +631,33 @@ class GeometricImage:
         return self.__class__(np.einsum(einstr, self.data), self.parity, self.D)
 
     def levi_civita_contract(self, index):
-        assert (self.k + 1) >= self.D
-        newimage = self.__class__.zeros(self.N, self.k - self.D + 2,
-                                         self.parity + 1, self.D)
-        for key, ktensor in self.items():
-            newimage[key] = ktensor.levi_civita_contract(index)
-        return newimage
+        """
+        Perform the Levi-Civita contraction.
+        """
+        assert self.k >= (self.D - 1) # so we have enough indices to work on since we perform D-1 contractions
+        if self.D == 2 and not (isinstance(indices, tuple) or isinstance(indices, list)):
+            indices = (indices,)
+        assert len(indices) == self.D - 1
+
+        levi_civita = LeviCivitaSymbol.get(self.D)
+        outer = jnp.tensordot(self.data, levi_civita, axes=0)
+
+        indices_removed = 0
+        while len(indices) > 0:
+            idx, *indices = indices
+            outer = outer.contract(idx + self.D, self.k - indices_removed + self.D)
+            indices = [x if x < idx else x-1 for x in indices]
+            #^ decrement indices larger than the one we just contracted, leave smaller ones alone
+            indices_removed += 1
+
+        return self.__class__(outer, self.parity + 1, self.D)
+
+        # assert (self.k + 1) >= self.D
+        # newimage = self.__class__.zeros(self.N, self.k - self.D + 2,
+        #                                  self.parity + 1, self.D)
+        # for key, ktensor in self.items():
+        #     newimage[key] = ktensor.levi_civita_contract(index)
+        # return newimage
 
     def get_rotated_keys(self, gg):
         """
@@ -645,13 +668,38 @@ class GeometricImage:
         key_array = self.key_array() - ((self.N-1) / 2)
         return jnp.rint((key_array @ gg) + (self.N-1) / 2).astype(int)
 
-    def times_group_element(self, gg, m=None):
+    def times_group_element(self, gg):
+        """
+        Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the location of the
+        pixels, then apply the action to the pixels themselves.
+        args:
+            gg (group operation matrix): a DxD matrix that rotates the tensor
+        """
+        assert self.k < 14
+        assert gg.shape == (self.D, self.D)
+        sign, logdet = np.linalg.slogdet(gg)
+        assert logdet == 0. #determinant is +- 1, so abs(log(det)) should be 0
+        parity_flip = sign ** self.parity #if parity=1, the flip operators don't flip the tensors
+
         rotated_keys = self.get_rotated_keys(gg)
-        ktensor_vals = [Ktensor(val, self.parity, self.D) for val in  self[self.hash(rotated_keys)]]
-        rotated_vals = [ktensor.times_group_element(gg).data for ktensor in ktensor_vals]
+        rotated_pixels = self[self.hash(rotated_keys)].reshape(self.shape())
 
-        return self.__class__(jnp.array(rotated_vals, dtype=self.data.dtype).reshape(self.shape()), self.parity, self.D)
+        if self.k == 0:
+            newdata = 1. * rotated_pixels * parity_flip
+        else:
+            # applying the rotation to ktensors is essentially multiplying each index, which we can think of as a
+            # vector, by the group action. The image pixels have already been rotated.
+            # by the group action
+            firstletters  = "abcdefghijklm"
+            secondletters = "nopqrstuvwxyz"
+            einstr = "".join([firstletters[i] for i in range(self.D)])
+            einstr += "".join([firstletters[i + self.D] for i in range(self.k)]) + ","
+            einstr += ",".join([secondletters[i] + firstletters[i + self.D] for i in range(self.k)])
+            tensor_inputs = (rotated_pixels, ) + self.k * (gg, )
+            newdata = np.einsum(einstr, *tensor_inputs) * (parity_flip)
 
+        print(newdata.shape)
+        return self.__class__(newdata, self.parity, self.D)
 
 # ------------------------------------------------------------------------------
 # PART 3: Define a geometric (k-tensor) filter.

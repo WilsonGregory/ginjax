@@ -502,7 +502,6 @@ class GeometricImage:
         if self.k == 0:
             return jnp.abs(self.data)
 
-        # norm_ord = jnp.inf if self.k == 0 else None #jnp.inf does the infinity norm, or absolute value
         vectorized_pixels = self.data.reshape(((self.N**self.D,) + self.pixel_shape()))
         return jnp.array([jnp.linalg.norm(x, ord=None) for x in vectorized_pixels]).reshape(self.image_shape())
 

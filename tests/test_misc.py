@@ -2,8 +2,8 @@ import sys
 sys.path.insert(0,'src/geometricconvolutions/')
 
 from geometric import (
+    GeometricImage,
     get_unique_invariant_filters,
-    Ktensor,
     LeviCivitaSymbol,
     make_all_operators,
     permutation_parity,
@@ -28,9 +28,9 @@ def do_group_actions(operators):
         key, subkey = random.split(key)
 
         # vector dot vector
-        v1 = Ktensor(random.normal(subkey, shape=(D,)), parity, D)
+        v1 = GeometricImage(random.normal(subkey, shape=((1,)*D + (D,))), parity, D)
         key, subkey = random.split(key)
-        v2 = Ktensor(random.normal(subkey, shape=(D,)), parity, D)
+        v2 = GeometricImage(random.normal(subkey, shape=((1,)*D + (D,))), parity, D)
         dots = [(v1.times_group_element(gg)
                  * v2.times_group_element(gg)).contract(0, 1).data
                 for gg in operators]
@@ -42,9 +42,9 @@ def do_group_actions(operators):
 
         # tensor times tensor
         key, subkey = random.split(key)
-        T3 = Ktensor(random.normal(subkey, shape=(D, D)), parity, D)
+        T3 = GeometricImage(random.normal(subkey, shape=((1,)*D + (D, D))), parity, D)
         key, subkey = random.split(key)
-        T4 = Ktensor(random.normal(subkey, shape=(D, D)), parity, D)
+        T4 = GeometricImage(random.normal(subkey, shape=((1,)*D + (D, D))), parity, D)
         dots = [(T3.times_group_element(gg)
                  * T4.times_group_element(gg)).contract(1, 2).contract(0, 1).data
                 for gg in operators]
@@ -56,7 +56,7 @@ def do_group_actions(operators):
 
         # vectors dotted through tensor
         key, subkey = random.split(key)
-        v5 = Ktensor(random.normal(subkey, shape=(D,)), 0, D)
+        v5 = GeometricImage(random.normal(subkey, shape=((1,)*D + (D,))), 0, D)
         dots = [(v5.times_group_element(gg) * T3.times_group_element(gg)
                  * v2.times_group_element(gg)).contract(1, 2).contract(0, 1).data
                 for gg in operators]

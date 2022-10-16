@@ -112,134 +112,7 @@ class LeviCivitaSymbol:
 
         return cls.symbol_dict[D]
 
-# ------------------------------------------------------------------------------
-# PART 2: Define a k-tensor.
 
-class Ktensor:
-
-    def name(k, parity):
-        nn = "tensor"
-        if k == 0:
-            nn = "scalar"
-        if k == 1:
-            nn = "vector"
-        if parity % 2 == 1 and k < 2:
-            nn = "pseudo" + nn
-        if k > 1:
-            nn = "${}$-${}$-".format(k, parity) + nn
-        return nn
-
-    def __init__(self, data, parity, D):
-        self.levi_civita = None
-        self.D = D
-        assert self.D > 1, \
-        "Ktensor: geometry makes no sense if D<2."
-        self.parity = parity % 2
-        if len(jnp.atleast_1d(data)) == 1:
-            self.data = data
-            self.k = 0
-        else:
-            self.data = jnp.array(data)
-            self.k = len(data.shape)
-            assert jnp.all(jnp.array(data.shape) == self.D), \
-            "Ktensor: shape must be (D, D, D, ...), but instead it's {}".format(data.shape)
-
-    def __getitem__(self, key):
-        return self.data[key]
-
-    def __add__(self, other):
-        assert self.k == other.k, \
-        "Ktensor: can't add objects of different k"
-        assert self.parity == other.parity, \
-        "Ktensor: can't add objects of different parity"
-        assert self.D == other.D, \
-        "Ktensor: can't add objects of different dimension D"
-        return Ktensor(self.data + other.data, self.parity, self.D)
-
-    def __mul__(self, other):
-        if self.k == 0 or other.k == 0:
-            return Ktensor(self.data * other.data,
-                           self.parity + other.parity, self.D)
-        return Ktensor(jnp.tensordot(self.data, other.data, axes=0),
-                       self.parity + other.parity, self.D)
-
-    def __str__(self):
-        return "<k-tensor object in D={} with k={} and parity={}>".format(
-            self.D, self.k, self.parity)
-
-    def norm(self):
-        if self.k == 0:
-            return np.abs(self.data)
-        return np.linalg.norm(self.data)
-
-    def times_scalar(self, scalar):
-        return Ktensor(scalar * self.data, self.parity, self.D)
-
-    def times_group_element(self, gg):
-        """
-        Multiply Ktensor by group element, performing necessary adjustments if its a pseudo-tensor
-        args:
-            gg (jnp array-like): group element
-        """
-        assert self.k < 14
-        assert gg.shape == (self.D, self.D)
-        sign, logdet = np.linalg.slogdet(gg)
-        assert logdet == 0. #determinant is +- 1, so abs(log(det)) should be 0
-        if self.k == 0:
-            newdata = 1. * self.data * (sign ** self.parity)
-        else:
-            firstletters  = "abcdefghijklm"
-            secondletters = "nopqrstuvwxyz"
-            einstr = "".join([firstletters[i] for i in range(self.k)]) +"," + \
-            ",".join([secondletters[i] + firstletters[i] for i in range(self.k)])
-            foo = (self.data, ) + self.k * (gg, )
-            newdata = np.einsum(einstr, *foo) * (sign ** self.parity)
-        return Ktensor(newdata, self.parity, self.D)
-
-    def contract(self, i, j):
-        """
-        Use einsum to perform a kronecker contraction on two dimensions
-        args:
-            i (int): first index
-            j (int): second index
-        """
-        assert self.k < 27
-        assert self.k >= 2
-        assert i != j
-        assert i < self.k
-        assert j < self.k
-        if (j < i): #order of indices does not matter for kronecker contraction
-            tmp = i
-            i = j
-            j = tmp
-
-        letters  = "bcdefghijklmnopqrstuvwxyz"
-        einstr = letters[:i] + "a" + letters[i:j-1] + "a" + letters[j-1:self.k-2]
-        return Ktensor(np.einsum(einstr, self.data), self.parity, self.D)
-
-    def levi_civita_contract(self, indices):
-        """
-        Possibly naive implementation of levi_civita contraction
-        args:
-            indices (array-like): can be list or tuple, indices in order that you want them contracted
-        """
-        assert (self.k+1) >= self.D # so we have enough indices to work on
-        if self.D == 2 and not (isinstance(indices, tuple) or isinstance(indices, list)):
-            indices = (indices,)
-        assert len(indices) == self.D - 1
-
-        levi_civita = LeviCivitaSymbol.get(self.D)
-        outer = Ktensor(jnp.tensordot(self.data, levi_civita, axes=((),())), self.parity + 1, self.D)
-
-        indices_removed = 0
-        while len(indices) > 0:
-            idx, *indices = indices
-            outer = outer.contract(idx, self.k - indices_removed)
-            indices = [x if x < idx else x-1 for x in indices]
-            #^ decrement indices larger than the one we just contracted, leave smaller ones alone
-            indices_removed += 1
-
-        return outer
 
 # ------------------------------------------------------------------------------
 # PART 4: Use group averaging to find unique invariant filters.
@@ -309,6 +182,41 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
 # ------------------------------------------------------------------------------
 # PART 5: Define geometric (k-tensor, torus) images.
 
+def contract_data(data, i, j):
+    """
+    Perform the Kronecker Delta contraction on the data. Must have at least 2 dimensions, and because we implement with
+    einsum, must have at most 27 dimensions.
+    args:
+        data (np.array-like): data to perform the contraction on
+        i,j (ints): indices to perform the contraction on
+    """
+    dimensions = len(data.shape)
+    assert dimensions < 27
+    assert dimensions >= 2
+    assert i != j
+    assert i < dimensions
+    assert j < dimensions
+    if (j < i): #order of indices does not matter for kronecker contraction
+        tmp = i
+        i = j
+        j = tmp
+
+    letters  = "bcdefghijklmnopqrstuvwxyz"
+    einstr = letters[:i] + "a" + letters[i:j-1] + "a" + letters[j-1:dimensions-2]
+    return jnp.einsum(einstr, data)
+
+def tensor_name(k, parity):
+    nn = "tensor"
+    if k == 0:
+        nn = "scalar"
+    if k == 1:
+        nn = "vector"
+    if parity % 2 == 1 and k < 2:
+        nn = "pseudo" + nn
+    if k > 1:
+        nn = "${}$-${}$-".format(k, parity) + nn
+    return nn
+
 class GeometricImage:
 
     # Constructors
@@ -366,20 +274,12 @@ class GeometricImage:
         """
         return self.data[key]
 
-    def __setitem__(self, key, thing):
+    def __setitem__(self, key, val):
         """
         Jax arrays are immutable, so this reconstructs the data object with copying, and is potentially slow
         """
-        val = thing.data if isinstance(thing, Ktensor) else thing
         self.data = self.data.at[key].set(val)
         return self
-
-    def ktensor(self, key):
-        """
-        Return the Ktensor at the location key. Equivalent to image[key] but returns Ktensor instead of raw data.
-        """
-        assert len(key) == self.D
-        return Ktensor(self[key], self.parity, self.D)
 
     def shape(self):
         return self.data.shape
@@ -404,19 +304,19 @@ class GeometricImage:
         # equivalent to the old pixels function
         return jnp.array([key for key in self.keys()], dtype=int)
 
-    def pixels(self, ktensor=True):
+    def pixels(self):
         """
-        Iterate over the pixels of GeometricImage. If ktensor=True, return the pixels as Ktensor objects
+        Iterate over the pixels of GeometricImage.
         """
         for key in self.keys():
-            yield self.ktensor(key) if ktensor else self[key]
+            yield self[key]
 
-    def items(self, ktensor=True):
+    def items(self):
         """
-        Iterate over the key, pixel pairs of GeometricImage. If ktensor=True, return the pixels as Ktensor objects
+        Iterate over the key, pixel pairs of GeometricImage.
         """
         for key in self.keys():
-            yield (key, self.ktensor(key)) if ktensor else (key, self[key])
+            yield (key, self[key])
 
     # Binary Operators, Complicated functions
 
@@ -434,7 +334,7 @@ class GeometricImage:
 
     def __mul__(self, other):
         """
-        Return the Ktensor product of each pixel as a new GeometricImage
+        Return the tensor product of each pixel as a new GeometricImage
         """
         assert self.D == other.D
         assert self.N == other.N
@@ -455,7 +355,7 @@ class GeometricImage:
             filter_image_keys = filter_image.key_array(centered=True) #centered key array
 
         key_list = self.hash(filter_image_keys + jnp.array(center_key)) #key list on the torus
-        #values, reshaped to the correct shape, which is the filter_image shape, while still having the ktensor shape
+        #values, reshaped to the correct shape, which is the filter_image shape, while still having the tensor shape
         vals = self[key_list].reshape(filter_image.image_shape() + self.pixel_shape())
         return self.__class__(vals, self.parity, self.D)
 
@@ -595,11 +495,21 @@ class GeometricImage:
         """
         return self.__class__(self.data * scalar, self.parity, self.D)
 
+    def norm(self):
+        """
+        Calculate the norm pixel-wise
+        """
+        if self.k == 0:
+            return jnp.abs(self.data)
+
+        vectorized_pixels = self.data.reshape(((self.N**self.D,) + self.pixel_shape()))
+        return jnp.array([jnp.linalg.norm(x, ord=None) for x in vectorized_pixels]).reshape(self.image_shape())
+
     def normalize(self):
         """
-        Normalize so that the max norm of each pixel is 1, and all other ktensors are scaled appropriately
+        Normalize so that the max norm of each pixel is 1, and all other tensors are scaled appropriately
         """
-        max_norm = jnp.max(jnp.array([ktensor.norm() for ktensor in self.pixels()]))
+        max_norm = jnp.max(self.norm())
         if max_norm > TINY:
             return self.times_scalar(1. / max_norm)
         else:
@@ -612,29 +522,31 @@ class GeometricImage:
             i (int): first index of tensor
             j (int): second index of tensor
         """
-        assert self.k < 27
-        assert self.k >= 2
-        assert i != j
-        assert i < self.k
-        assert j < self.k
-        if (j < i): #order of indices does not matter for kronecker contraction
-            tmp = i
-            i = j
-            j = tmp
+        return self.__class__(contract_data(self.data, self.D + i, self.D + j), self.parity, self.D)
 
-        i += self.D
-        j += self.D
-        letters  = "bcdefghijklmnopqrstuvwxyz"
-        einstr = letters[:i] + "a" + letters[i:j-1] + "a" + letters[j-1:self.D + self.k-2]
-        return self.__class__(np.einsum(einstr, self.data), self.parity, self.D)
+    def levi_civita_contract(self, indices):
+        """
+        Perform the Levi-Civita contraction. Outer product with the Levi-Civita Symbol, then perform D-1 contractions.
+        args:
+            indices (int, or tuple, or list): indices of tensor to perform contractions on
+        """
+        assert self.k >= (self.D - 1) # so we have enough indices to work on since we perform D-1 contractions
+        if self.D == 2 and not (isinstance(indices, tuple) or isinstance(indices, list)):
+            indices = (indices,)
+        assert len(indices) == self.D - 1
 
-    def levi_civita_contract(self, index):
-        assert (self.k + 1) >= self.D
-        newimage = self.__class__.zeros(self.N, self.k - self.D + 2,
-                                         self.parity + 1, self.D)
-        for key, ktensor in self.items():
-            newimage[key] = ktensor.levi_civita_contract(index)
-        return newimage
+        levi_civita = LeviCivitaSymbol.get(self.D)
+        outer = jnp.tensordot(self.data, levi_civita, axes=0)
+
+        indices_removed = 0
+        while len(indices) > 0:
+            idx, *indices = indices
+            outer = contract_data(outer, idx + self.D, self.k - indices_removed + self.D)
+            indices = [x if x < idx else x-1 for x in indices]
+            #^ decrement indices larger than the one we just contracted, leave smaller ones alone
+            indices_removed += 1
+
+        return self.__class__(outer, self.parity + 1, self.D)
 
     def get_rotated_keys(self, gg):
         """
@@ -645,13 +557,36 @@ class GeometricImage:
         key_array = self.key_array() - ((self.N-1) / 2)
         return jnp.rint((key_array @ gg) + (self.N-1) / 2).astype(int)
 
-    def times_group_element(self, gg, m=None):
+    def times_group_element(self, gg):
+        """
+        Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the location of the
+        pixels, then apply the action to the pixels themselves.
+        args:
+            gg (group operation matrix): a DxD matrix that rotates the tensor
+        """
+        assert self.k < 14
+        assert gg.shape == (self.D, self.D)
+        sign, logdet = np.linalg.slogdet(gg)
+        assert logdet == 0. #determinant is +- 1, so abs(log(det)) should be 0
+        parity_flip = sign ** self.parity #if parity=1, the flip operators don't flip the tensors
+
         rotated_keys = self.get_rotated_keys(gg)
-        ktensor_vals = [Ktensor(val, self.parity, self.D) for val in  self[self.hash(rotated_keys)]]
-        rotated_vals = [ktensor.times_group_element(gg).data for ktensor in ktensor_vals]
+        rotated_pixels = self[self.hash(rotated_keys)].reshape(self.shape())
 
-        return self.__class__(jnp.array(rotated_vals, dtype=self.data.dtype).reshape(self.shape()), self.parity, self.D)
+        if self.k == 0:
+            newdata = 1. * rotated_pixels * parity_flip
+        else:
+            # applying the rotation to tensors is essentially multiplying each index, which we can think of as a
+            # vector, by the group action. The image pixels have already been rotated.
+            firstletters  = "abcdefghijklm"
+            secondletters = "nopqrstuvwxyz"
+            einstr = "".join([firstletters[i] for i in range(self.D)])
+            einstr += "".join([firstletters[i + self.D] for i in range(self.k)]) + ","
+            einstr += ",".join([secondletters[i] + firstletters[i + self.D] for i in range(self.k)])
+            tensor_inputs = (rotated_pixels, ) + self.k * (gg, )
+            newdata = np.einsum(einstr, *tensor_inputs) * (parity_flip)
 
+        return self.__class__(newdata, self.parity, self.D)
 
 # ------------------------------------------------------------------------------
 # PART 3: Define a geometric (k-tensor) filter.
@@ -679,10 +614,12 @@ class GeometricFilter(GeometricImage):
         """
         Gives an idea of size for a filter, sparser filters are smaller while less sparse filters are larger
         """
-        numerator, denominator = 0., 0.
-        for key, ktensor in self.items():
-            numerator += jnp.linalg.norm(jnp.array(key) * ktensor.norm(), ord=2)
-            denominator += ktensor.norm()
+        norms = self.norm()
+        numerator = 0.
+        for key in self.key_array():
+            numerator += jnp.linalg.norm(key * norms[tuple(key)], ord=2)
+
+        denominator = jnp.sum(norms)
         return numerator / denominator
 
     def key_array(self, centered=False):
@@ -705,16 +642,15 @@ class GeometricFilter(GeometricImage):
             else:
                 yield key
 
-    def items(self, ktensor=True, centered=False):
+    def items(self, centered=False):
         """
         Enumerate over all the key, pixel pairs in the geometric filter. Use centered=True when using the keys as
         adjustments
         args:
-            ktensor (bool): if true, return the values as Ktensors, otherwise return as raw data. Defaults to true.
             centered (bool): if true, the keys range from -m to m rather than 0 to N. Defaults to false.
         """
         for key in self.keys(): #dont pass centered along because we need the un-centered keys to access the vals
-            value = self.ktensor(key) if ktensor else self[key]
+            value = self[key]
             if (centered):
                 #subtract m from all the elements of key
                 yield (tuple([a+b for a,b in zip(key, len(key) * (-self.m,))]), value)

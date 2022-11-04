@@ -527,6 +527,7 @@ class GeometricImage:
     def levi_civita_contract(self, indices):
         """
         Perform the Levi-Civita contraction. Outer product with the Levi-Civita Symbol, then perform D-1 contractions.
+        Resulting image has k= self.k - self.D + 2
         args:
             indices (int, or tuple, or list): indices of tensor to perform contractions on
         """

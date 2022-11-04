@@ -267,14 +267,6 @@ class TestGeometricImage:
         img4 = GeometricImage(random.normal(key, shape=(3,3,2,2,2,2,2)), 0, 2)
         assert jnp.allclose(img4.contract(0,1).contract(0,1).data, img4.contract(2,3).contract(0,1).data)
         assert jnp.allclose(img4.contract(0,1).contract(1,2).data, img4.contract(3,4).contract(0,1).data)
-        # assert jnp.allclose(img4.contract(0,2).contract(0,1).data, img4.contract(2,3).contract(0,1).data)
-        # assert jnp.allclose(img4.contract(1,2).contract(0,1).data, img4.contract(2,3).contract(0,1).data)
-        # assert not jnp.allclose(img4.contract(0,1).contract(0,1).data, img4.contract(0,1).contract(1,2).data)
-        # assert not jnp.allclose(img4.contract(0,1).contract(0,1).data, img4.contract(0,2).contract(1,2).data)
-        # assert not jnp.allclose(img4.contract(0,1).contract(0,1).data, img4.contract(1,2).contract(1,2).data)
-        # assert not jnp.allclose(img4.contract(0,1).contract(0,1).data, img4.contract(1,2).contract(1,2).data)
-
-
 
     def testLeviCivitaContract(self):
         key = random.PRNGKey(0)

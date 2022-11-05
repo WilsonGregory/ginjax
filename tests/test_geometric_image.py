@@ -305,7 +305,6 @@ class TestGeometricImage:
         key, subkey = random.split(key)
         img3 = GeometricImage(random.uniform(subkey, shape=(3,3,2,2)), 0, 2)
         for idx in range(img3.k):
-            print(idx)
             img3_contracted = img3.levi_civita_contract(idx)
             assert img3_contracted.parity == (img3.parity + 1) % 2
             assert img3_contracted.N == img3.N
@@ -565,8 +564,6 @@ class TestGeometricImage:
         assert img4_flipX.D == img4.D
         assert img4_flipX.parity == img4.parity
         assert img4_flipX.k == img4.k
-        print(img4.data)
-        print(img4_flipX.data)
         assert (img4_flipX.data == jnp.array([
             [ #first row
                 [[24,-25], [-26,27]],

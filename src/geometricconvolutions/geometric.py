@@ -25,12 +25,15 @@ import itertools as it
 import numpy as np #removing this
 import jax.numpy as jnp
 import jax.lax
+from jax import jit
+from functools import partial
 import pylab as plt
 import matplotlib.cm as cm
 from matplotlib.colors import ListedColormap
 import cmastro
 
 TINY = 1.e-5
+LETTERS = 'abcdefghijklmnopqrstuvwxyxABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
 # ------------------------------------------------------------------------------
 # PART 1: Make and test a complete group
@@ -182,28 +185,27 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
 # ------------------------------------------------------------------------------
 # PART 5: Define geometric (k-tensor, torus) images.
 
-def contract_data(data, i, j):
+def multicontract(data, indices):
     """
     Perform the Kronecker Delta contraction on the data. Must have at least 2 dimensions, and because we implement with
-    einsum, must have at most 27 dimensions.
+    einsum, must have at most 52 dimensions. Indices is considered as a flattened list of pairs
     args:
         data (np.array-like): data to perform the contraction on
-        i,j (ints): indices to perform the contraction on
+        indices (array of ints): array of index pairs to perform the contractions on
     """
     dimensions = len(data.shape)
-    assert dimensions < 27
+    assert len(indices) % 2 == 0 #must have pairs of indices
+    assert dimensions + (len(indices) / 2) < 52
     assert dimensions >= 2
-    assert i != j
-    assert i < dimensions
-    assert j < dimensions
-    if (j < i): #order of indices does not matter for kronecker contraction
-        tmp = i
-        i = j
-        j = tmp
+    assert len(jnp.unique(indices)) == len(indices) #all indices must be unique
 
-    letters  = "bcdefghijklmnopqrstuvwxyz"
-    einstr = letters[:i] + "a" + letters[i:j-1] + "a" + letters[j-1:dimensions-2]
-    return jnp.einsum(einstr, data)
+    einstr = list(LETTERS[:dimensions])
+    for i in range(len(indices) // 2):
+        idx1 = 2*i
+        idx2 = 2*i + 1
+        einstr[indices[idx1]] = einstr[indices[idx2]] = LETTERS[-(i+1)]
+
+    return jnp.einsum(''.join(einstr), data)
 
 def tensor_name(k, parity):
     nn = "tensor"
@@ -517,12 +519,20 @@ class GeometricImage:
 
     def contract(self, i, j):
         """
-        Use einsum to perform a kronecker contraction on two dimensions
+        Use einsum to perform a kronecker contraction on two dimensions of the tensor
         args:
             i (int): first index of tensor
             j (int): second index of tensor
         """
-        return self.__class__(contract_data(self.data, self.D + i, self.D + j), self.parity, self.D)
+        return self.__class__(multicontract(self.data, jnp.array([i,j]) + self.D), self.parity, self.D)
+
+    def multicontract(self, indices):
+        """
+        Use einsum to perform a kronecker contraction on two dimensions of the tensor
+        args:
+            indices (jax array): jax array of indices to contract, must be even length because it is pairs
+        """
+        return self.__class__(multicontract(self.data, indices + self.D), self.parity, self.D)
 
     def levi_civita_contract(self, indices):
         """
@@ -539,15 +549,9 @@ class GeometricImage:
         levi_civita = LeviCivitaSymbol.get(self.D)
         outer = jnp.tensordot(self.data, levi_civita, axes=0)
 
-        indices_removed = 0
-        while len(indices) > 0:
-            idx, *indices = indices
-            outer = contract_data(outer, idx + self.D, self.k - indices_removed + self.D)
-            indices = [x if x < idx else x-1 for x in indices]
-            #^ decrement indices larger than the one we just contracted, leave smaller ones alone
-            indices_removed += 1
-
-        return self.__class__(outer, self.parity + 1, self.D)
+        #make contraction index pairs with one of specified indices, and index (in order) from the levi_civita symbol
+        zipped_indices = jnp.array(list(zip(indices, range(self.k, self.k + len(indices))))).flatten() + self.D
+        return self.__class__(multicontract(outer, zipped_indices), self.parity + 1, self.D)
 
     def get_rotated_keys(self, gg):
         """

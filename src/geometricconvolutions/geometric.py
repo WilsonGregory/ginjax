@@ -26,6 +26,7 @@ import numpy as np #removing this
 import jax.numpy as jnp
 import jax.lax
 from jax import jit
+from jax.tree_util import register_pytree_node_class
 from functools import partial
 import pylab as plt
 import matplotlib.cm as cm
@@ -220,6 +221,7 @@ def tensor_name(k, parity):
         nn = "${}$-${}$-".format(k, parity) + nn
     return nn
 
+@register_pytree_node_class
 class GeometricImage:
 
     # Constructors
@@ -414,6 +416,7 @@ class GeometricImage:
 
         return image_a_expanded, image_b_expanded
 
+    @jit
     def convolve_with(self, filter_image, warnings=True):
         """
         Here is how this function works:
@@ -594,9 +597,29 @@ class GeometricImage:
 
         return self.__class__(newdata, self.parity, self.D)
 
+    def tree_flatten(self):
+        """
+        Helper function to define GeometricImage as a pytree so jax.jit handles it correctly. Children and aux_data
+        must contain all the variables that are passed in __init__()
+        """
+        children = (self.data,)  # arrays / dynamic values
+        aux_data = {
+            'D': self.D,
+            'parity': self.parity,
+        }  # static values
+        return (children, aux_data)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        """
+        Helper function to define GeometricImage as a pytree so jax.jit handles it correctly.
+        """
+        return cls(*children, **aux_data)
+
 # ------------------------------------------------------------------------------
 # PART 3: Define a geometric (k-tensor) filter.
 
+@register_pytree_node_class
 class GeometricFilter(GeometricImage):
 
     def __init__(self, data, parity, D):
@@ -682,4 +705,3 @@ class GeometricFilter(GeometricImage):
                 if np.sum([np.cross(np.array(key), self[key]) for key in self.keys()]) < 0:
                     return self.times_scalar(-1)
         return self
-

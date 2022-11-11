@@ -198,6 +198,7 @@ def multicontract(data, indices):
     assert dimensions + (len(indices) / 2) < 52
     assert dimensions >= 2
     assert len(jnp.unique(indices)) == len(indices) #all indices must be unique
+    assert jnp.max(indices) < len(data.shape)
 
     einstr = list(LETTERS[:dimensions])
     for i in range(len(indices) // 2):

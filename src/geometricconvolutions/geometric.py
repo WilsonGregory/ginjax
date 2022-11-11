@@ -598,17 +598,22 @@ class GeometricImage:
         return self.__class__(newdata, self.parity, self.D)
 
     def tree_flatten(self):
+        """
+        Helper function to define GeometricImage as a pytree so jax.jit handles it correctly. Children and aux_data
+        must contain all the variables that are passed in __init__()
+        """
         children = (self.data,)  # arrays / dynamic values
         aux_data = {
             'D': self.D,
-            # 'N': self.N,
-            # 'k': self.k,
             'parity': self.parity,
         }  # static values
         return (children, aux_data)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
+        """
+        Helper function to define GeometricImage as a pytree so jax.jit handles it correctly.
+        """
         return cls(*children, **aux_data)
 
 # ------------------------------------------------------------------------------
@@ -700,9 +705,3 @@ class GeometricFilter(GeometricImage):
                 if np.sum([np.cross(np.array(key), self[key]) for key in self.keys()]) < 0:
                     return self.times_scalar(-1)
         return self
-
-    # def tree_flatten(self):
-    #     children, aux_data = super(GeometricFilter, self).tree_flatten()
-    #     aux_data = { **aux_data, 'm': self.m}
-    #     return (children, aux_data)
-

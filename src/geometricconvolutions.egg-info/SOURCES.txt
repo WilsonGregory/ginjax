@@ -1,0 +1,12 @@
+LICENSE
+README.md
+pyproject.toml
+setup.cfg
+src/geometricconvolutions/__init__.py
+src/geometricconvolutions/geometric.py
+src/geometricconvolutions/utils.py
+src/geometricconvolutions.egg-info/PKG-INFO
+src/geometricconvolutions.egg-info/SOURCES.txt
+src/geometricconvolutions.egg-info/dependency_links.txt
+src/geometricconvolutions.egg-info/requires.txt
+src/geometricconvolutions.egg-info/top_level.txt

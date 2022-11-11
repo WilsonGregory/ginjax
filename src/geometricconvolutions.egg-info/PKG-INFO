@@ -1,0 +1,33 @@
+Metadata-Version: 2.1
+Name: geometricconvolutions
+Version: 0.0.1
+Summary: Package for building Convolutional Neural Networks on images of tensors.
+Home-page: https://github.com/WilsonGregory/GeometricConvolutions
+Author: Wilson Gregory
+Author-email: wilson.g.gregory@gmail.com
+License: UNKNOWN
+Project-URL: Bug Tracker, https://github.com/WilsonGregory/GeometricConvolutions/issues
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+License-File: LICENSE
+
+# Geometric Convolutions
+group-equivariant convolutional deep learning
+
+## Authors
+- **David W. Hogg** (NYU) (MPIA) (Flatiron)
+- **Soledad Villar** (JHU)
+- **Wilson Gregory** (JHU)
+
+## License
+Copyright 2022 the authors. All **text** (in `.txt` and `.tex` and `.bib` files) is licensed *All rights reserved*. All **code** (everything else) is licensed for use and reuse under the open-source *MIT License*. See the file `LICENSE` for more details of that.
+
+## Projects
+- Make nonlinear, group-equivariant, geometric convolution operators.
+- Apply these to cosmological-simulation problems, perhaps.
+
+

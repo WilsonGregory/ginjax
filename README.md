@@ -1,6 +1,13 @@
 # Geometric Convolutions
 group-equivariant convolutional deep learning
 
+## Installation
+
+- Install this repo as an editable install using pip.
+  - Clone the repository `git clone https://github.com/WilsonGregory/GeometricConvolutions.git`
+  - Navigate to the MarkerMap directory `cd GeometricConvolutions`
+  - Locally install the package `pip install -e .` (may have to use pip3 if your system has both python2 and python3 installed)
+
 ## Authors
 - **David W. Hogg** (NYU) (MPIA) (Flatiron)
 - **Soledad Villar** (JHU)

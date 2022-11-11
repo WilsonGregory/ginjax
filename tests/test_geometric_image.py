@@ -1,9 +1,6 @@
-import sys
-sys.path.insert(0,'src/geometricconvolutions/')
-
 import math
 
-from geometric import GeometricImage, GeometricFilter
+from geometricconvolutions.geometric import GeometricImage, GeometricFilter
 import pytest
 import jax.numpy as jnp
 from jax import random

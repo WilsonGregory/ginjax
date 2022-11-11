@@ -28,10 +28,6 @@ import jax.lax
 from jax import jit
 from jax.tree_util import register_pytree_node_class
 from functools import partial
-import pylab as plt
-import matplotlib.cm as cm
-from matplotlib.colors import ListedColormap
-import cmastro
 
 TINY = 1.e-5
 LETTERS = 'abcdefghijklmnopqrstuvwxyxABCDEFGHIJKLMNOPQRSTUVWXYZ'

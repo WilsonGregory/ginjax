@@ -1,7 +1,4 @@
-import sys
-sys.path.insert(0,'src/geometricconvolutions/')
-
-from geometric import (
+from geometricconvolutions.geometric import (
     GeometricImage,
     get_unique_invariant_filters,
     LeviCivitaSymbol,

@@ -1,11 +1,7 @@
-import sys
-sys.path.insert(0,'src/geometricconvolutions/')
-
-import yt
 import numpy as np
 import jax.numpy as jnp
 from jax import value_and_grad, jit, random
-import geometric as geom
+import geometricconvolutions.geometric as geom
 
 def initial_params(num_params):
     key = random.PRNGKey(0)

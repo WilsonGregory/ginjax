@@ -3,7 +3,7 @@ import pylab as plt
 import matplotlib.cm as cm
 from matplotlib.colors import ListedColormap
 import cmastro
-from geometric import TINY
+from geometricconvolutions.geometric import TINY
 
 # Visualize the filters.
 

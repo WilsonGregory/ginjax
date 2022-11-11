@@ -1,7 +1,9 @@
-import sys
-sys.path.insert(0,'src/geometricconvolutions/')
-
-from geometric import GeometricImage, GeometricFilter, make_all_operators, get_unique_invariant_filters
+from geometricconvolutions.geometric import (
+    GeometricImage,
+    GeometricFilter,
+    make_all_operators,
+    get_unique_invariant_filters,
+)
 import pytest
 import jax.numpy as jnp
 from jax import random

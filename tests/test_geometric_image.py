@@ -498,17 +498,19 @@ class TestGeometricImage:
         assert B1.parity == B2.parity
         assert jnp.allclose(B1.data, B2.data)
 
-    # def testConvolveCommutativity(self):
-    #     image1 = GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
-    #     filter_image = GeometricFilter(jnp.array([[1,0,1], [0,0,0], [1,0,1]], dtype=int), 0, 2)
+    def testCommutativityOfEquivariantFilters(self):
+        image1 = GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
 
-    #     convolveA = image1.convolve_with(filter_image)
-    #     convolveB = filter_image.convolve_with(image1)
-    #     assert convolveA.D == convolveB.D
-    #     assert convolveA.N == convolveB.N
-    #     assert convolveA.k == convolveB.k
-    #     assert convolveA.parity == convolveB.parity
-    #     assert (convolveA.data == convolveB.data).all()
+
+        filter_image = GeometricFilter(jnp.array([[1,0,1], [0,0,0], [1,0,1]], dtype=int), 0, 2)
+
+        convolveA = image1.convolve_with(filter_image)
+        convolveB = filter_image.convolve_with(image1)
+        assert convolveA.D == convolveB.D
+        assert convolveA.N == convolveB.N
+        assert convolveA.k == convolveB.k
+        assert convolveA.parity == convolveB.parity
+        assert (convolveA.data == convolveB.data).all()
 
     def testTimesGroupElement(self):
         left90 = jnp.array([[0,-1],[1,0]])

@@ -1,10 +1,9 @@
 import numpy as np
 import jax.numpy as jnp
-from jax import value_and_grad, jit, random
+from jax import value_and_grad, jit, random, vmap
 import geometricconvolutions.geometric as geom
 
-def initial_params(num_params):
-    key = random.PRNGKey(0)
+def initial_params(key, num_params):
     return random.normal(key, shape=(num_params,))
 
 def conv_layer(params, x, conv_filters):
@@ -14,7 +13,17 @@ def conv_layer(params, x, conv_filters):
 
 def net(params, x, conv_filters):
     # A simple neural net with 1 convolution layer. Then return a linear combination of the convolution outputs
-    data = jnp.sum(jnp.array([out.data for out in conv_layer(params, x, conv_filters)]), axis=0)
+    first_layer_out = conv_layer(params[:len(conv_filters)], x, conv_filters)
+
+    second_layer_out = []
+    for i in range(len(first_layer_out)):
+        second_layer_out.extend(conv_layer(
+            params[(i+1)*len(conv_filters):(i+2)*len(conv_filters)],
+            first_layer_out[i],
+            conv_filters,
+        ))
+
+    data = jnp.sum(jnp.array([out.data for out in second_layer_out]), axis=0)
     return geom.GeometricImage(data, x.parity, x.D)
 
 def loss(params, x, y, conv_filters):
@@ -36,48 +45,47 @@ def batch_loss(params, X, Y, conv_filters):
 
     return jnp.mean(res)
 
-
-def train(X, Y, conv_filters, batch_loss, epochs):
+def train(X, Y, conv_filters, batch_loss, epochs, params):
     # Train the model. Use a simple adaptive learning rate scheme, and go until the learning rate is small.
-    params = initial_params(len(conv_filters))
     batch_loss_grad = jit(value_and_grad(batch_loss))
 
-    learning_rate = 0.2
+    initial_lr = 0.1
+    learning_rate = initial_lr
+    decay = 0.01
+    min_lr = 0.001
 
-    loss_val = 1
-    prev_loss_val = 100000
-    while learning_rate > 0.0001:
-        if 'grads' in locals():
-            new_params = [param - learning_rate * grad for param, grad in zip(params, grads)]
-        else:
-            new_params = params
+    for i in range(epochs):
+        loss_val, grads = batch_loss_grad(params, X, Y, conv_filters)
+        params = [param - learning_rate * grad for param, grad in zip(params, grads)]
+        if (learning_rate > min_lr):
+            learning_rate = initial_lr * np.exp(-1*decay*i)
 
-        loss_val, grads = batch_loss_grad(new_params, X, Y, conv_filters)
-
-        # Update parameters via gradient descent
-        if loss_val < prev_loss_val:
+        if (i % (epochs // 10) == 0):
             print(loss_val, learning_rate)
-            params = new_params
-            learning_rate = 1.5 * learning_rate
-            prev_loss_val = loss_val
-        else:
-            learning_rate = 0.5 * learning_rate
 
     return params, loss_val
 
 
 #Main
+key = random.PRNGKey(0)
+
 D = 2
+N = 64 #image size
+M = 3  #filter image size
+num_images = 5
 
 group_actions = geom.make_all_operators(D)
 # start with basic 3x3 scalar filters
-conv_filters = geom.get_unique_invariant_filters(M=3, k=0, parity=0, D=D, operators=group_actions)
+conv_filters = geom.get_unique_invariant_filters(M=M, k=0, parity=0, D=D, operators=group_actions)
 
-X = [geom.GeometricImage(np.random.randn(64,64), 0, 2) for x in range(25)]
-Y = [x.convolve_with(conv_filters[2]) for x in X]
+key, subkey = random.split(key)
+X = [geom.GeometricImage(data, 0, D) for data in random.normal(subkey, shape=(num_images, N, N))]
+Y = [x.convolve_with(conv_filters[2]).convolve_with(conv_filters[1]) for x in X]
 
+key, subkey = random.split(key)
+params = random.normal(subkey, shape=(len(conv_filters) + len(conv_filters)**2,))
 
-params, loss_val = train(X, Y, conv_filters, batch_loss=batch_loss, epochs=10)
+params, loss_val = train(X, Y, conv_filters, batch_loss=batch_loss, epochs=2000, params = params)
 
 print(batch_loss(params, X, Y, conv_filters))
 print(params)

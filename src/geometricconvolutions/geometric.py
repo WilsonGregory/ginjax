@@ -561,7 +561,7 @@ class GeometricImage:
             indices (tuple of tuples of ints): indices to contract
         """
         assert self.k >= 2
-        shifted_indices = tuple([(i + self.D, j + self.D) for i,j in indices])
+        shifted_indices = tuple((i + self.D, j + self.D) for i,j in indices)
         return self.__class__(multicontract(self.data, shifted_indices), self.parity, self.D)
 
     def levi_civita_contract(self, indices):
@@ -580,7 +580,7 @@ class GeometricImage:
         outer = jnp.tensordot(self.data, levi_civita, axes=0)
 
         #make contraction index pairs with one of specified indices, and index (in order) from the levi_civita symbol
-        zipped_indices = tuple([(i+self.D, j+self.D) for i,j in zip(indices, range(self.k, self.k + len(indices)))])
+        zipped_indices = tuple((i+self.D, j+self.D) for i,j in zip(indices, range(self.k, self.k + len(indices))))
         return self.__class__(multicontract(outer, zipped_indices), self.parity + 1, self.D)
 
     def get_rotated_keys(self, gg):

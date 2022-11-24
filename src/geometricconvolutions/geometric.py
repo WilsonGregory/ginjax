@@ -179,29 +179,54 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
 
     return filters
 
+def get_invariant_filters_dict(Ms, ks, parities, D, operators):
+    """
+    Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and parities
+    args:
+        Ms (iterable of int): filter side lengths
+        ks (iterable of int): tensor orders
+        parities (iterable of int):  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
+        D (int): image dimension
+        operators (jnp-array): array of operators of a group
+    returns:
+        allfilters: a dictionary of filters of the specified D, M, k, and parity
+        maxn: a dictionary that tracks the longest number of filters per key, for a particular D,M combo
+    """
+    allfilters = {}
+    names = {}
+    maxn = {}
+    for M in Ms: #filter side length
+        maxn[(D, M)] = 0
+        for k in ks: #tensor order
+            for parity in parities: #parity
+                key = (D, M, k, parity)
+                allfilters[key] = get_unique_invariant_filters(M, k, parity, D, operators)
+                n = len(allfilters[key])
+                if n > maxn[(D, M)]:
+                    maxn[(D, M)] = n
+
+    return allfilters, maxn
+
 # ------------------------------------------------------------------------------
 # PART 5: Define geometric (k-tensor, torus) images.
 
+@partial(jit, static_argnums=1)
 def multicontract(data, indices):
     """
     Perform the Kronecker Delta contraction on the data. Must have at least 2 dimensions, and because we implement with
-    einsum, must have at most 52 dimensions. Indices is considered as a flattened list of pairs
+    einsum, must have at most 52 dimensions. Indices a tuple of pairs of indices, also tuples.
     args:
         data (np.array-like): data to perform the contraction on
-        indices (array of ints): array of index pairs to perform the contractions on
+        indices (tuple of tuples of ints): index pairs to perform the contractions on
     """
     dimensions = len(data.shape)
-    assert len(indices) % 2 == 0 #must have pairs of indices
-    assert dimensions + (len(indices) / 2) < 52
+    assert dimensions + len(indices) < 52
     assert dimensions >= 2
-    assert len(jnp.unique(indices)) == len(indices) #all indices must be unique
-    assert jnp.max(indices) < len(data.shape)
+    #all indices must be unique, indices must be greater than 0 and less than dimensions
 
     einstr = list(LETTERS[:dimensions])
-    for i in range(len(indices) // 2):
-        idx1 = 2*i
-        idx2 = 2*i + 1
-        einstr[indices[idx1]] = einstr[indices[idx2]] = LETTERS[-(i+1)]
+    for i, (idx1, idx2) in enumerate(indices):
+        einstr[idx1] = einstr[idx2] = LETTERS[-(i+1)]
 
     return jnp.einsum(''.join(einstr), data)
 
@@ -517,6 +542,7 @@ class GeometricImage:
         else:
             return self.times_scalar(1.)
 
+    @partial(jit, static_argnums=[1,2])
     def contract(self, i, j):
         """
         Use einsum to perform a kronecker contraction on two dimensions of the tensor
@@ -524,15 +550,19 @@ class GeometricImage:
             i (int): first index of tensor
             j (int): second index of tensor
         """
-        return self.__class__(multicontract(self.data, jnp.array([i,j]) + self.D), self.parity, self.D)
+        assert self.k >= 2
+        return self.__class__(multicontract(self.data, ((i + self.D, j + self.D),)), self.parity, self.D)
 
+    @partial(jit, static_argnums=1)
     def multicontract(self, indices):
         """
         Use einsum to perform a kronecker contraction on two dimensions of the tensor
         args:
-            indices (jax array): jax array of indices to contract, must be even length because it is pairs
+            indices (tuple of tuples of ints): indices to contract
         """
-        return self.__class__(multicontract(self.data, indices + self.D), self.parity, self.D)
+        assert self.k >= 2
+        shifted_indices = tuple([(i + self.D, j + self.D) for i,j in indices])
+        return self.__class__(multicontract(self.data, shifted_indices), self.parity, self.D)
 
     def levi_civita_contract(self, indices):
         """
@@ -550,7 +580,7 @@ class GeometricImage:
         outer = jnp.tensordot(self.data, levi_civita, axes=0)
 
         #make contraction index pairs with one of specified indices, and index (in order) from the levi_civita symbol
-        zipped_indices = jnp.array(list(zip(indices, range(self.k, self.k + len(indices))))).flatten() + self.D
+        zipped_indices = tuple([(i+self.D, j+self.D) for i,j in zip(indices, range(self.k, self.k + len(indices)))])
         return self.__class__(multicontract(outer, zipped_indices), self.parity + 1, self.D)
 
     def get_rotated_keys(self, gg):

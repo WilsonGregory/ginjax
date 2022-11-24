@@ -26,6 +26,7 @@ def net(params, x, conv_filters):
     data = jnp.sum(jnp.array([out.data for out in second_layer_out]), axis=0)
     return geom.GeometricImage(data, x.parity, x.D)
 
+@jit
 def loss(params, x, y, conv_filters):
     # Run the neural network, then calculate the MSE loss with the expected output y
     out = net(params, x, conv_filters)
@@ -36,18 +37,11 @@ def loss(params, x, y, conv_filters):
 
 def batch_loss(params, X, Y, conv_filters):
     # Loss function for batches, should be a way to vmap this.
-    lst = []
-    res = jnp.array([])
-    for i in range(len(X)):
-        x = X[i]
-        y = Y[i]
-        res = jnp.append(res, loss(params, x, y, conv_filters))
-
-    return jnp.mean(res)
+    return jnp.mean(jnp.array([loss(params, x, y, conv_filters) for x,y in zip(X,Y)]))
 
 def train(X, Y, conv_filters, batch_loss, epochs, params):
     # Train the model. Use a simple adaptive learning rate scheme, and go until the learning rate is small.
-    batch_loss_grad = jit(value_and_grad(batch_loss))
+    batch_loss_grad = value_and_grad(batch_loss)
 
     initial_lr = 0.1
     learning_rate = initial_lr
@@ -56,7 +50,7 @@ def train(X, Y, conv_filters, batch_loss, epochs, params):
 
     for i in range(epochs):
         loss_val, grads = batch_loss_grad(params, X, Y, conv_filters)
-        params = [param - learning_rate * grad for param, grad in zip(params, grads)]
+        params = params - learning_rate * grads
         if (learning_rate > min_lr):
             learning_rate = initial_lr * np.exp(-1*decay*i)
 

@@ -250,20 +250,17 @@ class TestGeometricImage:
         ])).all()
         assert (img2.contract(2,1).data == img2_contracted_3.data).all()
 
-        with pytest.raises(AssertionError):
-            img1.contract(0,0) #same indices
-
-        with pytest.raises(AssertionError):
-            img1.contract(2,3) #out of bounds indices
-
         img3 = GeometricImage(jnp.ones((3,3)), 0, 2)
         with pytest.raises(AssertionError):
             img3.contract(0,1) #k < 2
 
+        # Test that order of contractions performed in series does not matter
         key = random.PRNGKey(0)
         img4 = GeometricImage(random.normal(key, shape=(3,3,2,2,2,2,2)), 0, 2)
-        assert jnp.allclose(img4.contract(0,1).contract(0,1).data, img4.contract(2,3).contract(0,1).data)
-        assert jnp.allclose(img4.contract(0,1).contract(1,2).data, img4.contract(3,4).contract(0,1).data)
+        assert jnp.allclose(img4.multicontract(((0,1),(2,3))).data, img4.multicontract(((2,3),(0,1))).data)
+        assert jnp.allclose(img4.multicontract(((0,1),(3,4))).data, img4.multicontract(((3,4),(0,1))).data)
+        assert jnp.allclose(img4.multicontract(((1,2),(3,4))).data, img4.multicontract(((3,4),(1,2))).data)
+        assert jnp.allclose(img4.multicontract(((1,4),(2,3))).data, img4.multicontract(((1,4),(2,3))).data)
 
     def testLeviCivitaContract(self):
         key = random.PRNGKey(0)

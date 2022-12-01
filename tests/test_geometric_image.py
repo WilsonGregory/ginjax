@@ -254,14 +254,6 @@ class TestGeometricImage:
         with pytest.raises(AssertionError):
             img3.contract(0,1) #k < 2
 
-        # Test that order of contractions performed in series does not matter
-        key = random.PRNGKey(0)
-        img4 = GeometricImage(random.normal(key, shape=(3,3,2,2,2,2,2)), 0, 2)
-        assert jnp.allclose(img4.multicontract(((0,1),(2,3))).data, img4.multicontract(((2,3),(0,1))).data)
-        assert jnp.allclose(img4.multicontract(((0,1),(3,4))).data, img4.multicontract(((3,4),(0,1))).data)
-        assert jnp.allclose(img4.multicontract(((1,2),(3,4))).data, img4.multicontract(((3,4),(1,2))).data)
-        assert jnp.allclose(img4.multicontract(((1,4),(2,3))).data, img4.multicontract(((1,4),(2,3))).data)
-
     def testLeviCivitaContract(self):
         key = random.PRNGKey(0)
         key, subkey = random.split(key)
@@ -471,41 +463,6 @@ class TestGeometricImage:
             [[3,0],[-3,1],[0,-1]],
             [[-1,-2],[-1,-1],[2,-3]]
         ], dtype=int)).all()
-
-    def testConvolutionLinearity(self):
-        """
-        For scalars alpha, beta, tensor images image1, image2 and filter c1 alpha
-        """
-        key = random.PRNGKey(0)
-        key, subkey = random.split(key)
-        image1 = GeometricImage(random.uniform(subkey, shape=(3,3,2)), 0, 2)
-
-        key, subkey = random.split(key)
-        image2 = GeometricImage(random.uniform(subkey, shape=(3,3,2)), 0, 2)
-
-        key, subkey = random.split(key)
-        c1 = GeometricFilter(random.uniform(subkey, shape=(3,3,2)), 0, 2)
-
-        alpha, beta = random.uniform(subkey, shape=(2,))
-
-        B1 = image1.convolve_with(c1).times_scalar(alpha) + image2.convolve_with(c1).times_scalar(beta)
-        B2 = (image1.times_scalar(alpha) + image2.times_scalar(beta)).convolve_with(c1)
-
-        assert B1.shape() == B2.shape()
-        assert B1.parity == B2.parity
-        assert jnp.allclose(B1.data, B2.data)
-
-    # def testConvolveCommutativity(self):
-    #     image1 = GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
-    #     filter_image = GeometricFilter(jnp.array([[1,0,1], [0,0,0], [1,0,1]], dtype=int), 0, 2)
-
-    #     convolveA = image1.convolve_with(filter_image)
-    #     convolveB = filter_image.convolve_with(image1)
-    #     assert convolveA.D == convolveB.D
-    #     assert convolveA.N == convolveB.N
-    #     assert convolveA.k == convolveB.k
-    #     assert convolveA.parity == convolveB.parity
-    #     assert (convolveA.data == convolveB.data).all()
 
     def testTimesGroupElement(self):
         left90 = jnp.array([[0,-1],[1,0]])

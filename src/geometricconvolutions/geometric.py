@@ -369,6 +369,15 @@ class GeometricImage:
         #now that the shapes match, we can do elementwise multiplication
         return self.__class__(image_a_data * image_b_data, self.parity + other.parity, self.D)
 
+    def transpose(self, axes_permutation):
+        """
+        Transposes the axes of the tensor, keeping the image axes in the front the same
+        args:
+            axes_permutation (iterable of indices): new axes order
+        """
+        new_indices = tuple(tuple(range(self.D)) + tuple(axis + self.D for axis in axes_permutation))
+        return self.__class__(jnp.transpose(self.data, new_indices), self.parity, self.D)
+
     def conv_subimage(self, center_key, filter_image, filter_image_keys=None):
         """
         Get the subimage (on the torus) centered on center_idx that will be convolved with filter_image

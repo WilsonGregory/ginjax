@@ -28,7 +28,6 @@ import jax.lax
 from jax import jit
 from jax.tree_util import register_pytree_node_class
 from functools import partial
-import numbers
 
 TINY = 1.e-5
 LETTERS = 'abcdefghijklmnopqrstuvwxyxABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -173,10 +172,9 @@ def get_unique_invariant_filters(M, k, parity, D, operators, scale='normalize'):
     amps[np.abs(amps) < TINY] = 0.
 
     # order them
+    filters = [GeometricFilter(aa.reshape(shape), parity, D) for aa in amps]
     if (scale == 'normalize'):
-        filters = [GeometricFilter(aa.reshape(shape), parity, D).normalize() for aa in amps]
-    elif (scale == 'one'):
-        filters = [GeometricFilter(aa.reshape(shape), parity, D) for aa in amps]
+        filters = [ff.normalize() for ff in filters]
 
     norms = [ff.bigness() for ff in filters]
     I = np.argsort(norms)

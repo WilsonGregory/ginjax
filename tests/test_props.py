@@ -93,3 +93,16 @@ class TestPropositions:
         assert B1.N == B2.N
         assert B1.parity == B2.parity
         assert jnp.allclose(B1.transpose([2,3,4,0,1]).data, B2.data, rtol=geom.TINY, atol=geom.TINY)
+
+    def testOuterProductFilterInvariance(self):
+        # Test that the outer product of two invariant filters is also invariant
+        D = 2
+        group_operators = geom.make_all_operators(D)
+        all_filters = geom.get_invariant_filters([3], [0,1,2], [0,1], D, group_operators, return_list=True)
+        for g in group_operators:
+            for c1 in all_filters:
+                for c2 in all_filters:
+                    assert jnp.allclose(
+                        (c1 * c2).times_group_element(g).data,
+                        (c1 * c2).data,
+                    )

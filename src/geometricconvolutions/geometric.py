@@ -117,7 +117,7 @@ class LeviCivitaSymbol:
 # ------------------------------------------------------------------------------
 # PART 4: Use group averaging to find unique invariant filters.
 
-def get_unique_invariant_filters(M, k, parity, D, operators):
+def get_unique_invariant_filters(M, k, parity, D, operators, scale='normalize'):
     """
     Use group averaging to generate all the unique invariant filters
     args:
@@ -126,7 +126,10 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
         parity (int):  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
         D (int): image dimension
         operators (jnp-array): array of operators of a group
+        scale (string): option for scaling the values of the filters, 'normalize' (default) to make amplitudes of each
+        tensor +/- 1. 'one' to set them all to 1.
     """
+    assert scale == 'normalize' or scale == 'one'
 
     # make the seed filters
     tmp = GeometricFilter.zeros(M, k, parity, D)
@@ -169,7 +172,10 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
     amps[np.abs(amps) < TINY] = 0.
 
     # order them
-    filters = [GeometricFilter(aa.reshape(shape), parity, D).normalize() for aa in amps]
+    filters = [GeometricFilter(aa.reshape(shape), parity, D) for aa in amps]
+    if (scale == 'normalize'):
+        filters = [ff.normalize() for ff in filters]
+
     norms = [ff.bigness() for ff in filters]
     I = np.argsort(norms)
     filters = [filters[i] for i in I]
@@ -179,19 +185,26 @@ def get_unique_invariant_filters(M, k, parity, D, operators):
 
     return filters
 
-def get_invariant_filters_dict(Ms, ks, parities, D, operators):
+def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', return_list=False):
     """
-    Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and parities
+    Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and parities. By default
+    it returns the filters in a dictionary with the key (D,M,k,parity), but flattens to a list if return_list=True
     args:
         Ms (iterable of int): filter side lengths
         ks (iterable of int): tensor orders
         parities (iterable of int):  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
         D (int): image dimension
         operators (jnp-array): array of operators of a group
+        scale (string): option for scaling the values of the filters, 'normalize' (default) to make amplitudes of each
+        tensor +/- 1. 'one' to set them all to 1.
+        return_list (bool): defaults to False, if true return allfilters as a list
     returns:
-        allfilters: a dictionary of filters of the specified D, M, k, and parity
-        maxn: a dictionary that tracks the longest number of filters per key, for a particular D,M combo
+        allfilters: a dictionary of filters of the specified D, M, k, and parity. If return_list=True, this is a list
+        maxn: a dictionary that tracks the longest number of filters per key, for a particular D,M combo. Not returned
+            if return_list=True
     """
+    assert scale == 'normalize' or scale == 'one'
+
     allfilters = {}
     names = {}
     maxn = {}
@@ -200,15 +213,37 @@ def get_invariant_filters_dict(Ms, ks, parities, D, operators):
         for k in ks: #tensor order
             for parity in parities: #parity
                 key = (D, M, k, parity)
-                allfilters[key] = get_unique_invariant_filters(M, k, parity, D, operators)
+                allfilters[key] = get_unique_invariant_filters(M, k, parity, D, operators, scale)
                 n = len(allfilters[key])
                 if n > maxn[(D, M)]:
                     maxn[(D, M)] = n
 
-    return allfilters, maxn
+    if return_list:
+        return list(it.chain(*list(allfilters.values())))
+    else:
+        return allfilters, maxn
 
 # ------------------------------------------------------------------------------
 # PART 5: Define geometric (k-tensor, torus) images.
+
+def get_contraction_indices(initial_k, final_k):
+    """
+    Get all possible unique indices for multicontraction. Returns a list of indices. The indices are a tuple of tuples
+    where each of the inner tuples are pairs of indices. For example, if initial_k=5, final_k = 4, one element of the
+    list that is returned will be ((0,1), (2,3)), another will be ((1,4), (0,2)), etc.
+
+    Note that contracting (0,1) is the same as contracting (1,0). Also, contracting ((0,1),(2,3)) is the same as
+    contracting ((2,3),(0,1)). In both of those cases, they won't be returned. There are additional contractions that
+    are the same depending on how the image was created, but we don't worry about that complexity here.
+    args:
+        initial_k (int): the starting number of indices that we have
+        final_k (int): the final number of indices that we want to end up with
+    """
+    tuple_pairs = it.combinations(it.combinations(range(initial_k),2),(initial_k - final_k) // 2)
+    pairs = np.array([np.array(pair).reshape((initial_k - final_k,)) for pair in tuple_pairs])
+    unique_rows = np.array([True if len(np.unique(row)) == len(row) else False for row in pairs])
+    unique_pairs = pairs[unique_rows]
+    return [tuple((x,y) for x,y in zip(idxs[0::2], idxs[1::2])) for idxs in unique_pairs]
 
 @partial(jit, static_argnums=1)
 def multicontract(data, indices):
@@ -358,16 +393,40 @@ class GeometricImage:
         assert self.parity == other.parity
         return self.__class__(self.data + other.data, self.parity, self.D)
 
-    def __mul__(self, other):
+    def __sub__(self, other):
         """
-        Return the tensor product of each pixel as a new GeometricImage
+        Subtraction operator for GeometricImages. Both must be the same size and parity. Returns a new GeometricImage.
+        args:
+            other (GeometricImage): other image to add the the first one
         """
         assert self.D == other.D
         assert self.N == other.N
+        assert self.k == other.k
+        assert self.parity == other.parity
+        return self.__class__(self.data - other.data, self.parity, self.D)
 
-        image_a_data, image_b_data = GeometricImage.pre_tensor_product_expand(self, other)
-        #now that the shapes match, we can do elementwise multiplication
-        return self.__class__(image_a_data * image_b_data, self.parity + other.parity, self.D)
+    def __mul__(self, other):
+        """
+        If other is a scalar, do scalar multiplication of the data. If it is another GeometricImage, do the tensor
+        product at each pixel. Return the result as a new GeometricImage.
+        args:
+            other (GeometricImage or number): scalar or image to multiply by
+        """
+        if (isinstance(other, GeometricImage)):
+            assert self.D == other.D
+            assert self.N == other.N
+            image_a_data, image_b_data = GeometricImage.pre_tensor_product_expand(self, other)
+            #now that the shapes match, we can do elementwise multiplication
+            return self.__class__(image_a_data * image_b_data, self.parity + other.parity, self.D)
+        else: #its an integer or a float, or something that can we can multiply a Jax array by (like a DeviceArray)
+            return self.__class__(self.data * other, self.parity, self.D)
+
+    def __rmul__(self, other):
+        """
+        If other is a scalar, multiply the data by the scalar. This is necessary for doing scalar * image, and it
+        should only be called in that case.
+        """
+        return self * other
 
     def transpose(self, axes_permutation):
         """
@@ -525,11 +584,11 @@ class GeometricImage:
 
     def times_scalar(self, scalar):
         """
-        Scale the data by a scalar, returning a new GeometricImage object
+        Scale the data by a scalar, returning a new GeometricImage object. Alias of the multiplication operator.
         args:
             scalar (number): number to scale everything by
         """
-        return self.__class__(self.data * scalar, self.parity, self.D)
+        return self * scalar
 
     def norm(self):
         """

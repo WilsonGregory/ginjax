@@ -124,6 +124,39 @@ class TestGeometricImage:
         with pytest.raises(AssertionError): #N not equal
             result = image1 + image5
 
+    def testSub(self):
+        image1 = GeometricImage(jnp.ones((10,10,2), dtype=int), 0, 2)
+        image2 = GeometricImage(5*jnp.ones((10,10,2), dtype=int), 0, 2)
+        float_image = GeometricImage(3.4*jnp.ones((10,10,2)), 0, 2)
+
+        result = image1 - image2
+        assert (result.data == -4).all()
+        assert result.parity == 0
+        assert result.D == 2
+        assert result.k == 1
+        assert result.N == 10
+
+        assert (image1.data == 1).all()
+        assert (image2.data == 5).all()
+
+        result = image1 - float_image
+        assert (result.data == -2.4).all()
+
+        image3 = GeometricImage(jnp.ones((10,10,10,3), dtype=int), 0, 3)
+        with pytest.raises(AssertionError): #D not equal
+            result = image1 + image3
+
+        image4 = GeometricImage(jnp.ones((10,10,2), dtype=int), 1, 2)
+        with pytest.raises(AssertionError): #parity not equal
+            result = image1 + image4
+
+        with pytest.raises(AssertionError):
+            result = image3 + image4 #D and parity not equal
+
+        image5 = GeometricImage(jnp.ones((20,20,2), dtype=int), 0, 2)
+        with pytest.raises(AssertionError): #N not equal
+            result = image1 + image5
+
     def testMul(self):
         image1 = GeometricImage(2*jnp.ones((3,3), dtype=int), 0, 2)
         image2 = GeometricImage(5*jnp.ones((3,3), dtype=int), 0, 2)
@@ -183,6 +216,38 @@ class TestGeometricImage:
         image6 = GeometricImage(jnp.ones((3,3,3)), 0, 3)
         with pytest.raises(AssertionError): #mismatched D
             image6 * image1
+
+        # Test multiplying by a scalar (it calls times_scalar)
+        result = image1 * 5
+        assert (result.data == 10).all()
+        assert result.parity == image1.parity
+        assert result.D == image1.D
+        assert result.k == image1.k
+        assert result.N == image1.N
+        assert (image1.data == 2).all() #original is unchanged
+
+        result2 = image1 * 3.4
+        assert (result2.data == 6.8).all()
+        assert (image1.data == 2).all()
+
+        # Test multiplying by a scalar right mul
+        result = 5 * image1
+        assert (result.data == 10).all()
+        assert result.parity == image1.parity
+        assert result.D == image1.D
+        assert result.k == image1.k
+        assert result.N == image1.N
+        assert (image1.data == 2).all() #original is unchanged
+
+        result2 = 3.4 * image1
+        assert (result2.data == 6.8).all()
+        assert (image1.data == 2).all()
+
+        # check that rmul isn't being used in this case, because it only handles scalar multiplication
+        geom_filter = GeometricFilter(jnp.ones(image1.shape()), image1.parity, image1.D)
+        res1 = image1 * geom_filter
+        res2 = geom_filter * image1
+        assert (res1.data == res2.data).all()
 
     def testTimeScalar(self):
         image1 = GeometricImage(jnp.ones((10,10,2), dtype=int), 0, 2)

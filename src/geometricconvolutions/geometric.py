@@ -691,6 +691,20 @@ class GeometricImage:
 
         return self.__class__(newdata, self.parity, self.D)
 
+    @classmethod
+    def linear_combination(cls, images, params):
+        """
+        A class method that takes a list of parameters, a list of geometric images and returns the linear combination.
+        The images must all have the same k, and the likely should have the same parity.
+        args:
+            images (list): list of GeometricImages to be multiplied by the params, then summed
+            params (list): scalar multipliers of the images
+        """
+        assert len(images) == len(params) #must be the same length
+
+        data = jnp.sum(jnp.array([image.data * param for image, param in zip(images, params)]), axis=0)
+        return cls(data, images[0].parity, images[0].D)
+
     def tree_flatten(self):
         """
         Helper function to define GeometricImage as a pytree so jax.jit handles it correctly. Children and aux_data

@@ -118,7 +118,6 @@ def net(params, x, conv_filters):
                 params[param_idx:param_idx+len(images)],
             )
             contracted_img = group_sum.contract(u,v)
-            # print(contracted_img.k)
             if contracted_img.k == x.k: #done contracting, add to the the final list
                 final_list.append(contracted_img)
             else: #add the the next layer

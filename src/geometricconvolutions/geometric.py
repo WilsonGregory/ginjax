@@ -702,7 +702,7 @@ class GeometricImage:
 
         expanded_data = jnp.tensordot(self.data, jnp.ones((self.D,)*additional_k), axes=0) #stretch the data
 
-        if self.k == 0:
+        if self.k == 0: # 1 in the [0,0,...,0] position, zeros everywhere else
             kron_delta = jnp.array(list((1,) + (0,)*(self.D**additional_k - 1))).reshape(((self.D,)*additional_k))
         elif self.k == 1:
             kron_delta = KroneckerDeltaSymbol.get(self.D, additional_k + self.k)
@@ -752,8 +752,6 @@ class GeometricImage:
             newdata = np.einsum(einstr, *tensor_inputs) * (parity_flip)
 
         return self.__class__(newdata, self.parity, self.D)
-
-
 
     def tree_flatten(self):
         """

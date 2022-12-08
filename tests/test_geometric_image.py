@@ -1,6 +1,7 @@
 import math
+import time
 
-from geometricconvolutions.geometric import GeometricImage, GeometricFilter
+from geometricconvolutions.geometric import GeometricImage, GeometricFilter, get_contraction_indices
 import pytest
 import jax.numpy as jnp
 from jax import random
@@ -597,5 +598,20 @@ class TestGeometricImage:
                 [[8,-9], [-10,11]],
             ],
         ])).all()
+
+    def testAnticontract(self):
+        D = 2
+        N = 10
+        key = random.PRNGKey(time.time_ns())
+
+        for k in [0,1]:
+            key, subkey = random.split(key)
+            image = GeometricImage(random.uniform(subkey, shape=((N,)*D + (D,)*k)), 0, D)
+
+            for additional_k in [2,4]:
+                expanded_image = image.anticontract(additional_k)
+
+                for idxs in get_contraction_indices(expanded_image.k, image.k):
+                    assert jnp.allclose(expanded_image.multicontract(idxs).data, image.data)
 
 

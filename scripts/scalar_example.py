@@ -3,20 +3,19 @@ import jax.numpy as jnp
 from jax import value_and_grad, jit, random, vmap
 import geometricconvolutions.geometric as geom
 import time
-
-def conv_layer(x, conv_filters):
-    # Given an input, a list of convolutional filters
-    return [x.convolve_with(conv_filter) for conv_filter in conv_filters]
+import itertools as it
+import math
 
 def net(params, x, conv_filters):
     # A simple neural net with 1 convolution layer. Then return a linear combination of the convolution outputs
-    first_layer_out = conv_layer(x, conv_filters)
+    layer_out = []
+    for c1_idx, c2_idx in it.combinations_with_replacement(range(len(conv_filters)), 2):
+        c1 = conv_filters[c1_idx]
+        c2 = conv_filters[c2_idx]
 
-    second_layer_out = []
-    for i in range(len(first_layer_out)):
-        second_layer_out.extend(conv_layer(first_layer_out[i], conv_filters))
+        layer_out.append(x.convolve_with(c1).convolve_with(c2))
 
-    return geom.GeometricImage.linear_combination(second_layer_out, params)
+    return geom.linear_combination(layer_out, params)
 
 @jit
 def loss(params, x, y, conv_filters):
@@ -31,7 +30,7 @@ def batch_loss(params, X, Y, conv_filters):
     # Loss function for batches, should be a way to vmap this.
     return jnp.mean(jnp.array([loss(params, x, y, conv_filters) for x,y in zip(X,Y)]))
 
-def train(X, Y, conv_filters, batch_loss, epochs, params, initial_lr=0.1, decay=0.005, min_lr=0.001):
+def train(X, Y, conv_filters, batch_loss, epochs, params, initial_lr=0.1, decay=0.005, min_lr=0.0001):
     # Train the model. Use a simple adaptive learning rate scheme, and go until the learning rate is small.
     batch_loss_grad = value_and_grad(batch_loss)
 
@@ -50,7 +49,7 @@ def train(X, Y, conv_filters, batch_loss, epochs, params, initial_lr=0.1, decay=
 
 
 #Main
-key = random.PRNGKey(0)
+key = random.PRNGKey(time.time_ns())
 
 D = 2
 N = 64 #image size
@@ -66,7 +65,7 @@ X = [geom.GeometricImage(data, 0, D) for data in random.normal(subkey, shape=(nu
 Y = [x.convolve_with(conv_filters[2]).convolve_with(conv_filters[1]) for x in X]
 
 key, subkey = random.split(key)
-params = random.normal(subkey, shape=(len(conv_filters)**2,))
+params = random.normal(subkey, shape=(len(conv_filters) + math.comb(len(conv_filters), 2),))
 
 params, loss_val = train(X, Y, conv_filters, batch_loss=batch_loss, epochs=2000, params = params)
 

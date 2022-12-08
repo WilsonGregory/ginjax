@@ -65,7 +65,29 @@ def make_all_operators(D):
 
 
 # ------------------------------------------------------------------------------
-# PART 1.5: Define the Levi Civita symbol to be used in Levi Civita contractions
+# PART 1.5: Define the Kronecker Delta and Levi Civita symbols to be used in Levi Civita contractions
+
+class KroneckerDeltaSymbol:
+    #we only want to create each dimension of levi civita symbol once, so we cache them in this dictionary
+    symbol_dict = {}
+
+    @classmethod
+    def get(cls, D, k):
+        """
+        Get the Levi Civita symbol for dimension D from the cache, or creating it on a cache miss
+        args:
+            D (int): dimension of the Kronecker symbol
+            k (int): order of the Kronecker Delta symbol
+        """
+        assert D > 1
+        assert k > 1
+        if (D,k) not in cls.symbol_dict:
+            arr = np.zeros((k * (D,)), dtype=int)
+            for i in range(D):
+                arr[(i,)*k] = 1
+            cls.symbol_dict[(D,k)] = arr
+
+        return cls.symbol_dict[(D,k)]
 
 def permutation_parity(pi):
     """
@@ -264,6 +286,20 @@ def multicontract(data, indices):
         einstr[idx1] = einstr[idx2] = LETTERS[-(i+1)]
 
     return jnp.einsum(''.join(einstr), data)
+
+@jit
+def linear_combination(images, params):
+    """
+    A method takes a list of parameters, a list of geometric images and returns the linear combination.
+    The images must all have the same k, and the likely should have the same parity.
+    args:
+        images (list): list of GeometricImages to be multiplied by the params, then summed
+        params (list): scalar multipliers of the images
+    """
+    assert len(images) == len(params) #must be the same length
+
+    data = jnp.sum(jnp.array([image.data * param for image, param in zip(images, params)]), axis=0)
+    return images[0].__class__(data, images[0].parity, images[0].D)
 
 def tensor_name(k, parity):
     nn = "tensor"
@@ -650,6 +686,32 @@ class GeometricImage:
         #make contraction index pairs with one of specified indices, and index (in order) from the levi_civita symbol
         zipped_indices = tuple((i+self.D, j+self.D) for i,j in zip(indices, range(self.k, self.k + len(indices))))
         return self.__class__(multicontract(outer, zipped_indices), self.parity + 1, self.D)
+
+    def anticontract(self, additional_k):
+        """
+        Expand the ktensor so that the new order is self.k + additional_k. Then elemenet-wise multiply it by a
+        special symbol such that no matter what contractions you perform to return it to the orignal k, it equals the
+        original image. This only works under certain conditions, given by the asserts.
+        args:
+            additional_k (int): how many dimensions we are adding
+        """
+        # Currently these are the only cases it works with and has been tested for.
+        assert self.k == 0 or self.k == 1
+        assert additional_k == 2 or additional_k == 4
+        assert self.D == 2
+
+        expanded_data = jnp.tensordot(self.data, jnp.ones((self.D,)*additional_k), axes=0) #stretch the data
+
+        if self.k == 0: # 1 in the [0,0,...,0] position, zeros everywhere else
+            kron_delta = jnp.array(list((1,) + (0,)*(self.D**additional_k - 1))).reshape(((self.D,)*additional_k))
+        elif self.k == 1:
+            kron_delta = KroneckerDeltaSymbol.get(self.D, additional_k + self.k)
+
+        kron_delta = jnp.tensordot(jnp.ones((self.N,)*self.D), kron_delta, axes=0)
+
+        assert expanded_data.shape == kron_delta.shape
+
+        return self.__class__(expanded_data * kron_delta, self.parity, self.D)
 
     def get_rotated_keys(self, gg):
         """

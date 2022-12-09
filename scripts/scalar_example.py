@@ -30,7 +30,7 @@ def batch_loss(params, X, Y, conv_filters):
     # Loss function for batches, should be a way to vmap this.
     return jnp.mean(jnp.array([loss(params, x, y, conv_filters) for x,y in zip(X,Y)]))
 
-def train(X, Y, conv_filters, batch_loss, epochs, params, initial_lr=0.1, decay=0.005, min_lr=0.0001):
+def train(X, Y, conv_filters, batch_loss, params, epochs, initial_lr=0.1, decay=0.005, min_lr=0.0001):
     # Train the model. Use a simple adaptive learning rate scheme, and go until the learning rate is small.
     batch_loss_grad = value_and_grad(batch_loss)
 
@@ -67,7 +67,7 @@ Y = [x.convolve_with(conv_filters[2]).convolve_with(conv_filters[1]) for x in X]
 key, subkey = random.split(key)
 params = random.normal(subkey, shape=(len(conv_filters) + math.comb(len(conv_filters), 2),))
 
-params, loss_val = train(X, Y, conv_filters, batch_loss=batch_loss, epochs=2000, params = params)
+params, loss_val = train(X, Y, conv_filters, batch_loss, params, epochs=2000)
 
 print(batch_loss(params, X, Y, conv_filters))
 print(params)

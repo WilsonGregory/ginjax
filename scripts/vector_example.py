@@ -6,6 +6,7 @@ import geometricconvolutions.geometric as geom
 import time
 import functools
 
+@jit
 def conv_layer(x, conv_filters):
     """
     For each conv_filter, apply it to the image x and return the list
@@ -61,13 +62,18 @@ def prod_layer(images, degree):
 
     return prods
 
+# We have linear_layer and quadratic_layer just for code nice-ness.
 @jit
-def quadratic_layer(params, x, conv_filters):
-    conv_layer_out = conv_layer(x, conv_filters)
+def linear_layer(conv_layer_out):
+    return conv_layer_out
 
-    prod_layer_out = prod_layer(conv_layer_out, 2)
+@jit
+def quadratic_layer(conv_layer_out):
+    return prod_layer(conv_layer_out, 2)
 
-    prods_dict = make_p_k_dict(prod_layer_out)
+@jit
+def final_layer(params, x, conv_filters, input_layer):
+    prods_dict = make_p_k_dict(input_layer)
     filters_dict = make_p_k_dict(conv_filters, filters=True)
 
     last_layer = []
@@ -94,19 +100,15 @@ def quadratic_layer(params, x, conv_filters):
 
     return last_layer
 
-def net(params, x, conv_filters):
-    # A simple neural net with a quadratic convolution layer.
-    quad_results = quadratic_layer(params[:220], x, conv_filters)
-    params = params[220:]
-
-    quad_results_by_k = {}
-    for img in quad_results:
-        if img.k in quad_results_by_k:
-            quad_results_by_k[img.k].append(img)
+def cascading_contractions(params, x, input_layer):
+    images_by_k = {}
+    for img in input_layer:
+        if img.k in images_by_k:
+            images_by_k[img.k].append(img)
         else:
-            quad_results_by_k[img.k] = [img]
+            images_by_k[img.k] = [img]
 
-    descending_k_dict = dict(reversed(sorted(quad_results_by_k.items())))
+    descending_k_dict = dict(reversed(sorted(images_by_k.items())))
 
     param_idx = 0
     final_list = []
@@ -125,7 +127,19 @@ def net(params, x, conv_filters):
 
             param_idx += len(images)
 
-    return geom.linear_combination(final_list, params[param_idx:param_idx+len(final_list)])
+    return final_list
+
+def net(params, x, conv_filters):
+    conv_layer_out = conv_layer(x, conv_filters)
+    linear_layer_out = linear_layer(conv_layer_out)
+    quad_layer_out = quadratic_layer(conv_layer_out)
+
+    final_layer_out = final_layer(params, x, conv_filters, linear_layer_out + quad_layer_out)
+
+    contracted_images = cascading_contractions(params[278:], x, final_layer_out)
+    param_idx = 278 + 570
+
+    return geom.linear_combination(contracted_images, params[param_idx:param_idx+len(contracted_images)])
 
 def loss(params, x, y, conv_filters):
     # Run the neural network, then calculate the MSE loss with the expected output y
@@ -143,7 +157,7 @@ def get_batch(X, Y, batch_size):
     batch_indices = np.random.permutation(len(X))[:batch_size]
     return [X[idx] for idx in batch_indices], [Y[idx] for idx in batch_indices]
 
-def train(X, Y, conv_filters, batch_loss, epochs, params, batch_size=16, initial_lr=0.01, decay=0.01, min_lr=None):
+def train(X, Y, conv_filters, batch_loss, params, epochs, batch_size=16, initial_lr=0.01, decay=0.01, min_lr=None):
     # Train the model. Use a simple adaptive learning rate scheme, and go until the learning rate is small.
     batch_loss_grad = value_and_grad(batch_loss)
 
@@ -161,7 +175,7 @@ def train(X, Y, conv_filters, batch_loss, epochs, params, batch_size=16, initial
     return params, loss_val
 
 def target_function(x, conv_filters):
-    prod = x.convolve_with(conv_filters[2]) * x.convolve_with(conv_filters[1])
+    prod = x.convolve_with(conv_filters[1]) * x.convolve_with(conv_filters[2])
     return (prod).convolve_with(conv_filters[3]).contract(0,1)
 
 #Main
@@ -189,15 +203,15 @@ X = [geom.GeometricImage(data, 0, D) for data in random.normal(subkey, shape=((n
 Y = [target_function(x, conv_filters) for x in X]
 
 key, subkey = random.split(key)
-params = random.normal(subkey, shape=(220 + 564 + 3,)) #for k=1
+params = random.normal(subkey, shape=(278 + 570 + 3,)) #for k=1
 
 params, loss_val = train(
     X,
     Y,
     conv_filters,
-    batch_loss=batch_loss,
-    epochs=40,
-    params=params,
+    batch_loss,
+    params,
+    epochs=10,
     initial_lr=0.001,
     decay=0.1,
 )

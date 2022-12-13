@@ -5,6 +5,7 @@ import geometricconvolutions.geometric as geom
 import time
 import itertools as it
 import math
+import optax
 
 def net(params, x, conv_filters):
     # A simple neural net with 1 convolution layer. Then return a linear combination of the convolution outputs
@@ -30,23 +31,25 @@ def batch_loss(params, X, Y, conv_filters):
     # Loss function for batches, should be a way to vmap this.
     return jnp.mean(jnp.array([loss(params, x, y, conv_filters) for x,y in zip(X,Y)]))
 
-def train(X, Y, conv_filters, batch_loss, params, epochs, initial_lr=0.1, decay=0.005, min_lr=0.0001):
+def train(X, Y, conv_filters, batch_loss, params, epochs, learning_rate=0.1):
     # Train the model. Use a simple adaptive learning rate scheme, and go until the learning rate is small.
     batch_loss_grad = value_and_grad(batch_loss)
 
-    learning_rate = initial_lr
+    optimizer = optax.adam(learning_rate)
+    opt_state = optimizer.init(params)
 
     for i in range(epochs):
         loss_val, grads = batch_loss_grad(params, X, Y, conv_filters)
-        params = params - learning_rate * grads
-        if ((min_lr is None) or (learning_rate > min_lr)):
-            learning_rate = initial_lr * np.exp(-1*decay*i)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        params = optax.apply_updates(params, updates)
 
-        if (i % (epochs // 10) == 0):
-            print(loss_val, learning_rate)
+        if (i % (epochs // np.min([10,epochs])) == 0):
+            print(f'Epoch {i}: {loss_val}')
 
-    return params, loss_val
+    return params
 
+def target_function(x, conv_filters):
+    return x.convolve_with(conv_filters[1]).convolve_with(conv_filters[2])
 
 #Main
 key = random.PRNGKey(time.time_ns())
@@ -54,7 +57,7 @@ key = random.PRNGKey(time.time_ns())
 D = 2
 N = 64 #image size
 M = 3  #filter image size
-num_images = 1
+num_images = 10
 
 group_actions = geom.make_all_operators(D)
 # start with basic 3x3 scalar filters
@@ -62,12 +65,12 @@ conv_filters = geom.get_unique_invariant_filters(M=M, k=0, parity=0, D=D, operat
 
 key, subkey = random.split(key)
 X = [geom.GeometricImage(data, 0, D) for data in random.normal(subkey, shape=(num_images, N, N))]
-Y = [x.convolve_with(conv_filters[2]).convolve_with(conv_filters[1]) for x in X]
+Y = [target_function(x, conv_filters) for x in X]
 
 key, subkey = random.split(key)
 params = random.normal(subkey, shape=(len(conv_filters) + math.comb(len(conv_filters), 2),))
 
-params, loss_val = train(X, Y, conv_filters, batch_loss, params, epochs=2000)
+params = train(X, Y, conv_filters, batch_loss, params, epochs=1000)
 
 print(batch_loss(params, X, Y, conv_filters))
 print(params)

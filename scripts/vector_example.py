@@ -5,6 +5,9 @@ from jax import value_and_grad, jit, random, vmap
 import geometricconvolutions.geometric as geom
 import time
 import functools
+import argparse
+import sys
+import optax
 
 @jit
 def conv_layer(x, conv_filters):
@@ -153,39 +156,46 @@ def batch_loss(params, X, Y, conv_filters):
     # Loss function for batches, should be a way to vmap this.
     return jnp.mean(jnp.array([loss(params, x, y, conv_filters) for x,y in zip(X,Y)]))
 
-def get_batch(X, Y, batch_size):
-    batch_indices = np.random.permutation(len(X))[:batch_size]
-    return [X[idx] for idx in batch_indices], [Y[idx] for idx in batch_indices]
-
-def train(X, Y, conv_filters, batch_loss, params, epochs, batch_size=16, initial_lr=0.01, decay=0.01, min_lr=None):
+def train(X, Y, conv_filters, batch_loss, params, epochs, learning_rate=0.1):
     # Train the model. Use a simple adaptive learning rate scheme, and go until the learning rate is small.
     batch_loss_grad = value_and_grad(batch_loss)
 
-    learning_rate = initial_lr
+    optimizer = optax.adam(learning_rate)
+    opt_state = optimizer.init(params)
+
     for i in range(epochs):
-        X_batch, Y_batch = get_batch(X, Y, batch_size)
-        loss_val, grads = batch_loss_grad(params, X_batch, Y_batch, conv_filters)
-        params = params - learning_rate * grads
-        if ((min_lr is None) or (learning_rate > min_lr)):
-            learning_rate = initial_lr * jnp.exp(-1*decay*i)
+        loss_val, grads = batch_loss_grad(params, X, Y, conv_filters)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        params = optax.apply_updates(params, updates)
 
         if (i % (epochs // np.min([10,epochs])) == 0):
-            print(loss_val, learning_rate)
+            print(f'Epoch {i}: {loss_val}')
 
-    return params, loss_val
+    return params
 
 def target_function(x, conv_filters):
     prod = x.convolve_with(conv_filters[1]) * x.convolve_with(conv_filters[2])
     return (prod).convolve_with(conv_filters[3]).contract(0,1)
 
-#Main
+def handleArgs(argv):
+  parser = argparse.ArgumentParser()
+  parser.add_argument('-epochs', help='number of epochs to run', type=int, default=10)
+  parser.add_argument('-lr', help='learning rate', type=float, default=0.1)
+  parser.add_argument('-num_images', help='number of images', type=int, default=3)
+
+  args = parser.parse_args()
+
+  return args.epochs, args.lr, args.num_images
+
+# Main
+epochs, learning_rate, num_images = handleArgs(sys.argv)
+
 key = random.PRNGKey(time.time_ns())
 
 D = 2
 N = 64 #image size
 k = 1
 M = 3  #filter image size
-num_images = 3
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(
@@ -205,15 +215,14 @@ Y = [target_function(x, conv_filters) for x in X]
 key, subkey = random.split(key)
 params = random.normal(subkey, shape=(278 + 570 + 3,)) #for k=1
 
-params, loss_val = train(
+params = train(
     X,
     Y,
     conv_filters,
     batch_loss,
     params,
-    epochs=10,
-    initial_lr=0.001,
-    decay=0.1,
+    epochs=epochs,
+    learning_rate=learning_rate,
 )
 
 print('train loss:', batch_loss(params, X, Y, conv_filters))

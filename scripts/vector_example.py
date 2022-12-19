@@ -1,148 +1,25 @@
-import itertools as it
 import numpy as np
-import jax.numpy as jnp
-from jax import value_and_grad, jit, random, vmap
-import geometricconvolutions.geometric as geom
 import time
-import functools
 import argparse
 import sys
+
+import jax.numpy as jnp
+from jax import value_and_grad, random
 import optax
 
-@jit
-def conv_layer(x, conv_filters):
-    """
-    For each conv_filter, apply it to the image x and return the list
-    args:
-        x (GeometricImage): image that we are applying the filters to
-        conv_filters (list of GeometricFilter): the conv_filters we are applying to the image
-    """
-    return [x.convolve_with(conv_filter) for conv_filter in conv_filters]
+import geometricconvolutions.geometric as geom
+import geometricconvolutions.ml as ml
 
-def make_p_k_dict(images, filters=False):
-    images_dict = {
-        0: {
-            0: [],
-            1: [],
-            2: [],
-            3: [],
-            4: [],
-            5: [],
-            6: [],
-        },
-        1: {
-            0: [],
-            1: [],
-            2: [],
-            3: [],
-            4: [],
-            5: [],
-            6: [],
-        },
-    }
+def net(params, x, conv_filters, return_params=False):
+    conv_layer_out = ml.conv_layer(x, conv_filters)
+    linear_layer_out = ml.linear_layer(conv_layer_out)
+    quad_layer_out = ml.quadratic_layer(conv_layer_out)
 
-    for image in images:
-        if filters:
-            images_dict[image.parity % 2][image.k % 2].append(image)
-        else:
-            if image.k in {0,1}:
-                image = image.anticontract(2)
+    final_layer_out, param_idx = ml.final_layer(params, 0, x, conv_filters, linear_layer_out + quad_layer_out)
+    contracted_images, param_idx = ml.cascading_contractions(params, param_idx, x, final_layer_out)
+    net_output = geom.linear_combination(contracted_images, params[param_idx:(param_idx + len(contracted_images))])
 
-            images_dict[image.parity % 2][image.k].append(image)
-
-    return images_dict
-
-def prod_layer(images, degree):
-    """
-    For the given degree, apply that many prods in all possible combinations with replacement of the images
-    args:
-        images (list of GeometricImage): images to prod, these should be a convolved image
-        degree (int): degree of the prods
-    """
-    prods = []
-    for idxs in it.combinations_with_replacement(range(len(images)), degree):
-        prods.append(functools.reduce(lambda u,v: u * v, [images[idx] for idx in idxs]))
-
-    return prods
-
-# We have linear_layer and quadratic_layer just for code nice-ness.
-@jit
-def linear_layer(conv_layer_out):
-    return conv_layer_out
-
-@jit
-def quadratic_layer(conv_layer_out):
-    return prod_layer(conv_layer_out, 2)
-
-@jit
-def final_layer(params, x, conv_filters, input_layer):
-    prods_dict = make_p_k_dict(input_layer)
-    filters_dict = make_p_k_dict(conv_filters, filters=True)
-
-    last_layer = []
-    param_idx = 0
-    for parity in [0,1]:
-        for k in [0,1,2,3,4,5,6]:
-            prods_group = prods_dict[parity][k]
-            filter_group = filters_dict[(parity + x.parity) % 2][(k + x.k) % 2]
-
-            if (len(filter_group) == 0 or len(prods_group) == 0):
-                continue
-
-            for conv_filter in filter_group:
-                group_sum = geom.linear_combination(
-                    prods_group,
-                    params[param_idx:param_idx+len(prods_group)],
-                )
-                last_layer.append(group_sum.convolve_with(conv_filter))
-
-                assert (last_layer[-1].k % 2) == (x.k % 2)
-                assert (last_layer[-1].parity % 2) == (x.parity % 2)
-
-                param_idx += len(prods_group)
-
-    return last_layer
-
-def cascading_contractions(params, x, input_layer):
-    images_by_k = {}
-    for img in input_layer:
-        if img.k in images_by_k:
-            images_by_k[img.k].append(img)
-        else:
-            images_by_k[img.k] = [img]
-
-    descending_k_dict = dict(reversed(sorted(images_by_k.items())))
-
-    param_idx = 0
-    final_list = []
-    for k in descending_k_dict.keys():
-        images = descending_k_dict[k]
-        for u,v in it.combinations(range(k), 2):
-            group_sum = geom.linear_combination(
-                images,
-                params[param_idx:param_idx+len(images)],
-            )
-            contracted_img = group_sum.contract(u,v)
-            if contracted_img.k == x.k: #done contracting, add to the the final list
-                final_list.append(contracted_img)
-            else: #add the the next layer
-                descending_k_dict[contracted_img.k].append(contracted_img)
-
-            param_idx += len(images)
-
-    return final_list
-
-def net(params, x, conv_filters):
-    conv_layer_out = conv_layer(x, conv_filters)
-    linear_layer_out = linear_layer(conv_layer_out)
-    quad_layer_out = quadratic_layer(conv_layer_out)
-
-    final_layer_out = final_layer(params, x, conv_filters, linear_layer_out + quad_layer_out)
-
-    contracted_images = cascading_contractions(params[278:], x, final_layer_out)
-    param_idx = 278 + 570
-
-    return geom.linear_combination(contracted_images, params[param_idx:param_idx+len(contracted_images)])
+    return (net_output, param_idx + len(contracted_images)) if return_params else net_output
 
 def loss(params, x, y, conv_filters):
     # Run the neural network, then calculate the MSE loss with the expected output y
@@ -213,8 +90,11 @@ X = [geom.GeometricImage(data, 0, D) for data in random.normal(subkey, shape=((n
 Y = [target_function(x, conv_filters) for x in X]
 
 key, subkey = random.split(key)
-params = random.normal(subkey, shape=(278 + 570 + 3,)) #for k=1
 
+huge_params = jnp.ones(ml.param_count(X[0], conv_filters, 2))
+_, param_idx = net(huge_params, X[0], conv_filters, return_params=True)
+
+params = random.normal(subkey, shape=(param_idx,))
 params = train(
     X,
     Y,

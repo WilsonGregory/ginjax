@@ -4,6 +4,7 @@ pyproject.toml
 setup.cfg
 src/geometricconvolutions/__init__.py
 src/geometricconvolutions/geometric.py
+src/geometricconvolutions/ml.py
 src/geometricconvolutions/utils.py
 src/geometricconvolutions.egg-info/PKG-INFO
 src/geometricconvolutions.egg-info/SOURCES.txt

@@ -1,6 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
-from jax import value_and_grad, jit, random, vmap
+from jax import value_and_grad, jit, random
 import geometricconvolutions.geometric as geom
 import time
 import itertools as it

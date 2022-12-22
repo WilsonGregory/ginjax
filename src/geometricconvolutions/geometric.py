@@ -379,12 +379,22 @@ class GeometricImage:
         return self
 
     def shape(self):
+        """
+        Return the full shape of the data block
+        """
         return self.data.shape
 
     def image_shape(self):
+        """
+        Return the shape of the data block that is not the ktensor shape, but what comes before that. For regular
+        GeometricImages, this is shape of the literal image. For BatchGeometricImage it prepends the batch size L.
+        """
         return self.D*(self.N,)
 
     def pixel_shape(self):
+        """
+        Return the shape of the data block that is the ktensor, aka the pixel of the image.
+        """
         return self.k*(self.D,)
 
     def __str__(self):
@@ -427,6 +437,7 @@ class GeometricImage:
         assert self.N == other.N
         assert self.k == other.k
         assert self.parity == other.parity
+        assert self.data.shape == self.data.shape
         return self.__class__(self.data + other.data, self.parity, self.D)
 
     def __sub__(self, other):
@@ -439,6 +450,7 @@ class GeometricImage:
         assert self.N == other.N
         assert self.k == other.k
         assert self.parity == other.parity
+        assert self.data.shape == self.data.shape
         return self.__class__(self.data - other.data, self.parity, self.D)
 
     def __mul__(self, other):
@@ -470,42 +482,8 @@ class GeometricImage:
         args:
             axes_permutation (iterable of indices): new axes order
         """
-        new_indices = tuple(tuple(range(self.D)) + tuple(axis + self.D for axis in axes_permutation))
+        new_indices = tuple(tuple(range(len(self.image_shape()))) + tuple(axis + self.D for axis in axes_permutation))
         return self.__class__(jnp.transpose(self.data, new_indices), self.parity, self.D)
-
-    def conv_subimage(self, center_key, filter_image, filter_image_keys=None):
-        """
-        Get the subimage (on the torus) centered on center_idx that will be convolved with filter_image
-        args:
-            center_key (index tuple): tuple index of the center of this convolution
-            filter_image (GeometricFilter): the GeometricFilter we are convolving with
-            filter_image_keys (list): For efficiency, the key offsets of the filter_image. Defaults to None.
-        """
-        if filter_image_keys is None:
-            filter_image_keys = filter_image.key_array(centered=True) #centered key array
-
-        key_list = self.hash(filter_image_keys + jnp.array(center_key)) #key list on the torus
-        #values, reshaped to the correct shape, which is the filter_image shape, while still having the tensor shape
-        vals = self[key_list].reshape(filter_image.image_shape() + self.pixel_shape())
-        return self.__class__(vals, self.parity, self.D)
-
-    def convolve_with_slow(self, filter_image):
-        """
-        Apply the convolution filter_image to this geometric image. Keeping this around for testing.
-        args:
-            filter_image (GeometricFilter-like): convolution that we are applying, can be an image or a filter
-        """
-        newimage = self.__class__.zeros(self.N, self.k + filter_image.k,
-                                         self.parity + filter_image.parity, self.D)
-
-        if (isinstance(filter_image, GeometricImage)):
-            filter_image = GeometricFilter.from_image(filter_image) #will break if N is not odd
-
-        filter_image_keys = filter_image.key_array(centered=True)
-        for key in self.keys():
-            subimage = self.conv_subimage(key, filter_image, filter_image_keys)
-            newimage[key] = jnp.sum((subimage * filter_image).data, axis=tuple(range(self.D)))
-        return newimage
 
     @classmethod
     def pre_tensor_product_expand(cls, image_a, image_b):
@@ -527,7 +505,7 @@ class GeometricImage:
             image_a_expanded = image_a.data
 
         if len(image_a.pixel_shape()):
-            break1 = image_a.k + image_a.D #after outer product, end of image N^D axes
+            break1 = image_a.k + len(image_b.image_shape()) #after outer product, end of image_b N^D axes
             #after outer product: [D^ki, N^D, D^kf], convert to [N^D, D^ki, D^kf]
             # we are trying to expand the ones in the middle (D^ki), so we add them on the front, then move to middle
             image_b_expanded = jnp.transpose(
@@ -540,6 +518,18 @@ class GeometricImage:
             image_b_expanded = image_b.data
 
         return image_a_expanded, image_b_expanded
+
+    @classmethod
+    def data_to_NHWC_format(cls, image_data, image_shape, channel_length):
+        """
+        Given image data, format it into the NHWC format that is used by the convolution function. For GeometricImage
+        we need to prepend the 1 because that is the batch size.
+        args:
+            image_data (jnp.array): array of data, after torus expanding, stretching to match the filter
+            image_shape (tuple of ints): output of torus_expand.image_shape()
+            channel_length (int): the size of the output ktensor, we are vectorizing it
+        """
+        return image_data.reshape((1,) + image_shape + (channel_length,))
 
     @jit
     def convolve_with(self, filter_image, warnings=True):
@@ -564,7 +554,7 @@ class GeometricImage:
         if (self.data.dtype != filter_image.data.dtype):
             dtype = 'float32'
             if (warnings):
-                print('GeometricImage::convolve_with_fastest: GeometricImage dtype and filter_image dtype mismatch, converting to float32')
+                print('GeometricImage::convolve_with: GeometricImage dtype and filter_image dtype mismatch, converting to float32')
         else:
             dtype = self.data.dtype
 
@@ -575,13 +565,14 @@ class GeometricImage:
         img_expanded = img_expanded.astype(dtype)
         filter_expanded = filter_expanded.astype(dtype)
 
-        if output_k != 0:
-            channel_length = np.multiply.reduce(self.pixel_shape() + filter_image.pixel_shape())
-        else:
-            channel_length = 1
+        channel_length = int(np.multiply.reduce(self.pixel_shape() + filter_image.pixel_shape()))
 
         # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
-        img_formatted = img_expanded.reshape((1,) + torus_expand_img.shape()[:self.D] + (channel_length,))
+        img_formatted = self.__class__.data_to_NHWC_format(
+            img_expanded,
+            torus_expand_img.image_shape(),
+            channel_length,
+        )
 
         # convert filter to HWIO (or HWDIO)
         filter_formatted = filter_expanded.reshape(filter_image.image_shape() + (1,channel_length))
@@ -611,7 +602,7 @@ class GeometricImage:
             filter_image (GeometricFilter): filter, how much is expanded depends on filter_image.m
         """
         new_N = self.N + 2 * filter_image.m
-        indices = jnp.array([key for key in it.product(range(new_N), repeat=self.D)], dtype=int) - filter_image.m
+        indices = jnp.array(list(it.product(range(new_N), repeat=self.D)), dtype=int) - filter_image.m
         return self.__class__(
             self[self.hash(indices)].reshape((new_N,) * self.D + self.pixel_shape()),
             self.parity,
@@ -633,7 +624,8 @@ class GeometricImage:
         if self.k == 0:
             return jnp.abs(self.data)
 
-        vectorized_pixels = self.data.reshape(((self.N**self.D,) + self.pixel_shape()))
+        image_size = int(np.multiply.reduce(self.image_shape()))
+        vectorized_pixels = self.data.reshape(((image_size,) + self.pixel_shape()))
         return jnp.array([jnp.linalg.norm(x, ord=None) for x in vectorized_pixels]).reshape(self.image_shape())
 
     def normalize(self):
@@ -655,7 +647,12 @@ class GeometricImage:
             j (int): second index of tensor
         """
         assert self.k >= 2
-        return self.__class__(multicontract(self.data, ((i + self.D, j + self.D),)), self.parity, self.D)
+        idx_shift = len(self.image_shape())
+        return self.__class__(
+            multicontract(self.data, ((i + idx_shift, j + idx_shift),)),
+            self.parity,
+            self.D,
+        )
 
     @partial(jit, static_argnums=1)
     def multicontract(self, indices):
@@ -665,7 +662,8 @@ class GeometricImage:
             indices (tuple of tuples of ints): indices to contract
         """
         assert self.k >= 2
-        shifted_indices = tuple((i + self.D, j + self.D) for i,j in indices)
+        idx_shift = len(self.image_shape())
+        shifted_indices = tuple((i + idx_shift, j + idx_shift) for i,j in indices)
         return self.__class__(multicontract(self.data, shifted_indices), self.parity, self.D)
 
     def levi_civita_contract(self, indices):
@@ -684,7 +682,8 @@ class GeometricImage:
         outer = jnp.tensordot(self.data, levi_civita, axes=0)
 
         #make contraction index pairs with one of specified indices, and index (in order) from the levi_civita symbol
-        zipped_indices = tuple((i+self.D, j+self.D) for i,j in zip(indices, range(self.k, self.k + len(indices))))
+        idx_shift = len(self.image_shape())
+        zipped_indices = tuple((i+idx_shift,j+idx_shift) for i,j in zip(indices, range(self.k, self.k + len(indices))))
         return self.__class__(multicontract(outer, zipped_indices), self.parity + 1, self.D)
 
     def anticontract(self, additional_k):
@@ -707,7 +706,7 @@ class GeometricImage:
         elif self.k == 1:
             kron_delta = KroneckerDeltaSymbol.get(self.D, additional_k + self.k)
 
-        kron_delta = jnp.tensordot(jnp.ones((self.N,)*self.D), kron_delta, axes=0)
+        kron_delta = jnp.tensordot(jnp.ones(self.image_shape()), kron_delta, axes=0)
 
         assert expanded_data.shape == kron_delta.shape
 
@@ -743,11 +742,8 @@ class GeometricImage:
         else:
             # applying the rotation to tensors is essentially multiplying each index, which we can think of as a
             # vector, by the group action. The image pixels have already been rotated.
-            firstletters  = "abcdefghijklm"
-            secondletters = "nopqrstuvwxyz"
-            einstr = "".join([firstletters[i] for i in range(self.D)])
-            einstr += "".join([firstletters[i + self.D] for i in range(self.k)]) + ","
-            einstr += ",".join([secondletters[i] + firstletters[i + self.D] for i in range(self.k)])
+            einstr = LETTERS[:len(self.shape())] + ','
+            einstr += ",".join([LETTERS[i+13] + LETTERS[i + len(self.image_shape())] for i in range(self.k)])
             tensor_inputs = (rotated_pixels, ) + self.k * (gg, )
             newdata = np.einsum(einstr, *tensor_inputs) * (parity_flip)
 
@@ -861,3 +857,90 @@ class GeometricFilter(GeometricImage):
                 if np.sum([np.cross(np.array(key), self[key]) for key in self.keys()]) < 0:
                     return self.times_scalar(-1)
         return self
+
+@register_pytree_node_class
+class BatchGeometricImage(GeometricImage):
+    """
+    A GeometricImage class where the data is actually L geometric images
+    """
+
+    # Constructors
+
+    def __init__(self, data, parity, D):
+        """
+        Construct the GeometricImage. It will be (L x N^D x D^k), so if L=16, N=100, D=2, k=1, then it's
+        (16 x 100 x 100 x 2)
+        args:
+            data (array-like): the data
+            parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
+            D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
+        """
+        super(BatchGeometricImage, self).__init__(data[0], parity, D)
+        self.L = data.shape[0]
+        self.data = data
+
+    @classmethod
+    def from_images(cls, images):
+        """
+        Class method to construct a BatchGeometricImage from a list of GeometricImages. All the images should have the
+        same parity, D, and k.
+        args:
+            images (list of GeometricImages): images that we are making into a batch image
+        """
+        return cls(jnp.stack([image.data for image in images]), images[0].parity, images[0].D)
+
+    def image_shape(self):
+        """
+        Return the shape of the data block that is not the ktensor shape, but what comes before that. For regular
+        GeometricImages, this is shape of the literal image. For BatchGeometricImage it prepends the batch size L.
+        """
+        return (self.L,) + (self.N,) * self.D
+
+    def __str__(self):
+        return "<{} object with L={} images in D={} with N={}, k={}, and parity={}>".format(
+            self.__class__, self.L, self.D, self.N, self.k, self.parity)
+
+    # Binary Operators, Complicated functions
+
+    def __mul__(self, other):
+        """
+        Multiplication operator for BatchGeometricImages. Both must have the same batch size.
+        args:
+            other (GeometricImage or number): scalar or image to multiply by
+        """
+        assert self.L == other.L
+        return super(BatchGeometricImage, self).__mul__(other)
+
+    @classmethod
+    def data_to_NHWC_format(cls, image_data, image_shape, channel_length):
+        """
+        Given image data, format it into the NHWC format that is used by the convolution function. For
+        BatchGeometricImage we don't need to prepend the 1 because we already have the batch size in image_shape
+        args:
+            image_data (jnp.array): array of data, after torus expanding, stretching to match the filter
+            image_shape (tuple of ints): output of torus_expand.image_shape()
+            channel_length (int): the size of the output ktensor, we are vectorizing it
+        """
+        return image_data.reshape(image_shape + (channel_length,))
+
+    def get_torus_expanded(self, filter_image):
+        """
+        For a particular filter, expand the image so that we no longer have to do convolutions on the torus, we are
+        just doing convolutions on the expanded image and will get the same result. Return a new GeometricImage
+        args:
+            filter_image (GeometricFilter): filter, how much is expanded depends on filter_image.m
+        """
+        new_N = self.N + 2 * filter_image.m
+        indices = jnp.array(list(it.product(range(new_N), repeat=self.D)), dtype=int) - filter_image.m
+        flipped_data = jnp.moveaxis(self.data, 0, -1) #flip batch axis to the end
+        indexed_data = jnp.moveaxis(flipped_data[self.hash(indices)], -1, 0) #flip batch axis back to the front
+
+        return self.__class__(
+            indexed_data.reshape((self.L,) + (new_N,) * self.D + self.pixel_shape()),
+            self.parity,
+            self.D,
+        )
+
+    # TODO!!
+    def normalize(self):
+        raise Exception('BatchGeometricImage::normalize is not implemented')

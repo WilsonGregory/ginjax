@@ -20,6 +20,7 @@ def conv_layer(x, conv_filters):
         x (GeometricImage): image that we are applying the filters to
         conv_filters (list of GeometricFilter): the conv_filters we are applying to the image
     """
+    print('compiling conv_layer')
     return [x.convolve_with(conv_filter) for conv_filter in conv_filters]
 
 def make_p_k_dict(images, filters=False, rollup_set={}):

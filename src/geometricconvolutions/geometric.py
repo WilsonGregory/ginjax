@@ -437,7 +437,7 @@ class GeometricImage:
         assert self.N == other.N
         assert self.k == other.k
         assert self.parity == other.parity
-        assert self.data.shape == self.data.shape
+        assert self.data.shape == other.data.shape
         return self.__class__(self.data + other.data, self.parity, self.D)
 
     def __sub__(self, other):
@@ -450,7 +450,7 @@ class GeometricImage:
         assert self.N == other.N
         assert self.k == other.k
         assert self.parity == other.parity
-        assert self.data.shape == self.data.shape
+        assert self.data.shape == other.data.shape
         return self.__class__(self.data - other.data, self.parity, self.D)
 
     def __mul__(self, other):

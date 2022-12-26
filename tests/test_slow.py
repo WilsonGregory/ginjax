@@ -1,9 +1,4 @@
-from geometricconvolutions.geometric import (
-    GeometricImage,
-    GeometricFilter,
-    make_all_operators,
-    get_unique_invariant_filters,
-)
+import geometricconvolutions.geometric as geom
 import pytest
 import jax.numpy as jnp
 from jax import random
@@ -35,8 +30,8 @@ def convolve_with_slow(image, filter_image):
     newimage = image.__class__.zeros(image.N, image.k + filter_image.k,
                                      image.parity + filter_image.parity, image.D)
 
-    if (isinstance(filter_image, GeometricImage)):
-        filter_image = GeometricFilter.from_image(filter_image) #will break if N is not odd
+    if (isinstance(filter_image, geom.GeometricImage)):
+        filter_image = geom.GeometricFilter.from_image(filter_image) #will break if N is not odd
 
     filter_image_keys = filter_image.key_array(centered=True)
     for key in image.keys():
@@ -49,8 +44,8 @@ class TestSlowTests:
     # Test reserved for the slow tests, we only want to test these when we run the full battery
 
     def testConvSubimage(self):
-        image1 = GeometricImage(jnp.arange(25).reshape((5,5)), 0, 2)
-        filter1 = GeometricFilter(jnp.zeros(25).reshape((5,5)), 0, 2)
+        image1 = geom.GeometricImage(jnp.arange(25).reshape((5,5)), 0, 2)
+        filter1 = geom.GeometricFilter(jnp.zeros(25).reshape((5,5)), 0, 2)
         subimage1 = conv_subimage(image1, (0,0), filter1)
         assert subimage1.shape() == (5,5)
         assert subimage1.D == image1.D
@@ -83,7 +78,7 @@ class TestSlowTests:
             ],
         dtype=int)).all()
 
-        image2 = GeometricImage(jnp.arange(25).reshape((5,5)), 0, 2)*GeometricImage(jnp.ones((5,5,2)), 0, 2)
+        image2 = geom.GeometricImage(jnp.arange(25).reshape((5,5)), 0, 2)*geom.GeometricImage(jnp.ones((5,5,2)), 0, 2)
         subimage3 = conv_subimage(image2, (0,0), filter1)
         assert subimage3.shape() == (5,5,2)
         assert subimage3.D == image2.D
@@ -108,11 +103,11 @@ class TestSlowTests:
         for D in [2,3]:
             for k_img in range(3):
                 key, subkey = random.split(key)
-                image = GeometricImage(random.uniform(subkey, shape=((N,)*D + (D,)*k_img)), 0, D)
+                image = geom.GeometricImage(random.uniform(subkey, shape=((N,)*D + (D,)*k_img)), 0, D)
 
                 for k_filter in range(3):
                     key, subkey = random.split(key)
-                    geom_filter = GeometricFilter(random.uniform(subkey, shape=((3,)*D + (D,)*k_filter)), 0, D)
+                    geom_filter = geom.GeometricFilter(random.uniform(subkey, shape=((3,)*D + (D,)*k_filter)), 0, D)
 
                     convolved_image = image.convolve_with(geom_filter)
                     convolved_image_slow = convolve_with_slow(image, geom_filter)
@@ -128,13 +123,13 @@ class TestSlowTests:
         key = random.PRNGKey(0)
 
         for D in [2]: #image dimension
-            operators = make_all_operators(D)
+            operators = geom.make_all_operators(D)
             for N in [3]: #filter size
                 key, subkey = random.split(key)
-                image = GeometricImage(random.uniform(key, shape=(2*N,2*N)), 0, D)
+                image = geom.GeometricImage(random.uniform(key, shape=(2*N,2*N)), 0, D)
                 for k in [0,1,2]: #tensor order of filter
                     for parity in [0,1]:
-                        filters = get_unique_invariant_filters(N, k, parity, D, operators)
+                        filters = geom.get_unique_invariant_filters(N, k, parity, D, operators)
 
                         for gg in operators:
                             for geom_filter in filters:

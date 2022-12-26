@@ -1,12 +1,9 @@
-import math
-import time
-
-import geometricconvolutions.geometric as geom
 import pytest
+
 import jax.numpy as jnp
 from jax import random
 
-TINY = 1.e-5
+import geometricconvolutions.geometric as geom
 
 class TestBatchGeometricImage:
 

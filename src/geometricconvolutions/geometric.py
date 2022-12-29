@@ -397,6 +397,12 @@ class GeometricImage:
         """
         return self.k*(self.D,)
 
+    def pixel_size(self):
+        """
+        Get the size of the pixel shape, i.e. (D,D,D) = D**3
+        """
+        return self.D ** self.k
+
     def __str__(self):
         return "<{} object in D={} with N={}, k={}, and parity={}>".format(
             self.__class__, self.D, self.N, self.k, self.parity)

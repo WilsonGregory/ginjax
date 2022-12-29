@@ -169,3 +169,53 @@ def param_count(x, conv_filters, deg):
     #vague idea of possible contractions, no way this is right
 
     return math.comb(len(conv_filters)+deg-1, deg) * len(conv_filters) * math.comb((max_k**(deg+1))+(x.k**deg), 2)
+
+## Other
+
+def rmse_loss(x, y, batch=True):
+    """
+    Root Mean Squared Error Loss, defaults to expecting BatchGeometricImages
+    args:
+        x (GeometricImage): the input image
+        y (GeometricImage): the associated output for x that we are comparing against
+        batch (bool): whether x and y are BatchGeometricImages, defaults to True
+    """
+    axes = tuple(range(1, len(x.shape()))) if batch else None
+    rmse = jnp.sqrt(jnp.sum((x.data - y.data) ** 2, axis=axes))
+    return jnp.mean(rmse) if batch else rmse
+
+def get_batch_channel(Xs, Ys, batch_size, rand_key):
+    """
+    Given Xs, Ys, construct a random batch of batch size. Xs and Ys are lists of lists of Geometric images. The
+    outer-most list has length equal to the number of channels, and the inner list has length of the data
+    args:
+        X (list of list of GeometricImages): the input data
+        Y (list of list of GeometricImages): the target output
+        batch_size (int): length of the batch
+        rand_key (jnp random key): key for the randomness, should be a subkey from random.split
+    """
+    assert len(Xs) == len(Ys) # possibly will be loosened in the future
+    assert batch_size <= len(Xs[0])
+    batch_indices = random.permutation(rand_key, len(Xs[0]))[:batch_size]
+
+    X_batch_list = []
+    Y_batch_list = []
+    for X, Y in zip(Xs, Ys):
+        X_batch_list.append(geom.BatchGeometricImage.from_images([X[idx] for idx in batch_indices]))
+        Y_batch_list.append(geom.BatchGeometricImage.from_images([Y[idx] for idx in batch_indices]))
+
+    return X_batch_list, Y_batch_list
+
+
+def get_batch(X, Y, batch_size, rand_key):
+    """
+    Given X, Y, construct a random batch of batch size
+    args:
+        X (list of GeometricImages): the input data
+        Y (list of GeometricImages): the target output
+        batch_size (int): length of the batch
+        rand_key (jnp random key): key for the randomness
+    """
+    X_batch, Y_batch = get_batch_channel([X], [Y], batch_size, rand_key)
+    return X_batch[0], Y_batch[0]
+

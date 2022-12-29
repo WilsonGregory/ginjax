@@ -21,17 +21,9 @@ def net(params, x, conv_filters, return_params=False):
 
     return (net_output, param_idx + len(contracted_images)) if return_params else net_output
 
-def loss(params, x, y, conv_filters):
+def batch_loss(params, x, y, conv_filters):
     # Run the neural network, then calculate the MSE loss with the expected output y
-    out = net(params, x, conv_filters)
-
-    # calculate the mean squared error difference between y and out
-    mse = jnp.sqrt(jnp.sum((y.data - out.data) ** 2) / out.data.size)
-    return mse
-
-def batch_loss(params, X, Y, conv_filters):
-    # Loss function for batches, should be a way to vmap this.
-    return jnp.mean(jnp.array([loss(params, x, y, conv_filters) for x,y in zip(X,Y)]))
+    return ml.rmse_loss(net(params, x, conv_filters), y)
 
 def train(X, Y, conv_filters, batch_loss, params, epochs, learning_rate=0.1):
     # Train the model. Use a simple adaptive learning rate scheme, and go until the learning rate is small.
@@ -86,13 +78,13 @@ conv_filters = geom.get_invariant_filters(
 
 # construct num_images scalar images, (N,N)
 key, subkey = random.split(key)
-X = [geom.GeometricImage(data, 0, D) for data in random.normal(subkey, shape=((num_images,) + (N,)*D + (D,)*k))]
-Y = [target_function(x, conv_filters) for x in X]
+X = geom.BatchGeometricImage(random.normal(subkey, shape=((num_images,) + (N,)*D + (D,)*k)), 0, D)
+Y = target_function(X, conv_filters)
 
 key, subkey = random.split(key)
 
-huge_params = jnp.ones(ml.param_count(X[0], conv_filters, 2))
-_, param_idx = net(huge_params, X[0], conv_filters, return_params=True)
+huge_params = jnp.ones(ml.param_count(X, conv_filters, 2))
+_, param_idx = net(huge_params, X, conv_filters, return_params=True)
 
 params = random.normal(subkey, shape=(param_idx,))
 params = train(
@@ -108,8 +100,8 @@ params = train(
 print('train loss:', batch_loss(params, X, Y, conv_filters))
 
 key, subkey = random.split(key)
-X_test = [geom.GeometricImage(data, 0, D) for data in random.normal(subkey, shape=((num_images,) + (N,)*D + (D,)*k))]
-Y_test = [target_function(x, conv_filters) for x in X_test]
+X_test = geom.BatchGeometricImage(random.normal(subkey, shape=((num_images,) + (N,)*D + (D,)*k)), 0, D)
+Y_test = target_function(X_test, conv_filters)
 
 print('test loss:', batch_loss(params, X_test, Y_test, conv_filters))
 

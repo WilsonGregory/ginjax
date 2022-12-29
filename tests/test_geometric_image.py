@@ -561,4 +561,21 @@ class TestGeometricImage:
                 for idxs in geom.get_contraction_indices(expanded_image.k, image.k):
                     assert jnp.allclose(expanded_image.multicontract(idxs).data, image.data)
 
+    def testPixelSize(self):
+        img1 = geom.GeometricImage.zeros(10,0,0,2)
+        assert img1.pixel_size() == 1
 
+        img2 = geom.GeometricImage.zeros(10,1,0,2)
+        assert img2.pixel_size() == 2
+
+        img3 = geom.GeometricImage.zeros(10,2,0,2)
+        assert img3.pixel_size() == 4
+
+        img4 = geom.GeometricImage.zeros(10,0,0,3)
+        assert img1.pixel_size() == 1
+
+        img2 = geom.GeometricImage.zeros(10,1,0,3)
+        assert img2.pixel_size() == 3
+
+        img3 = geom.GeometricImage.zeros(10,2,0,3)
+        assert img3.pixel_size() == 9

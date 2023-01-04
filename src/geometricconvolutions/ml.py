@@ -45,16 +45,22 @@ def make_p_k_dict(images, filters=False, rollup_set={}):
 
     return images_dict
 
-def prod_layer(images, degree):
+def prod_layer(images, degree, with_replace=True):
     """
     For the given degree, apply that many prods in all possible combinations with replacement of the images.
     args:
         images (list of GeometricImage): images to prod, these should be all the convolved images
         degree (int): degree of the prods
+        with_replace (bool): whether prods should be combos w/ replacement, or combos w/o replacement, defaults to true
     """
     prods = []
-    for idxs in it.combinations_with_replacement(range(len(images)), degree):
-        prods.append(functools.reduce(lambda u,v: u * v, [images[idx] for idx in idxs]))
+
+    if with_replace:
+        for idxs in it.combinations_with_replacement(range(len(images)), degree):
+            prods.append(functools.reduce(lambda u,v: u * v, [images[idx] for idx in idxs]))
+    else:
+        for idxs in it.combinations(range(len(images)), degree):
+            prods.append(functools.reduce(lambda u,v: u * v, [images[idx] for idx in idxs]))
 
     return prods
 
@@ -65,14 +71,15 @@ def linear_layer(conv_layer_out):
     """
     return conv_layer_out
 
-@jit
-def quadratic_layer(conv_layer_out):
+@functools.partial(jit, static_argnums=1)
+def quadratic_layer(conv_layer_out, with_replace=True):
     """
     Given the image convolved with all the conv filters, calculate all the quadratic combinations, (c1*A) x (c2*A)
     args:
         conv_layer_out (list of GeometricImages): should be the output of the original image with all the conv filters
+        with_replace (bool): whether prods should be combos w/ replacement, or combos w/o replacement, defaults to true
     """
-    return prod_layer(conv_layer_out, 2)
+    return prod_layer(conv_layer_out, 2, with_replace)
 
 @functools.partial(jit, static_argnums=1)
 def final_layer(params, param_idx, x, conv_filters, input_layer):
@@ -186,8 +193,11 @@ def rmse_loss(x, y, batch=True):
 
 def get_batch_channel(Xs, Ys, batch_size, rand_key):
     """
-    Given Xs, Ys, construct a random batch of batch size. Xs and Ys are lists of lists of Geometric images. The
-    outer-most list has length equal to the number of channels, and the inner list has length of the data
+    Given Xs, Ys, construct random batches. All batches except the last batch will be of batch size, and the last
+    batch could be smaller than batch_size if there aren't enough images to fill it. Xs and Ys are lists of lists of
+    Geometric images. The outer-most list has length equal to the number of channels, and the inner list has length
+    of the data. The output will be a list of channels, then a list of batches, then the batch itself which is a list
+    of geometric images.
     args:
         X (list of list of GeometricImages): the input data
         Y (list of list of GeometricImages): the target output
@@ -195,14 +205,23 @@ def get_batch_channel(Xs, Ys, batch_size, rand_key):
         rand_key (jnp random key): key for the randomness, should be a subkey from random.split
     """
     assert len(Xs) == len(Ys) # possibly will be loosened in the future
-    assert batch_size <= len(Xs[0])
-    batch_indices = random.permutation(rand_key, len(Xs[0]))[:batch_size]
+    data_len = len(Xs[0])
+    assert batch_size <= data_len
+    batch_indices = random.permutation(rand_key, data_len)
 
     X_batch_list = []
     Y_batch_list = []
     for X, Y in zip(Xs, Ys):
-        X_batch_list.append(geom.BatchGeometricImage.from_images([X[idx] for idx in batch_indices]))
-        Y_batch_list.append(geom.BatchGeometricImage.from_images([Y[idx] for idx in batch_indices]))
+
+        X_batches = []
+        Y_batches = []
+        for i in range(int(math.ceil(data_len / batch_size))):
+            idxs = batch_indices[i*batch_size:(i+1)*batch_size]
+            X_batches.append(geom.BatchGeometricImage.from_images([X[idx] for idx in idxs]))
+            Y_batches.append(geom.BatchGeometricImage.from_images([Y[idx] for idx in idxs]))
+
+        X_batch_list.append(X_batches)
+        Y_batch_list.append(Y_batches)
 
     return X_batch_list, Y_batch_list
 

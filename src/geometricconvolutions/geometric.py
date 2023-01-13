@@ -89,6 +89,10 @@ class KroneckerDeltaSymbol:
 
         return cls.symbol_dict[(D,k)]
 
+    @classmethod
+    def get_image(cls, N, D, k):
+        return GeometricImage(jnp.stack([cls.get(D,k) for _ in range(N**D)]).reshape(((N,)*D + (D,)*k)), 0, D)
+
 def permutation_parity(pi):
     """
     Code taken from Sympy Permutations: https://github.com/sympy/sympy/blob/26f7bdbe3f860e7b4492e102edec2d6b429b5aaf/sympy/combinatorics/permutations.py#L114

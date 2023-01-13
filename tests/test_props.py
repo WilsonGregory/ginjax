@@ -106,3 +106,55 @@ class TestPropositions:
                         (c1 * c2).times_group_element(g).data,
                         (c1 * c2).data,
                     )
+
+    def testKroneckerAdd(self):
+        # Test that multiplying by the kronecker delta symbol, then contracting on those new indices
+        # merely scales the original image by D
+        N = 3
+        D = 2
+        k = 3
+        kron_delta_k = 2
+
+        key = random.PRNGKey(time.time_ns())
+        key, subkey = random.split(key)
+        img1 = geom.GeometricImage(random.normal(subkey, shape=((N,)*D + (D,)*k)), 0, D)
+        kron_delta_img = geom.KroneckerDeltaSymbol.get_image(N, D, kron_delta_k)
+
+        expanded_img1 = img1 * kron_delta_img
+        assert expanded_img1.k == k + kron_delta_k
+        assert jnp.allclose(expanded_img1.contract(3,4).data, (img1*D).data)
+
+         #Multiplying by K-D then contracting on exactly one K-D index returns the original, up to a transpose of axes
+        assert jnp.allclose(expanded_img1.contract(0,3).transpose((2,0,1)).data, (img1).data)
+
+        D = 3
+        key, subkey = random.split(key)
+        img2 = geom.GeometricImage(random.normal(subkey, shape=((N,)*D + (D,)*k)), 0, D)
+        kron_delta_img = geom.KroneckerDeltaSymbol.get_image(N, D, kron_delta_k)
+
+        expanded_img2 = img2 * kron_delta_img
+        assert expanded_img2.k == k + kron_delta_k
+
+        assert jnp.allclose(expanded_img2.contract(3,4).data, (img2*D).data)
+
+    def testInvariantFilter(self):
+        # The 3 scalar filters times the kron_delta image are the same as the first 3 k2 filters
+        D = 2
+        N = 3
+        group_operators = geom.make_all_operators(D)
+        max_k = 5
+
+        kron_delta_img = geom.KroneckerDeltaSymbol.get_image(N, D, 2)
+
+        k0_filters = geom.get_invariant_filters([N], [0], [0,1], D, group_operators, scale='one', return_list=True)
+        k2_filters = geom.get_invariant_filters([N], [2], [0,1], D, group_operators, scale='one', return_list=True)
+        for conv_filter in k0_filters:
+            found_match = False
+            conv_filter_exp = conv_filter * kron_delta_img
+
+            for other_filter in k2_filters:
+                if jnp.allclose(conv_filter_exp.data, other_filter.data):
+                    found_match = True
+                    break
+
+            assert found_match

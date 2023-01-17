@@ -5,8 +5,7 @@ import pytest
 import jax.numpy as jnp
 from jax import random
 import time
-
-TINY = 1.e-5
+import itertools as it
 
 class TestPropositions:
     # Class to test various propositions, mostly about the GeometricImage
@@ -16,13 +15,13 @@ class TestPropositions:
         key = random.PRNGKey(0)
         key, subkey = random.split(key)
         img1 = geom.GeometricImage(random.normal(subkey, shape=(3,3,2,2)), 0, 2)
-        assert jnp.allclose(img1.contract(0,1).data, img1.contract(1,0).data)
+        assert img1.contract(0,1) == img1.contract(1,0)
 
         key, subkey = random.split(key)
         img2 = geom.GeometricImage(random.normal(subkey, shape=(3,3,2,2,2)), 0, 2)
-        assert jnp.allclose(img2.contract(0,1).data, img2.contract(1,0).data)
-        assert jnp.allclose(img2.contract(0,2).data, img2.contract(2,0).data)
-        assert jnp.allclose(img2.contract(1,2).data, img2.contract(2,1).data)
+        assert img2.contract(0,1) == img2.contract(1,0)
+        assert img2.contract(0,2) == img2.contract(2,0)
+        assert img2.contract(1,2) == img2.contract(2,1)
 
     def testSerialContractionInvariance(self):
         # Test that order of contractions performed in series does not matter
@@ -57,6 +56,7 @@ class TestPropositions:
         assert jnp.allclose(B1.data, B2.data)
 
     def testConvolveConvolveCommutativity(self):
+        # Test that performing two contractions is the same (under transposition) no matter the order
         key = random.PRNGKey(time.time_ns())
         key, subkey = random.split(key)
         img1 = geom.GeometricImage(random.normal(subkey, shape=(3,3,2)), 0, 2)
@@ -73,9 +73,10 @@ class TestPropositions:
         assert B1.D == B2.D
         assert B1.N == B2.N
         assert B1.parity == B2.parity
-        assert jnp.allclose(B1.transpose([0,2,3,1]).data, B2.data, rtol=geom.TINY, atol=geom.TINY)
+        assert B1.transpose([0,2,3,1]) == B2
 
     def testOuterProductCommutativity(self):
+        # Test that the tensor product is commutative under transposition, including if there are convolves in there.
         key = random.PRNGKey(time.time_ns())
         key, subkey = random.split(key)
         img1 = geom.GeometricImage(random.normal(subkey, shape=(3,3,2)), 0, 2)
@@ -92,7 +93,7 @@ class TestPropositions:
         assert B1.D == B2.D
         assert B1.N == B2.N
         assert B1.parity == B2.parity
-        assert jnp.allclose(B1.transpose([2,3,4,0,1]).data, B2.data, rtol=geom.TINY, atol=geom.TINY)
+        assert B1.transpose([2,3,4,0,1]) == B2
 
     def testOuterProductFilterInvariance(self):
         # Test that the outer product of two invariant filters is also invariant
@@ -102,10 +103,7 @@ class TestPropositions:
         for g in group_operators:
             for c1 in all_filters:
                 for c2 in all_filters:
-                    assert jnp.allclose(
-                        (c1 * c2).times_group_element(g).data,
-                        (c1 * c2).data,
-                    )
+                    assert (c1 * c2).times_group_element(g) == (c1 * c2)
 
     def testKroneckerAdd(self):
         # Test that multiplying by the kronecker delta symbol, then contracting on those new indices
@@ -135,10 +133,11 @@ class TestPropositions:
         expanded_img2 = img2 * kron_delta_img
         assert expanded_img2.k == k + kron_delta_k
 
-        assert jnp.allclose(expanded_img2.contract(3,4).data, (img2*D).data)
+        assert expanded_img2.contract(3,4) == (img2*D)
 
     def testInvariantFilter(self):
-        # The 3 scalar filters times the kron_delta image are the same as the first 3 k2 filters
+        # For every invariant filter of order k, there exists an invariant filter of order k+2 where contracting on
+        # any pair of tensor indices results in the invariant filter of order k.
         D = 2
         N = 3
         group_operators = geom.make_all_operators(D)
@@ -146,15 +145,44 @@ class TestPropositions:
 
         kron_delta_img = geom.KroneckerDeltaSymbol.get_image(N, D, 2)
 
-        k0_filters = geom.get_invariant_filters([N], [0], [0,1], D, group_operators, scale='one', return_list=True)
-        k2_filters = geom.get_invariant_filters([N], [2], [0,1], D, group_operators, scale='one', return_list=True)
-        for conv_filter in k0_filters:
-            found_match = False
-            conv_filter_exp = conv_filter * kron_delta_img
+        conv_filters_dict = geom.get_invariant_filters([N], range(max_k+1), [0,1], D, group_operators, scale='one')
+        for k in range(max_k - 1):
+            for parity in [0,1]:
+                for conv_filter in conv_filters_dict[(D, N, k, parity)]:
+                    found_match = False
+                    for upper_conv_filter in conv_filters_dict[(D, N, k+2, parity)]:
+                        contracted_filter = upper_conv_filter.contract(0,1)
 
-            for other_filter in k2_filters:
-                if jnp.allclose(conv_filter_exp.data, other_filter.data):
-                    found_match = True
-                    break
+                        datablock = jnp.stack([conv_filter.data.flatten(), contracted_filter.data.flatten()])
+                        u, s, v = jnp.linalg.svd(datablock)
 
-            assert found_match
+                        if (jnp.sum(s > geom.TINY) == 1): #if one equals...
+                            found_match = True
+                            for i,j in it.combinations(range(k+2),2):
+                                contracted_filter = upper_conv_filter.contract(i,j)
+                                datablock = jnp.stack([conv_filter.data.flatten(), contracted_filter.data.flatten()])
+                                u, s, v = jnp.linalg.svd(datablock)
+                                assert jnp.sum(s > geom.TINY) == 1 # ...they must all equal
+
+                    assert found_match
+
+    def testContractConvolve(self):
+        # Test that contracting then convolving is the same as convolving, then contracting
+        N = 3
+        D = 2
+        k = 3
+
+        key = random.PRNGKey(time.time_ns())
+        key, subkey = random.split(key)
+        img1 = geom.GeometricImage(random.normal(subkey, shape=((N,)*D + (D,)*k)), 0, D)
+
+        key, subkey = random.split(key)
+        c1 = geom.GeometricFilter(random.normal(subkey, shape=(3,3,2)), 0, 2)
+
+        key, subkey = random.split(key)
+        c2 = geom.GeometricFilter(random.normal(subkey, shape=(3,3,2,2)), 0, 2)
+
+        for c in [c1, c2]:
+            for i,j in it.combinations(range(k), 2):
+                assert img1.contract(i,j).convolve_with(c) == img1.convolve_with(c).contract(i,j)
+

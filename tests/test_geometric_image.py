@@ -90,7 +90,40 @@ class TestGeometricImage:
         assert image1.D == image2.D
         assert image1.k == image2.k
         assert image1.N == image2.N
-        assert image1 != image2
+        assert image1 == image2
+
+    def testEqual(self):
+        img1 = geom.GeometricImage(jnp.ones((10,10,2)), 0, 2)
+        assert img1 == img1.copy()
+
+        # same
+        img2 = geom.GeometricImage(jnp.ones((10,10,2)), 0, 2)
+        assert img1 == img2
+
+        # different N
+        img3 = geom.GeometricImage(jnp.ones((5,5,2)), 0, 2)
+        assert img1 != img3
+
+        # different k
+        img4 = geom.GeometricImage(jnp.ones((10,10,2,2)), 0, 2)
+        assert img1 != img4
+
+        # different D
+        img5 = geom.GeometricImage(jnp.ones((10,10,10)), 0, 3)
+        assert img1 != img5
+        img6 = geom.GeometricImage(jnp.ones((2,2,2)), 0, 3) #D=3, k=0
+        img7 = geom.GeometricImage(jnp.ones((2,2,2)), 0, 2) #D=2, k=1
+        assert img6 != img7
+
+        # different parity
+        img8 = geom.GeometricImage(jnp.ones((10,10,2)), 1, 2)
+        assert img1 != img8
+
+        #different data
+        img9 = geom.GeometricImage(2*jnp.ones((10,10,2)), 0, 2)
+        assert img1 != img9
+        assert img1 != 1.0001*img1 #outside the error tolerance
+        assert img1 == 1.0000001*img1  #within the error tolerance
 
     def testAdd(self):
         image1 = geom.GeometricImage(jnp.ones((10,10,2), dtype=int), 0, 2)
@@ -559,7 +592,7 @@ class TestGeometricImage:
                 expanded_image = image.anticontract(additional_k)
 
                 for idxs in geom.get_contraction_indices(expanded_image.k, image.k):
-                    assert jnp.allclose(expanded_image.multicontract(idxs).data, image.data)
+                    assert expanded_image.multicontract(idxs) == image
 
     def testPixelSize(self):
         img1 = geom.GeometricImage.zeros(10,0,0,2)

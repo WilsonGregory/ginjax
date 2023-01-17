@@ -211,7 +211,7 @@ def get_unique_invariant_filters(M, k, parity, D, operators, scale='normalize'):
 
     return filters
 
-def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', return_list=False):
+def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', return_list=False, return_maxn=False):
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and parities. By default
     it returns the filters in a dictionary with the key (D,M,k,parity), but flattens to a list if return_list=True
@@ -224,6 +224,7 @@ def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', ret
         scale (string): option for scaling the values of the filters, 'normalize' (default) to make amplitudes of each
         tensor +/- 1. 'one' to set them all to 1.
         return_list (bool): defaults to False, if true return allfilters as a list
+        return_maxn (bool): defaults to False, if true returns the length of the max list for each D, M
     returns:
         allfilters: a dictionary of filters of the specified D, M, k, and parity. If return_list=True, this is a list
         maxn: a dictionary that tracks the longest number of filters per key, for a particular D,M combo. Not returned
@@ -245,9 +246,13 @@ def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', ret
                     maxn[(D, M)] = n
 
     if return_list:
-        return list(it.chain(*list(allfilters.values())))
-    else:
+        allfilters = list(it.chain(*list(allfilters.values())))
+
+    if return_maxn:
         return allfilters, maxn
+    else:
+        return allfilters
+
 
 # ------------------------------------------------------------------------------
 # PART 5: Define geometric (k-tensor, torus) images.
@@ -436,6 +441,19 @@ class GeometricImage:
             yield (key, self[key])
 
     # Binary Operators, Complicated functions
+
+    def __eq__(self, other):
+        """
+        Equality operator, must have same shape, parity, and data within the TINY=1e-5 tolerance.
+        """
+        return (
+            self.D == other.D and
+            self.N == other.N and
+            self.k == other.k and
+            self.parity == other.parity and
+            self.data.shape == other.data.shape and
+            jnp.allclose(self.data, other.data, rtol=TINY, atol=TINY)
+        )
 
     def __add__(self, other):
         """
@@ -911,6 +929,12 @@ class BatchGeometricImage(GeometricImage):
             self.__class__, self.L, self.D, self.N, self.k, self.parity)
 
     # Binary Operators, Complicated functions
+
+    def __eq__(self, other):
+        """
+        Equality operator, must have same L, shape, parity, and data within the TINY=1e-5 tolerance.
+        """
+        return self.L == other.L and super(BatchGeometricImage, self).__eq__(other)
 
     def __mul__(self, other):
         """

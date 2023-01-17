@@ -224,7 +224,7 @@ def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', ret
         scale (string): option for scaling the values of the filters, 'normalize' (default) to make amplitudes of each
         tensor +/- 1. 'one' to set them all to 1.
         return_list (bool): defaults to False, if true return allfilters as a list
-        return_maxn (bool): defaults ot False,, if true returns the length of the max list for each D, M
+        return_maxn (bool): defaults to False, if true returns the length of the max list for each D, M
     returns:
         allfilters: a dictionary of filters of the specified D, M, k, and parity. If return_list=True, this is a list
         maxn: a dictionary that tracks the longest number of filters per key, for a particular D,M combo. Not returned

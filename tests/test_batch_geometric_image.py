@@ -27,6 +27,17 @@ class TestBatchGeometricImage:
         with pytest.raises(AssertionError):
             geom.BatchGeometricImage(random.uniform(key, shape=(10,10,2)), 0, 3)
 
+    def testEqual(self):
+        img1 = geom.BatchGeometricImage(jnp.ones((5,10,10,2)), 0, 2)
+
+        # same
+        img2 = geom.BatchGeometricImage(jnp.ones((5,10,10,2)), 0, 2)
+        assert img1 == img2
+
+        # different L
+        img3 = geom.BatchGeometricImage(jnp.ones((7,10,10,2)), 0, 2)
+        assert img1 != img3
+
     def testAdd(self):
         image1 = geom.BatchGeometricImage(jnp.ones((5,10,10,2), dtype=int), 0, 2)
         image2 = geom.BatchGeometricImage(5*jnp.ones((5,10,10,2), dtype=int), 0, 2)

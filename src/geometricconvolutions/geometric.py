@@ -228,7 +228,6 @@ def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', ret
     assert scale == 'normalize' or scale == 'one'
 
     allfilters = {}
-    names = {}
     maxn = {}
     for M in Ms: #filter side length
         maxn[(D, M)] = 0
@@ -261,6 +260,9 @@ def get_contraction_indices(initial_k, final_k):
         initial_k (int): the starting number of indices that we have
         final_k (int): the final number of indices that we want to end up with
     """
+    assert ((initial_k + final_k) % 2)  == 0
+    assert initial_k >= final_k
+    assert final_k >= 0
     tuple_pairs = it.combinations(it.combinations(range(initial_k),2),(initial_k - final_k) // 2)
     pairs = np.array([np.array(pair).reshape((initial_k - final_k,)) for pair in tuple_pairs])
     unique_rows = np.array([True if len(np.unique(row)) == len(row) else False for row in pairs])
@@ -488,7 +490,8 @@ class GeometricImage:
         args:
             axes_permutation (iterable of indices): new axes order
         """
-        new_indices = tuple(tuple(range(len(self.image_shape()))) + tuple(axis + self.D for axis in axes_permutation))
+        idx_shift = len(self.image_shape())
+        new_indices = tuple(tuple(range(idx_shift)) + tuple(axis + idx_shift for axis in axes_permutation))
         return self.__class__(jnp.transpose(self.data, new_indices), self.parity, self.D)
 
     @classmethod
@@ -886,14 +889,17 @@ class BatchGeometricImage(GeometricImage):
         self.data = data
 
     @classmethod
-    def from_images(cls, images):
+    def from_images(cls, images, indices=None):
         """
         Class method to construct a BatchGeometricImage from a list of GeometricImages. All the images should have the
         same parity, D, and k.
         args:
             images (list of GeometricImages): images that we are making into a batch image
         """
-        return cls(jnp.stack([image.data for image in images]), images[0].parity, images[0].D)
+        if indices is None:
+            indices = range(len(images))
+            
+        return cls(jnp.stack([images[idx].data for idx in indices]), images[0].parity, images[0].D)
 
     def image_shape(self):
         """

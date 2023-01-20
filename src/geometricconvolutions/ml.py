@@ -130,36 +130,6 @@ def prod_layer(images, degree, max_k=None, with_replace=True):
     # print(len(prods))
     return prods
 
-@jit
-def linear_layer(conv_layer_out):
-    """
-    This function is purely for code clarity, in many cases it should get optimized away, (c1*A)
-    """
-    return conv_layer_out
-
-@functools.partial(jit, static_argnums=1)
-def quadratic_layer(conv_layer_out, with_replace=True):
-    """
-    Given the image convolved with all the conv filters, calculate all the quadratic combinations, (c1*A) x (c2*A)
-    args:
-        conv_layer_out (list of GeometricImages): should be the output of the original image with all the conv filters
-        with_replace (bool): whether prods should be combos w/ replacement, or combos w/o replacement, defaults to true
-    """
-    return prod_layer(conv_layer_out, 2, with_replace=with_replace)
-
-@jit
-def all_contractions(x, input_layer):
-    layer_out = []
-    contraction_indices = {}
-
-    for img in input_layer:
-        if img.k not in contraction_indices:
-            contraction_indices[img.k] = geom.get_contraction_indices(img.k, x.k)
-        for idxs in contraction_indices[img.k]:
-            layer_out.append(img.multicontract(idxs))
-
-    return layer_out
-
 @functools.partial(jit, static_argnums=1)
 def cascading_contractions(params, param_idx, x, input_layer):
     """
@@ -246,11 +216,11 @@ def get_batch_channel(Xs, Ys, batch_size, rand_key):
         Y_batches = []
         for i in range(int(math.ceil(data_len / batch_size))): #iterate through the batches of an epoch
             idxs = batch_indices[i*batch_size:(i+1)*batch_size]
-            X_batches.append(geom.BatchGeometricImage.from_images([X[idx] for idx in idxs]))
+            X_batches.append(geom.BatchGeometricImage.from_images(X, idxs))
 
             Y_steps_batched = []
             for Y in Y_steps: #iterate through the number of steps we are rolling out
-                Y_steps_batched.append(geom.BatchGeometricImage.from_images([Y[idx] for idx in idxs]))
+                Y_steps_batched.append(geom.BatchGeometricImage.from_images(Y, idxs))
 
             Y_batches.append(Y_steps_batched)
 

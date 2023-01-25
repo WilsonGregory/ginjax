@@ -25,6 +25,7 @@ import itertools as it
 import numpy as np #removing this
 import jax.numpy as jnp
 import jax.lax
+import jax.nn
 from jax import jit
 from jax.tree_util import register_pytree_node_class
 from functools import partial
@@ -341,6 +342,20 @@ class GeometricImage:
         """
         shape = D * (N, ) + k * (D, )
         return cls(jnp.zeros(shape), parity, D)
+
+    @classmethod
+    def fill(cls, N, parity, D, fill):
+        """
+        Class method fill constructor to construct a geometric image every pixel as fill
+        args:
+            N (int): length of a side of an image, currently all images must be square N^D pixels
+            parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
+            D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
+            fill (jnp.ndarray or number): tensor to fill the image with
+        """
+        k = len(fill.shape) if isinstance(fill, jnp.ndarray) else 0
+        data = jnp.stack([fill for _ in range(N ** D)]).reshape((N,)*D + (D,)*k)
+        return cls(data, parity, D)
 
     def __init__(self, data, parity, D):
         """
@@ -669,6 +684,10 @@ class GeometricImage:
         else:
             return self.times_scalar(1.)
 
+    def activation_function(self, function):
+        assert self.k == 0, "Activation functions only implemented for k=0 tensors due to equivariance"
+        return self.__class__(function(self.data), self.parity, self.D)
+
     @partial(jit, static_argnums=[1,2])
     def contract(self, i, j):
         """
@@ -896,6 +915,20 @@ class BatchGeometricImage(GeometricImage):
     """
 
     # Constructors
+
+    @classmethod
+    def fill(cls, N, parity, D, fill, L):
+        """
+        Class method fill constructor to construct a geometric image every pixel as fill
+        args:
+            N (int): length of a side of an image, currently all images must be square N^D pixels
+            parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
+            D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
+            fill (jnp.ndarray or number): tensor to fill the image with
+        """
+        k = len(fill.shape) if isinstance(fill, jnp.ndarray) else 0
+        data = jnp.stack([fill for _ in range(L * (N ** D))]).reshape((L,) + (N,)*D + (D,)*k)
+        return cls(data, parity, D)
 
     def __init__(self, data, parity, D):
         """

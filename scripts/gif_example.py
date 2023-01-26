@@ -21,7 +21,7 @@ def net(params, x, conv_filters, return_params=False):
     poly_layer = ml.leaky_relu_layer(poly_layer)
 
     final_layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, poly_layer, x)
-    contract_layer, param_idx = ml.cascading_contractions(params, int(param_idx), x, final_layer, bias=False)
+    contract_layer, param_idx = ml.cascading_contractions(params, int(param_idx), x, final_layer)
     contract_layer = ml.leaky_relu_layer(contract_layer)
 
     net_output = geom.linear_combination(contract_layer, params[param_idx:(param_idx + len(contract_layer))])

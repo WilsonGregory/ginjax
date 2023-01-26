@@ -46,7 +46,7 @@ def conv_layer(params, param_idx, conv_filters, input_layer, target_x=None, bias
                 continue
 
             for conv_filter in filter_group:
-                if (bias):
+                if (bias and k == 0):
                     bias_img, param_idx = get_bias_image(params, param_idx, prods_group[0])
                     prods_group.append(bias_img)
 
@@ -58,8 +58,13 @@ def conv_layer(params, param_idx, conv_filters, input_layer, target_x=None, bias
 
 def get_bias_image(params, param_idx, x):
     """
-    TODO: ensure this is working, for equivariance, the bias image must be invariant to the group.
+    Get a constant image that acts as a bias in the network.
+    args:
+        params (jnp.array): the parameters
+        param_idx (int): the current index of the parameters
+        x (GeometricImage): the image the gives us the shape/parity/batchness of the bias image we are making
     """
+    assert x.k == 0, "Currently only works for k=0 tensors in order to maintain equivariance"
     fill = params[param_idx:(param_idx + (x.D ** x.k))].reshape((x.D,)*x.k)
     param_idx += x.D ** x.k
     if (x.__class__ == geom.BatchGeometricImage):
@@ -124,7 +129,7 @@ def polynomial_layer(params, param_idx, images, poly_degree, bias=True):
                     if (len(image_group) == 0):
                         continue
 
-                    if (bias):
+                    if (bias and k == 0):
                         bias_img, param_idx = get_bias_image(params, param_idx, image_group[0])
                         image_group.append(bias_img)
 
@@ -157,7 +162,7 @@ def order_cap_layer(images, max_k):
     return out_layer
 
 @functools.partial(jit, static_argnums=[1,4])
-def cascading_contractions(params, param_idx, x, input_layer, bias=True):
+def cascading_contractions(params, param_idx, x, input_layer):
     """
     Starting with the highest k, sum all the images into a single image, perform all possible contractions,
     then add it to the layer below.
@@ -166,7 +171,6 @@ def cascading_contractions(params, param_idx, x, input_layer, bias=True):
         param_idx (int): index of current location in params
         x (GeometricImage): image that is going through the model
         input_layer (list of GeometricImages): images to contract
-        bias (bool): whether to include a constant bias image
     """
     images_by_k = defaultdict(list)
     max_k = np.max([img.k for img in input_layer])
@@ -175,10 +179,6 @@ def cascading_contractions(params, param_idx, x, input_layer, bias=True):
 
     for k in reversed(range(x.k+2, max_k+2, 2)):
         images = images_by_k[k]
-
-        if (bias):
-            bias_img, param_idx = get_bias_image(params, param_idx, images[0])
-            images.append(bias_img)
 
         for u,v in it.combinations(range(k), 2):
             group_sum = geom.linear_combination(images, params[param_idx:(param_idx + len(images))])

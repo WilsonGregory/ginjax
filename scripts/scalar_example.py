@@ -1,14 +1,16 @@
 import numpy as np
-import jax.numpy as jnp
-from jax import value_and_grad, jit, random
-import geometricconvolutions.geometric as geom
+from jax import random
 import time
 import itertools as it
 import math
 import optax
+from functools import partial
+
+import geometricconvolutions.geometric as geom
+import geometricconvolutions.ml as ml
 
 def net(params, x, conv_filters):
-    # A simple neural net with 1 convolution layer. Then return a linear combination of the convolution outputs
+    # A simple neural net that convolves with all combinations of each pair of conv_filters, then returns a linear combo
     layer_out = []
     for c1_idx, c2_idx in it.combinations_with_replacement(range(len(conv_filters)), 2):
         c1 = conv_filters[c1_idx]
@@ -18,35 +20,9 @@ def net(params, x, conv_filters):
 
     return geom.linear_combination(layer_out, params)
 
-@jit
-def loss(params, x, y, conv_filters):
-    # Run the neural network, then calculate the MSE loss with the expected output y
-    out = net(params, x, conv_filters)
-
-    # calculate the mean squared error difference between y and out
-    mse = jnp.sqrt(jnp.sum((y.data - out.data) ** 2) / out.data.size)
-    return mse
-
-def batch_loss(params, X, Y, conv_filters):
-    # Loss function for batches, should be a way to vmap this.
-    return jnp.mean(jnp.array([loss(params, x, y, conv_filters) for x,y in zip(X,Y)]))
-
-def train(X, Y, conv_filters, batch_loss, params, epochs, learning_rate=0.1):
-    # Train the model. Use a simple adaptive learning rate scheme, and go until the learning rate is small.
-    batch_loss_grad = value_and_grad(batch_loss)
-
-    optimizer = optax.adam(learning_rate)
-    opt_state = optimizer.init(params)
-
-    for i in range(epochs):
-        loss_val, grads = batch_loss_grad(params, X, Y, conv_filters)
-        updates, opt_state = optimizer.update(grads, opt_state)
-        params = optax.apply_updates(params, updates)
-
-        if (i % (epochs // np.min([10,epochs])) == 0):
-            print(f'Epoch {i}: {loss_val}')
-
-    return params
+def map_and_loss(params, x, y, conv_filters):
+    # Run x through the net, then return its loss with y
+    return ml.rmse_loss(net(params, x, conv_filters), y)
 
 def target_function(x, conv_filters):
     return x.convolve_with(conv_filters[1]).convolve_with(conv_filters[2])
@@ -70,8 +46,16 @@ Y = [target_function(x, conv_filters) for x in X]
 key, subkey = random.split(key)
 params = random.normal(subkey, shape=(len(conv_filters) + math.comb(len(conv_filters), 2),))
 
-params = train(X, Y, conv_filters, batch_loss, params, epochs=1000)
+params = ml.train(
+    X,
+    Y,
+    partial(map_and_loss, conv_filters=conv_filters),
+    params,
+    key,
+    epochs=500,
+    batch_size=num_images,
+    optimizer=optax.adam(optax.exponential_decay(0.1, transition_steps=1, decay_rate=0.99)),
+)
 
-print(batch_loss(params, X, Y, conv_filters))
 print(params)
 

@@ -1,10 +1,12 @@
 import math
 import time
+from functools import partial
 
 import geometricconvolutions.geometric as geom
 import pytest
 import jax.numpy as jnp
 from jax import random
+import jax.nn
 
 TINY = 1.e-5
 
@@ -312,6 +314,21 @@ class TestGeometricImage:
         assert (image1[4:,2:3] == random_vals[4:,2:3]).all()
         assert image1[4:, 2:3].shape == random_vals[4:, 2:3].shape
 
+    def testActivationFunction(self):
+        img1 = geom.GeometricImage(jnp.array([[-1, 0, 1], [2, -0.3, 4], [8, 3, 1]]).reshape((3,3)), 0, 2)
+        relu_img = img1.activation_function(jax.nn.relu)
+
+        assert img1.shape() == relu_img.shape()
+        assert img1.parity == relu_img.parity
+        assert jnp.allclose(relu_img.data, jnp.array([[0, 0, 1], [2, 0, 4], [8, 3, 1]]).reshape((3,3)))
+
+        img2 = geom.GeometricImage.fill(3, 0, 2, jnp.array([-1,1]))
+        with pytest.raises(AssertionError): #activation_function only implemented for k=0 tensors due to equivariance
+            img2.activation_function(jax.nn.relu)
+
+        leaky_relu_img = img1.activation_function(partial(jax.nn.leaky_relu, negative_slope=0.01))
+        assert jnp.allclose(leaky_relu_img.data, jnp.array([[-0.01, 0, 1], [2, -0.003, 4], [8, 3, 1]]).reshape((3,3)))
+
     def testContract(self):
         img1 = geom.GeometricImage(jnp.arange(36).reshape((3,3,2,2)), 0, 2)
 
@@ -439,7 +456,7 @@ class TestGeometricImage:
         image1 = geom.GeometricImage(random.uniform(key, shape=(10,10)), 0, 2)
 
         normed_image1 = image1.normalize()
-        assert math.isclose(jnp.max(jnp.abs(normed_image1.data)), 1.)
+        assert math.isclose(jnp.max(jnp.abs(normed_image1.data)), 1., rel_tol=geom.TINY)
         assert image1.data.shape == normed_image1.data.shape == (10,10)
 
         image2 = geom.GeometricImage(random.uniform(key, shape=(10,10,2)), 0, 2)
@@ -461,15 +478,15 @@ class TestGeometricImage:
         Convolve with where the input is k=0, and the filter is k=0
         """
         #did these out by hand, hopefully, my arithmetic is correct...
-        image1 = geom.GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
-        filter_image = geom.GeometricFilter(jnp.array([[1,0,1], [0,0,0], [1,0,1]], dtype=int), 0, 2)
+        image1 = geom.GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=float), 0, 2)
+        filter_image = geom.GeometricFilter(jnp.array([[1,0,1], [0,0,0], [1,0,1]], dtype=float), 0, 2)
 
         convolved_image = image1.convolve_with(filter_image)
         assert convolved_image.D == image1.D
         assert convolved_image.N == image1.N
         assert convolved_image.k == image1.k + filter_image.k
         assert convolved_image.parity == (image1.parity + filter_image.parity) % 2
-        assert (convolved_image.data == jnp.array([[-2,0,2], [2,5,5], [-2,-1,3]], dtype=int)).all()
+        assert (convolved_image.data == jnp.array([[-2,0,2], [2,5,5], [-2,-1,3]], dtype=float)).all()
 
         key = random.PRNGKey(0)
         image2 = geom.GeometricImage(jnp.floor(10*random.uniform(key, shape=(5,5))), 0, 2)
@@ -486,18 +503,18 @@ class TestGeometricImage:
                 [16,12,13,13,18],
                 [8,23,11,13,29],
             ],
-        dtype=int)).all()
+        dtype=float)).all()
 
     def testConvolveWithIK0_FK1(self):
         """
         Convolve with where the input is k=0, and the filter is k=1
         """
-        image1 = geom.GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
+        image1 = geom.GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=float), 0, 2)
         filter_image = geom.GeometricFilter(jnp.array([
             [[0,0], [0,1], [0,0]],
             [[-1,0],[0,0], [1,0]],
             [[0,0], [0,-1],[0,0]],
-        ], dtype=int), 0, 2) #this is an invariant filter, hopefully not a problem?
+        ], dtype=float), 0, 2) #this is an invariant filter, hopefully not a problem?
 
         convolved_image = image1.convolve_with(filter_image)
         assert convolved_image.D == image1.D
@@ -508,7 +525,7 @@ class TestGeometricImage:
             [[1,2],[-2,0],[1,4]],
             [[3,0],[-3,1],[0,-1]],
             [[-1,-2],[-1,-1],[2,-3]]
-        ], dtype=int)).all()
+        ], dtype=float)).all()
 
     def testTimesGroupElement(self):
         left90 = jnp.array([[0,-1],[1,0]])

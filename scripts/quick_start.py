@@ -1,69 +1,79 @@
-import sys
-sys.path.insert(0,'src/geometricconvolutions/')
-import itertools as it
-
-import geometric as geom
 import jax.numpy as jnp
 import jax.random as random
+import matplotlib.pyplot as plt
 
-def testIK0_FK1():
-    """
-    Convolve with where the input is k=0, and the filter is k=1
-    """
-    image1 = geom.GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=int), 0, 2)
-    filter_image = geom.GeometricFilter(jnp.array([
-        [[0,0], [0,1], [0,0]],
-        [[-1,0],[0,0], [1,0]],
-        [[0,0], [0,-1],[0,0]],
-    ], dtype=int), 0, 2) #this is an invariant filter, hopefully not a problem?
+import geometricconvolutions.geometric as geom
+import geometricconvolutions.utils as utils
 
-    convolved_image = image1.convolve_with(filter_image)
+key = random.PRNGKey(0)
+key, subkey = random.split(key)
 
-    assert convolved_image.D == image1.D
-    assert convolved_image.N == image1.N
-    assert convolved_image.k == image1.k + filter_image.k
-    assert convolved_image.parity == (image1.parity + filter_image.parity) % 2
-    assert (convolved_image.data == jnp.array([
-        [[1,2],[-2,0],[1,4]],
-        [[3,0],[-3,1],[0,-1]],
-        [[-1,-2],[-1,-1],[2,-3]]
-    ], dtype=int)).all()
+# Suppose you have some data that forms a 3 by 3 vector image, so N=3, D=2, and k=1.
+N = 3 # image side length. Currently only square or cube images are valid.
+D = 2 # image dimensions. Currently, D=2 and D=3 are valid dimensions
+k = 1 # pixel tensor order. Can be 1 or 0
+parity = 0 # parity, how the image responds when it is reflected. This is used by pseudovectors like angular velocity.
+data = random.normal(subkey, shape=((N,)*D + (D,)*k))
 
+# We can form a GeometricImage from this data by specifying to data, the parity, and D. N and k are inferred from data.
+image = geom.GeometricImage(data, parity=0, D=2)
 
-def testUniqueInvariantFilters():
-    # ensure that all the filters are actually invariant
-    key = random.PRNGKey(0)
+#We can visualize this image with the plotting tools in utils:
+utils.plot_image(image)
 
-    for D in [2]: #image dimension
-        operators = geom.make_all_operators(D)
-        for N in [3]: #filter size
-            key, subkey = random.split(key)
-            image = geom.GeometricImage(random.uniform(key, shape=(N,N)), 0, D)
-            for k in [1]: #tensor order of filter
-                for parity in [0,1]:
-                    filters = geom.get_unique_invariant_filters(N, k, parity, D, operators)
+# Now we can do various operations on this geometric image
+image2 = geom.GeometricImage.fill(N, parity, D, fill=jnp.array([1,0])) # fill constructor, each pixel is fill
 
-                    for gg in operators:
-                        for geom_filter in filters:
-                            print(gg)
-                            print(geom_filter.data)
+# pixel-wise addition
+image + image2
 
-                            # test that the filters are invariant to the group operators
-                            assert jnp.allclose(geom_filter.data, geom_filter.times_group_element(gg).data)
+# pixel-wise subtraction
+image - image2
 
-                            # test that the convolution with the invariant filters is equivariant to gg
-                            img1 = image.convolve_with(geom_filter).times_group_element(gg).data
-                            img2 = image.times_group_element(gg).convolve_with(geom_filter).data
-                            print(img1)
-                            print(img2)
+# pixel-wise tensor product
+image * image2
 
-                            assert jnp.allclose(img1, img2)
+# scalar multiplication
+image * 3
 
-# testUniqueInvariantFilters()
+# We can also apply a group action on the image. First we generate all the operators for dimension D, then we apply one
+operators = geom.make_all_operators(D)
+print("Number of operators:", len(operators))
+image.times_group_element(operators[1])
 
-testIK0_FK1()
+# Now let us generate all 3 by 3 filters of tensor order k=0,1 and parity=0,1 that are invariant to the operators
+invariant_filters = geom.get_invariant_filters(
+    Ms=[3],
+    ks=[0,1],
+    parities=[0,1],
+    D=D,
+    operators=operators,
+    scale='one', #all the values of the filter are 1, can also 'normalize' so the norm of the tensor pixel is 1
+    return_list=True,
+)
+print('Number of invariant filters N=3, k=0,1 parity=0,1:', len(invariant_filters))
 
+# Using these filters, we can perform convolutions on our image. Since the filters are invariant, the convolution
+# will be equivariant.
+gg = operators[1] # one operator, a flip over the y-axis
+ff_k0 = invariant_filters[1] # one filter, a non-trivial scalar filter
+print(
+    'Equivariant:',
+    image.times_group_element(gg).convolve_with(ff_k0) == image.convolve_with(ff_k0).times_group_element(gg),
+)
 
+# When convolving with filters that have tensor order > 0, the resulting image have tensor order img.k + filter.k
+ff_k1 = invariant_filters[5]
+print('image k:', image.k)
+print('filter k:', ff_k1.k)
+convolved_image = image.convolve_with(ff_k1)
+print('convolved image k:', convolved_image.k)
 
+# After convolving, the image has tensor order 1+1=2 pixels. We can transpose the indices of the tensor:
+convolved_image.transpose((1,0))
 
+# Since the tensor order is >= 2, we can perform a contraction on those indices which will reduce it to tensor order 0.
+print('contracted image k:', convolved_image.contract(0,1).k)
 
+# Show images.
+plt.show()

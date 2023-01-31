@@ -14,7 +14,7 @@ import geometricconvolutions.geometric as geom
 ## Layers
 
 @functools.partial(jit, static_argnums=[1,5,6])
-def conv_layer(params, param_idx, conv_filters, input_layer, target_x=None, bias=False, dilations=(None,)):
+def conv_layer(params, param_idx, conv_filters, input_layer, target_x=None, bias=False, dilations=(1,)):
     """
     Perform all the conv_filters on each image of input_layer. For efficiency, we take parameterized linear
     combinations of like inputs (same k and parity) before applying the convolutions. This is equivalent to a fully
@@ -29,7 +29,7 @@ def conv_layer(params, param_idx, conv_filters, input_layer, target_x=None, bias
         input_layer (list of GeometricImages): linear, quadratic, cubic, etc. function image outputs
         target_x (GeometricImage): defaults to None, image that we are trying to return to
         bias (bool): Whether to include a bias image, defaults to False
-        dilations (list of ints): the dilation convolutions to perform, defaults to (None,) (equivalent to (1,))
+        dilations (list of ints): the dilation convolutions to perform, defaults to (1,), or normal dilation
     """
     prods_dict = make_p_k_dict(input_layer)
     filters_dict = make_p_k_dict(conv_filters, filters=True) if target_x else None

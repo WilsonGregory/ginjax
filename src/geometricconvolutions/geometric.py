@@ -586,7 +586,7 @@ class GeometricImage:
         return image_data.reshape((1,) + image_shape + (channel_length,))
 
     partial(jit, static_argnums=2)
-    def convolve_with(self, filter_image, dilation=None, warnings=True):
+    def convolve_with(self, filter_image, dilation=1, warnings=True):
         """
         Here is how this function works:
         1. Expand the geom_image to its torus shape, i.e. add filter.m cells all around the perimeter of the image
@@ -603,9 +603,10 @@ class GeometricImage:
 
         args:
             filter_image (GeometricFilter): the filter we are performing the convolution with
-            dilation (int): amount of dilation to apply to image during convolution, defaults to None
+            dilation (int): amount of dilation to apply to image during convolution, defaults to 1
             warnings (bool): display warnings, defaults to True currently
         """
+        assert dilation > 0
         if (self.data.dtype != filter_image.data.dtype):
             dtype = 'float32'
             if (warnings):
@@ -615,21 +616,15 @@ class GeometricImage:
 
         output_k = self.k + filter_image.k
 
-        # if the image is on the torus, we expand the data so we can convolve with valid. Else, we will pad w/ 0s
-        torus_expand_img = self.get_torus_expanded(filter_image, dilation) if self.is_torus else self
+        rhs_dilation = (dilation,)*self.D if dilation else None
 
-        if dilation:
-            rhs_dilation = (dilation,)*self.D
-            if self.is_torus:
-                padding_mode = ((0,0),)*self.D
-            else:
-                # padding_mode = ((0,0),)*self.D
-                # padding_mode = 'SAME'
-                padding_mode = ((filter_image.m*dilation,)*2,)*self.D
-                # padding_mode = ((filter_image.m + dilation - 1, filter_image.m + dilation - 1),)*self.D
+        # if the image is on the torus, we expand the data so we can convolve with valid. Else, we will pad w/ 0s
+        if self.is_torus:
+            torus_expand_img = self.get_torus_expanded(filter_image, dilation)
+            padding_mode = ((0,0),)*self.D #equivalent to 'VALID'
         else:
-            rhs_dilation = None
-            padding_mode = 'VALID' if self.is_torus else 'SAME'
+            torus_expand_img = self #not on the torus, don't need to expand at all, just pad with zeros
+            padding_mode = ((filter_image.m*dilation,)*2,)*self.D #equivalent to 'SAME', pad w/ 0s
 
         img_expanded, filter_expanded = GeometricImage.pre_tensor_product_expand(torus_expand_img, filter_image)
         img_expanded = img_expanded.astype(dtype)
@@ -647,23 +642,15 @@ class GeometricImage:
         # convert filter to HWIO (or HWDIO)
         filter_formatted = filter_expanded.reshape(filter_image.image_shape() + (1,channel_length))
 
-        if self.D == 2:
-            dimension_numbers = ('NHWC','HWIO','NHWC')
-        elif self.D == 3:
-            dimension_numbers = ('NHWDC','HWDIO','NHWDC')
-
         convolved_array = jax.lax.conv_general_dilated(
             img_formatted, #lhs
             filter_formatted, #rhs
             (1,) * self.D, #window strides
             padding_mode,
             rhs_dilation=rhs_dilation,
-            dimension_numbers=dimension_numbers,
+            dimension_numbers=(('NHWC','HWIO','NHWC') if self.D == 2 else ('NHWDC','HWDIO','NHWDC')),
             feature_group_count=channel_length, #allows us to have separate filters for separate channels
-        )
-
-        #reshape the pixel to the correct tensor shape
-        convolved_array = convolved_array.reshape(self.image_shape() + (self.D,)*output_k) 
+        ).reshape(self.image_shape() + (self.D,)*output_k) #reshape the pixel to the correct tensor shape
         return self.__class__(convolved_array, self.parity + filter_image.parity, self.D, self.is_torus)
 
     def get_torus_expanded(self, filter_image, dilation):
@@ -673,8 +660,9 @@ class GeometricImage:
         args:
             filter_image (GeometricFilter): filter, how much is expanded depends on filter_image.m
         """
-        new_N = self.N + 2 * filter_image.m
-        indices = jnp.array(list(it.product(range(new_N), repeat=self.D)), dtype=int) - filter_image.m
+        padding = filter_image.m * dilation
+        new_N = self.N + 2 * padding
+        indices = jnp.array(list(it.product(range(new_N), repeat=self.D)), dtype=int) - padding
         return self.__class__(
             self[self.hash(indices)].reshape((new_N,) * self.D + self.pixel_shape()),
             self.parity,

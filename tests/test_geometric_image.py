@@ -551,6 +551,43 @@ class TestGeometricImage:
         assert not convolved_image.is_torus 
         assert jnp.allclose(convolved_image.data, jnp.array([[0,-3,0], [1,5,1], [0,-3,0]]))
 
+    def testConvolveDilation(self):
+        """
+        Convolve where the Geometric Image is a torus, but we dilate the filter.
+        """
+        image1 = geom.GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=float), 0, 2)
+        filter_image = geom.GeometricFilter(jnp.array([[1,0,2],[1,-1,0],[0,0,-2]], dtype=float), 0, 2)
+
+        convolved_image = image1.convolve_with(filter_image, dilation=2)
+        assert jnp.allclose(convolved_image.data, jnp.array([[-9,-8,2], [2,-2,3], [5,5,5]]))
+
+    def testConvolveDilationNonTorus(self):
+        """
+        Convolve where the Geometric Image is not a torus and we dilate the filter.
+        """
+        image1 = geom.GeometricImage(
+            jnp.array([
+                [2,1,0,1,0], 
+                [0,0,-3,2,-2], 
+                [2,0,1,0,1],
+                [1,0,1,2,2],
+                [-1,-1,0,0,0],
+            ], dtype=float),
+            0,
+            2,
+            is_torus=False,
+        )
+        filter_image = geom.GeometricFilter(jnp.array([[1,0,2],[1,-1,0],[0,0,-2]], dtype=float), 0, 2)
+
+        convolved_image = image1.convolve_with(filter_image, dilation=2)
+        assert jnp.allclose(convolved_image.data, jnp.array([
+            [-4,-1,0,0,0], 
+            [-2,-4,-1,-2,-1], 
+            [-2,2,3,1,0],
+            [-7,4,-4,-2,-4],
+            [3,1,3,-1,1],
+        ]))
+
     def testTimesGroupElement(self):
         left90 = jnp.array([[0,-1],[1,0]])
         flipX = jnp.array([[-1, 0], [0,1]])

@@ -60,9 +60,16 @@ def get_data(N, D, num_points, rand_key, num_images=1):
 def net(params, x, conv_filters, target_img, return_params=False):
     # Note that the target image is only used for its shape
     layer, param_idx = ml.conv_layer(params, 0, conv_filters, [x])
-    layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, dilations=tuple(range(x.N)))
+    layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, dilations=tuple(range(1,x.N)))
 
-    layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, target_img, dilations=tuple(range(int(x.N / 2))))
+    layer, param_idx = ml.conv_layer(
+        params, 
+        int(param_idx), 
+        conv_filters, 
+        layer, 
+        target_img, #final_layer, make sure out output is target_img shaped
+        dilations=tuple(range(1,int(x.N / 2))),
+    )
     layer, param_idx = ml.cascading_contractions(params, int(param_idx), target_img, layer)
 
     net_output = geom.linear_combination(layer, params[param_idx:(param_idx + len(layer))])
@@ -75,6 +82,7 @@ def map_and_loss(params, x, y, conv_filters):
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
+    parser.add_argument('outfile', help='where to save the image', type=str)
     parser.add_argument('-e', '--epochs', help='number of epochs to run', type=int, default=10)
     parser.add_argument('-lr', help='learning rate', type=float, default=0.1)
     parser.add_argument('-batch', help='batch size', type=int, default=1)
@@ -86,6 +94,7 @@ def handleArgs(argv):
     args = parser.parse_args()
 
     return (
+        args.outfile,
         args.epochs,
         args.lr,
         args.batch,
@@ -96,7 +105,7 @@ def handleArgs(argv):
     )
 
 # Main
-epochs, lr, batch_size, seed, save_file, load_file, verbose = handleArgs(sys.argv)
+outfile, epochs, lr, batch_size, seed, save_file, load_file, verbose = handleArgs(sys.argv)
 
 N = 16
 D = 2
@@ -154,11 +163,9 @@ else:
         epochs=epochs,
         batch_size=batch_size,
         optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(len(train_X) / batch_size), decay_rate=0.995)),
-        # optimizer=optax.adam(lr),
         validation_X=validation_X,
         validation_Y=validation_Y,
         save_params=save_file,
-        # noise_stdev=noise,
         verbose=verbose,
     )
 
@@ -183,4 +190,5 @@ print('Full Test loss:', test_loss)
 print(f'One Test loss: {map_and_loss(params, test_X[0], test_Y[0], conv_filters)}')
 utils.plot_image(net(params, test_X[0], conv_filters, test_Y[0]), ax=axs[1,2])
 
-plt.savefig('../images/gravity/gravity_test.png')
+plt.savefig(outfile)
+# plt.savefig('../images/gravity/gravity_test.png')

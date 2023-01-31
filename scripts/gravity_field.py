@@ -191,4 +191,3 @@ print(f'One Test loss: {map_and_loss(params, test_X[0], test_Y[0], conv_filters)
 utils.plot_image(net(params, test_X[0], conv_filters, test_Y[0]), ax=axs[1,2])
 
 plt.savefig(outfile)
-# plt.savefig('../images/gravity/gravity_test.png')

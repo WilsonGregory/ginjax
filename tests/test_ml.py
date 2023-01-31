@@ -17,7 +17,9 @@ class TestMachineLearning:
         X,Y = ml.get_timeseries_XY(ts, loss_steps=1, circular=False)
         assert len(X) == len(Y) == (len(ts)-1)
         for i in range(len(ts)-1):
-            assert ts[i] == X[i] == Y[i]
+            assert ts[i] == X[i]
+            if i > 0:
+                assert X[i] == Y[i-1]
 
         # loss_steps = 3
         X,Y = ml.get_timeseries_XY(ts, loss_steps=3, circular=False)

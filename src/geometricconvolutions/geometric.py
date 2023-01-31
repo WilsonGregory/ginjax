@@ -303,7 +303,7 @@ def multicontract(data, indices):
 def linear_combination(images, params):
     """
     A method takes a list of parameters, a list of geometric images and returns the linear combination.
-    The images must all have the same k, and the likely should have the same parity.
+    The images must all have the same k, and the likely should have the same parity and is_torus.
     args:
         images (list): list of GeometricImages to be multiplied by the params, then summed
         params (list): scalar multipliers of the images
@@ -311,7 +311,7 @@ def linear_combination(images, params):
     assert len(images) == len(params) #must be the same length
 
     data = jnp.sum(jnp.array([image.data * param for image, param in zip(images, params)]), axis=0)
-    return images[0].__class__(data, images[0].parity, images[0].D)
+    return images[0].__class__(data, images[0].parity, images[0].D, images[0].is_torus)
 
 def tensor_name(k, parity):
     nn = "tensor"
@@ -331,7 +331,7 @@ class GeometricImage:
     # Constructors
 
     @classmethod
-    def zeros(cls, N, k, parity, D):
+    def zeros(cls, N, k, parity, D, is_torus=True):
         """
         Class method zeros to construct a geometric image of zeros
         args:
@@ -339,12 +339,13 @@ class GeometricImage:
             k (int): the order of the tensor in each pixel, i.e. 0 (scalar), 1 (vector), 2 (matrix), etc.
             parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
             D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
+            is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
         """
         shape = D * (N, ) + k * (D, )
-        return cls(jnp.zeros(shape), parity, D)
+        return cls(jnp.zeros(shape), parity, D, is_torus)
 
     @classmethod
-    def fill(cls, N, parity, D, fill):
+    def fill(cls, N, parity, D, fill, is_torus=True):
         """
         Class method fill constructor to construct a geometric image every pixel as fill
         args:
@@ -352,18 +353,20 @@ class GeometricImage:
             parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
             D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
             fill (jnp.ndarray or number): tensor to fill the image with
+            is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
         """
         k = len(fill.shape) if isinstance(fill, jnp.ndarray) else 0
         data = jnp.stack([fill for _ in range(N ** D)]).reshape((N,)*D + (D,)*k)
-        return cls(data, parity, D)
+        return cls(data, parity, D, is_torus)
 
-    def __init__(self, data, parity, D):
+    def __init__(self, data, parity, D, is_torus=True):
         """
         Construct the GeometricImage. It will be (N^D x D^k), so if N=100, D=2, k=1, then it's (100 x 100 x 2)
         args:
             data (array-like):
             parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
             D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
+            is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
         """
         self.D = D
         self.N = len(data)
@@ -373,10 +376,11 @@ class GeometricImage:
         assert data.shape[D:] == self.k * (self.D, ), \
         "GeometricImage: each pixel must be D cross D, k times"
         self.parity = parity % 2
+        self.is_torus = is_torus
         self.data = jnp.copy(data) #TODO: don't need to copy if data is already an immutable jnp array
 
     def copy(self):
-        return self.__class__(self.data, self.parity, self.D)
+        return self.__class__(self.data, self.parity, self.D, self.is_torus)
 
     # Getters, setters, basic info
 
@@ -430,8 +434,8 @@ class GeometricImage:
         return self.D ** self.k
 
     def __str__(self):
-        return "<{} object in D={} with N={}, k={}, and parity={}>".format(
-            self.__class__, self.D, self.N, self.k, self.parity)
+        return "<{} object in D={} with N={}, k={}, parity={}, is_torus={}>".format(
+            self.__class__, self.D, self.N, self.k, self.parity, self.is_torus)
 
     def keys(self):
         """
@@ -468,6 +472,7 @@ class GeometricImage:
             self.N == other.N and
             self.k == other.k and
             self.parity == other.parity and
+            self.is_torus == other.is_torus and
             self.data.shape == other.data.shape and
             jnp.allclose(self.data, other.data, rtol=TINY, atol=TINY)
         )
@@ -482,8 +487,9 @@ class GeometricImage:
         assert self.N == other.N
         assert self.k == other.k
         assert self.parity == other.parity
+        assert self.is_torus == other.is_torus
         assert self.data.shape == other.data.shape
-        return self.__class__(self.data + other.data, self.parity, self.D)
+        return self.__class__(self.data + other.data, self.parity, self.D, self.is_torus)
 
     def __sub__(self, other):
         """
@@ -495,8 +501,9 @@ class GeometricImage:
         assert self.N == other.N
         assert self.k == other.k
         assert self.parity == other.parity
+        assert self.is_torus == other.is_torus
         assert self.data.shape == other.data.shape
-        return self.__class__(self.data - other.data, self.parity, self.D)
+        return self.__class__(self.data - other.data, self.parity, self.D, self.is_torus)
 
     def __mul__(self, other):
         """
@@ -508,11 +515,12 @@ class GeometricImage:
         if (isinstance(other, GeometricImage)):
             assert self.D == other.D
             assert self.N == other.N
+            assert self.is_torus == other.is_torus
             image_a_data, image_b_data = GeometricImage.pre_tensor_product_expand(self, other)
             #now that the shapes match, we can do elementwise multiplication
-            return self.__class__(image_a_data * image_b_data, self.parity + other.parity, self.D)
+            return self.__class__(image_a_data * image_b_data, self.parity + other.parity, self.D, self.is_torus)
         else: #its an integer or a float, or something that can we can multiply a Jax array by (like a DeviceArray)
-            return self.__class__(self.data * other, self.parity, self.D)
+            return self.__class__(self.data * other, self.parity, self.D, self.is_torus)
 
     def __rmul__(self, other):
         """
@@ -529,7 +537,7 @@ class GeometricImage:
         """
         idx_shift = len(self.image_shape())
         new_indices = tuple(tuple(range(idx_shift)) + tuple(axis + idx_shift for axis in axes_permutation))
-        return self.__class__(jnp.transpose(self.data, new_indices), self.parity, self.D)
+        return self.__class__(jnp.transpose(self.data, new_indices), self.parity, self.D, self.is_torus)
 
     @classmethod
     def pre_tensor_product_expand(cls, image_a, image_b):
@@ -577,8 +585,8 @@ class GeometricImage:
         """
         return image_data.reshape((1,) + image_shape + (channel_length,))
 
-    @jit
-    def convolve_with(self, filter_image, warnings=True):
+    partial(jit, static_argnums=2)
+    def convolve_with(self, filter_image, dilation=None, warnings=True):
         """
         Here is how this function works:
         1. Expand the geom_image to its torus shape, i.e. add filter.m cells all around the perimeter of the image
@@ -595,6 +603,7 @@ class GeometricImage:
 
         args:
             filter_image (GeometricFilter): the filter we are performing the convolution with
+            dilation (int): amount of dilation to apply to image during convolution, defaults to None
             warnings (bool): display warnings, defaults to True currently
         """
         if (self.data.dtype != filter_image.data.dtype):
@@ -605,7 +614,22 @@ class GeometricImage:
             dtype = self.data.dtype
 
         output_k = self.k + filter_image.k
-        torus_expand_img = self.get_torus_expanded(filter_image)
+
+        # if the image is on the torus, we expand the data so we can convolve with valid. Else, we will pad w/ 0s
+        torus_expand_img = self.get_torus_expanded(filter_image, dilation) if self.is_torus else self
+
+        if dilation:
+            rhs_dilation = (dilation,)*self.D
+            if self.is_torus:
+                padding_mode = ((0,0),)*self.D
+            else:
+                # padding_mode = ((0,0),)*self.D
+                # padding_mode = 'SAME'
+                padding_mode = ((filter_image.m*dilation,)*2,)*self.D
+                # padding_mode = ((filter_image.m + dilation - 1, filter_image.m + dilation - 1),)*self.D
+        else:
+            rhs_dilation = None
+            padding_mode = 'VALID' if self.is_torus else 'SAME'
 
         img_expanded, filter_expanded = GeometricImage.pre_tensor_product_expand(torus_expand_img, filter_image)
         img_expanded = img_expanded.astype(dtype)
@@ -625,22 +649,24 @@ class GeometricImage:
 
         if self.D == 2:
             dimension_numbers = ('NHWC','HWIO','NHWC')
-            window_strides = (1,1)
         elif self.D == 3:
             dimension_numbers = ('NHWDC','HWDIO','NHWDC')
-            window_strides = (1,1,1)
 
         convolved_array = jax.lax.conv_general_dilated(
             img_formatted, #lhs
             filter_formatted, #rhs
-            window_strides, #window strides
-            'VALID', #padding mode, we can do valid because we already expanded on the torus
+            (1,) * self.D, #window strides
+            padding_mode,
+            rhs_dilation=rhs_dilation,
             dimension_numbers=dimension_numbers,
             feature_group_count=channel_length, #allows us to have separate filters for separate channels
-        ).reshape(self.image_shape() + (self.D,)*output_k) #reshape the pixel to the correct tensor shape
-        return self.__class__(convolved_array, self.parity + filter_image.parity, self.D)
+        )
 
-    def get_torus_expanded(self, filter_image):
+        #reshape the pixel to the correct tensor shape
+        convolved_array = convolved_array.reshape(self.image_shape() + (self.D,)*output_k) 
+        return self.__class__(convolved_array, self.parity + filter_image.parity, self.D, self.is_torus)
+
+    def get_torus_expanded(self, filter_image, dilation):
         """
         For a particular filter, expand the image so that we no longer have to do convolutions on the torus, we are
         just doing convolutions on the expanded image and will get the same result. Return a new GeometricImage
@@ -653,6 +679,7 @@ class GeometricImage:
             self[self.hash(indices)].reshape((new_N,) * self.D + self.pixel_shape()),
             self.parity,
             self.D,
+            self.is_torus,
         )
 
     def times_scalar(self, scalar):
@@ -686,7 +713,7 @@ class GeometricImage:
 
     def activation_function(self, function):
         assert self.k == 0, "Activation functions only implemented for k=0 tensors due to equivariance"
-        return self.__class__(function(self.data), self.parity, self.D)
+        return self.__class__(function(self.data), self.parity, self.D, self.is_torus)
 
     @partial(jit, static_argnums=[1,2])
     def contract(self, i, j):
@@ -702,6 +729,7 @@ class GeometricImage:
             multicontract(self.data, ((i + idx_shift, j + idx_shift),)),
             self.parity,
             self.D,
+            self.is_torus,
         )
 
     @partial(jit, static_argnums=1)
@@ -714,7 +742,7 @@ class GeometricImage:
         assert self.k >= 2
         idx_shift = len(self.image_shape())
         shifted_indices = tuple((i + idx_shift, j + idx_shift) for i,j in indices)
-        return self.__class__(multicontract(self.data, shifted_indices), self.parity, self.D)
+        return self.__class__(multicontract(self.data, shifted_indices), self.parity, self.D, self.is_torus)
 
     def levi_civita_contract(self, indices):
         """
@@ -734,7 +762,7 @@ class GeometricImage:
         #make contraction index pairs with one of specified indices, and index (in order) from the levi_civita symbol
         idx_shift = len(self.image_shape())
         zipped_indices = tuple((i+idx_shift,j+idx_shift) for i,j in zip(indices, range(self.k, self.k + len(indices))))
-        return self.__class__(multicontract(outer, zipped_indices), self.parity + 1, self.D)
+        return self.__class__(multicontract(outer, zipped_indices), self.parity + 1, self.D, self.is_torus)
 
     def anticontract(self, additional_k):
         """
@@ -760,7 +788,7 @@ class GeometricImage:
 
         assert expanded_data.shape == kron_delta.shape
 
-        return self.__class__(expanded_data * kron_delta, self.parity, self.D)
+        return self.__class__(expanded_data * kron_delta, self.parity, self.D, self.is_torus)
 
     def get_rotated_keys(self, gg):
         """
@@ -797,7 +825,7 @@ class GeometricImage:
             tensor_inputs = (rotated_pixels, ) + self.k * (gg, )
             newdata = np.einsum(einstr, *tensor_inputs) * (parity_flip)
 
-        return self.__class__(newdata, self.parity, self.D)
+        return self.__class__(newdata, self.parity, self.D, self.is_torus)
 
     def tree_flatten(self):
         """
@@ -808,6 +836,7 @@ class GeometricImage:
         aux_data = {
             'D': self.D,
             'parity': self.parity,
+            'is_torus': self.is_torus,
         }  # static values
         return (children, aux_data)
 
@@ -824,8 +853,8 @@ class GeometricImage:
 @register_pytree_node_class
 class GeometricFilter(GeometricImage):
 
-    def __init__(self, data, parity, D):
-        super(GeometricFilter, self).__init__(data, parity, D)
+    def __init__(self, data, parity, D, is_torus=True):
+        super(GeometricFilter, self).__init__(data, parity, D, is_torus)
         self.m = (self.N - 1) // 2
         assert self.N == 2 * self.m + 1, \
         "GeometricFilter: N needs to be odd."
@@ -835,11 +864,11 @@ class GeometricFilter(GeometricImage):
         """
         Constructor that copies a GeometricImage and returns a GeometricFilter
         """
-        return cls(geometric_image.data, geometric_image.parity, geometric_image.D)
+        return cls(geometric_image.data, geometric_image.parity, geometric_image.D, geometric_image.is_torus)
 
     def __str__(self):
-        return "<geometric filter object in D={} with N={} (m={}), k={}, and parity={}>".format(
-            self.D, self.N, self.m, self.k, self.parity)
+        return "<geometric filter object in D={} with N={} (m={}), k={}, parity={}, and is_torus={}>".format(
+            self.D, self.N, self.m, self.k, self.parity, self.is_torus)
 
     def bigness(self):
         """
@@ -917,7 +946,7 @@ class BatchGeometricImage(GeometricImage):
     # Constructors
 
     @classmethod
-    def fill(cls, N, parity, D, fill, L):
+    def fill(cls, N, parity, D, fill, L, is_torus=True):
         """
         Class method fill constructor to construct a geometric image every pixel as fill
         args:
@@ -928,9 +957,9 @@ class BatchGeometricImage(GeometricImage):
         """
         k = len(fill.shape) if isinstance(fill, jnp.ndarray) else 0
         data = jnp.stack([fill for _ in range(L * (N ** D))]).reshape((L,) + (N,)*D + (D,)*k)
-        return cls(data, parity, D)
+        return cls(data, parity, D, is_torus)
 
-    def __init__(self, data, parity, D):
+    def __init__(self, data, parity, D, is_torus=True):
         """
         Construct the GeometricImage. It will be (L x N^D x D^k), so if L=16, N=100, D=2, k=1, then it's
         (16 x 100 x 100 x 2)
@@ -939,7 +968,7 @@ class BatchGeometricImage(GeometricImage):
             parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
             D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
         """
-        super(BatchGeometricImage, self).__init__(data[0], parity, D)
+        super(BatchGeometricImage, self).__init__(data[0], parity, D, is_torus)
         self.L = data.shape[0]
         self.data = data
 
@@ -947,14 +976,15 @@ class BatchGeometricImage(GeometricImage):
     def from_images(cls, images, indices=None):
         """
         Class method to construct a BatchGeometricImage from a list of GeometricImages. All the images should have the
-        same parity, D, and k.
+        same parity, D, k, and is_torus.
         args:
             images (list of GeometricImages): images that we are making into a batch image
         """
         if indices is None:
             indices = range(len(images))
-            
-        return cls(jnp.stack([images[idx].data for idx in indices]), images[0].parity, images[0].D)
+
+        data = jnp.stack([images[idx].data for idx in indices])
+        return cls(data, images[0].parity, images[0].D, images[0].is_torus)
 
     def image_shape(self):
         """
@@ -964,8 +994,8 @@ class BatchGeometricImage(GeometricImage):
         return (self.L,) + (self.N,) * self.D
 
     def __str__(self):
-        return "<{} object with L={} images in D={} with N={}, k={}, and parity={}>".format(
-            self.__class__, self.L, self.D, self.N, self.k, self.parity)
+        return "<{} object with L={} images in D={} with N={}, k={}, parity={}, and is_torus={}>".format(
+            self.__class__, self.L, self.D, self.N, self.k, self.parity, self.is_torus)
 
     # Binary Operators, Complicated functions
 
@@ -1012,6 +1042,7 @@ class BatchGeometricImage(GeometricImage):
             indexed_data.reshape((self.L,) + (new_N,) * self.D + self.pixel_shape()),
             self.parity,
             self.D,
+            self.is_torus,
         )
 
     # TODO!!

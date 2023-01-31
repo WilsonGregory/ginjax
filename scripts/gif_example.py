@@ -142,7 +142,7 @@ frames = []
 for i in range(len(test_images)):
     net_out = net(params, img, conv_filters)
     img = img + net_out
-    print(f'Step {i}: {ml.rmse_loss(img, test_images[i], batch=False)}')
+    print(f'Step {i}: {ml.rmse_loss(img, test_images[i])}')
     frames.append(img.data)
 
 iio.imwrite(outfile, jnp.stack(frames))

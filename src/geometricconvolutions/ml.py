@@ -13,8 +13,8 @@ import geometricconvolutions.geometric as geom
 
 ## Layers
 
-@functools.partial(jit, static_argnums=[1,5])
-def conv_layer(params, param_idx, conv_filters, input_layer, target_x=None, bias=True):
+@functools.partial(jit, static_argnums=[1,5,6])
+def conv_layer(params, param_idx, conv_filters, input_layer, target_x=None, bias=False, dilations=(1,)):
     """
     Perform all the conv_filters on each image of input_layer. For efficiency, we take parameterized linear
     combinations of like inputs (same k and parity) before applying the convolutions. This is equivalent to a fully
@@ -28,7 +28,8 @@ def conv_layer(params, param_idx, conv_filters, input_layer, target_x=None, bias
         conv_filters (list of GeometricFilters): all the filters we can apply
         input_layer (list of GeometricImages): linear, quadratic, cubic, etc. function image outputs
         target_x (GeometricImage): defaults to None, image that we are trying to return to
-        bias (bool): Whether to include a bias image, defaults to true
+        bias (bool): Whether to include a bias image, defaults to False
+        dilations (list of ints): the dilation convolutions to perform, defaults to (1,), or normal dilation
     """
     prods_dict = make_p_k_dict(input_layer)
     filters_dict = make_p_k_dict(conv_filters, filters=True) if target_x else None
@@ -46,13 +47,14 @@ def conv_layer(params, param_idx, conv_filters, input_layer, target_x=None, bias
                 continue
 
             for conv_filter in filter_group:
-                if (bias and k == 0):
-                    bias_img, param_idx = get_bias_image(params, param_idx, prods_group[0])
-                    prods_group.append(bias_img)
+                for dilation in dilations:
+                    if (bias and k == 0):
+                        bias_img, param_idx = get_bias_image(params, param_idx, prods_group[0])
+                        prods_group.append(bias_img)
 
-                group_sum = geom.linear_combination(prods_group, params[param_idx:(param_idx + len(prods_group))])
-                out_layer.append(group_sum.convolve_with(conv_filter))
-                param_idx += len(prods_group)
+                    group_sum = geom.linear_combination(prods_group, params[param_idx:(param_idx + len(prods_group))])
+                    out_layer.append(group_sum.convolve_with(conv_filter, dilation=dilation))
+                    param_idx += len(prods_group)
 
     return out_layer, param_idx
 
@@ -68,9 +70,9 @@ def get_bias_image(params, param_idx, x):
     fill = params[param_idx:(param_idx + (x.D ** x.k))].reshape((x.D,)*x.k)
     param_idx += x.D ** x.k
     if (x.__class__ == geom.BatchGeometricImage):
-        return x.__class__.fill(x.N, x.parity, x.D, fill, x.L), param_idx
+        return x.__class__.fill(x.N, x.parity, x.D, fill, x.L, x.is_torus), param_idx
     elif (x.__class__ == geom.GeometricImage):
-        return x.__class__.fill(x.N, x.parity, x.D, fill), param_idx
+        return x.__class__.fill(x.N, x.parity, x.D, fill, x.is_torus), param_idx
 
 def make_p_k_dict(images, filters=False, rollup_set={}):
     """
@@ -161,7 +163,7 @@ def order_cap_layer(images, max_k):
 
     return out_layer
 
-@functools.partial(jit, static_argnums=[1,4])
+@functools.partial(jit, static_argnums=1)
 def cascading_contractions(params, param_idx, x, input_layer):
     """
     Starting with the highest k, sum all the images into a single image, perform all possible contractions,
@@ -209,14 +211,15 @@ def param_count(x, conv_filters, deg):
 
 ## Losses
 
-def rmse_loss(x, y, batch=True):
+def rmse_loss(x, y):
     """
-    Root Mean Squared Error Loss, defaults to expecting BatchGeometricImages
+    Root Mean Squared Error Loss, if x and y are both batches, the loss is per image.
     args:
         x (GeometricImage): the input image
         y (GeometricImage): the associated output for x that we are comparing against
-        batch (bool): whether x and y are BatchGeometricImages, defaults to True
     """
+    assert isinstance(x, geom.BatchGeometricImage) == isinstance(y, geom.BatchGeometricImage)
+    batch = isinstance(x, geom.BatchGeometricImage)
     axes = tuple(range(1, len(x.shape()))) if batch else None
     rmse = jnp.sqrt(jnp.sum((x.data - y.data) ** 2, axis=axes))
     return jnp.mean(rmse) if batch else rmse
@@ -355,6 +358,8 @@ def train(
     epochs, 
     batch_size=16, 
     optimizer=None,
+    validation_X=None,
+    validation_Y=None,
     noise_stdev=None, 
     save_params=None,
     verbose=1,
@@ -373,6 +378,8 @@ def train(
             multiple batches.
         batch_size (int): defaults to 16, the size of each mini-batch in SGD
         optimizer (optax optimizer): optimizer, defaults to adam(learning_rate=0.1)
+        validation_X (list of GeometricImages): input data for a validation data set
+        validation_Y (list of GeometricImages): target data for a validation data set
         loss_steps (int): defaults to 1, the number of steps to rollout the prediction when computing the loss.
         noise_stdev (float): standard deviation for any noise to add to training data, defaults to None
         save_params (str): defaults to None, where to save the params of the model, every epochs/10 th epoch.
@@ -411,6 +418,10 @@ def train(
                 jnp.save(save_params, params)
             if (verbose == 1):
                 print(f'Epoch {i}: {epoch_loss / len(X_batches)}')
+            if (validation_X and validation_Y):
+                batch_validation_X = geom.BatchGeometricImage.from_images(validation_X)
+                batch_validation_Y = geom.BatchGeometricImage.from_images(validation_Y)
+                print('Validation Error: ', map_and_loss(params, batch_validation_X, batch_validation_Y))
 
         if (verbose >= 2):
             print(f'Epoch {i}: {epoch_loss / len(X_batches)}')

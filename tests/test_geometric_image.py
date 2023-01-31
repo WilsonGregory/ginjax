@@ -59,6 +59,7 @@ class TestGeometricImage:
         assert image1.data.shape == (10,10)
         assert image1.D == 2
         assert image1.k == 0
+        assert image1.is_torus
 
         image2 = geom.GeometricImage(random.uniform(key, shape=(10,10,2)), 0, 2)
         assert image2.data.shape == (10,10,2)
@@ -69,6 +70,9 @@ class TestGeometricImage:
         assert image3.data.shape == (10,10,2,2,2)
         assert image3.k == 3
         assert image3.parity == 1
+
+        image4 = geom.GeometricImage(random.uniform(key, shape=(10,10,10)), 0, 3, False)
+        assert not image4.is_torus
 
         #D does not match dimensions
         with pytest.raises(AssertionError):
@@ -83,7 +87,7 @@ class TestGeometricImage:
             geom.GeometricImage(random.uniform(key, shape=(10,10,3,3)), 0, 2)
 
     def testCopy(self):
-        image1 = geom.GeometricImage.zeros(20,0,0,2)
+        image1 = geom.GeometricImage.zeros(20,0,0,2,False)
         image2 = image1.copy()
 
         assert type(image1) == type(image2)
@@ -92,6 +96,7 @@ class TestGeometricImage:
         assert image1.D == image2.D
         assert image1.k == image2.k
         assert image1.N == image2.N
+        assert image1.is_torus == image2.is_torus
         assert image1 == image2
 
     def testEqual(self):
@@ -120,6 +125,10 @@ class TestGeometricImage:
         # different parity
         img8 = geom.GeometricImage(jnp.ones((10,10,2)), 1, 2)
         assert img1 != img8
+
+        # different is_torus
+        img9 = geom.GeometricImage(jnp.ones((10,10,2)), 0, 2, False)
+        assert img1 != img9
 
         #different data
         img9 = geom.GeometricImage(2*jnp.ones((10,10,2)), 0, 2)
@@ -159,6 +168,10 @@ class TestGeometricImage:
         image5 = geom.GeometricImage(jnp.ones((20,20,2), dtype=int), 0, 2)
         with pytest.raises(AssertionError): #N not equal
             result = image1 + image5
+
+        image6 = geom.GeometricImage(jnp.ones((10,10,2)), 0, 2, False)
+        with pytest.raises(AssertionError): # is_torus not equal
+            result = image1 + image6
 
     def testSub(self):
         image1 = geom.GeometricImage(jnp.ones((10,10,2), dtype=int), 0, 2)
@@ -526,6 +539,54 @@ class TestGeometricImage:
             [[3,0],[-3,1],[0,-1]],
             [[-1,-2],[-1,-1],[2,-3]]
         ], dtype=float)).all()
+
+    def testConvolveNonTorus(self):
+        """
+        Convolve where the GeometricImage is not a torus.
+        """
+        image1 = geom.GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=float), 0, 2, False)
+        filter_image = geom.GeometricFilter(jnp.array([[1,0,1],[0,0,0],[1,0,1]], dtype=float), 0, 2)
+
+        convolved_image = image1.convolve_with(filter_image)
+        assert not convolved_image.is_torus 
+        assert jnp.allclose(convolved_image.data, jnp.array([[0,-3,0], [1,5,1], [0,-3,0]]))
+
+    def testConvolveDilation(self):
+        """
+        Convolve where the Geometric Image is a torus, but we dilate the filter.
+        """
+        image1 = geom.GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=float), 0, 2)
+        filter_image = geom.GeometricFilter(jnp.array([[1,0,2],[1,-1,0],[0,0,-2]], dtype=float), 0, 2)
+
+        convolved_image = image1.convolve_with(filter_image, dilation=2)
+        assert jnp.allclose(convolved_image.data, jnp.array([[-9,-8,2], [2,-2,3], [5,5,5]]))
+
+    def testConvolveDilationNonTorus(self):
+        """
+        Convolve where the Geometric Image is not a torus and we dilate the filter.
+        """
+        image1 = geom.GeometricImage(
+            jnp.array([
+                [2,1,0,1,0], 
+                [0,0,-3,2,-2], 
+                [2,0,1,0,1],
+                [1,0,1,2,2],
+                [-1,-1,0,0,0],
+            ], dtype=float),
+            0,
+            2,
+            is_torus=False,
+        )
+        filter_image = geom.GeometricFilter(jnp.array([[1,0,2],[1,-1,0],[0,0,-2]], dtype=float), 0, 2)
+
+        convolved_image = image1.convolve_with(filter_image, dilation=2)
+        assert jnp.allclose(convolved_image.data, jnp.array([
+            [-4,-1,0,0,0], 
+            [-2,-4,-1,-2,-1], 
+            [-2,2,3,1,0],
+            [-7,4,-4,-2,-4],
+            [3,1,3,-1,1],
+        ]))
 
     def testTimesGroupElement(self):
         left90 = jnp.array([[0,-1],[1,0]])

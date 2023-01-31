@@ -1,7 +1,6 @@
 import numpy as np
 import pylab as plt
 import matplotlib.cm as cm
-from matplotlib.colors import ListedColormap
 import cmastro
 from geometricconvolutions.geometric import TINY
 

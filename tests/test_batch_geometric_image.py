@@ -100,3 +100,66 @@ class TestBatchGeometricImage:
 
         with pytest.raises(AssertionError): #L not equal
             image1 * image3
+
+    def testMaxPool(self):
+        image1 = geom.GeometricImage(
+            jnp.array([
+                [4,1,0,1], 
+                [0,0,-3,2], 
+                [1,0,1,0],
+                [1,0,2,1],
+            ], dtype=float),
+            0,
+            2,
+        )
+        image2 = geom.GeometricImage(jnp.arange(4 ** 2).reshape((4,4)), 0, 2)
+
+        batch_image = geom.BatchGeometricImage.from_images([image1, image2])
+
+        batch_image_pool2 = batch_image.max_pool(2)
+        assert batch_image_pool2.N == 2
+        assert batch_image_pool2.parity == 0
+        assert batch_image_pool2.D == 2
+        assert batch_image_pool2.k == 0
+        assert batch_image_pool2.is_torus == True
+        assert batch_image_pool2.L == 2
+        assert batch_image_pool2 == geom.BatchGeometricImage(
+            jnp.array([
+                [[4,-3],[1,2]],
+                [[5,7],[13,15]],
+            ]),
+            0,
+            2,
+        )
+
+    def testAveragePool(self):
+        image1 = geom.GeometricImage(
+            jnp.array([
+                [4,1,0,1], 
+                [0,0,-3,2], 
+                [1,0,1,0],
+                [1,0,2,1],
+            ], dtype=float),
+            0,
+            2,
+        )
+        image2 = geom.GeometricImage(jnp.arange(4 ** 2).reshape((4,4)), 0, 2)
+
+        batch_image = geom.BatchGeometricImage.from_images([image1, image2])
+
+        batch_image_pool2 = batch_image.average_pool(2)
+        assert batch_image_pool2.N == 2
+        assert batch_image_pool2.parity == 0
+        assert batch_image_pool2.D == 2
+        assert batch_image_pool2.k == 0
+        assert batch_image_pool2.is_torus == True
+        assert batch_image_pool2.L == 2
+        assert batch_image_pool2 == geom.BatchGeometricImage(
+            jnp.array([
+                [[1.25,0],[0.5,1]],
+                [[2.5,4.5],[10.5,12.5]],
+            ]),
+            0,
+            2,
+        )
+        

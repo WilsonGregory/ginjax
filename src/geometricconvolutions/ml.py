@@ -53,7 +53,7 @@ def conv_layer(params, param_idx, conv_filters, input_layer, target_x=None, bias
                         prods_group.append(bias_img)
 
                     group_sum = geom.linear_combination(prods_group, params[param_idx:(param_idx + len(prods_group))])
-                    out_layer.append(group_sum.convolve_with(conv_filter, dilation=dilation))
+                    out_layer.append(group_sum.convolve_with(conv_filter, rhs_dilation=(dilation,)*group_sum.D))
                     param_idx += len(prods_group)
 
     return out_layer, param_idx
@@ -190,6 +190,15 @@ def cascading_contractions(params, param_idx, x, input_layer):
             param_idx += len(images)
 
     return images_by_k[x.k], param_idx
+
+def max_pool_layer(input_layer, patch_len):
+    return [image.max_pool(patch_len) for image in input_layer]
+
+def average_pool_layer(input_layer, patch_len):
+    return [image.average_pool(patch_len) for image in input_layer]
+
+def unpool_layer(input_layer, patch_len):
+    return [image.unpool(patch_len) for image in input_layer]
 
 ## Params
 

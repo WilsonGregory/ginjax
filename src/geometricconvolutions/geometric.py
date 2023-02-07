@@ -28,7 +28,7 @@ import jax.lax
 import jax.nn
 from jax import jit, vmap
 from jax.tree_util import register_pytree_node_class
-from functools import partial
+from functools import partial, reduce
 
 TINY = 1.e-5
 LETTERS = 'abcdefghijklmnopqrstuvwxyxABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -614,7 +614,8 @@ class GeometricImage:
         args:
             filter_image (GeometricFilter): the filter we are performing the convolution with
             stride (tuple of ints): convolution stride, defaults to (1,)*self.D
-            padding (one of 'TORUS','VALID', or 'SAME'): defaults to 'TORUS' if image.is_torus, else 'SAME'
+            padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
+                defaults to 'TORUS' if image.is_torus, else 'SAME'
             lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
             rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
             warnings (bool): display warnings, defaults to True currently
@@ -637,7 +638,6 @@ class GeometricImage:
         if not padding: #if unspecified, infer from self.is_torus
             padding = 'TORUS' if self.is_torus else 'SAME'
 
-        # output_image_shape = (self.N,)*self.D
         if padding == 'TORUS':
             image = self.get_torus_expanded(filter_image, rhs_dilation[0])
             padding_literal = ((0,0),)*self.D
@@ -676,7 +676,7 @@ class GeometricImage:
             dimension_numbers=(('NHWC','HWIO','NHWC') if self.D == 2 else ('NHWDC','HWDIO','NHWDC')),
             feature_group_count=channel_length, #allows us to have separate filters for separate channels
         )
-        # if we need to get rid of the batch index at the beginning becuase its not a BatchGeometricImage
+        # if we need to get rid of the batch index at the beginning because its not a BatchGeometricImage
         start_idx = 0 if len(convolved_array.shape) == len(self.image_shape())+1 else 1
         out_data = convolved_array.reshape(convolved_array.shape[start_idx:-1] + (self.D,)*output_k)
         return self.__class__(out_data, self.parity + filter_image.parity, self.D, self.is_torus)
@@ -731,13 +731,13 @@ class GeometricImage:
         """
         assert (self.N % patch_len) == 0
 
-        avg_filter =GeometricImage((1/(patch_len ** self.D))* jnp.ones((patch_len,)*self.D), 0, self.D)
+        avg_filter = GeometricImage((1/(patch_len ** self.D)) * jnp.ones((patch_len,)*self.D), 0, self.D)
         return self.convolve_with(avg_filter, stride=(patch_len,) * self.D, padding='VALID')
 
     @partial(jit, static_argnums=1)
     def unpool(self, patch_len):
         """
-        Each pixel turns into a (patch_len,)*self.D patch of that pixel
+        Each pixel turns into a (patch_len,)*self.D patch of that pixel. Also called "Nearest Neighbor" unpooling
         args:
             patch_len (int): side length of the patch of our unpooled images
         """
@@ -757,11 +757,11 @@ class GeometricImage:
         """
         Calculate the norm pixel-wise
         """
-        # it is possible that the parity of the new image is always 0
-        vmap_norm = jnp.linalg.norm
-        for _ in range(len(self.image_shape())): #not sure if there is a jax way to avoid unrolling this loop
-            vmap_norm = vmap(vmap_norm)
+        #not sure if there is a jax way to avoid unrolling this loop
+        #construct a norm function that takes the norm of each pixel, so it maps over all the image_shape axes
+        vmap_norm = reduce(lambda f,_: vmap(f), range(len(self.image_shape())), jnp.linalg.norm)
 
+        # it is possible that the parity of the new image is always 0
         return self.__class__(vmap_norm(self.data), self.parity, self.D, self.is_torus)
 
     def normalize(self):

@@ -26,9 +26,9 @@ import numpy as np #removing this
 import jax.numpy as jnp
 import jax.lax
 import jax.nn
-from jax import jit
+from jax import jit, vmap
 from jax.tree_util import register_pytree_node_class
-from functools import partial
+from functools import partial, reduce
 
 TINY = 1.e-5
 LETTERS = 'abcdefghijklmnopqrstuvwxyxABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -414,12 +414,14 @@ class GeometricImage:
         """
         return self.data.shape
 
-    def image_shape(self):
+    def image_shape(self, plus_N=0):
         """
         Return the shape of the data block that is not the ktensor shape, but what comes before that. For regular
         GeometricImages, this is shape of the literal image. For BatchGeometricImage it prepends the batch size L.
+        args:
+            plus_N (int): numer to add to self.N, useful when growing/shrinking the image
         """
-        return self.D*(self.N,)
+        return self.D*(self.N + plus_N,)
 
     def pixel_shape(self):
         """
@@ -586,7 +588,15 @@ class GeometricImage:
         return image_data.reshape((1,) + image_shape + (channel_length,))
 
     partial(jit, static_argnums=2)
-    def convolve_with(self, filter_image, dilation=1, warnings=True):
+    def convolve_with(
+        self, 
+        filter_image, 
+        stride=None, 
+        padding=None,
+        lhs_dilation=None, 
+        rhs_dilation=None, 
+        warnings=True,
+    ):
         """
         Here is how this function works:
         1. Expand the geom_image to its torus shape, i.e. add filter.m cells all around the perimeter of the image
@@ -603,10 +613,13 @@ class GeometricImage:
 
         args:
             filter_image (GeometricFilter): the filter we are performing the convolution with
-            dilation (int): amount of dilation to apply to image during convolution, defaults to 1
+            stride (tuple of ints): convolution stride, defaults to (1,)*self.D
+            padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
+                defaults to 'TORUS' if image.is_torus, else 'SAME'
+            lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
+            rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
             warnings (bool): display warnings, defaults to True currently
         """
-        assert dilation > 0
         if (self.data.dtype != filter_image.data.dtype):
             dtype = 'float32'
             if (warnings):
@@ -616,17 +629,28 @@ class GeometricImage:
 
         output_k = self.k + filter_image.k
 
-        rhs_dilation = (dilation,)*self.D if dilation else None
+        if rhs_dilation is None:
+            rhs_dilation = (1,)*self.D
 
-        # if the image is on the torus, we expand the data so we can convolve with valid. Else, we will pad w/ 0s
-        if self.is_torus:
-            torus_expand_img = self.get_torus_expanded(filter_image, dilation)
-            padding_mode = ((0,0),)*self.D #equivalent to 'VALID'
+        if stride is None:
+            stride = (1,)*self.D
+
+        if not padding: #if unspecified, infer from self.is_torus
+            padding = 'TORUS' if self.is_torus else 'SAME'
+
+        if padding == 'TORUS':
+            image = self.get_torus_expanded(filter_image, rhs_dilation[0])
+            padding_literal = ((0,0),)*self.D
         else:
-            torus_expand_img = self #not on the torus, don't need to expand at all, just pad with zeros
-            padding_mode = ((filter_image.m*dilation,)*2,)*self.D #equivalent to 'SAME', pad w/ 0s
+            image = self
+            if padding == 'VALID':
+                padding_literal = ((0,0),)*self.D
+            elif padding == 'SAME':
+                padding_literal = ((filter_image.m * dilation,) * 2 for dilation in rhs_dilation)
+            else:
+                padding_literal = padding
 
-        img_expanded, filter_expanded = GeometricImage.pre_tensor_product_expand(torus_expand_img, filter_image)
+        img_expanded, filter_expanded = GeometricImage.pre_tensor_product_expand(image, filter_image)
         img_expanded = img_expanded.astype(dtype)
         filter_expanded = filter_expanded.astype(dtype)
 
@@ -635,7 +659,7 @@ class GeometricImage:
         # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
         img_formatted = self.__class__.data_to_NHWC_format(
             img_expanded,
-            torus_expand_img.image_shape(),
+            image.image_shape(),
             channel_length,
         )
 
@@ -645,13 +669,17 @@ class GeometricImage:
         convolved_array = jax.lax.conv_general_dilated(
             img_formatted, #lhs
             filter_formatted, #rhs
-            (1,) * self.D, #window strides
-            padding_mode,
+            stride,
+            padding_literal,
+            lhs_dilation=lhs_dilation,
             rhs_dilation=rhs_dilation,
             dimension_numbers=(('NHWC','HWIO','NHWC') if self.D == 2 else ('NHWDC','HWDIO','NHWDC')),
             feature_group_count=channel_length, #allows us to have separate filters for separate channels
-        ).reshape(self.image_shape() + (self.D,)*output_k) #reshape the pixel to the correct tensor shape
-        return self.__class__(convolved_array, self.parity + filter_image.parity, self.D, self.is_torus)
+        )
+        # if we need to get rid of the batch index at the beginning because its not a BatchGeometricImage
+        start_idx = 0 if len(convolved_array.shape) == len(self.image_shape())+1 else 1
+        out_data = convolved_array.reshape(convolved_array.shape[start_idx:-1] + (self.D,)*output_k)
+        return self.__class__(out_data, self.parity + filter_image.parity, self.D, self.is_torus)
 
     def get_torus_expanded(self, filter_image, dilation):
         """
@@ -659,16 +687,62 @@ class GeometricImage:
         just doing convolutions on the expanded image and will get the same result. Return a new GeometricImage
         args:
             filter_image (GeometricFilter): filter, how much is expanded depends on filter_image.m
+            dilation (int): dilation to apply to each filter dimension D
         """
         padding = filter_image.m * dilation
         new_N = self.N + 2 * padding
         indices = jnp.array(list(it.product(range(new_N), repeat=self.D)), dtype=int) - padding
         return self.__class__(
-            self[self.hash(indices)].reshape((new_N,) * self.D + self.pixel_shape()),
+            self[self.hash(indices)].reshape(self.image_shape(plus_N=(2 * padding)) + self.pixel_shape()),
             self.parity,
             self.D,
             self.is_torus,
         )
+
+    @partial(jit, static_argnums=1)
+    def max_pool(self, patch_len):
+        """
+        Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined by
+        the norm of the pixel. Note that for scalars, this will be the absolute value of the pixel.
+        args:
+            patch_len (int): the side length of the patches, must evenly divide self.N
+        """
+        assert (self.N % patch_len) == 0
+        plus_N = -1*(self.N - int(self.N / patch_len))
+
+        idxs = jnp.array(list(it.product(range(patch_len), repeat=self.D)))
+        max_idxs = []
+        for base in it.product(range(0, self.N, patch_len), repeat=self.D):
+            block_idxs = jnp.array(base) + idxs
+            max_hash_idx = jnp.argmax(self.norm()[self.hash(block_idxs)])
+            max_idxs.append(block_idxs[max_hash_idx])
+
+        max_data = self[self.hash(jnp.array(max_idxs))].reshape(self.image_shape(plus_N) + self.pixel_shape())
+        return self.__class__(max_data, self.parity, self.D, self.is_torus)
+
+    @partial(jit, static_argnums=1)
+    def average_pool(self, patch_len):
+        """
+        Perform a average pooling operation where the length of the side of each patch is patch_len. This is 
+        equivalent to doing a convolution where each element of the filter is 1 over the number of pixels in the 
+        filter, the stride length is patch_len, and the padding is 'VALID'.
+        args:
+            patch_len (int): the side length of the patches, must evenly divide self.N
+        """
+        assert (self.N % patch_len) == 0
+
+        avg_filter = GeometricImage((1/(patch_len ** self.D)) * jnp.ones((patch_len,)*self.D), 0, self.D)
+        return self.convolve_with(avg_filter, stride=(patch_len,) * self.D, padding='VALID')
+
+    @partial(jit, static_argnums=1)
+    def unpool(self, patch_len):
+        """
+        Each pixel turns into a (patch_len,)*self.D patch of that pixel. Also called "Nearest Neighbor" unpooling
+        args:
+            patch_len (int): side length of the patch of our unpooled images
+        """
+        grow_filter = GeometricImage(jnp.ones((patch_len,)*self.D), 0, self.D)
+        return self.convolve_with(grow_filter, padding=((patch_len-1,)*2,)*self.D, lhs_dilation=(patch_len,)*self.D)
 
     def times_scalar(self, scalar):
         """
@@ -678,22 +752,23 @@ class GeometricImage:
         """
         return self * scalar
 
+    @jit
     def norm(self):
         """
         Calculate the norm pixel-wise
         """
-        if self.k == 0:
-            return jnp.abs(self.data)
+        #not sure if there is a jax way to avoid unrolling this loop
+        #construct a norm function that takes the norm of each pixel, so it maps over all the image_shape axes
+        vmap_norm = reduce(lambda f,_: vmap(f), range(len(self.image_shape())), jnp.linalg.norm)
 
-        image_size = int(np.multiply.reduce(self.image_shape()))
-        vectorized_pixels = self.data.reshape(((image_size,) + self.pixel_shape()))
-        return jnp.array([jnp.linalg.norm(x, ord=None) for x in vectorized_pixels]).reshape(self.image_shape())
+        # it is possible that the parity of the new image is always 0
+        return self.__class__(vmap_norm(self.data), self.parity, self.D, self.is_torus)
 
     def normalize(self):
         """
         Normalize so that the max norm of each pixel is 1, and all other tensors are scaled appropriately
         """
-        max_norm = jnp.max(self.norm())
+        max_norm = jnp.max(self.norm().data)
         if max_norm > TINY:
             return self.times_scalar(1. / max_norm)
         else:
@@ -862,7 +937,7 @@ class GeometricFilter(GeometricImage):
         """
         Gives an idea of size for a filter, sparser filters are smaller while less sparse filters are larger
         """
-        norms = self.norm()
+        norms = self.norm().data
         numerator = 0.
         for key in self.key_array():
             numerator += jnp.linalg.norm(key * norms[tuple(key)], ord=2)
@@ -974,12 +1049,31 @@ class BatchGeometricImage(GeometricImage):
         data = jnp.stack([images[idx].data for idx in indices])
         return cls(data, images[0].parity, images[0].D, images[0].is_torus)
 
-    def image_shape(self):
+    def to_images(self):
+        """
+        Convert a batch image to a list of the individual images. Generally, doing this, then applying an operation,
+        then converting back to the batch will be less efficient than operating on the batch.
+        """
+        return [GeometricImage(image_data, self.parity, self.D, self.is_torus) for image_data in self.data]
+
+    def image_shape(self, plus_N=0):
         """
         Return the shape of the data block that is not the ktensor shape, but what comes before that. For regular
         GeometricImages, this is shape of the literal image. For BatchGeometricImage it prepends the batch size L.
+        args:
+            plus_N (int): number to add to self.N, used when shape will be growing/shrinking.
         """
-        return (self.L,) + (self.N,) * self.D
+        return (self.L,) + super(BatchGeometricImage, self).image_shape(plus_N)
+
+    def __getitem__(self, key):
+        """
+        Accessor for data values. For the BatchGeometricImage, we prepend ':' to the key automatically so that you
+        are selecting starting with the pixels on ALL images in the batch. If you want to select without this prepend,
+        do self.data[key] instead of self[key].
+        args:
+            key (index): JAX/numpy indexer, i.e. "0", "0,1,3", "4:, 2:3, 0" etc.
+        """
+        return self.data[(slice(None),)+key]
 
     def __str__(self):
         return "<{} object with L={} images in D={} with N={}, k={}, parity={}, and is_torus={}>".format(
@@ -1014,24 +1108,15 @@ class BatchGeometricImage(GeometricImage):
         """
         return image_data.reshape(image_shape + (channel_length,))
 
-    def get_torus_expanded(self, filter_image):
+    def max_pool(self, patch_len):
         """
-        For a particular filter, expand the image so that we no longer have to do convolutions on the torus, we are
-        just doing convolutions on the expanded image and will get the same result. Return a new GeometricImage
+        Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined by
+        the norm of the pixel. Note that for scalars, this will be the absolute value of the pixel.
         args:
-            filter_image (GeometricFilter): filter, how much is expanded depends on filter_image.m
+            patch_len (int): the side length of the patches, must evenly divide self.N
         """
-        new_N = self.N + 2 * filter_image.m
-        indices = jnp.array(list(it.product(range(new_N), repeat=self.D)), dtype=int) - filter_image.m
-        flipped_data = jnp.moveaxis(self.data, 0, -1) #flip batch axis to the end
-        indexed_data = jnp.moveaxis(flipped_data[self.hash(indices)], -1, 0) #flip batch axis back to the front
-
-        return self.__class__(
-            indexed_data.reshape((self.L,) + (new_N,) * self.D + self.pixel_shape()),
-            self.parity,
-            self.D,
-            self.is_torus,
-        )
+        # there has to be a better way of doing this
+        return BatchGeometricImage.from_images([image.max_pool(patch_len) for image in self.to_images()]) 
 
     # TODO!!
     def normalize(self):

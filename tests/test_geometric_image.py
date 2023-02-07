@@ -464,6 +464,16 @@ class TestGeometricImage:
 
             assert (img5_contracted.data == jnp.array(lst).reshape(img5_contracted.shape())).all()
 
+    def testNorm(self):
+        image1 = geom.GeometricImage(jnp.array([[1,2],[-1,0]]), 0, 2)
+        assert image1.norm() == geom.GeometricImage(jnp.array([[1,2],[1,0]]), 0, 2)
+
+        image2 = geom.GeometricImage(jnp.array([[[1,0], [-1,-1]],[[0,0],[-4,3]]]), 0, 2)
+        assert image2.norm() == geom.GeometricImage(jnp.array([[1, jnp.sqrt(2)],[0,5]]), 0, 2)
+
+        image3 =  geom.GeometricImage(jnp.array([[[4,-3],[0,1]],[[-2,-3],[1,2]]]), 0, 3)
+        assert image3.norm() ==  geom.GeometricImage(jnp.array([[[4,3],[0,1]],[[2,3],[1,2]]]), 0, 3)
+
     def testNormalize(self):
         key = random.PRNGKey(0)
         image1 = geom.GeometricImage(random.uniform(key, shape=(10,10)), 0, 2)
@@ -558,7 +568,7 @@ class TestGeometricImage:
         image1 = geom.GeometricImage(jnp.array([[2,1,0], [0,0,-3], [2,0,1]], dtype=float), 0, 2)
         filter_image = geom.GeometricFilter(jnp.array([[1,0,2],[1,-1,0],[0,0,-2]], dtype=float), 0, 2)
 
-        convolved_image = image1.convolve_with(filter_image, dilation=2)
+        convolved_image = image1.convolve_with(filter_image, rhs_dilation=(2,2))
         assert jnp.allclose(convolved_image.data, jnp.array([[-9,-8,2], [2,-2,3], [5,5,5]]))
 
     def testConvolveDilationNonTorus(self):
@@ -579,7 +589,7 @@ class TestGeometricImage:
         )
         filter_image = geom.GeometricFilter(jnp.array([[1,0,2],[1,-1,0],[0,0,-2]], dtype=float), 0, 2)
 
-        convolved_image = image1.convolve_with(filter_image, dilation=2)
+        convolved_image = image1.convolve_with(filter_image, rhs_dilation=(2,2))
         assert jnp.allclose(convolved_image.data, jnp.array([
             [-4,-1,0,0,0], 
             [-2,-4,-1,-2,-1], 
@@ -690,3 +700,209 @@ class TestGeometricImage:
 
         img3 = geom.GeometricImage.zeros(10,2,0,3)
         assert img3.pixel_size() == 9
+
+    def testMaxPool(self):
+        image1 = geom.GeometricImage(
+            jnp.array([
+                [4,1,0,1], 
+                [0,0,-3,2], 
+                [1,0,1,0],
+                [1,0,2,1],
+            ], dtype=float),
+            0,
+            2,
+        )
+
+        img1_pool2 = image1.max_pool(2)
+        assert img1_pool2.N == 2
+        assert img1_pool2.parity == 0
+        assert img1_pool2.D == 2
+        assert img1_pool2.k == 0
+        assert img1_pool2.is_torus == True
+        assert img1_pool2 == geom.GeometricImage(jnp.array([[4,-3],[1,2]]), 0, 2)
+
+        img1_pool4 = image1.max_pool(4)
+        assert img1_pool4.N == 1
+        assert img1_pool4 == geom.GeometricImage(jnp.array([[4]]), 0, 2)
+
+        image2 = geom.GeometricImage(
+            jnp.array([
+                [[1,0],[0,-1],[1,1],[3,4]],
+                [[0,0],[0,1],[1,0],[2,0]],
+                [[-3,4],[1,0],[1,0],[1,0]],
+                [[1,0],[1,0],[1,0],[-1,0]],
+            ]),
+            0,
+            2,
+        )
+
+        img2_pool2 = image2.max_pool(2)
+        assert img2_pool2.N == 2
+        assert img2_pool2 == geom.GeometricImage(
+            jnp.array([
+                [[1,0], [3,4]],
+                [[-3,4], [1,0]],
+            ]),
+            0,
+            2,
+        )
+
+        image3 = geom.GeometricImage(jnp.arange(4 ** 3).reshape((4,4,4)), 0, 3)
+        img3_pool2 = image3.max_pool(2)
+        assert img3_pool2 == geom.GeometricImage(
+            jnp.array([
+                [[21,23],[29,31]],
+                [[53,55],[61,63]],
+            ]),
+            0,
+            3,
+        )
+
+    def testAveragePool(self):
+        image1 = geom.GeometricImage(
+            jnp.array([
+                [4,1,0,1], 
+                [0,0,-3,2], 
+                [1,0,1,0],
+                [1,0,2,1],
+            ], dtype=float),
+            0,
+            2,
+        )
+
+        img1_pool2 = image1.average_pool(2)
+        assert img1_pool2.N == 2
+        assert img1_pool2.parity == 0
+        assert img1_pool2.D == 2
+        assert img1_pool2.k == 0
+        assert img1_pool2.is_torus == True
+        assert img1_pool2 == geom.GeometricImage(jnp.array([[1.25,0],[0.5,1]]), 0, 2)
+
+        img1_pool4 = image1.average_pool(4)
+        assert img1_pool4.N == 1
+        assert img1_pool4 == geom.GeometricImage(jnp.array([[11/16]]), 0, 2)
+
+        image2 = geom.GeometricImage(
+            jnp.array([
+                [[1,0],[0,-1],[1,1],[3,4]],
+                [[0,0],[0,1],[1,0],[2,0]],
+                [[-3,4],[1,0],[1,0],[1,0]],
+                [[1,0],[1,0],[1,0],[-1,0]],
+            ]),
+            0,
+            2,
+        )
+
+        img2_pool2 = image2.average_pool(2)
+        assert img2_pool2.N == 2
+        assert img2_pool2 == geom.GeometricImage(
+            jnp.array([
+                [[0.25,0], [1.75,1.25]],
+                [[0,1], [0.5,0]],
+            ]),
+            0,
+            2,
+        )
+
+        image3 = geom.GeometricImage(jnp.arange(4 ** 3).reshape((4,4,4)), 0, 3)
+        img3_pool2 = image3.average_pool(2)
+        assert img3_pool2 == geom.GeometricImage(
+            jnp.array([
+                [[10.5,12.5],[18.5,20.5]],
+                [[42.5,44.5],[50.5,52.5]],
+            ]),
+            0,
+            3,
+        )
+
+    def testUnpool(self):
+        image1 = geom.GeometricImage(
+            jnp.array([
+                [4,-3], 
+                [1,2], 
+            ], dtype=float),
+            0,
+            2,
+        )
+
+        unpooled_image1 = image1.unpool(2)
+        assert unpooled_image1.N == image1.N*2
+        assert unpooled_image1.parity == image1.parity
+        assert unpooled_image1.D == image1.D
+        assert unpooled_image1.is_torus == image1.is_torus
+        assert unpooled_image1.k == image1.k
+        assert unpooled_image1 == geom.GeometricImage(
+            jnp.array([
+                [4,4,-3,-3], 
+                [4,4,-3,-3], 
+                [1,1,2,2],
+                [1,1,2,2],
+            ], dtype=float),
+            0,
+            2,
+        )
+
+        unpooled_image2 = image1.unpool(3)
+        assert unpooled_image2.N == image1.N*3
+        assert unpooled_image2 == geom.GeometricImage(
+            jnp.array([
+                [4,4,4,-3,-3,-3], 
+                [4,4,4,-3,-3,-3], 
+                [4,4,4,-3,-3,-3], 
+                [1,1,1,2,2,2],
+                [1,1,1,2,2,2],
+                [1,1,1,2,2,2],
+            ], dtype=float),
+            0,
+            2,
+        )
+
+        # D=3
+        image2 = geom.GeometricImage(
+            jnp.array([
+                [[1,3],[-2,5]],
+                [[0,4],[1,0.3]],
+            ]),
+            0,
+            3,
+        )
+
+        unpooled_image3 = image2.unpool(2)
+        assert unpooled_image3.N == image2.N * 2
+        assert unpooled_image3.D == image2.D
+        assert unpooled_image3 == geom.GeometricImage(
+            jnp.array([
+                [[1,1,3,3],[1,1,3,3],[-2,-2,5,5],[-2,-2,5,5]],
+                [[1,1,3,3],[1,1,3,3],[-2,-2,5,5],[-2,-2,5,5]],
+                [[0,0,4,4],[0,0,4,4],[1,1,0.3,0.3],[1,1,0.3,0.3]],
+                [[0,0,4,4],[0,0,4,4],[1,1,0.3,0.3],[1,1,0.3,0.3]],
+            ]),
+            0,
+            3,
+        )
+
+        # k=1
+        image3 = geom.GeometricImage(
+            jnp.array([
+                [[1,0], [3,4]],
+                [[-3,4], [1,0]],
+            ]),
+            0,
+            2,
+        )
+
+        unpooled_image4 = image3.unpool(2)
+        assert unpooled_image4.N == image3.N * 2
+        assert unpooled_image4.k == image3.k
+        assert unpooled_image4 == geom.GeometricImage(
+            jnp.array([
+                [[1,0],[1,0],[3,4],[3,4]],
+                [[1,0],[1,0],[3,4],[3,4]],
+                [[-3,4],[-3,4],[1,0],[1,0]],
+                [[-3,4],[-3,4],[1,0],[1,0]],
+            ]),
+            0,
+            2,
+        )
+
+        

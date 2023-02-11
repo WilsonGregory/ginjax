@@ -18,7 +18,7 @@ import geometricconvolutions.utils as utils
 
 def get_gravity_vector(position1, position2, mass):
     r_vec = position1 - position2
-    r_squared = np.linalg.norm(r_vec) ** 2
+    r_squared = np.linalg.norm(r_vec) ** 3
     return (mass / r_squared) * r_vec
 
 def get_gravity_field_image(N, D, point_position, point_mass):

@@ -7,6 +7,7 @@ import math
 from jax import grad, jit, random, value_and_grad, vmap
 import jax.nn
 import jax.numpy as jnp
+from jax.tree_util import register_pytree_node_class
 import optax
 
 import geometricconvolutions.geometric as geom
@@ -172,8 +173,7 @@ def order_cap_layer(images, max_k):
     for img in images:
         if (img.k > max_k):
             k_diff = img.k - max_k 
-            if(k_diff % 2 == 1): #if its odd, we need to go one lower
-                k_diff += 1
+            k_diff += (k_diff % 2) #if its odd, we need to go one lower
 
             for contract_idx in geom.get_contraction_indices(img.k, img.k - k_diff):
                 out_layer.append(img.multicontract(contract_idx))

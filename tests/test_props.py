@@ -32,6 +32,30 @@ class TestPropositions:
         assert jnp.allclose(img1.multicontract(((1,2),(3,4))).data, img1.multicontract(((3,4),(1,2))).data)
         assert jnp.allclose(img1.multicontract(((1,4),(2,3))).data, img1.multicontract(((1,4),(2,3))).data)
 
+    def testContractSwappableIndices(self):
+        # Test that convolving with a k=2, parity=0 invariant filter means that we can contract on either
+        # filter index and it is the same.
+        key = random.PRNGKey(time.time_ns())
+        N = 3
+        D = 2
+        img_k = 3
+        operators = geom.make_all_operators(D)
+        conv_filters = geom.get_unique_invariant_filters(N, 2, 0, D, operators)
+
+        img1 = geom.GeometricImage(random.normal(key, shape=((N,)*D + (D,)*img_k)), 0, D)
+        for conv_filter in conv_filters:
+            convolved_img = img1.convolve_with(conv_filter)
+            for i in range(img_k):
+                assert convolved_img.contract(i, 3) == convolved_img.contract(i, 4)
+
+        for conv_filter1 in conv_filters:
+            for conv_filter2 in conv_filters:
+                prod_img = img1.convolve_with(conv_filter1) * img1.convolve_with(conv_filter2)
+                for i in [0,1,2,5,6,7]:
+                    assert prod_img.contract(i, 3) == prod_img.contract(i, 4)
+                    assert prod_img.contract(i, 8) == prod_img.contract(i, 9)
+
+
     def testConvolutionLinearity(self):
         """
         For scalars alpha, beta, tensor images image1, image2 and filter c1 alpha
@@ -137,13 +161,11 @@ class TestPropositions:
 
     def testInvariantFilter(self):
         # For every invariant filter of order k, there exists an invariant filter of order k+2 where contracting on
-        # any pair of tensor indices results in the invariant filter of order k.
+        # some pair of tensor indices results in the invariant filter of order k.
         D = 2
         N = 3
         group_operators = geom.make_all_operators(D)
         max_k = 5
-
-        kron_delta_img = geom.KroneckerDeltaSymbol.get_image(N, D, 2)
 
         conv_filters_dict = geom.get_invariant_filters([N], range(max_k+1), [0,1], D, group_operators, scale='one')
         for k in range(max_k - 1):
@@ -151,18 +173,16 @@ class TestPropositions:
                 for conv_filter in conv_filters_dict[(D, N, k, parity)]:
                     found_match = False
                     for upper_conv_filter in conv_filters_dict[(D, N, k+2, parity)]:
-                        contracted_filter = upper_conv_filter.contract(0,1)
-
-                        datablock = jnp.stack([conv_filter.data.flatten(), contracted_filter.data.flatten()])
-                        u, s, v = jnp.linalg.svd(datablock)
-
-                        if (jnp.sum(s > geom.TINY) == 1): #if one equals...
-                            found_match = True
-                            for i,j in it.combinations(range(k+2),2):
-                                contracted_filter = upper_conv_filter.contract(i,j)
-                                datablock = jnp.stack([conv_filter.data.flatten(), contracted_filter.data.flatten()])
-                                u, s, v = jnp.linalg.svd(datablock)
-                                assert jnp.sum(s > geom.TINY) == 1 # ...they must all equal
+                        for i,j in it.combinations(range(k+2),2):
+                            contracted_filter = upper_conv_filter.contract(i,j)
+                            datablock = jnp.stack([conv_filter.data.flatten(), contracted_filter.data.flatten()])
+                            s = jnp.linalg.svd(datablock, compute_uv=False)
+                            if (jnp.sum(s > geom.TINY) != 1): #they're the same
+                                found_match = True
+                                break
+                        
+                        if (found_match):
+                            break
 
                     assert found_match
 

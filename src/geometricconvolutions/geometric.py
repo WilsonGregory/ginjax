@@ -159,23 +159,17 @@ def get_unique_invariant_filters(M, k, parity, D, operators, scale='normalize'):
     assert scale == 'normalize' or scale == 'one'
 
     # make the seed filters
-    tmp = GeometricFilter.zeros(M, k, parity, D)
-    keys, shape = tmp.keys(), tmp.data.shape
+    shape = (M,)*D + (D,)*k
+    size = np.multiply.reduce(shape)
     allfilters = []
-    if k == 0:
-        for kk in keys:
-            thisfilter = GeometricFilter.zeros(M, k, parity, D)
-            thisfilter[kk] = 1
-            allfilters.append(thisfilter)
-    else:
-        for kk in keys:
-            thisfilter = GeometricFilter.zeros(M, k, parity, D)
-            for indices in it.product(range(D), repeat=k):
-                thisfilter[kk] = thisfilter[kk].at[indices].set(1) #is this even right?
-                allfilters.append(thisfilter)
+
+    for i in range(size):
+        data = [0]*size
+        data[i] = 1
+        allfilters.append(GeometricFilter(jnp.array(data).reshape(shape), parity, D))
 
     # do the group averaging
-    bigshape = (len(allfilters), ) + thisfilter.data.flatten().shape
+    bigshape = (len(allfilters), size)
     filter_matrix = np.zeros(bigshape)
     for i, f1 in enumerate(allfilters):
         ff = GeometricFilter.zeros(M, k, parity, D)
@@ -257,27 +251,41 @@ def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', ret
 # ------------------------------------------------------------------------------
 # PART 5: Define geometric (k-tensor, torus) images.
 
-def get_contraction_indices(initial_k, final_k):
+def get_contraction_indices(initial_k, final_k, swappable_idxs=()):
     """
     Get all possible unique indices for multicontraction. Returns a list of indices. The indices are a tuple of tuples
     where each of the inner tuples are pairs of indices. For example, if initial_k=5, final_k = 4, one element of the
     list that is returned will be ((0,1), (2,3)), another will be ((1,4), (0,2)), etc.
 
     Note that contracting (0,1) is the same as contracting (1,0). Also, contracting ((0,1),(2,3)) is the same as
-    contracting ((2,3),(0,1)). In both of those cases, they won't be returned. There are additional contractions that
-    are the same depending on how the image was created, but we don't worry about that complexity here.
+    contracting ((2,3),(0,1)). In both of those cases, they won't be returned. There is also the optional 
+    argument swappable_idxs to specify indices that can be swapped without changing the contraction. Suppose
+    we have A * c1 where c1 is a k=2, parity=0 invariant conv_filter. In that case, we can contract on either of 
+    its indices and it won't change the result because transposing the axes is a group operation.
     args:
         initial_k (int): the starting number of indices that we have
         final_k (int): the final number of indices that we want to end up with
+        swappable_idxs (tuple of tuple pairs of ints): Indices that can swapped w/o changing the contraction
     """
-    assert ((initial_k + final_k) % 2)  == 0
+    assert ((initial_k + final_k) % 2) == 0
     assert initial_k >= final_k
     assert final_k >= 0
     tuple_pairs = it.combinations(it.combinations(range(initial_k),2),(initial_k - final_k) // 2)
     pairs = np.array([np.array(pair).reshape((initial_k - final_k,)) for pair in tuple_pairs])
     unique_rows = np.array([True if len(np.unique(row)) == len(row) else False for row in pairs])
     unique_pairs = pairs[unique_rows]
-    return [tuple((x,y) for x,y in zip(idxs[0::2], idxs[1::2])) for idxs in unique_pairs]
+    unique_swapped_pairs = unique_pairs
+
+    for pair in swappable_idxs:
+        for row in unique_pairs:
+            locs = np.isin(row, pair)
+            row[np.max(np.where(locs))] = pair[1]
+            row[np.min(np.where(locs))] = pair[0] #if there is only 1, it will get set to pair 0
+            # small bug. if (0,1) is swappable, we won't catch that ((0,2),(1,3)) and ((0,3),(1,2)) are dupes
+
+    unique_swapped_pairs = np.unique(unique_pairs, axis=0)
+
+    return [tuple((x,y) for x,y in zip(idxs[0::2], idxs[1::2])) for idxs in unique_swapped_pairs]
 
 @partial(jit, static_argnums=1)
 def multicontract(data, indices):
@@ -296,7 +304,7 @@ def multicontract(data, indices):
     einstr = list(LETTERS[:dimensions])
     for i, (idx1, idx2) in enumerate(indices):
         einstr[idx1] = einstr[idx2] = LETTERS[-(i+1)]
-
+    
     return jnp.einsum(''.join(einstr), data)
 
 @jit

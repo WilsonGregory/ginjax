@@ -7,7 +7,6 @@ import math
 from jax import grad, jit, random, value_and_grad, vmap
 import jax.nn
 import jax.numpy as jnp
-from jax.tree_util import register_pytree_node_class
 import optax
 
 import geometricconvolutions.geometric as geom
@@ -63,6 +62,9 @@ def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target
                     out_layer[res_k] = jnp.concatenate((out_layer[res_k], res))
                 else:
                     out_layer[res_k] = res
+
+    if (max_k is not None):
+        out_layer = order_cap_layer(out_layer, max_k)
 
     return out_layer, param_idx
 
@@ -182,7 +184,12 @@ def order_cap_layer(images, max_k):
 
     return out_layer
 
+<<<<<<< HEAD
 def cascading_contractions(params, param_idx, target_k, input_layer, D):
+=======
+@functools.partial(jit, static_argnums=[1,2])
+def cascading_contractions(params, param_idx, target_k, input_layer):
+>>>>>>> tmp
     """
     Starting with the highest k, sum all the images into a single image, perform all possible contractions,
     then add it to the layer below.
@@ -193,6 +200,7 @@ def cascading_contractions(params, param_idx, target_k, input_layer, D):
         input_layer (list of GeometricImages): images to contract
         D (int): dimension of the images
     """
+<<<<<<< HEAD
     max_k = np.max(list(input_layer.keys()))
     for k in reversed(range(target_k+2, max_k+2, 2)):
         images = input_layer[k]
@@ -212,6 +220,27 @@ def cascading_contractions(params, param_idx, target_k, input_layer, D):
                 input_layer[k - 2] = contracted_img
 
     return input_layer[target_k], param_idx
+=======
+    images_by_k = defaultdict(list)
+    max_k = np.max([img.k for img in input_layer])
+    for img in input_layer:
+        images_by_k[img.k].append(img)
+
+    for k in reversed(range(target_k+2, max_k+2, 2)):
+        images = images_by_k[k]
+
+        for u,v in it.combinations(range(k), 2):
+            group_sum = geom.linear_combination(images, params[param_idx:(param_idx + len(images))])
+            contracted_img = group_sum.contract(u,v)
+            images_by_k[contracted_img.k].append(contracted_img)
+
+            param_idx += len(images)
+
+    return images_by_k[target_k], param_idx
+
+def contract_to_scalars(params, param_idx, input_layer):
+    return cascading_contractions(params, param_idx, 0, list(filter(lambda img: (img.k % 2) == 0, input_layer)))
+>>>>>>> tmp
 
 def max_pool_layer(input_layer, patch_len):
     return [image.max_pool(patch_len) for image in input_layer]

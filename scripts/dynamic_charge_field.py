@@ -6,6 +6,7 @@ from functools import partial
 import argparse
 import time
 import matplotlib.pyplot as plt
+# import imageio.v3 as iio
 import imageio
 
 from jax import vmap
@@ -42,9 +43,10 @@ def update_charges(charges, delta_t):
     new_charges = []
     for i in range(len(charges)):
         velocities = get_net_velocity(charges[i], jnp.concatenate((charges[:i], charges[i+1:])), 1)
-        net_velocity = jnp.sum(velocities)
+        assert velocities.shape == (len(charges) - 1, 2)
+        net_velocity = jnp.sum(velocities, axis=0)
+        assert net_velocity.shape == (2,)
         new_charges.append(charges[i] + delta_t * net_velocity)
-        # jnp.sum(get_net_velocity(charges[i], charges[:i] + charges[i+1:], 1))
     return jnp.stack(new_charges)
 
 def Qtransform(vector_field, s):
@@ -64,15 +66,15 @@ def get_data(N, D, num_charges, num_steps, delta_t, s, rand_key, num_images=1, o
         rand_key, subkey = random.split(rand_key)
         # generate charges, generally in the center so that they don't repel off the grid
         charges = get_initial_charges(num_charges, N/2, D, subkey) + jnp.array([int(N/4)]*D)
-        initial_fields.append(get_velocity_field(N, D, charges))
+        initial_fields.append(Qtransform(get_velocity_field(N, D, charges), s))
 
         for i in range(num_steps):
             charges = update_charges(charges, delta_t)
             if outfile:
                 velocity_field = get_velocity_field(N, D, charges)
-                utils.plot_image(velocity_field)
-                plt.savefig(f'{outfile}_{i}.png')
-                plt.close()
+                # utils.plot_image(velocity_field)
+                # plt.savefig(f'{outfile}_{i}.png')
+                # plt.close()
 
                 utils.plot_image(Qtransform(velocity_field, s))
                 plt.savefig(f'{outfile}_q_{i}.png')
@@ -80,31 +82,51 @@ def get_data(N, D, num_charges, num_steps, delta_t, s, rand_key, num_images=1, o
 
 
         if outfile:
-            with imageio.get_writer(f'{outfile}.gif', mode='I') as writer:
-                for i in range(num_steps):
-                    image = imageio.imread(f'{outfile}_{i}.png')
-                    writer.append_data(image)
+            # frames = []
+            # for i in range(num_steps):
+            #     frames.append(iio.imread(f'{outfile}_{i}.png'))
+            
+            # iio.imwrite(f'{outfile}.gif', jnp.stack(frames))
+
+            # with imageio.get_writer(f'{outfile}.gif', mode='I') as writer:
+            #     for i in range(num_steps):
+            #         image = imageio.imread(f'{outfile}_{i}.png')
+            #         writer.append_data(image)
             with imageio.get_writer(f'{outfile}_q.gif', mode='I') as writer:
                 for i in range(num_steps):
                     image = imageio.imread(f'{outfile}_q_{i}.png')
                     writer.append_data(image)
 
-        final_fields.append(get_velocity_field(N, D, charges))
+        final_fields.append(Qtransform(get_velocity_field(N, D, charges), s))
 
     return initial_fields, final_fields
 
 def net(params, x, conv_filters, target_img, return_params=False):
     # Note that the target image is only used for its shape
     layer, param_idx = ml.conv_layer(params, 0, conv_filters, [x])
+    scalar_layer, param_idx = ml.contract_to_scalars(params, int(param_idx), layer)
+    layer += ml.relu_layer(scalar_layer)
+
     # layer, param_idx = ml.polynomial_layer(params, int(param_idx), layer, 2, bias=False)
-    # layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, dilations=tuple(range(1,x.N)))
-    # layer = ml.order_cap_layer(layer, max_k=4)
-    # layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, dilations=(4,))
-    # layer = ml.order_cap_layer(layer, max_k=4)
-    # layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, dilations=(8,))
-    # layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, dilations=(4,))
-    # layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, dilations=(2,))
-    # layer = ml.order_cap_layer(layer, max_k=4)
+    layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, dilations=(1,2,4,8), max_k=5)
+    scalar_layer, param_idx = ml.contract_to_scalars(params, int(param_idx), layer)
+    layer += ml.leaky_relu_layer(scalar_layer)
+
+    layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, max_k=5)
+    scalar_layer, param_idx = ml.contract_to_scalars(params, int(param_idx), layer)
+    layer += ml.leaky_relu_layer(scalar_layer)
+
+    layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, max_k=5)
+    scalar_layer, param_idx = ml.contract_to_scalars(params, int(param_idx), layer)
+    layer += ml.leaky_relu_layer(scalar_layer)
+
+    # layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, max_k=5)
+    # scalar_layer, param_idx = ml.contract_to_scalars(params, int(param_idx), layer)
+    # layer += ml.leaky_relu_layer(scalar_layer)
+
+    # layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer)
+    # scalar_layer, param_idx = ml.contract_to_scalars(params, int(param_idx), layer)
+    # layer += ml.leaky_relu_layer(scalar_layer)
 
     layer, param_idx = ml.conv_layer(
         params, 
@@ -114,7 +136,7 @@ def net(params, x, conv_filters, target_img, return_params=False):
         target_img, #final_layer, make sure out output is target_img shaped
         # dilations=tuple(range(1, int(x.N/2))),
     )
-    layer, param_idx = ml.cascading_contractions(params, int(param_idx), target_img, layer)
+    layer, param_idx = ml.cascading_contractions(params, int(param_idx), target_img.k, layer)
 
     net_output = geom.linear_combination(layer, params[param_idx:(param_idx + len(layer))])
     param_idx += len(layer)
@@ -153,12 +175,12 @@ outfile, epochs, lr, batch_size, seed, save_file, load_file, verbose = handleArg
 
 N = 16
 D = 2
-num_steps = 20
+num_steps = 1
 delta_t = 2
-s = 0.4 # used for transforming the input/output data
+s = 0.2 # used for transforming the input/output data
 
 num_points = 4
-num_train_images = 1
+num_train_images = 5
 num_test_images = 10
 num_val_images = 5
 
@@ -178,7 +200,7 @@ group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(
     Ms=[3],
     ks=[1,2],
-    parities=[0,1],
+    parities=[0],
     D=D,
     operators=group_actions,
     return_list=True,
@@ -210,7 +232,7 @@ else:
         key,
         epochs=epochs,
         batch_size=batch_size,
-        optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(len(train_X) / batch_size), decay_rate=0.995)),
+        optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(len(train_X) / batch_size), decay_rate=0.99)),
         validation_X=validation_X,
         validation_Y=validation_Y,
         save_params=save_file,
@@ -220,22 +242,26 @@ else:
     if (save_file):
             jnp.save(save_file, params)
 
-# fig, axs = plt.subplots(nrows=2, ncols=3, figsize=(24,12))
+fig, axs = plt.subplots(nrows=2, ncols=4, figsize=(32,12))
 
-# utils.plot_image(train_X[0], ax=axs[0,0])
-# utils.plot_image(train_Y[0], ax=axs[0,1])
-# utils.plot_image(net(params, train_X[0], conv_filters, train_Y[0]), ax=axs[0,2])
+utils.plot_image(train_X[0], ax=axs[0,0])
+utils.plot_image(train_Y[0], ax=axs[0,1])
+train_out = net(params, train_X[0], conv_filters, train_Y[0])
+utils.plot_image(train_out, ax=axs[0,2])
+utils.plot_image(train_Y[0] - train_out, ax=axs[0,3])
 
-# utils.plot_image(test_X[0], ax=axs[1,0])
-# utils.plot_image(test_Y[0], ax=axs[1,1])
-# test_loss = map_and_loss(
-#     params, 
-#     geom.BatchGeometricImage.from_images(test_X), 
-#     geom.BatchGeometricImage.from_images(test_Y), 
-#     conv_filters,
-# )
-# print('Full Test loss:', test_loss)
-# print(f'One Test loss: {map_and_loss(params, test_X[0], test_Y[0], conv_filters)}')
-# utils.plot_image(net(params, test_X[0], conv_filters, test_Y[0]), ax=axs[1,2])
+utils.plot_image(test_X[0], ax=axs[1,0])
+utils.plot_image(test_Y[0], ax=axs[1,1])
+test_loss = map_and_loss(
+    params, 
+    geom.BatchGeometricImage.from_images(test_X), 
+    geom.BatchGeometricImage.from_images(test_Y), 
+    conv_filters,
+)
+print('Full Test loss:', test_loss)
+print(f'One Test loss: {map_and_loss(params, test_X[0], test_Y[0], conv_filters)}')
+test_out = net(params, test_X[0], conv_filters, test_Y[0])
+utils.plot_image(test_out, ax=axs[1,2])
+utils.plot_image(test_Y[0] - test_out, ax=axs[1,3])
 
-# plt.savefig(outfile)
+plt.savefig(outfile)

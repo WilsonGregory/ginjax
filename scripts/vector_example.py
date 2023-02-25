@@ -2,45 +2,33 @@ import numpy as np
 import time
 import argparse
 import sys
+from functools import partial
 
 import jax.numpy as jnp
-from jax import value_and_grad, random
+from jax import random, vmap
 import optax
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 
-def net(params, x, conv_filters, return_params=False):
-    conv_layer_out = ml.conv_layer(x, conv_filters)
-    linear_layer_out = ml.linear_layer(conv_layer_out)
-    quad_layer_out = ml.quadratic_layer(conv_layer_out)
+def net(params, x, D, is_torus, conv_filters, return_params=False):
+    _, img_k = geom.parse_shape(x.shape, D)
+    layer = { img_k: jnp.expand_dims(x, axis=0) }
+    conv_filters = ml.make_layer(conv_filters)
 
-    final_layer_out, param_idx = ml.final_layer(params, 0, x, conv_filters, linear_layer_out + quad_layer_out)
-    contracted_images, param_idx = ml.cascading_contractions(params, param_idx, x, final_layer_out)
-    net_output = geom.linear_combination(contracted_images, params[param_idx:(param_idx + len(contracted_images))])
+    layer, param_idx = ml.conv_layer(params, 0, conv_filters, layer, D, is_torus)
+    layer, param_idx = ml.polynomial_layer(params, int(param_idx), layer, D, 2)
 
-    return (net_output, param_idx + len(contracted_images)) if return_params else net_output
+    layer, param_idx = ml.conv_layer(params, 0, conv_filters, layer, D, is_torus, img_k)
+    layer, param_idx = ml.cascading_contractions(params, param_idx, img_k, layer, D)
+    net_output = geom.linear_combination(layer, params[param_idx:(param_idx + len(layer))])
+    param_idx += len(layer)
 
-def batch_loss(params, x, y, conv_filters):
+    return (net_output, param_idx) if return_params else net_output
+
+def map_and_loss(params, x, y, conv_filters, D, is_torus):
     # Run the neural network, then calculate the MSE loss with the expected output y
-    return ml.rmse_loss(net(params, x, conv_filters), y)
-
-def train(X, Y, conv_filters, batch_loss, params, epochs, learning_rate=0.1):
-    # Train the model. Use a simple adaptive learning rate scheme, and go until the learning rate is small.
-    batch_loss_grad = value_and_grad(batch_loss)
-
-    optimizer = optax.adam(learning_rate)
-    opt_state = optimizer.init(params)
-
-    for i in range(epochs):
-        loss_val, grads = batch_loss_grad(params, X, Y, conv_filters)
-        updates, opt_state = optimizer.update(grads, opt_state)
-        params = optax.apply_updates(params, updates)
-
-        if (i % (epochs // np.min([10,epochs])) == 0):
-            print(f'Epoch {i}: {loss_val}')
-
-    return params
+    return ml.rmse_loss(net(params, x, D, is_torus, conv_filters), y)
 
 def target_function(x, conv_filters):
     prod = x.convolve_with(conv_filters[1]) * x.convolve_with(conv_filters[2])
@@ -76,32 +64,48 @@ conv_filters = geom.get_invariant_filters(
     return_list=True,
 )
 
-# construct num_images scalar images, (N,N)
-key, subkey = random.split(key)
-X = geom.BatchGeometricImage(random.normal(subkey, shape=((num_images,) + (N,)*D + (D,)*k)), 0, D)
-Y = target_function(X, conv_filters)
+# construct num_images vector images, (N,N)
+X = []
+Y = []
+for i in range(num_images):
+    key, subkey = random.split(key)
+    img = geom.GeometricImage(random.normal(subkey, shape=((N,)*D + (D,)*k)), 0, D)
+    X.append(img)
+    Y.append(target_function(img, conv_filters))
 
 key, subkey = random.split(key)
 
-huge_params = jnp.ones(ml.param_count(X, conv_filters, 2))
-_, param_idx = net(huge_params, X, conv_filters, return_params=True)
+huge_params = jnp.ones(ml.param_count(X[0], conv_filters, 2))
+_, num_params = net(huge_params, X[0].data, D, True, conv_filters, return_params=True)
+print('Number of params:', num_params)
+params = random.normal(subkey, shape=(num_params,))
 
-params = random.normal(subkey, shape=(param_idx,))
-params = train(
+key, subkey = random.split(key)
+
+params = ml.train(
     X,
     Y,
-    conv_filters,
-    batch_loss,
+    partial(map_and_loss, conv_filters=conv_filters, D=D, is_torus=True),
     params,
+    subkey,
     epochs=epochs,
-    learning_rate=learning_rate,
+    optimizer=optax.adam(learning_rate),
+    # optimizer=optax.adam(optax.exponential_decay(learning_rate, transition_steps=1, decay_rate=0.995)),
 )
 
-print('train loss:', batch_loss(params, X, Y, conv_filters))
+vmap_map_loss = vmap(
+    partial(map_and_loss, conv_filters=conv_filters, D=X[0].D, is_torus=X[0].is_torus),
+    in_axes=(None, 0, 0),
+)
+print('train loss:', jnp.mean(vmap_map_loss(
+    params, 
+    geom.BatchGeometricImage.from_images(X).data,
+    geom.BatchGeometricImage.from_images(Y).data, 
+)))
 
 key, subkey = random.split(key)
 X_test = geom.BatchGeometricImage(random.normal(subkey, shape=((num_images,) + (N,)*D + (D,)*k)), 0, D)
 Y_test = target_function(X_test, conv_filters)
 
-print('test loss:', batch_loss(params, X_test, Y_test, conv_filters))
+print('test loss:', jnp.mean(vmap_map_loss(params, X_test.data, Y_test.data)))
 

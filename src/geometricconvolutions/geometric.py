@@ -12,12 +12,7 @@ See the file `LICENSE` for more details.
 
 ## To-do items:
 - Fix the norm() operations so they are makeable with index summations! Duh. sqrt(a_hij a_hij / d^(k-2)) maybe??
-- Move over to jax.
-- Create tests for group operations on k-tensor images.
 - Fix sizing of multi-filter plots.
-- Switch over to jax so this is useful for ML people.
-- Need to implement index permutation operation.
-- Need to build tests for the contractions.
 - Need to implement bin-down and bin-up operators.
 """
 
@@ -66,7 +61,7 @@ def make_all_operators(D):
 
 
 # ------------------------------------------------------------------------------
-# PART 1.5: Define the Kronecker Delta and Levi Civita symbols to be used in Levi Civita contractions
+# PART 2: Define the Kronecker Delta and Levi Civita symbols to be used in Levi Civita contractions
 
 class KroneckerDeltaSymbol:
     #we only want to create each dimension of levi civita symbol once, so we cache them in this dictionary
@@ -142,7 +137,7 @@ class LeviCivitaSymbol:
 
 
 # ------------------------------------------------------------------------------
-# PART 4: Use group averaging to find unique invariant filters.
+# PART 3: Use group averaging to find unique invariant filters.
 
 def get_unique_invariant_filters(M, k, parity, D, operators, scale='normalize'):
     """
@@ -249,7 +244,184 @@ def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', ret
 
 
 # ------------------------------------------------------------------------------
-# PART 5: Define geometric (k-tensor, torus) images.
+# PART 4: Functional Programming GeometricImages
+# This section contains pure functions of geometric images that allows easier use of JAX fundamentals 
+# such as vmaps, loops, jit, and so on. All functions in this section take in images as their jnp.array data
+# only, and return them as that as well.
+
+def parse_shape(shape, D):
+    """
+    Given a geometric image shape and dimension D, return the sidelength N and tensor order k.
+    args:
+        shape (shape tuple): the shape of the data of a single geoemtric image
+        D (int): dimension of the image
+    """
+    return shape[0], len(shape) - D
+
+def hash(D, image, indices):
+    """
+    Deals with torus by modding (with `np.remainder()`).
+    args:
+        D (int): dimension of hte image
+        image (jnp.array): data of the image
+        indices (tuple of ints): indices to apply the remainder to
+    """
+    img_N, _ = parse_shape(image.shape, D)
+    return tuple(jnp.remainder(indices, img_N).transpose().astype(int))
+
+def get_torus_expanded(D, image, filter_image, dilation):
+        """
+        For a particular filter, expand the image so that we no longer have to do convolutions on the torus, we are
+        just doing convolutions on the expanded image and will get the same result. Return a new GeometricImage
+        args:
+            D (int): dimension of the image
+            image (jnp.array): image data
+            filter_image (jnp.array): filter data, how much is expanded depends on filter_image.m
+            dilation (int): dilation to apply to each filter dimension D
+        """
+        img_N, img_k = parse_shape(image.shape, D)
+        filter_N, _ = parse_shape(filter_image.shape, D)
+        assert filter_N % 2 == 1
+
+        padding = ((filter_N - 1) // 2) * dilation
+        indices = jnp.array(list(it.product(range(img_N + 2 * padding), repeat=D)), dtype=int) - padding
+        return image[hash(D, image, indices)].reshape((img_N + 2 * padding,)*D + (D,)*img_k)
+
+def pre_tensor_product_expand(D, image_a, image_b):
+    """
+    Rather than take a tensor product of two tensors, we can first take a tensor product of each with a tensor of
+    ones with the shape of the other. Then we have two matching shapes, and we can then do whatever operations.
+    args:
+        D (int): dimension of the image
+        image_a (GeometricImage like): one geometric image whose tensors we will later be doing tensor products on
+        image_b (GeometricImage like): other geometric image
+    """
+    _, img_a_k = parse_shape(image_a.shape, D)
+    _, img_b_k = parse_shape(image_b.shape, D)
+
+    if (img_b_k > 0):
+        image_a_expanded = jnp.tensordot(
+            image_a,
+            jnp.ones((D,)*img_b_k),
+            axes=0,
+        )
+    else:
+        image_a_expanded = image_a
+
+    if (img_a_k > 0):
+        break1 = img_a_k + D #after outer product, end of image_b N^D axes
+        #after outer product: [D^ki, N^D, D^kf], convert to [N^D, D^ki, D^kf]
+        # we are trying to expand the ones in the middle (D^ki), so we add them on the front, then move to middle
+        image_b_expanded = jnp.transpose(
+            jnp.tensordot(jnp.ones((D,)*img_a_k), image_b, axes=0),
+            list(
+                tuple(range(img_a_k, break1)) + tuple(range(img_a_k)) + tuple(range(break1, break1 + img_b_k))
+            ),
+        )
+    else:
+        image_b_expanded = image_b
+
+    return image_a_expanded, image_b_expanded
+
+def mul(D, image_a, image_b):
+    """
+    Multiplication operator between two images, implemented as a tensor product of the pixels.
+    args:
+        D (int): dimension of the images
+        image_a (jnp.array): image data
+        image_b (jnp.array): image data
+    """
+    image_a_data, image_b_data = pre_tensor_product_expand(D, image_a, image_b)
+    return image_a_data * image_b_data #now that shapes match, do elementwise multiplication
+
+@partial(jit, static_argnums=[0,3,4,5,6,7])
+def convolve(
+    D,
+    image,
+    filter_image, 
+    is_torus,
+    stride=None, 
+    padding=None,
+    lhs_dilation=None, 
+    rhs_dilation=None, 
+):
+    """
+    Here is how this function works:
+    1. Expand the geom_image to its torus shape, i.e. add filter.m cells all around the perimeter of the image
+    2. Do the tensor product (with 1s) to each image.k, filter.k so that they are both image.k + filter.k tensors.
+    That is if image.k=2, filter.k=1, do (D,D) => (D,D) x (D,) and (D,) => (D,D) x (D,) with tensors of 1s
+    3. Now we shape the inputs to work with jax.lax.conv_general_dilated
+    4. Put image in NHWC (batch, height, width, channel). Thus we vectorize the tensor
+    5. Put filter in HWIO (height, width, input, output). Input is 1, output is the vectorized tensor
+    6. Plug all that stuff in to conv_general_dilated, and feature_group_count is the length of the vectorized
+    tensor, and it is basically saying that each part of the vectorized tensor is treated separately in the filter.
+    It must be the case that channel = input * feature_group_count
+    See: https://jax.readthedocs.io/en/latest/notebooks/convolutions.html#id1 and
+    https://www.tensorflow.org/xla/operation_semantics#conv_convolution
+
+    args:
+        D (int): dimension of the images
+        image (jnp.array): image data
+        filter_image (jnp.array): the filter we are performing the convolution with
+        is_torus (bool): whether the images data is on the torus or not
+        stride (tuple of ints): convolution stride, defaults to (1,)*self.D
+        padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
+            defaults to 'TORUS' if image.is_torus, else 'SAME'
+        lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
+        rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
+    """
+    dtype= 'float32'
+
+    _, img_k = parse_shape(image.shape, D)
+    filter_N, filter_k = parse_shape(filter_image.shape, D)
+
+    output_k = img_k + filter_k
+
+    if rhs_dilation is None:
+        rhs_dilation = (1,)*D
+
+    if stride is None:
+        stride = (1,)*D
+
+    if not padding: #if unspecified, infer from is_torus
+        padding = 'TORUS' if is_torus else 'SAME'
+
+    if padding == 'TORUS':
+        image = get_torus_expanded(D, image, filter_image, rhs_dilation[0])
+        padding_literal = ((0,0),)*D
+    else:
+        if padding == 'VALID':
+            padding_literal = ((0,0),)*D
+        elif padding == 'SAME':
+            filter_m = (filter_N - 1) // 2
+            padding_literal = ((filter_m * dilation,) * 2 for dilation in rhs_dilation)
+        else:
+            padding_literal = padding
+
+    img_expanded, filter_expanded = pre_tensor_product_expand(D, image, filter_image)
+    img_expanded = img_expanded.astype(dtype)
+    filter_expanded = filter_expanded.astype(dtype)
+
+    channel_length = int(np.multiply.reduce((D,)*img_k + (D,)*filter_k))
+
+    # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
+    # batching is handled by using vmap on this function
+    img_formatted = img_expanded.reshape((1,) + tuple(img_expanded.shape[:D]) + (channel_length,))
+
+    # convert filter to HWIO (or HWDIO)
+    filter_formatted = filter_expanded.reshape((filter_N,)*D + (1,channel_length))
+
+    convolved_array = jax.lax.conv_general_dilated(
+        img_formatted, #lhs
+        filter_formatted, #rhs
+        stride,
+        padding_literal,
+        lhs_dilation=lhs_dilation,
+        rhs_dilation=rhs_dilation,
+        dimension_numbers=(('NHWC','HWIO','NHWC') if D == 2 else ('NHWDC','HWDIO','NHWDC')),
+        feature_group_count=channel_length, #allows us to have separate filters for separate channels
+    )
+    return convolved_array.reshape(convolved_array.shape[1:-1] + (D,)*output_k)
 
 def get_contraction_indices(initial_k, final_k, swappable_idxs=()):
     """
@@ -311,15 +483,14 @@ def multicontract(data, indices):
 def linear_combination(images, params):
     """
     A method takes a list of parameters, a list of geometric images and returns the linear combination.
-    The images must all have the same k, and the likely should have the same parity and is_torus.
     args:
-        images (list): list of GeometricImages to be multiplied by the params, then summed
-        params (list): scalar multipliers of the images
+        images (jnp.array): block of image data where the first axis is the image
+        params (jnp.array): scalar multipliers of the images
     """
-    assert len(images) == len(params) #must be the same length
+    return jnp.sum(vmap(lambda image, param: image * param)(images, params), axis=0)
 
-    data = jnp.sum(jnp.array([image.data * param for image, param in zip(images, params)]), axis=0)
-    return images[0].__class__(data, images[0].parity, images[0].D, images[0].is_torus)
+# ------------------------------------------------------------------------------
+# PART 5: Define geometric (k-tensor, torus) images.
 
 def tensor_name(k, parity):
     nn = "tensor"
@@ -398,7 +569,7 @@ class GeometricImage:
         args:
             indices (tuple of ints): indices to apply the remainder to
         """
-        return tuple(jnp.remainder(indices, self.N).transpose().astype(int))
+        return hash(self.D, self.data, indices)
 
     def __getitem__(self, key):
         """
@@ -526,9 +697,12 @@ class GeometricImage:
             assert self.D == other.D
             assert self.N == other.N
             assert self.is_torus == other.is_torus
-            image_a_data, image_b_data = GeometricImage.pre_tensor_product_expand(self, other)
-            #now that the shapes match, we can do elementwise multiplication
-            return self.__class__(image_a_data * image_b_data, self.parity + other.parity, self.D, self.is_torus)
+            return self.__class__(
+                mul(self.D, self.data, other.data), 
+                self.parity + other.parity, 
+                self.D, 
+                self.is_torus,
+            )
         else: #its an integer or a float, or something that can we can multiply a Jax array by (like a DeviceArray)
             return self.__class__(self.data * other, self.parity, self.D, self.is_torus)
 
@@ -549,53 +723,7 @@ class GeometricImage:
         new_indices = tuple(tuple(range(idx_shift)) + tuple(axis + idx_shift for axis in axes_permutation))
         return self.__class__(jnp.transpose(self.data, new_indices), self.parity, self.D, self.is_torus)
 
-    @classmethod
-    def pre_tensor_product_expand(cls, image_a, image_b):
-        """
-        Rather than take a tensor product of two tensors, we can first take a tensor product of each with a tensor of
-        ones with the shape of the other. Then we have two matching shapes, and we can then do whatever operations.
-        This is a class method that takes in two images and returns the expanded data
-        args:
-            image_a (GeometricImage like): one geometric image whose tensors we will later be doing tensor products on
-            image_b (GeometricImage like): other geometric image
-        """
-        if (len(image_b.pixel_shape())):
-            image_a_expanded = jnp.tensordot(
-                image_a.data,
-                jnp.ones(image_b.pixel_shape()),
-                axes=0,
-            )
-        else:
-            image_a_expanded = image_a.data
-
-        if len(image_a.pixel_shape()):
-            break1 = image_a.k + len(image_b.image_shape()) #after outer product, end of image_b N^D axes
-            #after outer product: [D^ki, N^D, D^kf], convert to [N^D, D^ki, D^kf]
-            # we are trying to expand the ones in the middle (D^ki), so we add them on the front, then move to middle
-            image_b_expanded = jnp.transpose(
-                jnp.tensordot(jnp.ones(image_a.pixel_shape()), image_b.data, axes=0),
-                list(
-                    tuple(range(image_a.k, break1)) + tuple(range(image_a.k)) + tuple(range(break1, break1 + image_b.k))
-                ),
-            )
-        else:
-            image_b_expanded = image_b.data
-
-        return image_a_expanded, image_b_expanded
-
-    @classmethod
-    def data_to_NHWC_format(cls, image_data, image_shape, channel_length):
-        """
-        Given image data, format it into the NHWC format that is used by the convolution function. For GeometricImage
-        we need to prepend the 1 because that is the batch size.
-        args:
-            image_data (jnp.array): array of data, after torus expanding, stretching to match the filter
-            image_shape (tuple of ints): output of torus_expand.image_shape()
-            channel_length (int): the size of the output ktensor, we are vectorizing it
-        """
-        return image_data.reshape((1,) + image_shape + (channel_length,))
-
-    partial(jit, static_argnums=2)
+    @partial(jit, static_argnums=[2,3,4,5])
     def convolve_with(
         self, 
         filter_image, 
@@ -603,107 +731,24 @@ class GeometricImage:
         padding=None,
         lhs_dilation=None, 
         rhs_dilation=None, 
-        warnings=True,
     ):
         """
-        Here is how this function works:
-        1. Expand the geom_image to its torus shape, i.e. add filter.m cells all around the perimeter of the image
-        2. Do the tensor product (with 1s) to each image.k, filter.k so that they are both image.k + filter.k tensors.
-        That is if image.k=2, filter.k=1, do (D,D) => (D,D) x (D,) and (D,) => (D,D) x (D,) with tensors of 1s
-        3. Now we shape the inputs to work with jax.lax.conv_general_dilated
-        4. Put image in NHWC (batch, height, width, channel). Thus we vectorize the tensor
-        5. Put filter in HWIO (height, width, input, output). Input is 1, output is the vectorized tensor
-        6. Plug all that stuff in to conv_general_dilated, and feature_group_count is the length of the vectorized
-        tensor, and it is basically saying that each part of the vectorized tensor is treated separately in the filter.
-        It must be the case that channel = input * feature_group_count
-        See: https://jax.readthedocs.io/en/latest/notebooks/convolutions.html#id1 and
-        https://www.tensorflow.org/xla/operation_semantics#conv_convolution
-
-        args:
-            filter_image (GeometricFilter): the filter we are performing the convolution with
-            stride (tuple of ints): convolution stride, defaults to (1,)*self.D
-            padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
-                defaults to 'TORUS' if image.is_torus, else 'SAME'
-            lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
-            rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
-            warnings (bool): display warnings, defaults to True currently
+        See convolve for a description of this function.
         """
-        if (self.data.dtype != filter_image.data.dtype):
-            dtype = 'float32'
-            if (warnings):
-                print('GeometricImage::convolve_with: GeometricImage dtype and filter_image dtype mismatch, converting to float32')
-        else:
-            dtype = self.data.dtype
-
-        output_k = self.k + filter_image.k
-
-        if rhs_dilation is None:
-            rhs_dilation = (1,)*self.D
-
-        if stride is None:
-            stride = (1,)*self.D
-
-        if not padding: #if unspecified, infer from self.is_torus
-            padding = 'TORUS' if self.is_torus else 'SAME'
-
-        if padding == 'TORUS':
-            image = self.get_torus_expanded(filter_image, rhs_dilation[0])
-            padding_literal = ((0,0),)*self.D
-        else:
-            image = self
-            if padding == 'VALID':
-                padding_literal = ((0,0),)*self.D
-            elif padding == 'SAME':
-                padding_literal = ((filter_image.m * dilation,) * 2 for dilation in rhs_dilation)
-            else:
-                padding_literal = padding
-
-        img_expanded, filter_expanded = GeometricImage.pre_tensor_product_expand(image, filter_image)
-        img_expanded = img_expanded.astype(dtype)
-        filter_expanded = filter_expanded.astype(dtype)
-
-        channel_length = int(np.multiply.reduce(self.pixel_shape() + filter_image.pixel_shape()))
-
-        # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
-        img_formatted = self.__class__.data_to_NHWC_format(
-            img_expanded,
-            image.image_shape(),
-            channel_length,
-        )
-
-        # convert filter to HWIO (or HWDIO)
-        filter_formatted = filter_expanded.reshape(filter_image.image_shape() + (1,channel_length))
-
-        convolved_array = jax.lax.conv_general_dilated(
-            img_formatted, #lhs
-            filter_formatted, #rhs
+        convolved_array = convolve(
+            self.D, 
+            self.data, 
+            filter_image.data, 
+            self.is_torus,
             stride,
-            padding_literal,
-            lhs_dilation=lhs_dilation,
-            rhs_dilation=rhs_dilation,
-            dimension_numbers=(('NHWC','HWIO','NHWC') if self.D == 2 else ('NHWDC','HWDIO','NHWDC')),
-            feature_group_count=channel_length, #allows us to have separate filters for separate channels
+            padding,
+            lhs_dilation,
+            rhs_dilation,
         )
-        # if we need to get rid of the batch index at the beginning because its not a BatchGeometricImage
-        start_idx = 0 if len(convolved_array.shape) == len(self.image_shape())+1 else 1
-        out_data = convolved_array.reshape(convolved_array.shape[start_idx:-1] + (self.D,)*output_k)
-        return self.__class__(out_data, self.parity + filter_image.parity, self.D, self.is_torus)
-
-    def get_torus_expanded(self, filter_image, dilation):
-        """
-        For a particular filter, expand the image so that we no longer have to do convolutions on the torus, we are
-        just doing convolutions on the expanded image and will get the same result. Return a new GeometricImage
-        args:
-            filter_image (GeometricFilter): filter, how much is expanded depends on filter_image.m
-            dilation (int): dilation to apply to each filter dimension D
-        """
-        padding = filter_image.m * dilation
-        new_N = self.N + 2 * padding
-        indices = jnp.array(list(it.product(range(new_N), repeat=self.D)), dtype=int) - padding
         return self.__class__(
-            self[self.hash(indices)].reshape(self.image_shape(plus_N=(2 * padding)) + self.pixel_shape()),
-            self.parity,
-            self.D,
+            convolved_array, 
+            self.parity + filter_image.parity, 
+            self.D, 
             self.is_torus,
         )
 
@@ -1101,20 +1146,19 @@ class BatchGeometricImage(GeometricImage):
         args:
             other (GeometricImage or number): scalar or image to multiply by
         """
-        assert self.L == other.L
-        return super(BatchGeometricImage, self).__mul__(other)
-
-    @classmethod
-    def data_to_NHWC_format(cls, image_data, image_shape, channel_length):
-        """
-        Given image data, format it into the NHWC format that is used by the convolution function. For
-        BatchGeometricImage we don't need to prepend the 1 because we already have the batch size in image_shape
-        args:
-            image_data (jnp.array): array of data, after torus expanding, stretching to match the filter
-            image_shape (tuple of ints): output of torus_expand.image_shape()
-            channel_length (int): the size of the output ktensor, we are vectorizing it
-        """
-        return image_data.reshape(image_shape + (channel_length,))
+        if (isinstance(other, GeometricImage)):
+            assert self.D == other.D
+            assert self.N == other.N
+            assert self.is_torus == other.is_torus
+            assert self.L == other.L
+            return self.__class__(
+                vmap(mul, in_axes=(None, 0, 0))(self.D, self.data, other.data), 
+                self.parity + other.parity, 
+                self.D, 
+                self.is_torus,
+            )
+        else: #its an integer or a float, or something that can we can multiply a Jax array by (like a DeviceArray)
+            return self.__class__(self.data * other, self.parity, self.D, self.is_torus)
 
     def max_pool(self, patch_len):
         """
@@ -1129,3 +1173,33 @@ class BatchGeometricImage(GeometricImage):
     # TODO!!
     def normalize(self):
         raise Exception('BatchGeometricImage::normalize is not implemented')
+
+    @partial(jit, static_argnums=[2,3,4,5])
+    def convolve_with(
+        self, 
+        filter_image, 
+        stride=None, 
+        padding=None,
+        lhs_dilation=None, 
+        rhs_dilation=None, 
+    ):
+        """
+        See batch_convolve for a description of this function.
+        """
+        batch_convolve = vmap(convolve, in_axes=(None, 0, None, None, None, None, None, None))
+        convolved_array = batch_convolve(
+            self.D, 
+            self.data, 
+            filter_image.data, 
+            self.is_torus,
+            stride,
+            padding,
+            lhs_dilation,
+            rhs_dilation,
+        )
+        return self.__class__(
+            convolved_array, 
+            self.parity + filter_image.parity, 
+            self.D, 
+            self.is_torus,
+        )

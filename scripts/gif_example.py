@@ -11,6 +11,8 @@ import optax
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 
+# TODO: fix this script
+
 def read_gif(infile):
     return iio.imread(infile).astype('float32')[...,0] #only need 1 channel b/c its b/w
 

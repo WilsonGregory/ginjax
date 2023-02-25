@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 import jax.numpy as jnp
 import jax.random as random
+from jax import vmap
 import optax
 
 import geometricconvolutions.geometric as geom
@@ -57,28 +58,44 @@ def get_data(N, D, num_points, rand_key, num_images=1):
 
     return masses, gravity_fields
 
-def net(params, x, conv_filters, target_img, return_params=False):
+def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
+    #x is a layer
     # Note that the target image is only used for its shape
-    layer, param_idx = ml.conv_layer(params, 0, conv_filters, [x])
-    layer, param_idx = ml.conv_layer(params, int(param_idx), conv_filters, layer, dilations=tuple(range(1,x.N)))
+    img_N, img_k = geom.parse_shape(x.shape, D)
+    _, target_k = geom.parse_shape(target_img.shape, D)
+    layer = { img_k: jnp.expand_dims(x, axis=0) }
+    conv_filters = ml.make_layer(conv_filters)
+
+    layer, param_idx = ml.conv_layer(params, 0, conv_filters, layer, D, is_torus)
+    layer, param_idx = ml.conv_layer(
+        params, 
+        int(param_idx), 
+        conv_filters, 
+        layer, 
+        D, 
+        is_torus, 
+        dilations=tuple(range(1,img_N)),
+    )
 
     layer, param_idx = ml.conv_layer(
         params, 
         int(param_idx), 
         conv_filters, 
         layer, 
-        target_img, #final_layer, make sure out output is target_img shaped
-        dilations=tuple(range(1,int(x.N / 2))),
+        D,
+        is_torus,
+        target_k, #final_layer, make sure out output is target_img shaped
+        dilations=tuple(range(1,int(img_N / 2))),
     )
-    layer, param_idx = ml.cascading_contractions(params, int(param_idx), target_img, layer)
+    layer, param_idx = ml.cascading_contractions(params, int(param_idx), target_k, layer, D)
 
     net_output = geom.linear_combination(layer, params[param_idx:(param_idx + len(layer))])
     param_idx += len(layer)
     return (net_output, param_idx) if return_params else net_output
 
-def map_and_loss(params, x, y, conv_filters):
+def map_and_loss(params, x, y, conv_filters, D, is_torus):
     # Run x through the net, then return its loss with y
-    return ml.rmse_loss(net(params, x, conv_filters, y), y)
+    return ml.rmse_loss(net(params, x, D, is_torus, conv_filters, y), y)
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -136,16 +153,19 @@ conv_filters = geom.get_invariant_filters(
     return_list=True,
 )
 
+one_point = train_X[0]
+
 if load_file:
     params = jnp.load(load_file)
 else:
     huge_params = jnp.ones(100000)
-
     _, num_params = net(
         huge_params,
-        geom.BatchGeometricImage.from_images(train_X),
+        one_point.data,
+        one_point.D,
+        one_point.is_torus,
         conv_filters,
-        train_Y[0],
+        train_Y[0].data,
         return_params=True,
     )
 
@@ -157,7 +177,7 @@ else:
     params = ml.train(
         train_X,
         train_Y,
-        partial(map_and_loss, conv_filters=conv_filters),
+        partial(map_and_loss, D=one_point.D, is_torus=one_point.is_torus, conv_filters=conv_filters),
         params,
         key,
         epochs=epochs,
@@ -174,20 +194,33 @@ else:
 
 fig, axs = plt.subplots(nrows=2, ncols=3, figsize=(24,12))
 
-utils.plot_image(train_X[0], ax=axs[0,0])
+utils.plot_image(one_point, ax=axs[0,0])
 utils.plot_image(train_Y[0], ax=axs[0,1])
-utils.plot_image(net(params, train_X[0], conv_filters, train_Y[0]), ax=axs[0,2])
+train_img = geom.GeometricImage(
+    net(params, one_point.data, one_point.D, one_point.is_torus, conv_filters, train_Y[0].data),
+    train_X[0].parity,
+    train_X[0].D,
+)
+utils.plot_image(train_img, ax=axs[0,2])
 
 utils.plot_image(test_X[0], ax=axs[1,0])
 utils.plot_image(test_Y[0], ax=axs[1,1])
-test_loss = map_and_loss(
-    params, 
-    geom.BatchGeometricImage.from_images(test_X), 
-    geom.BatchGeometricImage.from_images(test_Y), 
-    conv_filters,
+vmap_map_loss = vmap(
+    partial(map_and_loss, conv_filters=conv_filters, D=test_X[0].D, is_torus=test_X[0].is_torus),
+    in_axes=(None, 0, 0),
 )
+test_loss = jnp.mean(vmap_map_loss(
+    params, 
+    geom.BatchGeometricImage.from_images(test_X).data, 
+    geom.BatchGeometricImage.from_images(test_Y).data, 
+))
 print('Full Test loss:', test_loss)
-print(f'One Test loss: {map_and_loss(params, test_X[0], test_Y[0], conv_filters)}')
-utils.plot_image(net(params, test_X[0], conv_filters, test_Y[0]), ax=axs[1,2])
+print(f'One Test loss: {map_and_loss(params, test_X[0].data, test_Y[0].data, conv_filters, test_X[0].D, test_X[0].is_torus)}')
+test_img = geom.GeometricImage(
+    net(params, test_X[0].data, test_X[0].D, test_X[0].is_torus, conv_filters, test_Y[0].data), 
+    test_X[0].parity,
+    test_X[0].D,
+)
+utils.plot_image(test_img, ax=axs[1,2])
 
 plt.savefig(outfile)

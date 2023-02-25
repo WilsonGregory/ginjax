@@ -90,7 +90,6 @@ params = ml.train(
     subkey,
     epochs=epochs,
     optimizer=optax.adam(learning_rate),
-    # optimizer=optax.adam(optax.exponential_decay(learning_rate, transition_steps=1, decay_rate=0.995)),
 )
 
 vmap_map_loss = vmap(

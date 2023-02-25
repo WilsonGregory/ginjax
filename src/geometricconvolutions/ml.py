@@ -35,7 +35,6 @@ def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target
     out_layer = {}
     for k in input_layer.keys():
         prods_group = input_layer[k]
-        # print('prods_group', prods_group.shape)
         for filter_k, filter_group in conv_filters.items():
             for dilation in dilations:
                 if (target_k and ((k + target_k - filter_k) % 2 != 0)):
@@ -114,6 +113,7 @@ def leaky_relu_layer(images, negative_slope=0.01):
     leaky_relu = functools.partial(jax.nn.leaky_relu, negative_slope=negative_slope)
     return [image.activation_function(leaky_relu) for image in images]
 
+@functools.partial(jit, static_argnums=[1,3,4])
 def polynomial_layer(params, param_idx, layer, D, poly_degree):
     """
     Construct a polynomial layer for a given degree. Calculate the full polynomial up to that degree of all the images.
@@ -159,41 +159,6 @@ def polynomial_layer(params, param_idx, layer, D, poly_degree):
                     out_layer[prod_k] = prod
 
     return out_layer, param_idx
-
-@functools.partial(jit, static_argnums=[1,3,4])
-def polynomial_layer_old(params, param_idx, images, poly_degree, bias=True):
-    """
-    Construct a polynomial layer for a given degree. Calculate the full polynomial up to that degree of all the images.
-    For example, if poly_degree=3, calculate the linear, quadratic, and cubic terms.
-    args:
-        params (jnp.array): parameters
-        param_idx (int): index of current location in params
-        images (list of GeometricImages): the images to make the polynomial function
-        poly_degree (int): the maximum degree of the polynomial 
-        bias (bool): whether to include a constant bias image
-    """
-    out_layer_dict = defaultdict(list)
-
-    out_layer_dict[0] = images
-    for degree in range(1, poly_degree):
-        prev_images_dict = make_p_k_dict(out_layer_dict[degree - 1])
-
-        for img in images: #multiply by all the images
-            for parity in [0,1]:
-                for k in prev_images_dict[parity].keys():
-                    image_group = prev_images_dict[parity][k]
-                    if (len(image_group) == 0):
-                        continue
-
-                    if (bias and k == 0):
-                        bias_img, param_idx = get_bias_image(params, param_idx, image_group[0])
-                        image_group.append(bias_img)
-
-                    group_sum = geom.linear_combination(image_group, params[param_idx:(param_idx + len(image_group))])
-                    out_layer_dict[degree].append(group_sum * img)
-                    param_idx += len(image_group)
-
-    return list(it.chain(*list(out_layer_dict.values()))), param_idx
 
 def order_cap_layer(images, max_k):
     """
@@ -493,84 +458,3 @@ def train(
             print(f'Epoch {i}: {epoch_loss / len(X_batches)}')
 
     return params
-
-
-# train_rollout?
-# def train(
-#     X, 
-#     Y, 
-#     map_and_loss,
-#     params, 
-#     rand_key, 
-#     epochs, 
-#     batch_size=16, 
-#     optimizer=None,
-#     validation_X=None,
-#     validation_Y=None,
-#     noise_stdev=None, 
-#     save_params=None,
-#     verbose=1,
-# ):
-#     """
-#     Method to train the model. It uses stochastic gradient descent (SGD) with the Adam optimizer to learn the
-#     parameters the minimize the map_and_loss function. The params are returned.
-#     args:
-#         X (list of GeometricImages): The X input data to the model
-#         Y (list of GeometricImages): The Y target data for the model
-#         map_and_loss (function): function that takes in params, X, and Y, and maps X to Y_hat
-#             using params, then calculates the loss with Y.
-#         params (jnp.array): 
-#         rand_key (jnp.random key): key for randomness
-#         epochs (int): number of epochs to run. An epoch is defined as a pass over the entire data, and may involve
-#             multiple batches.
-#         batch_size (int): defaults to 16, the size of each mini-batch in SGD
-#         optimizer (optax optimizer): optimizer, defaults to adam(learning_rate=0.1)
-#         validation_X (list of GeometricImages): input data for a validation data set
-#         validation_Y (list of GeometricImages): target data for a validation data set
-#         loss_steps (int): defaults to 1, the number of steps to rollout the prediction when computing the loss.
-#         noise_stdev (float): standard deviation for any noise to add to training data, defaults to None
-#         save_params (str): defaults to None, where to save the params of the model, every epochs/10 th epoch.
-#         verbose (0,1,2 or 3): verbosity level. 3 prints loss every batch, 2 every epoch, 1 ever epochs/10 th epoch
-#             0 not at all.
-#     """
-#     assert verbose in {0,1,2,3}
-#     batch_loss_grad = value_and_grad(vmap(map_and_loss, in_axes=(None, 0, 0)))
-
-#     if (optimizer is None):
-#         optimizer = optax.adam(0.1)
-
-#     opt_state = optimizer.init(params)
-
-#     for i in range(epochs):
-#         rand_key, subkey = random.split(rand_key)
-
-#         if noise_stdev:
-#             train_X = add_noise(X, noise_stdev, subkey)
-#             rand_key, subkey = random.split(rand_key)
-#         else:
-#             train_X = X
-
-#         X_batches, Y_batches = get_batch_rollout(train_X, Y, batch_size, subkey)
-#         epoch_loss = 0
-#         for X_batch, Y_batch_steps in zip(X_batches, Y_batches):
-#             loss_val, grads = batch_loss_grad(params, X_batch, Y_batch_steps)
-#             if (verbose >= 3):
-#                 print(f'Batch loss: {loss_val}')
-#             updates, opt_state = optimizer.update(grads, opt_state)
-#             params = optax.apply_updates(params, updates)
-#             epoch_loss += loss_val
-
-#         if (i == 0 or ((i+1) % (epochs // np.min([10,epochs])) == 0)):
-#             if (save_params):
-#                 jnp.save(save_params, params)
-#             if (verbose == 1):
-#                 print(f'Epoch {i}: {epoch_loss / len(X_batches)}')
-#             if (validation_X and validation_Y):
-#                 batch_validation_X = geom.BatchGeometricImage.from_images(validation_X)
-#                 batch_validation_Y = geom.BatchGeometricImage.from_images(validation_Y)
-#                 print('Validation Error: ', map_and_loss(params, batch_validation_X, batch_validation_Y))
-
-#         if (verbose >= 2):
-#             print(f'Epoch {i}: {epoch_loss / len(X_batches)}')
-
-#     return params

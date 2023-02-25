@@ -4,7 +4,7 @@ from collections import defaultdict
 import numpy as np
 import math
 
-from jax import jit, random, value_and_grad
+from jax import grad, jit, random, value_and_grad, vmap
 import jax.nn
 import jax.numpy as jnp
 import optax
@@ -13,48 +13,55 @@ import geometricconvolutions.geometric as geom
 
 ## Layers
 
-@functools.partial(jit, static_argnums=[1,5,6])
-def conv_layer(params, param_idx, conv_filters, input_layer, target_x=None, bias=False, dilations=(1,)):
+def make_layer(images):
+    images_by_k = defaultdict(list)
+    for image in images:
+        images_by_k[image.k].append(image)
+
+    if isinstance(images[0], geom.BatchGeometricImage) or isinstance(images[0], geom.GeometricFilter):
+        return { k: jnp.stack([image.data for image in image_list]) for k, image_list in images_by_k.items() }
+    elif isinstance(images[0], geom.GeometricImage):
+        return { k: jnp.stack([jnp.expand_dims(image.data, axis=0) for image in image_list]) for k, image_list in images_by_k.items() }
+
+@functools.partial(jit, static_argnums=[1,4,5,6,7])
+def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target_k=None, dilations=(1,)):
     """
-    Perform all the conv_filters on each image of input_layer. For efficiency, we take parameterized linear
-    combinations of like inputs (same k and parity) before applying the convolutions. This is equivalent to a fully
-    connected layer.
-
-    Alternatively, if target_x is provided, only do those convolutions which will result in the same parity as
-    target_x and a tensor order k that can be contracted back to target_x.
-    args:
-        params (list of floats): model params
-        param_idx (int): current index of where we are in the params array
-        conv_filters (list of GeometricFilters): all the filters we can apply
-        input_layer (list of GeometricImages): linear, quadratic, cubic, etc. function image outputs
-        target_x (GeometricImage): defaults to None, image that we are trying to return to
-        bias (bool): Whether to include a bias image, defaults to False
-        dilations (list of ints): the dilation convolutions to perform, defaults to (1,), or normal dilation
+    Functional version of conv_layer.
     """
-    prods_dict = make_p_k_dict(input_layer)
-    filters_dict = make_p_k_dict(conv_filters, filters=True) if target_x else None
+    # map over dilations, then filters
+    vmap_sums = vmap(geom.linear_combination, in_axes=(None, 0))
+    vmap_convolve = vmap(geom.convolve, in_axes=(None, 0, 0, None, None, None, None, None))
 
-    out_layer = []
-    for parity in [0,1]:
-        for k in prods_dict[parity].keys():
-            prods_group = prods_dict[parity][k]
-            if (target_x):
-                filter_group = filters_dict[(parity + target_x.parity) % 2][(k + target_x.k) % 2]
-            else:
-                filter_group = conv_filters
+    out_layer = {}
+    for k in input_layer.keys():
+        prods_group = input_layer[k]
+        for filter_k, filter_group in conv_filters.items():
+            for dilation in dilations:
+                if (target_k and ((k + target_k - filter_k) % 2 != 0)):
+                    continue
 
-            if ((len(prods_group) == 0) or (len(filter_group) == 0)):
-                continue
-
-            for conv_filter in filter_group:
-                for dilation in dilations:
-                    if (bias and k == 0):
-                        bias_img, param_idx = get_bias_image(params, param_idx, prods_group[0])
-                        prods_group.append(bias_img)
-
-                    group_sum = geom.linear_combination(prods_group, params[param_idx:(param_idx + len(prods_group))])
-                    out_layer.append(group_sum.convolve_with(conv_filter, rhs_dilation=(dilation,)*group_sum.D))
-                    param_idx += len(prods_group)
+                param_shape = (len(filter_group), len(prods_group))
+                num_params = np.multiply.reduce(param_shape)
+                group_sums = vmap_sums(
+                    prods_group, 
+                    params[param_idx:(param_idx + num_params)].reshape(param_shape),
+                )
+                param_idx += num_params
+                res = vmap_convolve(
+                    D, 
+                    group_sums, 
+                    filter_group, 
+                    is_torus, 
+                    None, #stride
+                    None, #padding
+                    None, #lhs_dilations
+                    (dilation,)*D, #rhs_dilations
+                )
+                res_k = filter_k + k 
+                if (res_k in out_layer):
+                    out_layer[res_k] = jnp.concatenate((out_layer[res_k], res))
+                else:
+                    out_layer[res_k] = res
 
     return out_layer, param_idx
 
@@ -107,7 +114,7 @@ def leaky_relu_layer(images, negative_slope=0.01):
     return [image.activation_function(leaky_relu) for image in images]
 
 @functools.partial(jit, static_argnums=[1,3,4])
-def polynomial_layer(params, param_idx, images, poly_degree, bias=True):
+def polynomial_layer(params, param_idx, layer, D, poly_degree):
     """
     Construct a polynomial layer for a given degree. Calculate the full polynomial up to that degree of all the images.
     For example, if poly_degree=3, calculate the linear, quadratic, and cubic terms.
@@ -118,28 +125,40 @@ def polynomial_layer(params, param_idx, images, poly_degree, bias=True):
         poly_degree (int): the maximum degree of the polynomial 
         bias (bool): whether to include a constant bias image
     """
-    out_layer_dict = defaultdict(list)
+    prods_by_degree = defaultdict(dict)
+    out_layer = {}
 
-    out_layer_dict[0] = images
-    for degree in range(1, poly_degree):
-        prev_images_dict = make_p_k_dict(out_layer_dict[degree - 1])
+    vmap_sums = vmap(geom.linear_combination, in_axes=(None, 0))
+    vmap_mul = vmap(geom.mul, in_axes=(None, 0, 0))
 
-        for img in images: #multiply by all the images
-            for parity in [0,1]:
-                for k in prev_images_dict[parity].keys():
-                    image_group = prev_images_dict[parity][k]
-                    if (len(image_group) == 0):
-                        continue
+    prods_by_degree[1] = layer
+    for degree in range(2, poly_degree + 1):
+        prev_images_dict = prods_by_degree[degree - 1]
 
-                    if (bias and k == 0):
-                        bias_img, param_idx = get_bias_image(params, param_idx, image_group[0])
-                        image_group.append(bias_img)
+        for prods_group in prev_images_dict.values(): #for each similarly shaped image group in the rolling prods
+            for mult_block in layer.values(): #multiply by each mult_block in the images
 
-                    group_sum = geom.linear_combination(image_group, params[param_idx:(param_idx + len(image_group))])
-                    out_layer_dict[degree].append(group_sum * img)
-                    param_idx += len(image_group)
+                param_shape = (len(mult_block), len(prods_group))
+                num_params = np.multiply.reduce(param_shape)
+                group_sums = vmap_sums(
+                    prods_group, 
+                    params[param_idx:(param_idx + num_params)].reshape(param_shape),
+                )
+                param_idx += num_params
+                prod = vmap_mul(D, group_sums, mult_block)
+                _, prod_k = geom.parse_shape(prod.shape[1:], D)
 
-    return list(it.chain(*list(out_layer_dict.values()))), param_idx
+                if (prod_k in prods_by_degree[degree]):
+                    prods_by_degree[degree][prod_k] = jnp.concatenate((prods_by_degree[degree][prod_k], prod))
+                else:
+                    prods_by_degree[degree][prod_k] = prod
+
+                if (prod_k in out_layer):
+                    out_layer[prod_k] = jnp.concatenate((out_layer[prod_k], prod))
+                else:
+                    out_layer[prod_k] = prod
+
+    return out_layer, param_idx
 
 def order_cap_layer(images, max_k):
     """
@@ -163,33 +182,36 @@ def order_cap_layer(images, max_k):
 
     return out_layer
 
-@functools.partial(jit, static_argnums=1)
-def cascading_contractions(params, param_idx, x, input_layer):
+def cascading_contractions(params, param_idx, target_k, input_layer, D):
     """
     Starting with the highest k, sum all the images into a single image, perform all possible contractions,
     then add it to the layer below.
     args:
         params (list of floats): model params
         param_idx (int): index of current location in params
-        x (GeometricImage): image that is going through the model
+        target_k (int): what tensor order you want to end up at
         input_layer (list of GeometricImages): images to contract
+        D (int): dimension of the images
     """
-    images_by_k = defaultdict(list)
-    max_k = np.max([img.k for img in input_layer])
-    for img in input_layer:
-        images_by_k[img.k].append(img)
+    max_k = np.max(list(input_layer.keys()))
+    for k in reversed(range(target_k+2, max_k+2, 2)):
+        images = input_layer[k]
 
-    for k in reversed(range(x.k+2, max_k+2, 2)):
-        images = images_by_k[k]
-
-        for u,v in it.combinations(range(k), 2):
-            group_sum = geom.linear_combination(images, params[param_idx:(param_idx + len(images))])
-            contracted_img = group_sum.contract(u,v)
-            images_by_k[contracted_img.k].append(contracted_img)
-
+        idx_shift = 1 + D # layer plus N x N x ... x N (D times)
+        for u,v in it.combinations(range(idx_shift, k + idx_shift), 2):
+            group_sum = jnp.expand_dims(
+                geom.linear_combination(images, params[param_idx:(param_idx + len(images))]),
+                axis=0,
+            )
+            contracted_img = geom.multicontract(group_sum, ((u,v),))
             param_idx += len(images)
 
-    return images_by_k[x.k], param_idx
+            if ((k - 2) in input_layer):
+                input_layer[k - 2] = jnp.concatenate((input_layer[k - 2], contracted_img))
+            else:
+                input_layer[k - 2] = contracted_img
+
+    return input_layer[target_k], param_idx
 
 def max_pool_layer(input_layer, patch_len):
     return [image.max_pool(patch_len) for image in input_layer]
@@ -222,16 +244,12 @@ def param_count(x, conv_filters, deg):
 
 def rmse_loss(x, y):
     """
-    Root Mean Squared Error Loss, if x and y are both batches, the loss is per image.
+    Root Mean Squared Error Loss.
     args:
         x (GeometricImage): the input image
         y (GeometricImage): the associated output for x that we are comparing against
     """
-    assert isinstance(x, geom.BatchGeometricImage) == isinstance(y, geom.BatchGeometricImage)
-    batch = isinstance(x, geom.BatchGeometricImage)
-    axes = tuple(range(1, len(x.shape()))) if batch else None
-    rmse = jnp.sqrt(jnp.sum((x.data - y.data) ** 2, axis=axes))
-    return jnp.mean(rmse) if batch else rmse
+    return jnp.sqrt(jnp.sum((x - y) ** 2))
 
 ## Data and Batching operations
 
@@ -379,8 +397,8 @@ def train(
     args:
         X (list of GeometricImages): The X input data to the model
         Y (list of GeometricImages): The Y target data for the model
-        map_and_loss (function): function that takes in params, X_batch, and Y_batch, maps X_batch to Y_batch_hat
-            using params, then calculates the loss with Y_batch.
+        map_and_loss (function): function that takes in params, X, and Y, and maps X to Y_hat
+            using params, then calculates the loss with Y.
         params (jnp.array): 
         rand_key (jnp.random key): key for randomness
         epochs (int): number of epochs to run. An epoch is defined as a pass over the entire data, and may involve
@@ -392,16 +410,22 @@ def train(
         loss_steps (int): defaults to 1, the number of steps to rollout the prediction when computing the loss.
         noise_stdev (float): standard deviation for any noise to add to training data, defaults to None
         save_params (str): defaults to None, where to save the params of the model, every epochs/10 th epoch.
-        verbose (0,1,2 or 3): verbosity level. 3 prints loss every batch, 2 every epoch, 1 ever epochs/10 th epoch
-            0 not at all.
+        verbose (0,1, or 2): verbosity level. 2 prints every epoch, 1 ever epochs/10 th epoch 0 not at all.
     """
-    assert verbose in {0,1,2,3}
-    batch_loss_grad = value_and_grad(map_and_loss)
+    assert verbose in {0,1,2}
+    batch_loss_grad = vmap(value_and_grad(map_and_loss), in_axes=(None, 0, 0))
 
     if (optimizer is None):
         optimizer = optax.adam(0.1)
 
     opt_state = optimizer.init(params)
+
+    if (validation_X and validation_Y):
+        batch_validation_X = geom.BatchGeometricImage.from_images(validation_X)
+        batch_validation_Y = geom.BatchGeometricImage.from_images(validation_Y)
+    else:
+        batch_validation_X = None 
+        batch_validation_Y = None
 
     for i in range(epochs):
         rand_key, subkey = random.split(rand_key)
@@ -414,23 +438,21 @@ def train(
 
         X_batches, Y_batches = get_batch_rollout(train_X, Y, batch_size, subkey)
         epoch_loss = 0
-        for X_batch, Y_batch_steps in zip(X_batches, Y_batches):
-            loss_val, grads = batch_loss_grad(params, X_batch, Y_batch_steps)
-            if (verbose >= 3):
-                print(f'Batch loss: {loss_val}')
+        for X_batch, Y_batch in zip(X_batches, Y_batches):
+            loss_val, grads = batch_loss_grad(params, X_batch.data, Y_batch.data)
+            grads = jnp.mean(grads, axis=0)
             updates, opt_state = optimizer.update(grads, opt_state)
             params = optax.apply_updates(params, updates)
-            epoch_loss += loss_val
+            epoch_loss += jnp.mean(loss_val)
 
         if (i == 0 or ((i+1) % (epochs // np.min([10,epochs])) == 0)):
             if (save_params):
                 jnp.save(save_params, params)
             if (verbose == 1):
                 print(f'Epoch {i}: {epoch_loss / len(X_batches)}')
-            if (validation_X and validation_Y):
-                batch_validation_X = geom.BatchGeometricImage.from_images(validation_X)
-                batch_validation_Y = geom.BatchGeometricImage.from_images(validation_Y)
-                print('Validation Error: ', map_and_loss(params, batch_validation_X, batch_validation_Y))
+            if (batch_validation_X and batch_validation_Y):
+                validation_error = batch_loss_grad(params, batch_validation_X.data, batch_validation_Y.data)[0]
+                print('Validation Error: ', jnp.mean(validation_error))
 
         if (verbose >= 2):
             print(f'Epoch {i}: {epoch_loss / len(X_batches)}')

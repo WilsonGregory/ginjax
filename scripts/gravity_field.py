@@ -200,6 +200,7 @@ train_img = geom.GeometricImage(
     net(params, one_point.data, one_point.D, one_point.is_torus, conv_filters, train_Y[0].data),
     train_X[0].parity,
     train_X[0].D,
+    train_X[0].is_torus,
 )
 utils.plot_image(train_img, ax=axs[0,2])
 
@@ -220,6 +221,7 @@ test_img = geom.GeometricImage(
     net(params, test_X[0].data, test_X[0].D, test_X[0].is_torus, conv_filters, test_Y[0].data), 
     test_X[0].parity,
     test_X[0].D,
+    test_X[0].is_torus,
 )
 utils.plot_image(test_img, ax=axs[1,2])
 

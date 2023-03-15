@@ -31,35 +31,6 @@ def add_to_layer(layer, k, image):
 
     return layer
 
-@functools.partial(jit, static_argnums=[2,3,4,5,6])
-def conv_layer_full(conv_filters, input_layer, D, is_torus, target_k=None, dilations=(1,), max_k=None):
-    """
-    Functional version of conv_layer.
-    """
-    batch_convolve = vmap(geom.convolve, in_axes=(None, 0, None, None, None, None, None, None))
-    vmap_convolve = vmap(batch_convolve, in_axes=(None, None, 0, None, None, None, None, None))
-
-    out_layer = {}
-    for k in input_layer.keys():
-        prods_group = input_layer[k]
-        for filter_k, filter_group in conv_filters.items():
-            for dilation in dilations:
-                if (target_k and ((k + target_k - filter_k) % 2 != 0)):
-                    continue
-
-                img_N, _ = geom.parse_shape(prods_group.shape[1:], D)
-                res_k = k + filter_k
-
-                res = vmap_convolve(D, prods_group, filter_group, is_torus, None, None, None, (dilation,)*D)
-                res = res.reshape((len(prods_group)*len(filter_group),) + (img_N,)*D + (D,)*res_k)
-
-                out_layer = add_to_layer(out_layer, res_k, res)
-
-    if (max_k is not None):
-        out_layer = order_cap_layer(D, out_layer, max_k)
-
-    return out_layer
-
 @functools.partial(jit, static_argnums=[1,4,5,6,7,8])
 def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target_k=None, dilations=(1,), max_k=None):
     """
@@ -68,8 +39,6 @@ def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target
     # map over dilations, then filters
     vmap_sums = vmap(geom.linear_combination, in_axes=(None, 0))
     vmap_convolve = vmap(geom.convolve, in_axes=(None, 0, 0, None, None, None, None, None))
-    # batch_convolve = vmap(geom.convolve, in_axes=(None, 0, None, None, None, None, None, None))
-    # vmap_convolve = vmap(batch_convolve, in_axes=(None, None, 0, None, None, None, None, None))
 
     out_layer = {}
     for k in input_layer.keys():
@@ -79,11 +48,7 @@ def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target
                 if (target_k and ((k + target_k - filter_k) % 2 != 0)):
                     continue
 
-                img_N, _ = geom.parse_shape(prods_group.shape[1:], D)
                 res_k = k + filter_k
-
-                # res = vmap_convolve(D, prods_group, filter_group, is_torus, None, None, None, (dilation,)*D)
-                # res = res.reshape((len(prods_group)*len(filter_group),) + (img_N,)*D + (D,)*res_k)
 
                 param_shape = (len(filter_group), len(prods_group))
                 num_params = np.multiply.reduce(param_shape)
@@ -508,18 +473,12 @@ def train(
 
         X_batches, Y_batches = get_batch_rollout(train_X, Y, batch_size, subkey)
         epoch_loss = 0
-        bounce = 0
-        last_loss = jnp.inf
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             loss_val, grads = batch_loss_grad(params, X_batch.data, Y_batch.data)
             grads = jnp.mean(grads, axis=0)
             updates, opt_state = optimizer.update(grads, opt_state)
             params = optax.apply_updates(params, updates)
             epoch_loss += jnp.mean(loss_val)
-
-            if (jnp.mean(loss_val) > last_loss):
-                bounce += 1
-            last_loss = jnp.mean(loss_val)
 
         if (i == 0 or ((i+1) % (epochs // np.min([10,epochs])) == 0)):
             if (save_params):
@@ -531,6 +490,6 @@ def train(
                 print('Validation Error: ', jnp.mean(validation_error))
 
         if (verbose >= 2):
-            print(f'Epoch {i}: {epoch_loss / len(X_batches)} (bounce {bounce})')
+            print(f'Epoch {i}: {epoch_loss / len(X_batches)}')
 
     return params

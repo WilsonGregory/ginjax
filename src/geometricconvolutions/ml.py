@@ -4,7 +4,7 @@ from collections import defaultdict
 import numpy as np
 import math
 
-from jax import grad, jit, random, value_and_grad, vmap
+from jax import jit, random, value_and_grad, vmap
 import jax.nn
 import jax.numpy as jnp
 import optax
@@ -22,9 +22,17 @@ def make_layer(images):
         return { k: jnp.stack([image.data for image in image_list]) for k, image_list in images_by_k.items() }
     elif isinstance(images[0], geom.GeometricImage):
         return { k: jnp.stack([jnp.expand_dims(image.data, axis=0) for image in image_list]) for k, image_list in images_by_k.items() }
+    
+def add_to_layer(layer, k, image):
+    if (k in layer):
+        layer[k] = jnp.concatenate((layer[k], image))
+    else:
+        layer[k] = image
 
-@functools.partial(jit, static_argnums=[1,4,5,6,7])
-def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target_k=None, dilations=(1,)):
+    return layer
+
+@functools.partial(jit, static_argnums=[1,4,5,6,7,8])
+def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target_k=None, dilations=(1,), max_k=None):
     """
     Functional version of conv_layer.
     """
@@ -39,6 +47,8 @@ def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target
             for dilation in dilations:
                 if (target_k and ((k + target_k - filter_k) % 2 != 0)):
                     continue
+
+                res_k = k + filter_k
 
                 param_shape = (len(filter_group), len(prods_group))
                 num_params = np.multiply.reduce(param_shape)
@@ -57,11 +67,10 @@ def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target
                     None, #lhs_dilations
                     (dilation,)*D, #rhs_dilations
                 )
-                res_k = filter_k + k 
-                if (res_k in out_layer):
-                    out_layer[res_k] = jnp.concatenate((out_layer[res_k], res))
-                else:
-                    out_layer[res_k] = res
+                out_layer = add_to_layer(out_layer, res_k, res)
+
+    if (max_k is not None):
+        out_layer = order_cap_layer(D, out_layer, max_k)
 
     return out_layer, param_idx
 
@@ -104,14 +113,23 @@ def make_p_k_dict(images, filters=False, rollup_set={}):
 
     return images_dict
 
-@jit
-def relu_layer(images):
-    return [image.activation_function(jax.nn.relu) for image in images]
+@functools.partial(jit, static_argnums=[1,2])
+def activation_layer(layer, D, activation_function):
+    scalar_image = contract_to_scalars(layer, D)
+    layer = add_to_layer(layer, 0, activation_function(scalar_image))
+    return layer
 
-@jit
-def leaky_relu_layer(images, negative_slope=0.01):
-    leaky_relu = functools.partial(jax.nn.leaky_relu, negative_slope=negative_slope)
-    return [image.activation_function(leaky_relu) for image in images]
+@functools.partial(jit, static_argnums=1)
+def relu_layer(layer, D):
+    return activation_layer(layer, D, jax.nn.relu)
+
+@functools.partial(jit, static_argnums=[1,2])
+def leaky_relu_layer(layer, D, negative_slope=0.01):
+    return activation_layer(layer, D, functools.partial(jax.nn.leaky_relu, negative_slope=negative_slope))
+
+@functools.partial(jit, static_argnums=1)
+def sigmoid_layer(layer, D):
+    return activation_layer(layer, D, jax.nn.sigmoid)
 
 @functools.partial(jit, static_argnums=[1,3,4])
 def polynomial_layer(params, param_idx, layer, D, poly_degree):
@@ -148,19 +166,12 @@ def polynomial_layer(params, param_idx, layer, D, poly_degree):
                 prod = vmap_mul(D, group_sums, mult_block)
                 _, prod_k = geom.parse_shape(prod.shape[1:], D)
 
-                if (prod_k in prods_by_degree[degree]):
-                    prods_by_degree[degree][prod_k] = jnp.concatenate((prods_by_degree[degree][prod_k], prod))
-                else:
-                    prods_by_degree[degree][prod_k] = prod
-
-                if (prod_k in out_layer):
-                    out_layer[prod_k] = jnp.concatenate((out_layer[prod_k], prod))
-                else:
-                    out_layer[prod_k] = prod
+                prods_by_degree[degree] = add_to_layer(prods_by_degree[degree], prod_k, prod)
+                out_layer = add_to_layer(out_layer, prod_k, prod)
 
     return out_layer, param_idx
 
-def order_cap_layer(images, max_k):
+def order_cap_layer(D, images, max_k):
     """
     For each image with tensor order k larger than max_k, do all possible contractions to reduce it to order k, or k-1
     if necessary because the difference is odd.
@@ -168,19 +179,31 @@ def order_cap_layer(images, max_k):
         images (list of GeometricImages): the input images in the layer
         max_k (int): the max tensor order
     """
-    out_layer = []
-    for img in images:
-        if (img.k > max_k):
-            k_diff = img.k - max_k 
-            if(k_diff % 2 == 1): #if its odd, we need to go one lower
-                k_diff += 1
+    out_layer = {}
+    for k, img in images.items():
+        if (k > max_k):
+            k_diff = k - max_k 
+            k_diff += (k_diff % 2) #if its odd, we need to go one lower
 
-            for contract_idx in geom.get_contraction_indices(img.k, img.k - k_diff):
-                out_layer.append(img.multicontract(contract_idx))
+            idx_shift = 1 + D
+            for contract_idx in geom.get_contraction_indices(k, k - k_diff):
+                shifted_idx = tuple((i + idx_shift, j + idx_shift) for i,j in contract_idx)
+                contract_img = geom.multicontract(img, shifted_idx)
+                _, res_k = geom.parse_shape(contract_img.shape[1:], D)
+
+                out_layer = add_to_layer(out_layer, res_k, contract_img)
         else:
-            out_layer.append(img)
+            out_layer = add_to_layer(out_layer, k, img)
 
     return out_layer
+
+def contract_to_scalars(input_layer, D):
+    suitable_images = {}
+    for k, image_block in input_layer.items():
+        if ((k % 2) == 0):
+            suitable_images[k] = image_block 
+
+    return all_contractions(0, suitable_images, D)
 
 def cascading_contractions(params, param_idx, target_k, input_layer, D):
     """
@@ -206,12 +229,24 @@ def cascading_contractions(params, param_idx, target_k, input_layer, D):
             contracted_img = geom.multicontract(group_sum, ((u,v),))
             param_idx += len(images)
 
-            if ((k - 2) in input_layer):
-                input_layer[k - 2] = jnp.concatenate((input_layer[k - 2], contracted_img))
-            else:
-                input_layer[k - 2] = contracted_img
+            input_layer = add_to_layer(input_layer, k-2, contracted_img)
 
     return input_layer[target_k], param_idx
+
+def all_contractions(target_k, input_layer, D):
+    final_image = None
+    for k, image_block in input_layer.items():
+        idx_shift = 1 + D # layer plus N x N x ... x N (D times)
+        for contract_idx in geom.get_contraction_indices(k, target_k):
+            shifted_idx = tuple((i + idx_shift, j + idx_shift) for i,j in contract_idx)
+            contracted_img = geom.multicontract(image_block, shifted_idx)
+            if final_image is not None:
+                final_image = jnp.concatenate((final_image, contracted_img))
+            else:
+                final_image = contracted_img
+
+    return final_image
+
 
 def max_pool_layer(input_layer, patch_len):
     return [image.max_pool(patch_len) for image in input_layer]

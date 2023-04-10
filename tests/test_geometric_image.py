@@ -465,14 +465,38 @@ class TestGeometricImage:
             assert (img5_contracted.data == jnp.array(lst).reshape(img5_contracted.shape())).all()
 
     def testNorm(self):
+        # 2d image of scalars
         image1 = geom.GeometricImage(jnp.array([[1,2],[-1,0]]), 0, 2)
         assert image1.norm() == geom.GeometricImage(jnp.array([[1,2],[1,0]]), 0, 2)
 
+        # 2d image of vectors
         image2 = geom.GeometricImage(jnp.array([[[1,0], [-1,-1]],[[0,0],[-4,3]]]), 0, 2)
         assert image2.norm() == geom.GeometricImage(jnp.array([[1, jnp.sqrt(2)],[0,5]]), 0, 2)
 
+        # 3d image of scalars
         image3 =  geom.GeometricImage(jnp.array([[[4,-3],[0,1]],[[-2,-3],[1,2]]]), 0, 3)
         assert image3.norm() ==  geom.GeometricImage(jnp.array([[[4,3],[0,1]],[[2,3],[1,2]]]), 0, 3)
+
+        # 2d image of matrices, N=2
+        image4 = geom.GeometricImage(
+            jnp.array([
+                [
+                    [[1,0],[-1,-1]],
+                    [[0,0],[-4,3]],
+                ],
+                [
+                    [[1,2],[-1,0]],
+                    [[4,0],[2,-4]],
+                ],
+            ]),
+            0,
+            2,
+        )
+        assert image4.norm() == geom.GeometricImage(jnp.array([[jnp.sqrt(3),5],[jnp.sqrt(6),6]]), 0, 2)
+
+        # 2d images of 3rd order tensors, N=1
+        image5 = geom.GeometricImage(jnp.array([[ [[[1,0],[-1,-1]],[[0,0],[-4,3]]] ]]), 0, 2)
+        assert image5.norm() == geom.GeometricImage(jnp.array([[jnp.sqrt(28)]]), 0, 2)
 
     def testNormalize(self):
         key = random.PRNGKey(0)

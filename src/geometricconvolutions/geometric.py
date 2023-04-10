@@ -762,12 +762,13 @@ class GeometricImage:
         """
         assert (self.N % patch_len) == 0
         plus_N = -1*(self.N - int(self.N / patch_len))
+        norm_data = self.norm()
 
         idxs = jnp.array(list(it.product(range(patch_len), repeat=self.D)))
         max_idxs = []
         for base in it.product(range(0, self.N, patch_len), repeat=self.D):
             block_idxs = jnp.array(base) + idxs
-            max_hash_idx = jnp.argmax(self.norm()[self.hash(block_idxs)])
+            max_hash_idx = jnp.argmax(norm_data[self.hash(block_idxs)])
             max_idxs.append(block_idxs[max_hash_idx])
 
         max_data = self[self.hash(jnp.array(max_idxs))].reshape(self.image_shape(plus_N) + self.pixel_shape())

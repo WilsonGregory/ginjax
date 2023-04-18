@@ -45,7 +45,7 @@ def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target
         prods_group = input_layer[k]
         for filter_k, filter_group in conv_filters.items():
             for dilation in dilations:
-                if (target_k and ((k + target_k - filter_k) % 2 != 0)):
+                if ((target_k is not None) and ((k + target_k - filter_k) % 2 != 0)):
                     continue
 
                 res_k = k + filter_k
@@ -411,6 +411,40 @@ def get_timeseries_XY(X, loss_steps=1, circular=False):
 
 ### Train
 
+class StopCondition:
+    def __init__(self) -> None:
+        self.best_params = None
+
+    def stop(self, params):
+        pass
+
+class EpochStop(StopCondition):
+    def __init__(self, epochs) -> None:
+        super(EpochStop, self).__init__()
+        self.epochs = epochs
+
+    def stop(self, params, current_epoch) -> bool:
+        self.best_params = params
+        return current_epoch >= self.epochs
+    
+class ValLoss(StopCondition):
+    def __init__(self, patience=None, min_delta=None) -> None:
+        super(ValLoss, self).__init__()
+        self.patience = patience
+        self.min_delta = 0 if min_delta is None else min_delta
+        self.best_val_loss = jnp.inf
+        self.epochs_since_best = 0
+
+    def stop(self, params, val_loss) -> bool:
+        if (val_loss < (self.best_val_loss - self.min_delta)):
+            self.best_val_loss = val_loss
+            self.best_params = params
+            self.epochs_since_best = 0
+        else:
+            self.epochs_since_best += 1
+
+        return self.epochs_since_best > self.patience
+
 def train(
     X, 
     Y, 
@@ -445,7 +479,7 @@ def train(
         loss_steps (int): defaults to 1, the number of steps to rollout the prediction when computing the loss.
         noise_stdev (float): standard deviation for any noise to add to training data, defaults to None
         save_params (str): defaults to None, where to save the params of the model, every epochs/10 th epoch.
-        verbose (0,1, or 2): verbosity level. 2 prints every epoch, 1 ever epochs/10 th epoch 0 not at all.
+        verbose (0,1, or 2): verbosity level. 2 prints every epoch, 1 every epochs/10 th epoch, 0 not at all.
     """
     assert verbose in {0,1,2}
     batch_loss_grad = vmap(value_and_grad(map_and_loss), in_axes=(None, 0, 0))
@@ -493,3 +527,111 @@ def train(
             print(f'Epoch {i}: {epoch_loss / len(X_batches)}')
 
     return params
+
+def train_early_stopping(
+    X, 
+    Y, 
+    map_and_loss,
+    params, 
+    rand_key, 
+    # stop_conditions=[],
+    batch_size=16, 
+    optimizer=None,
+    validation_X=None,
+    validation_Y=None,
+    patience=None,
+    noise_stdev=None, 
+    save_params=None,
+    verbose=1,
+):
+    """
+    Method to train the model. It uses stochastic gradient descent (SGD) with the Adam optimizer to learn the
+    parameters the minimize the map_and_loss function. The params are returned.
+    args:
+        X (list of GeometricImages): The X input data to the model
+        Y (list of GeometricImages): The Y target data for the model
+        map_and_loss (function): function that takes in params, X, and Y, and maps X to Y_hat
+            using params, then calculates the loss with Y.
+        params (jnp.array): 
+        rand_key (jnp.random key): key for randomness
+        epochs (int): number of epochs to run. An epoch is defined as a pass over the entire data, and may involve
+            multiple batches.
+        batch_size (int): defaults to 16, the size of each mini-batch in SGD
+        optimizer (optax optimizer): optimizer, defaults to adam(learning_rate=0.1)
+        validation_X (list of GeometricImages): input data for a validation data set
+        validation_Y (list of GeometricImages): target data for a validation data set
+        patience (int): how many epochs of no improvement before early stopping
+        loss_steps (int): defaults to 1, the number of steps to rollout the prediction when computing the loss.
+        noise_stdev (float): standard deviation for any noise to add to training data, defaults to None
+        save_params (str): defaults to None, where to save the params of the model, every epochs/10 th epoch.
+        verbose (0,1, or 2): verbosity level. 2 prints every epoch, 1 every epochs/10 th epoch, 0 not at all.
+    """
+    assert verbose in {0,1,2}
+    assert validation_X and validation_Y
+    # assert len(stop_conditions) > 0
+    batch_loss_grad = vmap(value_and_grad(map_and_loss), in_axes=(None, 0, 0))
+
+    if (optimizer is None):
+        optimizer = optax.adam(0.1)
+
+    opt_state = optimizer.init(params)
+
+    batch_validation_X = geom.BatchGeometricImage.from_images(validation_X)
+    batch_validation_Y = geom.BatchGeometricImage.from_images(validation_Y)
+
+    early_stop = False
+    epoch = 0
+    best_params = None
+    best_val_error = jnp.inf
+    train_loss = []
+    val_loss = []
+    while (not early_stop):
+        rand_key, subkey = random.split(rand_key)
+
+        if noise_stdev:
+            train_X = add_noise(X, noise_stdev, subkey)
+            rand_key, subkey = random.split(rand_key)
+        else:
+            train_X = X
+
+        X_batches, Y_batches = get_batch_rollout(train_X, Y, batch_size, subkey)
+        epoch_loss = 0
+        for X_batch, Y_batch in zip(X_batches, Y_batches):
+            loss_val, grads = batch_loss_grad(params, X_batch.data, Y_batch.data)
+            grads = jnp.mean(grads, axis=0)
+            updates, opt_state = optimizer.update(grads, opt_state)
+            params = optax.apply_updates(params, updates)
+            epoch_loss += jnp.mean(loss_val)
+
+        epoch_loss = epoch_loss / len(X_batches)
+        train_loss.append(epoch_loss)
+
+        epoch += 1
+
+        validation_error = jnp.mean(batch_loss_grad(params, batch_validation_X.data, batch_validation_Y.data)[0])
+        val_loss.append(validation_error)
+        if (validation_error < best_val_error):
+            # print(f'Val Loss: {validation_error}')
+            best_val_error = validation_error
+            best_params = params
+            epochs_since_best = 0
+            if (save_params):
+                jnp.save(save_params, params)
+        else:
+            epochs_since_best += 1
+            if epochs_since_best > patience:
+                early_stop = True
+
+        # if (i == 0 or ((i+1) % (epochs // np.min([10,epochs])) == 0)):
+        #     if (save_params):
+        #         jnp.save(save_params, params)
+        #     if (verbose == 1):
+        #         print(f'Epoch {i}: {epoch_loss / len(X_batches)}')
+        #     if (batch_validation_X and batch_validation_Y):
+        #         validation_error = batch_loss_grad(params, batch_validation_X.data, batch_validation_Y.data)[0]
+        #         print('Validation Error: ', jnp.mean(validation_error))
+
+        # if (verbose >= 2):
+        #     print(f'Epoch {i}: {epoch_loss / len(X_batches)}')
+
+    return best_params, np.array(train_loss), np.array(val_loss)

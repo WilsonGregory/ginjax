@@ -501,7 +501,11 @@ def tensor_name(k, parity):
     if parity % 2 == 1 and k < 2:
         nn = "pseudo" + nn
     if k > 1:
-        nn = "${}$-${}$-".format(k, parity) + nn
+        if parity == 0:
+            nn = r'${}_{}-$'.format(k, '{(+)}') + nn
+        else:
+            nn = r'${}_{}-$'.format(k, '{(-)}') + nn
+
     return nn
 
 @register_pytree_node_class

@@ -442,22 +442,30 @@ def get_contraction_indices(initial_k, final_k, swappable_idxs=()):
     assert ((initial_k + final_k) % 2) == 0
     assert initial_k >= final_k
     assert final_k >= 0
+
     tuple_pairs = it.combinations(it.combinations(range(initial_k),2),(initial_k - final_k) // 2)
-    pairs = np.array([np.array(pair).reshape((initial_k - final_k,)) for pair in tuple_pairs])
-    unique_rows = np.array([True if len(np.unique(row)) == len(row) else False for row in pairs])
-    unique_pairs = pairs[unique_rows]
-    unique_swapped_pairs = unique_pairs
+    rows = np.array([np.array(pair).reshape((initial_k - final_k,)) for pair in tuple_pairs])
+    unique_rows = np.array([True if len(np.unique(row)) == len(row) else False for row in rows])
+    unique_pairs = rows[unique_rows] #remove rows which have an index multiple times
 
+    # replace every element of the second term of the swappable pair with the first term
+    for a,b in swappable_idxs:
+        unique_pairs[np.where(np.isin(unique_pairs, b))] = a
+
+    # convert back to lists
+    sorted_tuples = [sorted(sorted([x,y]) for x,y in zip(row[0::2], row[1::2])) for row in unique_pairs]
+    sorted_rows = np.array([np.array(pair).reshape((initial_k - final_k,)) for pair in sorted_tuples])
+    unique_sorted_rows = np.unique(sorted_rows, axis=0) #after sorting remove redundant rows
+
+    # restore by elements of the swappable pairs to being in the sequences
     for pair in swappable_idxs:
-        for row in unique_pairs:
+        for row in unique_sorted_rows:
             locs = np.isin(row, pair)
-            row[np.max(np.where(locs))] = pair[1]
-            row[np.min(np.where(locs))] = pair[0] #if there is only 1, it will get set to pair 0
-            # small bug. if (0,1) is swappable, we won't catch that ((0,2),(1,3)) and ((0,3),(1,2)) are dupes
+            if len(np.where(locs)[0]) > 0:
+                row[np.max(np.where(locs))] = pair[1]
+                row[np.min(np.where(locs))] = pair[0] #if there is only 1, it will get set to pair 0
 
-    unique_swapped_pairs = np.unique(unique_pairs, axis=0)
-
-    return [tuple((x,y) for x,y in zip(idxs[0::2], idxs[1::2])) for idxs in unique_swapped_pairs]
+    return [tuple((x,y) for x,y in zip(idxs[0::2], idxs[1::2])) for idxs in unique_sorted_rows]
 
 @partial(jit, static_argnums=1)
 def multicontract(data, indices):

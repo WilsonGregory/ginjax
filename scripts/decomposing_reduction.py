@@ -150,8 +150,8 @@ P = findPwithJordanDecomp(
 # print(P @ P.T)
 print(np.allclose(P @ P.T, np.eye(P.shape[0]), rtol=geom.TINY, atol=geom.TINY))
 
-# for g in operators_big:
-#     assert np.allclose(g @ conv_large_reps[1], conv_large_reps[1] @ g)
+for g in operators_big:
+    assert np.allclose(g @ conv_large_reps[1], conv_large_reps[1] @ g)
 
 # for i in range(len(operators_big)):
 #     print(f'Original Operator {i}')
@@ -161,18 +161,18 @@ print(np.allclose(P @ P.T, np.eye(P.shape[0]), rtol=geom.TINY, atol=geom.TINY))
 #         print(df)
 
 
-# print(f'Original Operator {6}')
-# print(operators_big[6])
-# df = pd.DataFrame(np.around(P.T @ operators_big[6] @ P, decimals=2))
-# with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
-#     print(df)
+print(f'Original Operator {6}')
+print(operators_big[6])
+df = pd.DataFrame(np.around(P.T @ operators_big[6] @ P, decimals=2))
+with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
+    print(df)
 
-# print('~~~~~~~~~~~~~~~~~~~~~~~~')
-# print('Original Convolution 2')
-# print(conv_large_reps[2])
-# df = pd.DataFrame(np.around(P.T @ conv_large_reps[2] @ P, decimals=2))
-# with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
-#     print(df)
+print('~~~~~~~~~~~~~~~~~~~~~~~~')
+print('Original Convolution 2')
+print(conv_large_reps[2])
+df = pd.DataFrame(np.around(P.T @ conv_large_reps[2] @ P, decimals=2))
+with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
+    print(df)
 
 
 

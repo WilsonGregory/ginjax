@@ -1,7 +1,5 @@
 #generate gravitational field
 import sys
-import numpy as np
-import itertools as it
 from functools import partial
 import argparse
 import time
@@ -15,48 +13,21 @@ import optax
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 import geometricconvolutions.utils as utils
+from geometricconvolutions.data import get_gravity_data as get_data
 
-def get_gravity_vector(position1, position2, mass):
-    r_vec = position1 - position2
-    r_squared = np.linalg.norm(r_vec) ** 3
-    return (mass / r_squared) * r_vec
+def plot_results(x, y, axs, titles):
+    assert len(axs) == len(titles)
 
-def get_gravity_field_image(N, D, point_position, point_mass):
-    field = np.zeros((N,)*D + (D,))
-
-    # this could all be vectorized
-    for position in it.product(range(N), repeat=D):
-        position = np.array(position)
-        if (np.all(position == point_position)):
-            continue
-
-        field[tuple(position)] = get_gravity_vector(point_position, position, point_mass)
-
-    return geom.GeometricImage(field, 0, D, is_torus=False)
-
-def get_data(N, D, num_points, rand_key, num_images=1):
-    rand_key, subkey = random.split(rand_key)
-    planets = random.uniform(subkey, shape=(num_points,))
-    planets = planets / jnp.max(planets)
-
-    masses = []
-    gravity_fields = []
-    for _ in range(num_images):
-        point_mass = np.zeros((N,N))
-        gravity_field = geom.GeometricImage.zeros(N=N, k=1, parity=0, D=D, is_torus=False)
-
-        # Sample uniformly the cells
-        rand_key, subkey = random.split(rand_key)
-        possible_locations = np.array(list(it.product(range(N), repeat=D)))
-        location_choices = random.choice(subkey, possible_locations, shape=(num_points,), replace=False, axis=0)
-        for (x,y), mass in zip(location_choices, planets):
-            point_mass[x,y] = mass
-            gravity_field = gravity_field + get_gravity_field_image(N, D, np.array([x,y]), mass)
-
-        masses.append(geom.GeometricImage(point_mass, 0, D, is_torus=False))
-        gravity_fields.append(gravity_field)
-
-    return masses, gravity_fields
+    learned_x = geom.GeometricImage(
+        net(params, x.data, x.D, x.is_torus, conv_filters, y.data),
+        x.parity,
+        x.D,
+        x.is_torus,
+    )
+    images = [x, y, learned_x, y - learned_x]
+    for image, ax, title in zip(images, axs, titles):
+        utils.plot_image(image, ax=ax)
+        ax.set_title(title, fontsize=24)
 
 def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
     #x is a layer
@@ -87,7 +58,7 @@ def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
         target_k, #final_layer, make sure out output is target_img shaped
         dilations=tuple(range(1,int(img_N / 2))),
     )
-    layer, param_idx = ml.cascading_contractions(params, int(param_idx), target_k, layer, D)
+    layer = ml.all_contractions(target_k, layer, D)
 
     net_output = geom.linear_combination(layer, params[param_idx:(param_idx + len(layer))])
     param_idx += len(layer)
@@ -100,7 +71,6 @@ def map_and_loss(params, x, y, conv_filters, D, is_torus):
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('outfile', help='where to save the image', type=str)
-    parser.add_argument('-e', '--epochs', help='number of epochs to run', type=int, default=10)
     parser.add_argument('-lr', help='learning rate', type=float, default=0.1)
     parser.add_argument('-batch', help='batch size', type=int, default=1)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
@@ -112,7 +82,6 @@ def handleArgs(argv):
 
     return (
         args.outfile,
-        args.epochs,
         args.lr,
         args.batch,
         args.seed,
@@ -122,7 +91,7 @@ def handleArgs(argv):
     )
 
 # Main
-outfile, epochs, lr, batch_size, seed, save_file, load_file, verbose = handleArgs(sys.argv)
+outfile, lr, batch_size, seed, save_file, load_file, verbose = handleArgs(sys.argv)
 
 N = 16
 D = 2
@@ -174,38 +143,32 @@ else:
     key, subkey = random.split(key)
     params = 0.1*random.normal(subkey, shape=(num_params,))
 
-    params = ml.train(
+    params, _, _ = ml.train(
         train_X,
         train_Y,
         partial(map_and_loss, D=one_point.D, is_torus=one_point.is_torus, conv_filters=conv_filters),
         params,
         key,
-        epochs=epochs,
+        ml.ValLoss(patience=20, verbose=verbose),
         batch_size=batch_size,
         optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(len(train_X) / batch_size), decay_rate=0.995)),
         validation_X=validation_X,
         validation_Y=validation_Y,
         save_params=save_file,
-        verbose=verbose,
     )
 
     if (save_file):
-            jnp.save(save_file, params)
+        jnp.save(save_file, params)
 
-fig, axs = plt.subplots(nrows=2, ncols=3, figsize=(24,12))
+plt.rcParams['font.family'] = 'serif'
+plt.rcParams['font.serif'] = 'STIXGeneral'
+plt.tight_layout()
 
-utils.plot_image(one_point, ax=axs[0,0])
-utils.plot_image(train_Y[0], ax=axs[0,1])
-train_img = geom.GeometricImage(
-    net(params, one_point.data, one_point.D, one_point.is_torus, conv_filters, train_Y[0].data),
-    train_X[0].parity,
-    train_X[0].D,
-    train_X[0].is_torus,
-)
-utils.plot_image(train_img, ax=axs[0,2])
+fig, axs = plt.subplots(nrows=2, ncols=4, figsize=(24,12))
+plot_results(train_X[0], train_Y[0], axs[0], ['Input', 'Ground Truth', 'Prediction', 'Difference'])
+plot_results(test_X[0], test_Y[0], axs[1], ['Input', 'Ground Truth', 'Prediction', 'Difference'])
+plt.savefig(outfile)
 
-utils.plot_image(test_X[0], ax=axs[1,0])
-utils.plot_image(test_Y[0], ax=axs[1,1])
 vmap_map_loss = vmap(
     partial(map_and_loss, conv_filters=conv_filters, D=test_X[0].D, is_torus=test_X[0].is_torus),
     in_axes=(None, 0, 0),
@@ -217,12 +180,3 @@ test_loss = jnp.mean(vmap_map_loss(
 ))
 print('Full Test loss:', test_loss)
 print(f'One Test loss: {map_and_loss(params, test_X[0].data, test_Y[0].data, conv_filters, test_X[0].D, test_X[0].is_torus)}')
-test_img = geom.GeometricImage(
-    net(params, test_X[0].data, test_X[0].D, test_X[0].is_torus, conv_filters, test_Y[0].data), 
-    test_X[0].parity,
-    test_X[0].D,
-    test_X[0].is_torus,
-)
-utils.plot_image(test_img, ax=axs[1,2])
-
-plt.savefig(outfile)

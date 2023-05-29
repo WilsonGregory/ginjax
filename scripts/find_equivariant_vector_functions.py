@@ -46,7 +46,6 @@ def get_swappable_indices(k_tuple, img_k, filter_k, res_k):
 
 def get_vector_images(D, image_data_block, conv_filters, degree):
     #vmap over the multiple image
-    # vmap_apply_funcs = vmap(apply_all_functions, in_axes=(None, 0, None, None))
     vmap_apply_funcs = vmap(apply_all_functions, in_axes=(None, 0, None, None))
     datablock = vmap_apply_funcs(D, image_data_block, [c.data for c in conv_filters], degree)
     return np.transpose(datablock, axes=(1,2,0)).reshape((datablock.shape[1],-1))

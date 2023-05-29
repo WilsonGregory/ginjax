@@ -16,48 +16,7 @@ import optax
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
-
-def get_gravity_vector(position1, position2, mass):
-    r_vec = position1 - position2
-    r_squared = np.linalg.norm(r_vec) ** 3
-    return (mass / r_squared) * r_vec
-
-def get_gravity_field_image(N, D, point_position, point_mass):
-    field = np.zeros((N,)*D + (D,))
-
-    # this could all be vectorized
-    for position in it.product(range(N), repeat=D):
-        position = np.array(position)
-        if (np.all(position == point_position)):
-            continue
-
-        field[tuple(position)] = get_gravity_vector(point_position, position, point_mass)
-
-    return geom.GeometricImage(field, 0, D, is_torus=False)
-
-def get_data(N, D, num_points, rand_key, num_images=1):
-    rand_key, subkey = random.split(rand_key)
-    planets = random.uniform(subkey, shape=(num_points,))
-    planets = planets / jnp.max(planets)
-
-    masses = []
-    gravity_fields = []
-    for _ in range(num_images):
-        point_mass = np.zeros((N,N))
-        gravity_field = geom.GeometricImage.zeros(N=N, k=1, parity=0, D=D, is_torus=False)
-
-        # Sample uniformly the cells
-        rand_key, subkey = random.split(rand_key)
-        possible_locations = np.array(list(it.product(range(N), repeat=D)))
-        location_choices = random.choice(subkey, possible_locations, shape=(num_points,), replace=False, axis=0)
-        for (x,y), mass in zip(location_choices, planets):
-            point_mass[x,y] = mass
-            gravity_field = gravity_field + get_gravity_field_image(N, D, np.array([x,y]), mass)
-
-        masses.append(geom.GeometricImage(point_mass, 0, D, is_torus=False))
-        gravity_fields.append(gravity_field)
-
-    return masses, gravity_fields
+from geometricconvolutions.data import get_gravity_data as get_data
 
 def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
     #x is a layer
@@ -159,7 +118,6 @@ def baseline_map_and_loss(params, x, y, D, is_torus):
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument('-lr', help='learning rate', type=float, default=0.1)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-s', '--save', help='file name to save the params', type=str, default=None)
     parser.add_argument('-l', '--load', help='file name to load params from', type=str, default=None)
@@ -168,7 +126,6 @@ def handleArgs(argv):
     args = parser.parse_args()
 
     return (
-        args.lr,
         args.seed,
         args.save,
         args.load,
@@ -176,13 +133,12 @@ def handleArgs(argv):
     )
 
 # Main
-lr, seed, save_file, load_file, verbose = handleArgs(sys.argv)
+seed, save_file, load_file, verbose = handleArgs(sys.argv)
 
 num_times = 5
 N = 16
 D = 2
 num_points = 5
-# num_train_images = 10
 num_train_images_range = [5,10,20,50]
 num_test_images = 10
 num_val_images = 5
@@ -216,7 +172,7 @@ _, num_params = net(
     one_point_y.data,
     return_params=True,
 )
-print(num_params)
+print('Model Params:', num_params)
 
 _, baseline_num_params = baseline_net(
     huge_params,
@@ -226,7 +182,7 @@ _, baseline_num_params = baseline_net(
     one_point_y.data,
     return_params=True,
 )
-print(baseline_num_params)
+print('Baseline Params:', baseline_num_params)
 models = [
     (
         partial(map_and_loss, D=one_point_x.D, is_torus=one_point_x.is_torus, conv_filters=conv_filters), 
@@ -320,13 +276,11 @@ plt.rcParams['font.serif'] = 'STIXGeneral'
 plt.tight_layout()
 
 plt.plot(num_train_images_range, model_train_loss, label='GI-Net train', color='b', marker='o', linestyle='dashed')
-# plt.plot(num_train_images_range, model_val_loss, label='model val', marker='o')
 plt.plot(num_train_images_range, model_test_loss, label='GI-Net test', color='b', marker='o')
 plt.plot(num_train_images_range, baseline_train_loss, label='Baseline train', color='r', marker='o', linestyle='dashed')
-# plt.plot(num_train_images_range, baseline_val_loss, label='baseline val', marker='o')
 plt.plot(num_train_images_range, baseline_test_loss, label='Baseline test', color='r', marker='o')
 plt.legend()
 plt.title('Gravitational Field Loss vs. Number of Training Points')
 plt.xlabel('Number of Training Points')
 plt.ylabel('RMSE Loss')
-plt.savefig('../images/gravity/gravity_loss_chart_1729.png')
+plt.savefig(f'../images/gravity/gravity_loss_chart_{seed}.png')

@@ -1,7 +1,5 @@
 #generate gravitational field
 import sys
-import numpy as np
-import itertools as it
 from functools import partial
 import argparse
 import time
@@ -15,6 +13,7 @@ import optax
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 import geometricconvolutions.utils as utils
+from geometricconvolutions.data import get_gravity_data as get_data
 
 def plot_results(x, y, axs, titles):
     assert len(axs) == len(titles)
@@ -29,48 +28,6 @@ def plot_results(x, y, axs, titles):
     for image, ax, title in zip(images, axs, titles):
         utils.plot_image(image, ax=ax)
         ax.set_title(title, fontsize=24)
-
-def get_gravity_vector(position1, position2, mass):
-    r_vec = position1 - position2
-    r_squared = np.linalg.norm(r_vec) ** 3
-    return (mass / r_squared) * r_vec
-
-def get_gravity_field_image(N, D, point_position, point_mass):
-    field = np.zeros((N,)*D + (D,))
-
-    # this could all be vectorized
-    for position in it.product(range(N), repeat=D):
-        position = np.array(position)
-        if (np.all(position == point_position)):
-            continue
-
-        field[tuple(position)] = get_gravity_vector(point_position, position, point_mass)
-
-    return geom.GeometricImage(field, 0, D, is_torus=False)
-
-def get_data(N, D, num_points, rand_key, num_images=1):
-    rand_key, subkey = random.split(rand_key)
-    planets = random.uniform(subkey, shape=(num_points,))
-    planets = planets / jnp.max(planets)
-
-    masses = []
-    gravity_fields = []
-    for _ in range(num_images):
-        point_mass = np.zeros((N,N))
-        gravity_field = geom.GeometricImage.zeros(N=N, k=1, parity=0, D=D, is_torus=False)
-
-        # Sample uniformly the cells
-        rand_key, subkey = random.split(rand_key)
-        possible_locations = np.array(list(it.product(range(N), repeat=D)))
-        location_choices = random.choice(subkey, possible_locations, shape=(num_points,), replace=False, axis=0)
-        for (x,y), mass in zip(location_choices, planets):
-            point_mass[x,y] = mass
-            gravity_field = gravity_field + get_gravity_field_image(N, D, np.array([x,y]), mass)
-
-        masses.append(geom.GeometricImage(point_mass, 0, D, is_torus=False))
-        gravity_fields.append(gravity_field)
-
-    return masses, gravity_fields
 
 def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
     #x is a layer
@@ -186,19 +143,18 @@ else:
     key, subkey = random.split(key)
     params = 0.1*random.normal(subkey, shape=(num_params,))
 
-    params, _, _ = ml.train_early_stopping(
+    params, _, _ = ml.train(
         train_X,
         train_Y,
         partial(map_and_loss, D=one_point.D, is_torus=one_point.is_torus, conv_filters=conv_filters),
         params,
         key,
+        ml.ValLoss(patience=20, verbose=verbose),
         batch_size=batch_size,
         optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(len(train_X) / batch_size), decay_rate=0.995)),
         validation_X=validation_X,
         validation_Y=validation_Y,
-        patience=20,
         save_params=save_file,
-        verbose=verbose,
     )
 
     if (save_file):

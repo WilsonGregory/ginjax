@@ -1,22 +1,19 @@
 #generate gravitational field
 import sys
-import numpy as np
-import itertools as it
 from functools import partial
 import argparse
 import time
 import matplotlib.pyplot as plt
-import imageio
 
 from jax import vmap
 import jax.numpy as jnp
 import jax.random as random
-import jax.nn
 import optax
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 import geometricconvolutions.utils as utils
+from geometricconvolutions.data import get_charge_data as get_data
 
 def plot_results(x, y, axs, titles):
     assert len(axs) == len(titles)
@@ -31,81 +28,6 @@ def plot_results(x, y, axs, titles):
     for image, ax, title in zip(images, axs, titles):
         utils.plot_image(image, ax=ax)
         ax.set_title(title, fontsize=24)
-
-def get_initial_charges(num_charges, N, D, rand_key):
-    return N*random.uniform(rand_key, shape=(num_charges, D))
-
-def get_velocity_vector(loc, charge_loc, charge):
-    vec = loc - charge_loc
-    scaling = jnp.linalg.norm(vec) ** 3
-    return (charge / scaling) * vec
-
-def get_velocity_field(N, D, charges):
-    pixel_idxs = jnp.array(list(it.product(range(N), repeat=D)), dtype=int)
-    velocity_field = jnp.zeros((N,)*D + (D,))
-
-    vmap_get_vv = vmap(get_velocity_vector, in_axes=(0, None, None)) #all locs, one charge
-
-    for charge in charges:
-        velocity_field = velocity_field + vmap_get_vv(pixel_idxs, charge, 1).reshape((N,)*D + (D,))
-
-    return geom.GeometricImage(velocity_field, 0, D, is_torus=False)
-
-def update_charges(charges, delta_t):
-    get_net_velocity = vmap(get_velocity_vector, in_axes=(None, 0, None)) #single loc, all charges
-
-    new_charges = []
-    for i in range(len(charges)):
-        velocities = get_net_velocity(charges[i], jnp.concatenate((charges[:i], charges[i+1:])), 1)
-        assert velocities.shape == (len(charges) - 1, 2)
-        net_velocity = jnp.sum(velocities, axis=0)
-        assert net_velocity.shape == charges[i].shape == (2,)
-        new_charges.append(charges[i] + delta_t * net_velocity)
-    return jnp.stack(new_charges)
-
-def Qtransform(vector_field, s):
-    vector_field_norm = vector_field.norm()
-    return geom.GeometricImage(
-        (4*(jax.nn.sigmoid(vector_field_norm.data / s)-0.5)) / vector_field_norm.data, 
-        0, 
-        vector_field.D,
-        is_torus=vector_field.is_torus,
-    ) * vector_field
-
-def get_data(N, D, num_charges, num_steps, delta_t, s, rand_key, num_images=1, outfile=None, warmup_steps=0):
-    assert (not outfile) or (num_images == 1)
-
-    initial_fields = []
-    final_fields = []
-    for _ in range(num_images):
-        rand_key, subkey = random.split(rand_key)
-        # generate charges, generally in the center so that they don't repel off the grid
-        charges = get_initial_charges(num_charges, N/2, D, subkey) + jnp.array([int(N/4)]*D)
-        for i in range(warmup_steps):
-            charges = update_charges(charges, delta_t)
-
-        initial_fields.append(Qtransform(get_velocity_field(N, D, charges), s))
-        if outfile:
-            utils.plot_image(initial_fields[-1])
-            plt.savefig(f'{outfile}_{0}.png')
-            plt.close()
-
-        for i in range(1,num_steps+1):
-            charges = update_charges(charges, delta_t)
-            if outfile:
-                utils.plot_image(Qtransform(get_velocity_field(N, D, charges), s))
-                plt.savefig(f'{outfile}_{i}.png')
-                plt.close()
-
-        if outfile:
-            with imageio.get_writer(f'{outfile}.gif', mode='I') as writer:
-                for i in range(num_steps+1):
-                    image = imageio.imread(f'{outfile}_{i}.png')
-                    writer.append_data(image)
-
-        final_fields.append(Qtransform(get_velocity_field(N, D, charges), s))
-
-    return initial_fields, final_fields
 
 def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
     # Note that the target image is only used for its shape
@@ -152,7 +74,6 @@ def handleArgs(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('outfile', help='where to save the image', type=str)
     parser.add_argument('--data_gif', help='where the save the gif of the charges moving', type=str)
-    parser.add_argument('-e', '--epochs', help='number of epochs to run', type=int, default=10)
     parser.add_argument('-lr', help='learning rate', type=float, default=0.1)
     parser.add_argument('-d', '--decay', help='decay rate of learning rate', type=float, default=0.99)
     parser.add_argument('-batch', help='batch size', type=int, default=1)
@@ -166,7 +87,6 @@ def handleArgs(argv):
     return (
         args.outfile,
         args.data_gif,
-        args.epochs,
         args.lr,
         args.decay,
         args.batch,
@@ -177,7 +97,7 @@ def handleArgs(argv):
     )
 
 # Main
-outfile, data_gif, epochs, lr, decay, batch_size, seed, save_file, load_file, verbose = handleArgs(sys.argv)
+outfile, data_gif, lr, decay, batch_size, seed, save_file, load_file, verbose = handleArgs(sys.argv)
 
 N = 16
 D = 2
@@ -239,18 +159,19 @@ else:
         optax.exponential_decay(lr, transition_steps=int(len(train_X) / batch_size), decay_rate=decay)
     )
 
-    params, train_loss, val_loss = ml.train_early_stopping(
+    params, train_loss, val_loss = ml.train(
         train_X,
         train_Y,
         partial(map_and_loss, D=one_point.D, is_torus=one_point.is_torus, conv_filters=conv_filters),
         params,
         key,
+        ml.EpochStop(100, verbose=verbose),
+        # ml.ValLoss(patience=20, verbose=verbose),
         batch_size=batch_size,
         optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(num_train_images / batch_size), decay_rate=0.995)),
         validation_X=validation_X,
         validation_Y=validation_Y,
-        patience=20,
-        verbose=verbose,
+        save_params=save_file,
     )
 
     if (save_file):

@@ -74,8 +74,8 @@ def handleArgs(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('outfile', help='where to save the image', type=str)
     parser.add_argument('--data_gif', help='where the save the gif of the charges moving', type=str)
-    parser.add_argument('-lr', help='learning rate', type=float, default=0.1)
-    parser.add_argument('-d', '--decay', help='decay rate of learning rate', type=float, default=0.99)
+    parser.add_argument('-lr', help='learning rate', type=float, default=0.01)
+    parser.add_argument('-d', '--decay', help='decay rate of learning rate', type=float, default=0.995)
     parser.add_argument('-batch', help='batch size', type=int, default=1)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-s', '--save', help='file name to save the params', type=str, default=None)
@@ -102,7 +102,7 @@ outfile, data_gif, lr, decay, batch_size, seed, save_file, load_file, verbose = 
 N = 16
 D = 2
 num_steps = 10 #number of steps to do
-warmup_steps = 1 #number of initial steps to run. This ensures that particles don't start directly adjacent.
+warmup_steps = 1 #number of initial steps to run, ensures that particles don't start directly adjacent.
 delta_t = 1 #distance taken in a single step
 s = 0.2 # used for transforming the input/output data
 
@@ -165,10 +165,9 @@ else:
         partial(map_and_loss, D=one_point.D, is_torus=one_point.is_torus, conv_filters=conv_filters),
         params,
         key,
-        ml.EpochStop(100, verbose=verbose),
-        # ml.ValLoss(patience=20, verbose=verbose),
+        ml.ValLoss(patience=20, verbose=verbose),
         batch_size=batch_size,
-        optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(num_train_images / batch_size), decay_rate=0.995)),
+        optimizer=optimizer,
         validation_X=validation_X,
         validation_Y=validation_Y,
         save_params=save_file,

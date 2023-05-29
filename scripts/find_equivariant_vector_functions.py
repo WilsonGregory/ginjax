@@ -44,25 +44,7 @@ def get_swappable_indices(k_tuple, img_k, filter_k, res_k):
 
     return swappable_idxs
 
-def get_linear_functions(D, image_data, conv_filters):
-    _, img_k = geom.parse_shape(image_data.shape, D)
-
-    out_layer = {}
-    for conv_filter in conv_filters:
-        _, filter_k = geom.parse_shape(conv_filter.shape, D)
-        if ((filter_k % 2) != 0):
-            continue
-
-        res = geom.convolve(D, image_data, conv_filter, True)
-        res_k = img_k + filter_k 
-
-        out_layer = ml.add_to_layer(out_layer, res_k, res.reshape((1,) + res.shape))
-
-    all = ml.all_contractions(img_k, out_layer, D)
-    print(all.shape)
-    return all
-
-def get_vector_images_fast(D, image_data_block, conv_filters, degree):
+def get_vector_images(D, image_data_block, conv_filters, degree):
     #vmap over the multiple image
     # vmap_apply_funcs = vmap(apply_all_functions, in_axes=(None, 0, None, None))
     vmap_apply_funcs = vmap(apply_all_functions, in_axes=(None, 0, None, None))
@@ -170,7 +152,7 @@ for degree in polynomial_degrees:
 
     geom_img = get_images_random(key, num_images, N, D, img_k)
 
-    datablock = get_vector_images_fast(D, geom_img.data, conv_filters, degree)
+    datablock = get_vector_images(D, geom_img.data, conv_filters, degree)
     print('Datablock', datablock.shape)
     unique_rows = np.unique(datablock, axis=0)
     np.save(f'../data/all_functions_unique_rows_deg{degree}_n{N}.npy', unique_rows)

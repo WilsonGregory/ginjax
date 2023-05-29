@@ -428,6 +428,8 @@ class StopCondition:
                 print(f'Epoch {epoch} Train: {train_loss:.7f}')
 
 class EpochStop(StopCondition):
+    # Stop when enough epochs have passed.
+
     def __init__(self, epochs, verbose=0) -> None:
         super(EpochStop, self).__init__(verbose=verbose)
         self.epochs = epochs
@@ -444,10 +446,12 @@ class EpochStop(StopCondition):
         return current_epoch >= self.epochs
     
 class TrainLoss(StopCondition):
-    def __init__(self, patience=None, min_delta=None, verbose=0) -> None:
+    # Stop when the training error stops improving after patience number of epochs.
+
+    def __init__(self, patience=0, min_delta=0, verbose=0) -> None:
         super(TrainLoss, self).__init__(verbose=verbose)
         self.patience = patience
-        self.min_delta = 0 if min_delta is None else min_delta
+        self.min_delta = min_delta
         self.best_train_loss = jnp.inf
         self.epochs_since_best = 0
 
@@ -468,10 +472,12 @@ class TrainLoss(StopCondition):
         return self.epochs_since_best > self.patience
 
 class ValLoss(StopCondition):
-    def __init__(self, patience=None, min_delta=None, verbose=0) -> None:
+     # Stop when the validation error stops improving after patience number of epochs.
+
+    def __init__(self, patience=0, min_delta=0, verbose=0) -> None:
         super(ValLoss, self).__init__(verbose=verbose)
         self.patience = patience
-        self.min_delta = 0 if min_delta is None else min_delta
+        self.min_delta = min_delta
         self.best_val_loss = jnp.inf
         self.epochs_since_best = 0
 

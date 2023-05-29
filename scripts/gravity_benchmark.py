@@ -218,20 +218,20 @@ if (not load_file):
                 print(f'Iter {i}, train size {num_train_images}, model {k}')
                 key, subkey = random.split(key)
                 params = 0.1*random.normal(subkey, shape=(num_params,))
+                key, subkey = random.split(key)
 
                 start_time = time.time()
-                params, train_loss, val_loss = ml.train_early_stopping(
+                params, train_loss, val_loss = ml.train(
                     train_X,
                     train_Y,
                     model,
                     params,
-                    key,
+                    subkey,
+                    ml.ValLoss(patience=20, verbose=verbose),
                     batch_size=batch_size,
                     optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(num_train_images / batch_size), decay_rate=0.995)),
                     validation_X=validation_X,
                     validation_Y=validation_Y,
-                    patience=20,
-                    verbose=verbose,
                 )
                 all_time_elapsed[i,j,k] = time.time() - start_time
                 all_train_loss[i,j,k] = train_loss[-1]

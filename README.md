@@ -5,7 +5,7 @@ group-equivariant convolutional deep learning
 
 - Install this repo as an editable install using pip.
   - Clone the repository `git clone https://github.com/WilsonGregory/GeometricConvolutions.git`
-  - Navigate to the MarkerMap directory `cd GeometricConvolutions`
+  - Navigate to the GeometricConvolutions directory `cd GeometricConvolutions`
   - Locally install the package `pip install -e .` (may have to use pip3 if your system has both python2 and python3 installed)
 
 ## Quick Start

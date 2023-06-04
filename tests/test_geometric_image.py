@@ -622,6 +622,91 @@ class TestGeometricImage:
             [3,1,3,-1,1],
         ]))
 
+    def testConvolveDepth(self):
+        # Depth convolve, where input data has 2 channels, so filter needs to have depth 2.
+        image_data = jnp.array([
+            [
+                [2,1,0,], 
+                [0,0,-3], 
+                [2,0,1],
+            ],
+            [
+                [-7,4,-4],
+                [3,1,3],
+                [-4,-1,1],
+            ],
+        ])
+        assert image_data.shape == (2,3,3)
+    
+        filter_data = jnp.array([
+            [
+                [1,0,1],
+                [0,0,0],
+                [1,0,1],
+            ],
+            [
+                [0,1,0],
+                [1,0,1],
+                [0,1,0],
+            ],
+        ])
+        assert filter_data.shape == (2,3,3)
+
+        convolved_image = geom.depth_convolve(2, image_data, filter_data, is_torus=True)
+        assert convolved_image.shape == image_data.shape[1:]
+        assert jnp.allclose(
+            convolved_image,
+            jnp.array([
+                [-3,-11,3],
+                [-5,14,6],
+                [-6,1,-3],
+            ]),
+        )
+
+    def testConvolveDepth_IK0_FK1(self):
+        # Depth convolve where the filter has k=1
+        image_data = jnp.array([
+            [
+                [2,1,0,], 
+                [0,0,-3], 
+                [2,0,1],
+            ],
+            [
+                [-7,4,-4],
+                [3,1,3],
+                [-4,-1,1],
+            ],
+        ])
+
+        # same filter at both depths
+        filter_image = jnp.array([
+            [
+                [[0,0], [0,1], [0,0]],
+                [[-1,0],[0,0], [1,0]],
+                [[0,0], [0,-1],[0,0]],
+            ],
+            [
+                [[0,0], [0,1], [0,0]],
+                [[-1,0],[0,0], [1,0]],
+                [[0,0], [0,-1],[0,0]],
+            ], 
+        ])
+
+        convolved_image = geom.depth_convolve(2, image_data, filter_image, is_torus=True)
+        assert convolved_image.shape == (3,3,2)
+        assert jnp.allclose(
+            convolved_image,
+            jnp.array([
+                [[1,2],[-2,0],[1,4]],
+                [[3,0],[-3,1],[0,-1]],
+                [[-1,-2],[-1,-1],[2,-3]]
+            ]) + jnp.array([
+                [[8,-7],[3,-2],[-11,-2]],
+                [[-2,-3],[0,5],[2,-5]],
+                [[-2,10],[5,-3],[-3,7]],
+            ]),
+        )
+
     def testTimesGroupElement(self):
         left90 = jnp.array([[0,-1],[1,0]])
         flipX = jnp.array([[-1, 0], [0,1]])

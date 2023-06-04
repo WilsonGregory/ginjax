@@ -3,6 +3,7 @@ README.md
 pyproject.toml
 setup.cfg
 src/geometricconvolutions/__init__.py
+src/geometricconvolutions/data.py
 src/geometricconvolutions/geometric.py
 src/geometricconvolutions/ml.py
 src/geometricconvolutions/utils.py
@@ -11,3 +12,9 @@ src/geometricconvolutions.egg-info/SOURCES.txt
 src/geometricconvolutions.egg-info/dependency_links.txt
 src/geometricconvolutions.egg-info/requires.txt
 src/geometricconvolutions.egg-info/top_level.txt
+tests/test_batch_geometric_image.py
+tests/test_geometric_image.py
+tests/test_misc.py
+tests/test_ml.py
+tests/test_props.py
+tests/test_slow.py

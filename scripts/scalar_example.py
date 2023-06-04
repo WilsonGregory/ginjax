@@ -45,13 +45,13 @@ Y = [target_function(x, conv_filters) for x in X]
 key, subkey = random.split(key)
 params = random.normal(subkey, shape=(len(conv_filters) + math.comb(len(conv_filters), 2),))
 
-params = ml.train(
+params, _, _ = ml.train(
     X,
     Y,
     partial(map_and_loss, conv_filters=conv_filters, D=D, is_torus=True),
     params,
     key,
-    epochs=500,
+    ml.EpochStop(500),
     batch_size=num_images,
     optimizer=optax.adam(optax.exponential_decay(0.1, transition_steps=1, decay_rate=0.99)),
 )

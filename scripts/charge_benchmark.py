@@ -34,8 +34,8 @@ def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
             layer, 
             D, 
             is_torus, 
-            dilations=(dilation,), 
             max_k=max_k,
+            rhs_dilation=(dilation,)*D, 
         )
         layer = ml.leaky_relu_layer(layer, D)
 
@@ -58,36 +58,6 @@ def map_and_loss(params, x, y, conv_filters, D, is_torus):
     # Run x through the net, then return its loss with y
     return ml.rmse_loss(net(params, x, D, is_torus, conv_filters, y), y)
 
-@partial(jit, static_argnums=[1,2,3,4,6,7,8])
-def baseline_conv_layer(params, param_idx, D, M, img_N, layer, out_channels, dilations, dilations_to_channels=True):
-    collected = []
-    filter_shape = (M,)*D + (layer.shape[-1],out_channels)
-    filter_size = np.multiply.reduce(filter_shape)
-    for dilation in dilations:
-        filter_formatted = params[param_idx:param_idx + filter_size].reshape(filter_shape)
-        param_idx += filter_size
-
-        rhs_dilation = (dilation,)*D
-        padding_literal = ((dilation,) * 2 for dilation in rhs_dilation)
-
-        res = jax.lax.conv_general_dilated(
-            layer, #lhs
-            filter_formatted, #rhs
-            (1,)*D, #stride
-            padding_literal,
-            rhs_dilation=rhs_dilation,
-            dimension_numbers=('NHWC','HWIO','NHWC'),
-        )
-        collected.append(res)
-
-    if dilations_to_channels:
-        return (
-            jnp.stack(collected).transpose(1,2,3,4,0).reshape((1,) + (img_N,)*D + (len(collected)*out_channels,)),
-            param_idx,
-        )
-    else:
-        return jnp.stack(collected), param_idx
-
 def baseline_net(params, x, D, is_torus, target_img, return_params=False):
     img_N, _ = geom.parse_shape(x.shape, D)
     M = 3
@@ -97,10 +67,18 @@ def baseline_net(params, x, D, is_torus, target_img, return_params=False):
     param_idx = 0
 
     for dilation in [1,2,4,2,1,1,2,1]:
-        layer, param_idx = baseline_conv_layer(params, int(param_idx), D, M, img_N, layer, out_channels, (dilation,))
+        layer, param_idx = ml.baseline_conv_layer(
+            params, 
+            int(param_idx), 
+            D,
+            M, 
+            layer, 
+            out_channels, 
+            rhs_dilation=(dilation,)*D,
+        )
         layer = jax.nn.leaky_relu(layer)
 
-    layer, param_idx = baseline_conv_layer(params, int(param_idx), D, M, img_N, layer, 2, (1,))
+    layer, param_idx = ml.baseline_conv_layer(params, int(param_idx), D, M, layer, 2, rhs_dilation=(1,)*D)
 
     net_output = layer.reshape((x.shape))
     return (net_output, param_idx) if return_params else net_output

@@ -361,8 +361,8 @@ def convolve(
 
     args:
         D (int): dimension of the images
-        image (jnp.array): image data
-        filter_image (jnp.array): the filter we are performing the convolution with
+        image (jnp.array): image data, shape (depth, (N,)*D, (D,)*img_k)
+        filter_image (jnp.array): the convolution filter, shape (depth, (N,)*D, (D,)*filter_k)
         is_torus (bool): whether the images data is on the torus or not
         stride (tuple of ints): convolution stride, defaults to (1,)*self.D
         padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
@@ -370,6 +370,7 @@ def convolve(
         lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
         rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
     """
+    assert (D == 2) or (D == 3)
     dtype= 'float32'
 
     _, img_k = parse_shape(image.shape, D)
@@ -383,7 +384,7 @@ def convolve(
     if stride is None:
         stride = (1,)*D
 
-    if not padding: #if unspecified, infer from is_torus
+    if padding is None: #if unspecified, infer from is_torus
         padding = 'TORUS' if is_torus else 'SAME'
 
     if padding == 'TORUS':
@@ -402,7 +403,7 @@ def convolve(
     img_expanded = img_expanded.astype(dtype)
     filter_expanded = filter_expanded.astype(dtype)
 
-    channel_length = int(np.multiply.reduce((D,)*img_k + (D,)*filter_k))
+    channel_length = D**output_k
 
     # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
     # batching is handled by using vmap on this function
@@ -419,9 +420,34 @@ def convolve(
         lhs_dilation=lhs_dilation,
         rhs_dilation=rhs_dilation,
         dimension_numbers=(('NHWC','HWIO','NHWC') if D == 2 else ('NHWDC','HWDIO','NHWDC')),
-        feature_group_count=channel_length, #allows us to have separate filters for separate channels
+        feature_group_count=channel_length, #each tensor component is treated separately
     )
     return convolved_array.reshape(convolved_array.shape[1:-1] + (D,)*output_k)
+
+@partial(jit, static_argnums=[0,3,4,5,6,7])
+def depth_convolve(
+    D,
+    image,
+    filter_image, 
+    is_torus,
+    stride=None, 
+    padding=None,
+    lhs_dilation=None, 
+    rhs_dilation=None, 
+):
+    """
+    See convolve for a full description. This function performs depth convolutions by applying a vmap
+    over regular convolutions to the image and filter_image arguments, then taking the sum of the result.
+    This could be achieved by doing the vmaps inside the convolution function and using jax.lax.convolve
+    inherent ability to do depth convolutions, and it is possibly faster to do it that way.
+    args:
+        image (jnp.array): array of shape (depth, (N,)*D, (D,)*img_k)
+        filter_image (jnp.array): array of shape (depth, (N,)*D, (D,)*filter_k)
+    """
+    assert image.shape[0] == filter_image.shape[0]
+    vmap_convolve = vmap(convolve, in_axes=(None, 0, 0, None, None, None, None, None))
+    res = vmap_convolve(D, image, filter_image, is_torus, stride, padding, lhs_dilation, rhs_dilation)
+    return jnp.sum(res, axis=0)
 
 def get_contraction_indices(initial_k, final_k, swappable_idxs=()):
     """

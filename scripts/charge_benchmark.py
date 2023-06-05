@@ -59,28 +59,28 @@ def map_and_loss(params, x, y, conv_filters, D, is_torus):
     return ml.rmse_loss(net(params, x, D, is_torus, conv_filters, y), y)
 
 def baseline_net(params, x, D, is_torus, target_img, return_params=False):
-    img_N, _ = geom.parse_shape(x.shape, D)
     M = 3
     out_channels = 20
-
-    layer = x.reshape((1,) + x.shape)
+    layer = { 0: jnp.moveaxis(x, -1, 0) } #move the vector to the channel slot
     param_idx = 0
 
     for dilation in [1,2,4,2,1,1,2,1]:
-        layer, param_idx = ml.baseline_conv_layer(
+        layer, param_idx = ml.conv_layer_free_filters(
             params, 
             int(param_idx), 
+            layer,
             D,
-            M, 
-            layer, 
+            is_torus,
             out_channels, 
+            M, 
             rhs_dilation=(dilation,)*D,
         )
-        layer = jax.nn.leaky_relu(layer)
+        layer = { 0: jax.nn.leaky_relu(layer[0]) }
 
-    layer, param_idx = ml.baseline_conv_layer(params, int(param_idx), D, M, layer, 2, rhs_dilation=(1,)*D)
+    layer, param_idx = ml.conv_layer_free_filters(params, int(param_idx), layer, D, is_torus, 2, M)
+    net_output = jnp.moveaxis(layer[0], 0, -1) # make the channels the vector dimensions
+    assert net_output.shape == x.shape
 
-    net_output = layer.reshape((x.shape))
     return (net_output, param_idx) if return_params else net_output
 
 def baseline_map_and_loss(params, x, y, D, is_torus):

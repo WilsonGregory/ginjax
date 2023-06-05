@@ -278,6 +278,7 @@ def make_p_k_dict(images, filters=False, rollup_set={}):
 @functools.partial(jit, static_argnums=[1,2])
 def activation_layer(layer, D, activation_function):
     scalar_image = contract_to_scalars(layer, D)
+    # might consider replacing k=0, rather than adding to it
     layer = add_to_layer(layer, 0, activation_function(scalar_image))
     return layer
 

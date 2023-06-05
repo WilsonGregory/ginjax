@@ -361,7 +361,7 @@ def convolve(
 
     args:
         D (int): dimension of the images
-        image (jnp.array): image data, shape (depth, (N,)*D, (D,)*img_k)
+        image (jnp.array): image data
         filter_image (jnp.array): the convolution filter, shape (depth, (N,)*D, (D,)*filter_k)
         is_torus (bool): whether the images data is on the torus or not
         stride (tuple of ints): convolution stride, defaults to (1,)*self.D
@@ -438,8 +438,7 @@ def depth_convolve(
     """
     See convolve for a full description. This function performs depth convolutions by applying a vmap
     over regular convolutions to the image and filter_image arguments, then taking the sum of the result.
-    This could be achieved by doing the vmaps inside the convolution function and using jax.lax.convolve
-    inherent ability to do depth convolutions, and it is possibly faster to do it that way.
+    Possibly would be faster to do this inside convolve.
     args:
         image (jnp.array): array of shape (depth, (N,)*D, (D,)*img_k)
         filter_image (jnp.array): array of shape (depth, (N,)*D, (D,)*filter_k)

@@ -39,13 +39,14 @@ def handleArgs(argv):
   parser.add_argument('-epochs', help='number of epochs to run', type=int, default=10)
   parser.add_argument('-lr', help='learning rate', type=float, default=0.1)
   parser.add_argument('-num_images', help='number of images', type=int, default=3)
+  parser.add_argument('-verbose', help='how many status messages to print during training', type=int, default=1)
 
   args = parser.parse_args()
 
-  return args.epochs, args.lr, args.num_images
+  return args.epochs, args.lr, args.num_images, args.verbose
 
 # Main
-epochs, learning_rate, num_images = handleArgs(sys.argv)
+epochs, learning_rate, num_images, verbose = handleArgs(sys.argv)
 
 key = random.PRNGKey(time.time_ns())
 
@@ -82,13 +83,13 @@ params = random.normal(subkey, shape=(num_params,))
 
 key, subkey = random.split(key)
 
-params = ml.train(
+params, _, _ = ml.train(
     X,
     Y,
     partial(map_and_loss, conv_filters=conv_filters, D=D, is_torus=True),
     params,
     subkey,
-    epochs=epochs,
+    ml.EpochStop(epochs, verbose=verbose),
     optimizer=optax.adam(learning_rate),
 )
 

@@ -1,7 +1,6 @@
 #generate gravitational field
 import sys
 import numpy as np
-import itertools as it
 from functools import partial
 import argparse
 import time
@@ -10,8 +9,7 @@ import matplotlib.pyplot as plt
 
 import jax.numpy as jnp
 import jax.random as random
-from jax import vmap, jit
-import jax.lax
+from jax import vmap
 import optax
 
 import geometricconvolutions.geometric as geom
@@ -27,26 +25,36 @@ def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
     conv_filters = ml.make_layer(conv_filters)
 
     layer, param_idx = ml.conv_layer(params, 0, conv_filters, layer, D, is_torus)
-    layer, param_idx = ml.conv_layer(
-        params, 
-        int(param_idx), 
-        conv_filters, 
-        layer, 
-        D, 
-        is_torus, 
-        dilations=tuple(range(1,img_N)),
-    )
+    out_layer = {}
+    for dilation in range(1,img_N): #dilations in parallel
+        dilation_out_layer, param_idx = ml.conv_layer(
+            params, 
+            int(param_idx), 
+            conv_filters, 
+            layer, 
+            D, 
+            is_torus, 
+            rhs_dilation=(dilation,)*D,
+        )
+        out_layer = ml.merge_layers(out_layer, dilation_out_layer)
 
-    layer, param_idx = ml.conv_layer(
-        params, 
-        int(param_idx), 
-        conv_filters, 
-        layer, 
-        D,
-        is_torus,
-        target_k, #final_layer, make sure out output is target_img shaped
-        dilations=tuple(range(1,int(img_N / 2))),
-    )
+    layer = out_layer
+
+    out_layer = {}
+    for dilation in range(1,int(img_N / 2)):
+        dilation_out_layer, param_idx = ml.conv_layer(
+            params, 
+            int(param_idx), 
+            conv_filters, 
+            layer, 
+            D, 
+            is_torus, 
+            target_k=target_k, #final_layer, make sure out output is target_img shaped
+            rhs_dilation=(dilation,)*D,
+        )
+        out_layer = ml.merge_layers(out_layer, dilation_out_layer)
+
+    layer = out_layer
     layer = ml.all_contractions(target_k, layer, D)
 
     net_output = geom.linear_combination(layer, params[param_idx:(param_idx + len(layer))])
@@ -57,59 +65,50 @@ def map_and_loss(params, x, y, conv_filters, D, is_torus):
     # Run x through the net, then return its loss with y
     return ml.rmse_loss(net(params, x, D, is_torus, conv_filters, y), y)
 
-@partial(jit, static_argnums=[1,2,3,4,6,7,8])
-def baseline_conv_layer(params, param_idx, D, M, img_N, layer, out_channels, dilations, dilations_to_channels=True):
-    collected = []
-    filter_shape = (M,)*D + (layer.shape[-1],out_channels)
-    filter_size = np.multiply.reduce(filter_shape)
-    for dilation in dilations:
-        filter_formatted = params[param_idx:param_idx + filter_size].reshape(filter_shape)
-        param_idx += filter_size
-
-        rhs_dilation = (dilation,)*D
-        padding_literal = ((dilation,) * 2 for dilation in rhs_dilation)
-
-        res = jax.lax.conv_general_dilated(
-            layer, #lhs
-            filter_formatted, #rhs
-            (1,)*D, #stride
-            padding_literal,
-            rhs_dilation=rhs_dilation,
-            dimension_numbers=('NHWC','HWIO','NHWC'),
-        )
-        collected.append(res)
-
-    if dilations_to_channels:
-        return (
-            jnp.stack(collected).transpose(1,2,3,4,0).reshape((1,) + (img_N,)*D + (len(collected)*out_channels,)),
-            param_idx,
-        )
-    else:
-        return jnp.stack(collected), param_idx
-
 def baseline_net(params, x, D, is_torus, target_img, return_params=False):
-    img_N, _ = geom.parse_shape(x.shape, D)
+    img_N, img_k = geom.parse_shape(x.shape, D)
     M = 3
     out_channels = 2
+    layer = { img_k: jnp.expand_dims(x, axis=0) }
 
-    layer = x.reshape((1,) + x.shape + (1,))
+    layer, param_idx = ml.conv_layer_free_filters(params, 0, layer, D, is_torus, out_channels, M)
 
-    layer, param_idx = baseline_conv_layer(params, 0, D, M, img_N, layer, out_channels, (1,))
-    layer, param_idx = baseline_conv_layer(params, int(param_idx), D, M, img_N, layer, out_channels, range(1, img_N))
-    layer, param_idx = baseline_conv_layer(
-        params, 
-        int(param_idx), 
-        D, 
-        M, 
-        img_N, 
-        layer, 
-        out_channels, 
-        range(1,int(img_N / 2)),
-        dilations_to_channels=False,
-    )
+    out_layer = {}
+    for dilation in range(1,img_N): #dilations in parallel
+        dilation_out_layer, param_idx = ml.conv_layer_free_filters(
+            params, 
+            int(param_idx), 
+            layer,
+            D, 
+            is_torus, 
+            out_channels,
+            M,
+            rhs_dilation=(dilation,)*D,
+        )
+        out_layer = ml.merge_layers(out_layer, dilation_out_layer)
 
-    net_output = geom.linear_combination(layer, params[param_idx:(param_idx + len(layer))])
-    param_idx += len(layer)
+    layer = out_layer
+
+    out_layer = {}
+    for dilation in range(1,int(img_N / 2)): #dilations in parallel
+        dilation_out_layer, param_idx = ml.conv_layer_free_filters(
+            params, 
+            int(param_idx), 
+            layer,
+            D, 
+            is_torus, 
+            D, #out depth is D because we turn it into k=1
+            M,
+            rhs_dilation=(dilation,)*D,
+        )
+        # turn the out channels into the vector field k=1
+        dilation_out_image = jnp.expand_dims(jnp.moveaxis(dilation_out_layer[0], 0, D), axis=0)
+        out_layer = ml.add_to_layer(out_layer, 1, dilation_out_image)
+
+    last_image = out_layer[1]
+
+    net_output = geom.linear_combination(last_image, params[param_idx:(param_idx + len(last_image))])
+    param_idx += len(last_image)
     return (net_output, param_idx) if return_params else net_output
 
 def baseline_map_and_loss(params, x, y, D, is_torus):

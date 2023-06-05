@@ -11,7 +11,7 @@ import optax
 
 import geometricconvolutions.geometric as geom
 
-## Layers
+## GeometricImageNet Layers
 
 def make_layer(images):
     images_by_k = defaultdict(list)
@@ -31,10 +31,48 @@ def add_to_layer(layer, k, image):
 
     return layer
 
-@functools.partial(jit, static_argnums=[1,4,5,6,7,8])
-def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target_k=None, dilations=(1,), max_k=None):
+def merge_layers(layer_a, layer_b):
+    for k, image in layer_b.items():
+        layer_a = add_to_layer(layer_a, k, image)
+
+    return layer_a
+
+@functools.partial(jit, static_argnums=[1,4,5,6,7,8,9,10,11])
+def conv_layer(
+    params, #non-static
+    param_idx, 
+    conv_filters, #non-static
+    input_layer, #non-static
+    D, 
+    is_torus, 
+    target_k=None, 
+    max_k=None,
+    # Convolve kwargs that are passed directly along
+    stride=None, 
+    padding=None,
+    lhs_dilation=None, 
+    rhs_dilation=None,
+):
     """
-    Functional version of conv_layer.
+    conv_layer takes a layer of conv filters and a layer of images and convolves them all together, taking
+    parameterized sums of the images prior to convolution to control memory explosion.
+
+    args:
+        params (jnp.array): array of parameters, how learning will happen
+        param_idx (int): current index of the params
+        conv_filters (dictionary by k of jnp.array): layer of the conv filters we are using
+        input_layer (dictionary by k of jnp.array): layer of the input images, can think of each image 
+            as a channel in the traditional cnn case.
+        D (int): dimension of the images
+        is_torus (bool): whether the images data is on the torus or not
+        target_k (int): only do that convolutions that can be contracted to this, defaults to None
+        max_k (int): apply an order cap layer immediately following convolution, defaults to None
+
+        # Below, these are all parameters that are passed to the convolve function.
+        stride (tuple of ints): convolution stride
+        padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
+        lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D
+        rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D
     """
     # map over dilations, then filters
     vmap_sums = vmap(geom.linear_combination, in_axes=(None, 0))
@@ -44,35 +82,159 @@ def conv_layer(params, param_idx, conv_filters, input_layer, D, is_torus, target
     for k in input_layer.keys():
         prods_group = input_layer[k]
         for filter_k, filter_group in conv_filters.items():
-            for dilation in dilations:
-                if ((target_k is not None) and ((k + target_k - filter_k) % 2 != 0)):
-                    continue
+            if ((target_k is not None) and ((k + target_k - filter_k) % 2 != 0)):
+                continue
 
-                res_k = k + filter_k
+            res_k = k + filter_k
 
-                param_shape = (len(filter_group), len(prods_group))
-                num_params = np.multiply.reduce(param_shape)
-                group_sums = vmap_sums(
-                    prods_group, 
-                    params[param_idx:(param_idx + num_params)].reshape(param_shape),
-                )
-                param_idx += num_params
-                res = vmap_convolve(
-                    D, 
-                    group_sums, 
-                    filter_group, 
-                    is_torus, 
-                    None, #stride
-                    None, #padding
-                    None, #lhs_dilations
-                    (dilation,)*D, #rhs_dilations
-                )
-                out_layer = add_to_layer(out_layer, res_k, res)
+            param_shape = (len(filter_group), len(prods_group))
+            num_params = np.multiply.reduce(param_shape)
+            group_sums = vmap_sums(
+                prods_group, 
+                params[param_idx:(param_idx + num_params)].reshape(param_shape),
+            )
+            param_idx += num_params
+            res = vmap_convolve(
+                D, 
+                group_sums, 
+                filter_group, 
+                is_torus,
+                stride, 
+                padding,
+                lhs_dilation, 
+                rhs_dilation,
+            )
+            out_layer = add_to_layer(out_layer, res_k, res)
 
     if (max_k is not None):
         out_layer = order_cap_layer(D, out_layer, max_k)
 
     return out_layer, param_idx
+
+@functools.partial(jit, static_argnums=[1,4])
+def get_filter_block_from_invariants(params, param_idx, input_layer, invariant_filters, out_depth):
+    """
+    For each k in the input_layer and each k of the invariant filters, return a block of filters of shape
+    (out_depth,in_depth, (M,)*D, (D,)*filter_k). Note that in_depth is the size of the input_layer.
+    """
+    vmap_sum = vmap(vmap(geom.linear_combination, in_axes=(None, 0)), in_axes=(None, 0))
+
+    filter_layer = {}
+    for k, image_block in input_layer.items():
+        filter_layer[k] = {}
+        in_depth = image_block.shape[0]
+
+        for filter_k, filter_block in invariant_filters.items():
+            param_shape = (out_depth, in_depth, len(filter_block))
+            param_size = out_depth * in_depth * len(filter_block)
+            filter_sum = vmap_sum(filter_block, params[param_idx:param_idx + param_size].reshape(param_shape))
+            param_idx += param_size
+
+            filter_layer[k][filter_k] = filter_sum
+
+    return filter_layer, param_idx 
+
+@functools.partial(jit, static_argnums=[1,4,5,6,7,8,9,10,11,12])
+def conv_layer_fixed_filters(
+    params, #non-static
+    param_idx,
+    conv_filters, #non-static
+    input_layer, #non-static
+    D, 
+    is_torus, 
+    depth,
+    target_k=None, 
+    max_k=None,
+    # Convolve kwargs that are passed directly along
+    stride=None, 
+    padding=None,
+    lhs_dilation=None, 
+    rhs_dilation=None,
+):
+    """
+    Wrapper for conv_layer_alt that constructs the filter_block from the invariant filters in 
+    conv_filters with the specified output depth.
+    """
+    filter_block, param_idx = get_filter_block_from_invariants(
+        params, 
+        int(param_idx), 
+        input_layer, 
+        conv_filters, 
+        out_depth=depth,
+    )
+    layer = conv_layer_alt(
+        filter_block, 
+        input_layer, 
+        D, 
+        is_torus, 
+        target_k,
+        max_k,
+        stride,
+        padding,
+        lhs_dilation,
+        rhs_dilation, 
+    )
+    return layer, param_idx
+
+@functools.partial(jit, static_argnums=[2,3,4,5,6,7,8,9])
+def conv_layer_alt(
+    conv_filters, #non-static
+    input_layer, #non-static
+    D, 
+    is_torus, 
+    target_k=None, 
+    max_k=None,
+    # Convolve kwargs that are passed directly along
+    stride=None, 
+    padding=None,
+    lhs_dilation=None, 
+    rhs_dilation=None,
+):
+    """
+    A more traditional take on convolution layer. The input_layer is a dictionary by k of batches of images.
+    The conv_filters is a dictionary by k of groups of batches of filters, and that the number of groups
+    will be the length of the batch of the output for that k.
+    args:
+        conv_filters (dictionary by k of jnp.array): layer of the conv filters we are using, (OIHWk) or
+            alternatively (output_depth, input_depth, (N,)*D, (D,)*filter_k)
+        input_layer (dictionary by k of jnp.array): layer of the input images, (CHWk) where C is the input
+            depth, or alternatively (depth, (N,)*D, (D,)*img_k)
+        D (int): dimension of the images
+        is_torus (bool): whether the images data is on the torus or not
+        target_k (int): only do that convolutions that can be contracted to this, defaults to None
+        max_k (int): apply an order cap layer immediately following convolution, defaults to None
+
+        # Below, these are all parameters that are passed to the convolve function.
+        stride (tuple of ints): convolution stride
+        padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
+        lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D
+        rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D
+    """
+    # map over filters
+    vmap_convolve = vmap(geom.depth_convolve, in_axes=(None, None, 0, None, None, None, None, None))
+
+    out_layer = {}
+    for k, images_block in input_layer.items():
+        for filter_k, filter_group in conv_filters[k].items():
+            if ((target_k is not None) and ((k + target_k - filter_k) % 2 != 0)):
+                continue
+
+            convolved_images_block = vmap_convolve(
+                D, 
+                images_block, 
+                filter_group, 
+                is_torus,
+                stride, 
+                padding,
+                lhs_dilation, 
+                rhs_dilation,
+            )
+            out_layer = add_to_layer(out_layer, k + filter_k, convolved_images_block)
+
+    if (max_k is not None):
+        out_layer = order_cap_layer(D, out_layer, max_k)
+
+    return out_layer
 
 def get_bias_image(params, param_idx, x):
     """
@@ -116,6 +278,7 @@ def make_p_k_dict(images, filters=False, rollup_set={}):
 @functools.partial(jit, static_argnums=[1,2])
 def activation_layer(layer, D, activation_function):
     scalar_image = contract_to_scalars(layer, D)
+    # might consider replacing k=0, rather than adding to it
     layer = add_to_layer(layer, 0, activation_function(scalar_image))
     return layer
 
@@ -256,6 +419,76 @@ def average_pool_layer(input_layer, patch_len):
 
 def unpool_layer(input_layer, patch_len):
     return [image.unpool(patch_len) for image in input_layer]
+
+## Baseline Layers
+
+@functools.partial(jit, static_argnums=[1,2,3,5,6])
+def get_filter_block(params, param_idx, D, M, input_layer, out_depth, filter_k_set=None):
+    """
+    For each k in the input_layer and each k of the invariant filters, form a filter block from params 
+    of shape (out_depth,in_depth, (M,)*D, (D,)*filter_k). Note that in_depth is the size of the input_layer.
+    """
+    if filter_k_set is None:
+        filter_k_set = { 0 }
+
+    filter_layer = {}
+    for k, image_block in input_layer.items():
+        filter_layer[k] = {}
+        in_depth = image_block.shape[0]
+
+        for filter_k in filter_k_set:
+            filter_shape = (out_depth,in_depth) + (M,)*D + (D,)*filter_k
+            filter_size = np.multiply.reduce(filter_shape)
+
+            filter_layer[k][filter_k] = params[param_idx:param_idx + filter_size].reshape(filter_shape)
+            param_idx += filter_size
+    
+    return filter_layer, param_idx
+
+@functools.partial(jit, static_argnums=[1,3,4,5,6,7,8,9,10,11,12,13])
+def conv_layer_free_filters(
+    params, #non-static
+    param_idx,
+    input_layer, #non-static
+    D, 
+    is_torus, 
+    depth,
+    M,
+    filter_k_set=None,
+    target_k=None, 
+    max_k=None,
+    # Convolve kwargs that are passed directly along
+    stride=None, 
+    padding=None,
+    lhs_dilation=None, 
+    rhs_dilation=None,
+):
+    """
+    Wrapper for conv_layer_alt that first constructs the free filter block from params with the specified
+    side length M, filter_k, and output depth.
+    """
+    filter_block, param_idx = get_filter_block(
+        params, 
+        int(param_idx), 
+        D,
+        M,
+        input_layer, 
+        out_depth=depth,
+        filter_k_set=filter_k_set,
+    )
+    layer = conv_layer_alt(
+        filter_block, 
+        input_layer, 
+        D, 
+        is_torus, 
+        target_k,
+        max_k,
+        stride,
+        padding,
+        lhs_dilation,
+        rhs_dilation, 
+    )
+    return layer, param_idx
 
 ## Params
 

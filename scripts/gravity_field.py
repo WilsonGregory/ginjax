@@ -38,26 +38,36 @@ def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
     conv_filters = ml.make_layer(conv_filters)
 
     layer, param_idx = ml.conv_layer(params, 0, conv_filters, layer, D, is_torus)
-    layer, param_idx = ml.conv_layer(
-        params, 
-        int(param_idx), 
-        conv_filters, 
-        layer, 
-        D, 
-        is_torus, 
-        dilations=tuple(range(1,img_N)),
-    )
+    out_layer = {}
+    for dilation in range(1,img_N): #dilations in parallel
+        dilation_out_layer, param_idx = ml.conv_layer(
+            params, 
+            int(param_idx), 
+            conv_filters, 
+            layer, 
+            D, 
+            is_torus, 
+            rhs_dilation=(dilation,)*D,
+        )
+        out_layer = ml.merge_layers(out_layer, dilation_out_layer)
 
-    layer, param_idx = ml.conv_layer(
-        params, 
-        int(param_idx), 
-        conv_filters, 
-        layer, 
-        D,
-        is_torus,
-        target_k, #final_layer, make sure out output is target_img shaped
-        dilations=tuple(range(1,int(img_N / 2))),
-    )
+    layer = out_layer
+
+    out_layer = {}
+    for dilation in range(1,int(img_N / 2)):
+        dilation_out_layer, param_idx = ml.conv_layer(
+            params, 
+            int(param_idx), 
+            conv_filters, 
+            layer, 
+            D, 
+            is_torus, 
+            target_k=target_k, #final_layer, make sure out output is target_img shaped
+            rhs_dilation=(dilation,)*D,
+        )
+        out_layer = ml.merge_layers(out_layer, dilation_out_layer)
+
+    layer = out_layer
     layer = ml.all_contractions(target_k, layer, D)
 
     net_output = geom.linear_combination(layer, params[param_idx:(param_idx + len(layer))])

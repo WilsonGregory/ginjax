@@ -38,7 +38,7 @@ def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
     max_k = 5
 
     param_idx = 0
-    for dilation in [1,2,4,2,1,1,2,1]:
+    for dilation in [1,2,4,2,1,1,2,1]: #dilated layers in sequence
         layer, param_idx = ml.conv_layer(
             params, 
             int(param_idx), 
@@ -46,8 +46,8 @@ def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
             layer, 
             D, 
             is_torus, 
-            dilations=(dilation,), 
             max_k=max_k,
+            rhs_dilation=(dilation,)*D, 
         )
         layer = ml.leaky_relu_layer(layer, D)
 

@@ -349,31 +349,30 @@ conv_filters = geom.get_invariant_filters(
 
 train_data_path = '../phase2vec/output/data/polynomial'
 X_train_data, X_val_data, y_train, y_val, p_train, p_val = load_dataset(train_data_path)
-# print(X_train.shape) # (samples, d,n,n)
 X_train = [geom.GeometricImage(data,0,D,False) for data in X_train_data.transpose(0,2,3,1)]
 X_val = [geom.GeometricImage(data,0,D,False) for data in X_val_data.transpose(0,2,3,1)]
 
 one_point = X_train[0]
 
 huge_params = jnp.ones(100000000)
-# _, _, num_params = net(
-#     huge_params,
-#     one_point.data,
-#     D,
-#     False, #is_torus
-#     conv_filters,
-#     return_params=True,
-# )
+_, _, num_params = net(
+    huge_params,
+    one_point.data,
+    D,
+    False, #is_torus
+    conv_filters,
+    return_params=True,
+)
+print(f'Model Params: {num_params}')
 
-_, _, num_params = baseline_net(
+_, _, num_params_baseline = baseline_net(
     huge_params,
     one_point.data,
     D,
     False, #is_torus
     return_params=True,
 )
-
-print('Num params:', num_params)
+print(f'Baseline Params {num_params_baseline}')
 
 key, subkey = random.split(key)
 params = 0.1*random.normal(subkey, shape=(num_params,))
@@ -381,21 +380,16 @@ params = 0.1*random.normal(subkey, shape=(num_params,))
 params, _, _ = ml.train(
     X_train,
     X_train, #reconstruction, so we want to get back to the input
-    # partial(map_and_loss, D=D, is_torus=False, conv_filters=conv_filters),
-    partial(baseline_map_and_loss, D=D, is_torus=False),
+    partial(map_and_loss, D=D, is_torus=False, conv_filters=conv_filters),
+    # partial(baseline_map_and_loss, D=D, is_torus=False),
     params,
     key,
     ml.EpochStop(epochs, verbose=verbose),
     batch_size=batch_size,
     optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(len(X_train) / batch_size), decay_rate=0.995)),
-    # validation_X=validation_X,
-    # validation_Y=validation_Y,
     save_params=save_file,
 )
 
 if (save_file):
     jnp.save(save_file, params)
 
-# plt.rcParams['font.family'] = 'serif'
-# plt.rcParams['font.serif'] = 'STIXGeneral'
-# plt.tight_layout()

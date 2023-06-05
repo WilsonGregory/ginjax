@@ -362,7 +362,7 @@ def convolve(
     args:
         D (int): dimension of the images
         image (jnp.array): image data
-        filter_image (jnp.array): the convolution filter, shape (depth, (N,)*D, (D,)*filter_k)
+        filter_image (jnp.array): the convolution filter
         is_torus (bool): whether the images data is on the torus or not
         stride (tuple of ints): convolution stride, defaults to (1,)*self.D
         padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 

@@ -47,19 +47,52 @@ class TestMachineLearning:
         assert Y[-2][0] == X[-1]
         assert Y[-2][1] == X[0]
 
-    def testGetBatchRollout(self):
+    def testGetBatchLayer(self):
         key = random.PRNGKey(0)
         N = 5
-        parity = 0
         D = 2
-        ts = [geom.GeometricImage.fill(N, parity, D, fill_val) for fill_val in jnp.arange(11)]
+        k = 0
 
-        X,Y = ml.get_timeseries_XY(ts, loss_steps=1, circular=False)
+        X = { k: random.normal(key, shape=((10,1) + (N,)*D + (D,)*k)) }
+        Y = { k: random.normal(key, shape=((10,1) + (N,)*D + (D,)*k)) }
 
         batch_size = 2
-        X_batches, Y_batches = ml.get_batch_rollout(X, Y, batch_size=batch_size, rand_key=key)
+        X_batches, Y_batches = ml.get_batch_layer(X, Y, batch_size=batch_size, rand_key=key)
         assert len(X_batches) == len(Y_batches) == 5
         for X_batch, Y_batch in zip(X_batches, Y_batches):
-            assert X_batch.L == Y_batch.L == 2
-            assert (X_batch + geom.BatchGeometricImage.fill(N, parity, D, 1, batch_size)) == Y_batch
+            assert X_batch[k].shape == Y_batch[k].shape == (batch_size, 1) + (N,)*D + (D,)*k
 
+        X = { 
+            0: random.normal(key, shape=((20,1) + (N,)*D + (D,)*0)),
+            1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
+        }
+        Y = { 
+            0: random.normal(key, shape=((20,1) + (N,)*D + (D,)*0)),
+            1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
+        }
+
+        # batching when the layer has multiple channels at different values of k
+        batch_size = 5
+        X_batches, Y_batches = ml.get_batch_layer(X, Y, batch_size=batch_size, rand_key=key)
+        assert len(X_batches) == len(Y_batches) == 4
+        for X_batch, Y_batch in zip(X_batches, Y_batches):
+            assert X_batch[0].shape == Y_batch[0].shape == (batch_size, 1) + (N,)*D + (D,)*0
+            assert X_batch[1].shape == Y_batch[1].shape == (batch_size, 1) + (N,)*D + (D,)*1
+
+        X = { 
+            0: random.normal(key, shape=((20,2) + (N,)*D + (D,)*0)),
+            1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
+        }
+        Y = { 
+            0: random.normal(key, shape=((20,2) + (N,)*D + (D,)*0)),
+            1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
+        }
+
+        # batching when layer has multiple channels for one value of k
+        batch_size = 5
+        X_batches, Y_batches = ml.get_batch_layer(X, Y, batch_size=batch_size, rand_key=key)
+        assert len(X_batches) == len(Y_batches) == 4
+        for X_batch, Y_batch in zip(X_batches, Y_batches):
+            assert X_batch[0].shape == Y_batch[0].shape == (batch_size, 2) + (N,)*D + (D,)*0
+            assert X_batch[1].shape == Y_batch[1].shape == (batch_size, 1) + (N,)*D + (D,)*1
+            

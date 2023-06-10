@@ -53,8 +53,8 @@ class TestMachineLearning:
         D = 2
         k = 0
 
-        X = { k: random.normal(key, shape=((10,1) + (N,)*D + (D,)*k)) }
-        Y = { k: random.normal(key, shape=((10,1) + (N,)*D + (D,)*k)) }
+        X = geom.BatchLayer({ k: random.normal(key, shape=((10,1) + (N,)*D + (D,)*k)) }, D)
+        Y = geom.BatchLayer({ k: random.normal(key, shape=((10,1) + (N,)*D + (D,)*k)) }, D)
 
         batch_size = 2
         X_batches, Y_batches = ml.get_batch_layer(X, Y, batch_size=batch_size, rand_key=key)
@@ -62,14 +62,20 @@ class TestMachineLearning:
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             assert X_batch[k].shape == Y_batch[k].shape == (batch_size, 1) + (N,)*D + (D,)*k
 
-        X = { 
-            0: random.normal(key, shape=((20,1) + (N,)*D + (D,)*0)),
-            1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
-        }
-        Y = { 
-            0: random.normal(key, shape=((20,1) + (N,)*D + (D,)*0)),
-            1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
-        }
+        X = geom.BatchLayer(
+            { 
+                0: random.normal(key, shape=((20,1) + (N,)*D + (D,)*0)),
+                1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
+            },
+            D,
+        )
+        Y = geom.BatchLayer(
+            { 
+                0: random.normal(key, shape=((20,1) + (N,)*D + (D,)*0)),
+                1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
+            },
+            D,
+        )
 
         # batching when the layer has multiple channels at different values of k
         batch_size = 5
@@ -79,14 +85,20 @@ class TestMachineLearning:
             assert X_batch[0].shape == Y_batch[0].shape == (batch_size, 1) + (N,)*D + (D,)*0
             assert X_batch[1].shape == Y_batch[1].shape == (batch_size, 1) + (N,)*D + (D,)*1
 
-        X = { 
-            0: random.normal(key, shape=((20,2) + (N,)*D + (D,)*0)),
-            1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
-        }
-        Y = { 
-            0: random.normal(key, shape=((20,2) + (N,)*D + (D,)*0)),
-            1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
-        }
+        X = geom.BatchLayer(
+            { 
+                0: random.normal(key, shape=((20,2) + (N,)*D + (D,)*0)),
+                1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
+            },
+            D,
+        )
+        Y = geom.BatchLayer(
+            { 
+                0: random.normal(key, shape=((20,2) + (N,)*D + (D,)*0)),
+                1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
+            },
+            D,
+        )
 
         # batching when layer has multiple channels for one value of k
         batch_size = 5

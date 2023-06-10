@@ -56,7 +56,7 @@ def get_gravity_data(N, D, num_points, rand_key, num_images=1):
         masses.append(geom.GeometricImage(point_mass, 0, D, is_torus=False))
         gravity_fields.append(gravity_field)
 
-    return masses, gravity_fields
+    return geom.BatchLayer.from_images(masses), geom.BatchLayer.from_images(gravity_fields)
 
 
 # Generate data for the moving charges problems

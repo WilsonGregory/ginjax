@@ -99,7 +99,7 @@ def conv_layer(
                 lhs_dilation, 
                 rhs_dilation,
             )
-            out_layer.add(res_k, res)
+            out_layer.append(res_k, res)
 
     if (max_k is not None):
         out_layer = order_cap_layer(out_layer, max_k)
@@ -129,12 +129,34 @@ def get_filter_block_from_invariants(params, param_idx, input_layer, invariant_f
 
     return filter_layer, param_idx 
 
-@functools.partial(jit, static_argnums=[1,4,5,6,7,8,9,10])
-def conv_layer_fixed_filters(
-    params, #non-static
+@functools.partial(jit, static_argnums=[1,3,4,5])
+def get_filter_block(params, param_idx, input_layer, M, out_depth, filter_k_set=None):
+    """
+    For each k in the input_layer and each k of the invariant filters, form a filter block from params 
+    of shape (out_depth,in_depth, (M,)*D, (D,)*filter_k). Note that in_depth is the size of the input_layer.
+    """
+    if filter_k_set is None:
+        filter_k_set = { 0 }
+
+    filter_layer = {}
+    for k, image_block in input_layer.items():
+        filter_layer[k] = {}
+        in_depth = image_block.shape[0]
+
+        for filter_k in filter_k_set:
+            filter_shape = (out_depth,in_depth) + (M,)*input_layer.D + (input_layer.D,)*filter_k
+            filter_size = np.multiply.reduce(filter_shape)
+
+            filter_layer[k][filter_k] = params[param_idx:param_idx + filter_size].reshape(filter_shape)
+            param_idx += filter_size
+    
+    return filter_layer, param_idx
+
+def conv_layer_build_filters(
+    params, 
     param_idx,
-    conv_filters, #non-static
-    input_layer, #non-static
+    input_layer,
+    filter_info, 
     depth,
     target_k=None, 
     max_k=None,
@@ -145,19 +167,42 @@ def conv_layer_fixed_filters(
     rhs_dilation=None,
 ):
     """
-    Wrapper for conv_layer_alt that constructs the filter_block from the invariant filters in 
-    conv_filters with the specified output depth.
+    Wrapper for conv_layer_alt that constructs the filter_block from either invariant filters or 
+    free parameters, i.e. regular convolution with fully learned filters. 
     """
-    filter_block, param_idx = get_filter_block_from_invariants(
-        params, 
-        int(param_idx), 
-        input_layer, 
-        conv_filters, 
-        out_depth=depth,
-    )
+    if (isinstance(filter_info, geom.Layer)): #if just a layer is passed, defaults to fixed filters
+        filter_block, param_idx = get_filter_block_from_invariants(
+            params, 
+            int(param_idx), 
+            input_layer, 
+            filter_info, 
+            depth,
+        )
+    elif (filter_info['type'] == 'raw'):
+        filter_block = filter_info['filters']
+    elif (filter_info['type'] == 'fixed'):
+        filter_block, param_idx = get_filter_block_from_invariants(
+            params, 
+            int(param_idx), 
+            input_layer, 
+            filter_info['filters'], 
+            depth,
+        )
+    elif (filter_info['type'] == 'free'):
+        filter_block, param_idx = filter_block, param_idx = get_filter_block(
+            params, 
+            int(param_idx), 
+            input_layer, 
+            filter_info['M'],
+            depth,
+            filter_info['filter_k_set'],
+        )
+    else:
+        raise Exception('conv_layer_build_filters: filter_info["type"] must be one of: raw, fixed, free')
+    
     layer = conv_layer_alt(
-        filter_block, 
         input_layer, 
+        filter_block, 
         target_k,
         max_k,
         stride,
@@ -167,10 +212,41 @@ def conv_layer_fixed_filters(
     )
     return layer, param_idx
 
+def batch_conv_layer(
+    params, 
+    param_idx,
+    input_layer, 
+    filter_info, 
+    depth,
+    target_k=None, 
+    max_k=None,
+    # Convolve kwargs that are passed directly along
+    stride=None, 
+    padding=None,
+    lhs_dilation=None, 
+    rhs_dilation=None,
+):
+    """
+    Vmap wrapper for conv_layer_build_filters that maps over the batch in the input layer.
+    """
+    return vmap(conv_layer_build_filters, in_axes=((None,)*2 + (0,) + (None,)*8), out_axes=(0, None))(
+        params,
+        param_idx,
+        input_layer, #vmapped over this arg
+        filter_info, 
+        depth,
+        target_k, 
+        max_k,
+        stride, 
+        padding,
+        lhs_dilation, 
+        rhs_dilation,
+    )
+
 @functools.partial(jit, static_argnums=[2,3,4,5,6,7])
 def conv_layer_alt(
-    conv_filters, #non-static
     input_layer, #non-static
+    conv_filters, #non-static
     target_k=None, 
     max_k=None,
     # Convolve kwargs that are passed directly along
@@ -216,7 +292,7 @@ def conv_layer_alt(
                 lhs_dilation, 
                 rhs_dilation,
             )
-            out_layer.add(k + filter_k, convolved_images_block)
+            out_layer.append(k + filter_k, convolved_images_block)
 
     if (max_k is not None):
         out_layer = order_cap_layer(out_layer, max_k)
@@ -265,14 +341,15 @@ def make_p_k_dict(images, filters=False, rollup_set={}):
 @functools.partial(jit, static_argnums=1)
 def activation_layer(layer, activation_function):
     scalar_image = contract_to_scalars(layer)
-    # might consider replacing k=0, rather than adding to it
     layer[0] = activation_function(scalar_image)
-    # layer.add(0, activation_function(scalar_image))
     return layer
 
 @jit
 def relu_layer(layer):
     return activation_layer(layer, jax.nn.relu)
+
+def batch_relu_layer(layer):
+    return vmap(relu_layer)(layer)
 
 @functools.partial(jit, static_argnums=1)
 def leaky_relu_layer(layer, negative_slope=0.01):
@@ -343,9 +420,9 @@ def order_cap_layer(layer, max_k):
                 contract_img = geom.multicontract(img, shifted_idx)
                 _, res_k = geom.parse_shape(contract_img.shape[1:], layer.D)
 
-                out_layer.add(res_k, contract_img)
+                out_layer.append(res_k, contract_img)
         else:
-            out_layer.add(k, img)
+            out_layer.append(k, img)
 
     return out_layer
 
@@ -357,7 +434,7 @@ def contract_to_scalars(input_layer):
 
     return all_contractions(0, suitable_images)
 
-def cascading_contractions(params, param_idx, target_k, input_layer, D):
+def cascading_contractions(params, param_idx, input_layer, target_k):
     """
     Starting with the highest k, sum all the images into a single image, perform all possible contractions,
     then add it to the layer below.
@@ -369,21 +446,30 @@ def cascading_contractions(params, param_idx, target_k, input_layer, D):
         D (int): dimension of the images
     """
     max_k = np.max(list(input_layer.keys()))
+    out_layer = input_layer.copy()
     for k in reversed(range(target_k+2, max_k+2, 2)):
-        images = input_layer[k]
+        image_block = out_layer[k]
 
-        idx_shift = 1 + D # layer plus N x N x ... x N (D times)
+        idx_shift = 1 + input_layer.D # layer plus N x N x ... x N (D times)
         for u,v in it.combinations(range(idx_shift, k + idx_shift), 2):
             group_sum = jnp.expand_dims(
-                geom.linear_combination(images, params[param_idx:(param_idx + len(images))]),
+                geom.linear_combination(image_block, params[param_idx:(param_idx + len(image_block))]),
                 axis=0,
             )
             contracted_img = geom.multicontract(group_sum, ((u,v),))
-            param_idx += len(images)
+            param_idx += len(image_block)
 
-            input_layer = add_to_layer(input_layer, k-2, contracted_img)
+            out_layer.append(k-2, contracted_img)
 
-    return input_layer[target_k], param_idx
+    return out_layer[target_k], param_idx
+
+def batch_cascading_contractions(params, param_idx, input_layer, target_k):
+    return vmap(cascading_contractions, in_axes=(None, None, 0, None), out_axes=(0, None))(
+        params,
+        param_idx,
+        input_layer,
+        target_k,
+    )
 
 def all_contractions(target_k, input_layer):
     final_image = None
@@ -398,6 +484,9 @@ def all_contractions(target_k, input_layer):
                 final_image = contracted_img
 
     return final_image
+
+def batch_all_contractions(target_k, input_layer):
+    return vmap(all_contractions, in_axes=(None, 0))(target_k, input_layer)
 
 @functools.partial(jit, static_argnums=1)
 def batch_norm(batch_layer, eps=1e-05):
@@ -424,71 +513,6 @@ def average_pool_layer(input_layer, patch_len):
 
 def unpool_layer(input_layer, patch_len):
     return [image.unpool(patch_len) for image in input_layer]
-
-## Baseline Layers
-
-@functools.partial(jit, static_argnums=[1,2,4,5])
-def get_filter_block(params, param_idx, M, input_layer, out_depth, filter_k_set=None):
-    """
-    For each k in the input_layer and each k of the invariant filters, form a filter block from params 
-    of shape (out_depth,in_depth, (M,)*D, (D,)*filter_k). Note that in_depth is the size of the input_layer.
-    """
-    if filter_k_set is None:
-        filter_k_set = { 0 }
-
-    filter_layer = {}
-    for k, image_block in input_layer.items():
-        filter_layer[k] = {}
-        in_depth = image_block.shape[0]
-
-        for filter_k in filter_k_set:
-            filter_shape = (out_depth,in_depth) + (M,)*input_layer.D + (input_layer.D,)*filter_k
-            filter_size = np.multiply.reduce(filter_shape)
-
-            filter_layer[k][filter_k] = params[param_idx:param_idx + filter_size].reshape(filter_shape)
-            param_idx += filter_size
-    
-    return filter_layer, param_idx
-
-@functools.partial(jit, static_argnums=[1,3,4,5,6,7,8,9,10,11])
-def conv_layer_free_filters(
-    params, #non-static
-    param_idx,
-    input_layer, #non-static
-    depth,
-    M,
-    filter_k_set=None,
-    target_k=None, 
-    max_k=None,
-    # Convolve kwargs that are passed directly along
-    stride=None, 
-    padding=None,
-    lhs_dilation=None, 
-    rhs_dilation=None,
-):
-    """
-    Wrapper for conv_layer_alt that first constructs the free filter block from params with the specified
-    side length M, filter_k, and output depth.
-    """
-    filter_block, param_idx = get_filter_block(
-        params, 
-        int(param_idx), 
-        M,
-        input_layer, 
-        out_depth=depth,
-        filter_k_set=filter_k_set,
-    )
-    layer = conv_layer_alt(
-        filter_block, 
-        input_layer, 
-        target_k,
-        max_k,
-        stride,
-        padding,
-        lhs_dilation,
-        rhs_dilation, 
-    )
-    return layer, param_idx
 
 ## Params
 
@@ -737,7 +761,7 @@ def train(
         epoch_loss = 0
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             rand_key, subkey = random.split(rand_key)
-            loss_val, grads = batch_loss_grad(params, X_batch, Y_batch, key=rand_key, train=True)
+            loss_val, grads = batch_loss_grad(params, X_batch, Y_batch, key=subkey, train=True)
             updates, opt_state = optimizer.update(grads, opt_state)
             params = optax.apply_updates(params, updates)
             epoch_loss += loss_val
@@ -748,7 +772,8 @@ def train(
         epoch += 1
 
         if (validation_X and validation_Y):
-            epoch_val_loss = map_and_loss(params, validation_X, validation_Y)
+            rand_key, subkey = random.split(rand_key)
+            epoch_val_loss = map_and_loss(params, validation_X, validation_Y, subkey, train=False)
             val_loss.append(epoch_val_loss)
 
         if (save_params and ((epoch % 10) == 0)):

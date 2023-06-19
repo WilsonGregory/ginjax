@@ -1241,3 +1241,187 @@ class BatchGeometricImage(GeometricImage):
             self.D, 
             self.is_torus,
         )
+
+@register_pytree_node_class
+class Layer:
+
+    # Constructors
+
+    def __init__(self, data, D, is_torus=True):
+        """
+        Construct a layer
+        args:
+            data (dictionary of jnp.array): dictionary by k of jnp.array
+            parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
+            D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
+            is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
+        """
+        self.D = D
+        self.is_torus = is_torus
+        #copy dict, but image_block is immutable jnp array
+        self.data = { k: image_block for k, image_block in data.items() } 
+
+        self.N = None
+        for image_block in data.values(): #if empty, this won't get set
+            if isinstance(image_block, jnp.ndarray):
+                self.N = image_block.shape[1] #shape (channels, (N,)*D, (D,)*k)
+            break
+
+    def copy(self):
+        return self.__class__(self.data, self.D, self.is_torus)
+
+    def empty(self):
+        return self.__class__({}, self.D, self.is_torus)
+    
+    @classmethod
+    def from_images(cls, images):
+        # We assume that all images have the same D and is_torus
+        if len(images) == 0:
+            return None 
+        
+        out_layer = cls({}, images[0].D, images[0].is_torus)
+        for image in images:
+            out_layer.append(image.k, image.data.reshape((1,) + image.data.shape))
+
+        return out_layer
+
+    # Functions that map directly to calling the function on data
+
+    def keys(self):
+        return self.data.keys()
+    
+    def values(self):
+        return self.data.values()
+    
+    def items(self):
+        return self.data.items()
+    
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+    def __setitem__(self, idx, val):
+        self.data[idx] = val
+        return self.data[idx]
+    
+    def __contains__(self, idx):
+        return idx in self.data
+    
+    # Other functions
+
+    def append(self, k, image_block):
+        """
+        Append an image block at k=k. It will be concatenated along axis=0, so channel for Layer
+        and vmapped BatchLayer, and batch for normal BatchLayer
+        """
+        # will this work for BatchLayer?
+        if k > 0: #very light shape checking, other problematic cases should be caught in concatenate
+            assert image_block.shape[-k:] == (self.D,)*k
+
+        if (k in self):
+            self[k] = jnp.concatenate((self[k], image_block))
+        else:
+            self[k] = image_block
+
+        if self.N is None:
+            self.N = image_block.shape[1]
+
+        return self
+
+    def __add__(self, other):
+        """
+        Addition operator for Layers, merges them together
+        """
+        assert type(self) == type(other), \
+            f'{self.__class__}::__add__: Types of layers being added must match, had {type(self)} and {type(other)}'
+        assert self.D == other.D, \
+            f'{self.__class__}::__add__: Dimension of layers must match, had {self.D} and {other.D}'
+        assert self.is_torus == other.is_torus, \
+            f'{self.__class__}::__add__: is_torus of layers must match, had {self.is_torus} and {other.is_torus}'
+
+        new_layer = self.copy()
+        for k, image_block in other.items():
+            new_layer.append(k, image_block)
+
+        return new_layer
+    
+    def to_images(self):
+        # Should only be used in Layer of vmapped BatchLayer
+        images = []
+        for image_block in self.values():
+            for image in image_block:
+                images.append(GeometricImage(image, 0, self.D, self.is_torus)) # for now, assume 0 parity
+
+        return images
+
+    #JAX helpers
+    def tree_flatten(self):
+        """
+        Helper function to define GeometricImage as a pytree so jax.jit handles it correctly. Children 
+        and aux_data must contain all the variables that are passed in __init__()
+        """
+        children = (self.data,)  # arrays / dynamic values
+        aux_data = {
+            'D': self.D,
+            'is_torus': self.is_torus,
+        }  # static values
+        return (children, aux_data)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        """
+        Helper function to define GeometricImage as a pytree so jax.jit handles it correctly.
+        """
+        return cls(*children, **aux_data)
+
+@register_pytree_node_class
+class BatchLayer(Layer):
+    # I may want to only have Layer, and find out a better way of tracking this
+
+    # Constructors
+
+    def __init__(self, data, D, is_torus=True):
+        """
+        Construct a layer
+        args:
+            data (dictionary of jnp.array): dictionary by k of jnp.array
+            parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
+            D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
+            is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
+        """
+        super(BatchLayer, self).__init__(data, D, is_torus)
+
+        self.L = None
+        for image_block in data.values(): #if empty, this won't get set
+            if isinstance(image_block, jnp.ndarray):
+                self.L = len(image_block) #shape (batch, channels, (N,)*D, (D,)*k)
+                self.N = image_block.shape[2]
+            break
+
+    @classmethod
+    def from_images(cls, images):
+        # We assume that all images have the same D and is_torus
+        if len(images) == 0:
+            return None 
+        
+        out_layer = cls({}, images[0].D, images[0].is_torus)
+        for image in images:
+            out_layer.append(image.k, image.data.reshape((1,1) + image.data.shape))
+
+        batch_image_block = list(out_layer.values())[0]
+        out_layer.L = batch_image_block.shape[0]
+        out_layer.N = batch_image_block.shape[2]
+
+        return out_layer
+
+    def get_subset(self, idxs):
+        """
+        Select a subset of the batch, picking the indices idxs
+        args:
+            idxs (jnp.array): array of indices to select the subset
+        """
+        assert isinstance(idxs, jnp.ndarray)
+        return self.__class__(
+            { k: image_block[idxs] for k, image_block in self.items() },
+            self.D,
+            self.is_torus,
+        )

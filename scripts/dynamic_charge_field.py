@@ -15,60 +15,67 @@ import geometricconvolutions.ml as ml
 import geometricconvolutions.utils as utils
 from geometricconvolutions.data import get_charge_data as get_data
 
-def plot_results(x, y, axs, titles):
+def plot_results(layer_x, layer_y, axs, titles, conv_filters):
     assert len(axs) == len(titles)
 
     learned_x = geom.GeometricImage(
-        net(params, x.data, x.D, x.is_torus, conv_filters, y.data),
-        x.parity,
-        x.D,
-        x.is_torus,
+        batch_net(params, layer_x, conv_filters)[0],
+        0,
+        layer_x.D,
+        layer_x.is_torus,
     )
+    x = geom.GeometricImage(next(iter(layer_x.values()))[0,0], 0, layer_x.D, layer_x.is_torus)
+    y = geom.GeometricImage(next(iter(layer_y.values()))[0,0], 0, layer_y.D, layer_y.is_torus)
+    
     images = [x, y, learned_x, y - learned_x]
     for image, ax, title in zip(images, axs, titles):
         utils.plot_image(image, ax=ax)
         ax.set_title(title, fontsize=24)
 
-def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
-    # Note that the target image is only used for its shape
-    _, img_k = geom.parse_shape(x.shape, D)
-    _, target_k = geom.parse_shape(target_img.shape, D)
-    layer = { img_k: jnp.expand_dims(x, axis=0) }
-    conv_filters = ml.make_layer(conv_filters)
+def batch_net(params, layer, conv_filters, return_params=False):
+    target_k = 1
     max_k = 5
+
+    batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*3 + (0,) + (None,)*6), out_axes=(0,None))
+    batch_linear_combination = vmap(geom.linear_combination, in_axes=(0, None))
 
     param_idx = 0
     for dilation in [1,2,4,2,1,1,2,1]: #dilated layers in sequence
-        layer, param_idx = ml.conv_layer(
-            params, 
+        layer, param_idx = batch_conv_layer(
+            params,
             int(param_idx), 
-            conv_filters, 
-            layer, 
-            D, 
-            is_torus, 
-            max_k=max_k,
-            rhs_dilation=(dilation,)*D, 
+            conv_filters,
+            layer,
+            None,
+            max_k,
+            None, 
+            None,
+            None, 
+            (dilation,)*layer.D, # rhs_dilation
         )
-        layer = ml.leaky_relu_layer(layer, D)
+        layer = ml.batch_leaky_relu_layer(layer)
 
-    layer, param_idx = ml.conv_layer(
+    layer, param_idx = batch_conv_layer(
         params, 
         int(param_idx),
         conv_filters,
         layer,
-        D,
-        is_torus,
         target_k, #final_layer, make sure out output is target_img shaped
+        None,
+        None,
+        None,
+        None,
+        None,
     )
-    layer = ml.all_contractions(target_k, layer, D)
+    image_block = ml.batch_all_contractions(target_k, layer)
 
-    net_output = geom.linear_combination(layer, params[param_idx:(param_idx + len(layer))])
-    param_idx += len(layer)
+    net_output = batch_linear_combination(image_block, params[param_idx:(param_idx + image_block.shape[1])])
+    param_idx += image_block.shape[1]
     return (net_output, param_idx) if return_params else net_output
 
-def map_and_loss(params, x, y, conv_filters, D, is_torus):
+def map_and_loss(params, x, y, key, train, conv_filters):
     # Run x through the net, then return its loss with y
-    return ml.rmse_loss(net(params, x, D, is_torus, conv_filters, y), y)
+    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, conv_filters), y[1]))
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -132,21 +139,19 @@ conv_filters = geom.get_invariant_filters(
     operators=group_actions,
     return_list=True,
 )
+filter_layer = geom.Layer.from_images(conv_filters)
 
-one_point = train_X[0]
+one_point = train_X.get_subset(jnp.array([0]))
 
 if load_file:
     params = jnp.load(load_file)
 else:
     huge_params = jnp.ones(10000000)
 
-    _, num_params = net(
+    _, num_params = batch_net(
         huge_params,
-        one_point.data,
-        one_point.D,
-        one_point.is_torus,
-        conv_filters,
-        train_Y[0].data, #just used for shape
+        one_point,
+        filter_layer,
         return_params=True,
     )
 
@@ -156,13 +161,13 @@ else:
     params = 0.1*random.normal(subkey, shape=(num_params,))
 
     optimizer = optax.adam(
-        optax.exponential_decay(lr, transition_steps=int(len(train_X) / batch_size), decay_rate=decay)
+        optax.exponential_decay(lr, transition_steps=int(train_X.L / batch_size), decay_rate=decay)
     )
 
     params, train_loss, val_loss = ml.train(
         train_X,
         train_Y,
-        partial(map_and_loss, D=one_point.D, is_torus=one_point.is_torus, conv_filters=conv_filters),
+        partial(map_and_loss, conv_filters=filter_layer),
         params,
         key,
         ml.ValLoss(patience=20, verbose=verbose),
@@ -180,19 +185,19 @@ plt.rcParams['font.family'] = 'serif'
 plt.rcParams['font.serif'] = 'STIXGeneral'
 plt.tight_layout()
 
+titles = ['Input', 'Ground Truth', 'Prediction', 'Difference']
 fig, axs = plt.subplots(nrows=2, ncols=4, figsize=(24,12))
-plot_results(train_X[0], train_Y[0], axs[0], ['Input', 'Ground Truth', 'Prediction', 'Difference'])
-plot_results(test_X[0], test_Y[0], axs[1], ['Input', 'Ground Truth', 'Prediction', 'Difference'])
+plot_results(train_X.get_subset(jnp.array([0])), train_Y.get_subset(jnp.array([0])), axs[0], titles, filter_layer)
+plot_results(test_X.get_subset(jnp.array([0])), test_Y.get_subset(jnp.array([0])), axs[1], titles, filter_layer)
 plt.savefig(outfile)
 
-vmap_map_loss = vmap(
-    partial(map_and_loss, conv_filters=conv_filters, D=test_X[0].D, is_torus=test_X[0].is_torus),
-    in_axes=(None, 0, 0),
-)
-test_loss = jnp.mean(vmap_map_loss(
+print('Full Test loss:', map_and_loss(params, test_X, test_Y, None, None, conv_filters=filter_layer))
+one_test_loss = map_and_loss(
     params, 
-    geom.BatchGeometricImage.from_images(test_X).data, 
-    geom.BatchGeometricImage.from_images(test_Y).data, 
-))
-print('Full Test loss:', test_loss)
-print(f'One Test loss: {map_and_loss(params, test_X[0].data, test_Y[0].data, conv_filters, test_X[0].D, test_X[0].is_torus)}')
+    test_X.get_subset(jnp.array([0])), 
+    test_Y.get_subset(jnp.array([0])), 
+    None,
+    None,
+    conv_filters=filter_layer,
+)
+print(f'One Test loss: {one_test_loss}')

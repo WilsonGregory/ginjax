@@ -13,16 +13,6 @@ import geometricconvolutions.geometric as geom
 
 ## GeometricImageNet Layers
 
-def make_layer(images):
-    images_by_k = defaultdict(list)
-    for image in images:
-        images_by_k[image.k].append(image)
-
-    if isinstance(images[0], geom.BatchGeometricImage) or isinstance(images[0], geom.GeometricFilter):
-        return { k: jnp.stack([image.data for image in image_list]) for k, image_list in images_by_k.items() }
-    elif isinstance(images[0], geom.GeometricImage):
-        return { k: jnp.stack([jnp.expand_dims(image.data, axis=0) for image in image_list]) for k, image_list in images_by_k.items() }
-    
 def add_to_layer(layer, k, image):
     if (k in layer):
         layer[k] = jnp.concatenate((layer[k], image))

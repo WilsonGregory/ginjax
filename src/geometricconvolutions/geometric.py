@@ -1425,6 +1425,3 @@ class BatchLayer(Layer):
             self.D,
             self.is_torus,
         )
-    
-    # def add(self):
-    #     pass

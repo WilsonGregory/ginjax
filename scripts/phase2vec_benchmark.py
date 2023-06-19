@@ -151,7 +151,6 @@ def net(params, layer, conv_filters, ode_basis, key, train=True, return_params=F
     embedding_d = 100
     num_coeffs = ode_basis.shape[1]
     img_N = layer.N
-    conv_filters = ml.make_layer(conv_filters)
 
     batch_fully_connected = vmap(fully_connected_layer, in_axes=(None, None, 0, None), out_axes=(0, None))
 
@@ -238,7 +237,7 @@ def phase2vec_loss(recon_x, layer_y, coeffs, eps=1e-5, beta=1e-3):
     return normalized_loss + beta * sparsity_loss
 
 partial(jit, static_argnums=[4,5,6])
-def map_and_loss(params, layer_x, layer_y, conv_filters, ode_basis, key, train, eps=1e-5, beta=1e-3):
+def map_and_loss(params, layer_x, layer_y, key, train, conv_filters, ode_basis, eps=1e-5, beta=1e-3):
     recon, coeffs = net(params, layer_x, conv_filters, ode_basis, key, train=train)
     return phase2vec_loss(recon, layer_y, coeffs, eps, beta)
 
@@ -318,15 +317,15 @@ def baseline_net(params, layer, ode_basis, key, train=True, return_params=False)
     return (recon_x, coeffs, param_idx) if return_params else (recon_x, coeffs)
 
 partial(jit, static_argnums=[4,5,6])
-def baseline_map_and_loss(params, layer_x, layer_y, ode_basis, key, train, eps=1e-5, beta=1e-3):
+def baseline_map_and_loss(params, layer_x, layer_y, key, train, ode_basis, eps=1e-5, beta=1e-3):
     recon, coeffs = baseline_net(params, layer_x, ode_basis, key, train=train)
     return phase2vec_loss(recon, layer_y, coeffs, eps, beta)
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('-e', '--epochs', help='number of epochs', type=float, default=200)
-    parser.add_argument('-lr', help='learning rate', type=float, default=0.1)
-    parser.add_argument('-batch', help='batch size', type=int, default=1)
+    parser.add_argument('-lr', help='learning rate', type=float, default=0.001)
+    parser.add_argument('-batch', help='batch size', type=int, default=10)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-s', '--save', help='file name to save the results', type=str, default=None)
     parser.add_argument('-l', '--load', help='file name to load results from', type=str, default=None)
@@ -360,6 +359,7 @@ conv_filters = geom.get_invariant_filters(
     operators=geom.make_all_operators(D),
     return_list=True,
 )
+filter_layer = geom.Layer.from_images(conv_filters)
 
 train_data_path = '../phase2vec/output/data/polynomial'
 X_train_data, X_val_data, y_train, y_val, p_train, p_val = load_dataset(train_data_path)
@@ -373,6 +373,7 @@ X_val = geom.BatchLayer(
     D,
     False,
 )
+X_val = X_val.get_subset(jnp.arange(100)) #reduce the size of val set b/c baseline is running out of mem
 
 # generate function library
 spatial_coords = [jnp.linspace(mn, mx, X_train.N) for (mn, mx) in zip([-1.,-1.], [1.,1.])]
@@ -381,17 +382,13 @@ L = jnp.concatenate([ms[..., None] for ms in mesh], axis=-1)
 ode_basis, _ = sindy_library(L.reshape(X_train.N**D,D), 3)
 
 #its only a single point, but net expects a BatchLayer so that is what we do.
-one_point = geom.BatchLayer(
-    { 1: jnp.expand_dims(X_train[1][0], axis=0) }, 
-    D,
-    False,
-)
+one_point = X_train.get_subset(jnp.array([0]))
 
 huge_params = jnp.ones(100000000) #hundred million
 _, _, num_params_model = net(
     huge_params,
     one_point,
-    conv_filters,
+    filter_layer,
     ode_basis,
     key,
     train=True,
@@ -410,11 +407,11 @@ _, _, num_params_baseline = baseline_net(
 print(f'Baseline Params {num_params_baseline}')
 
 models = [
-    # (
-    #     'GI-Net',
-    #     partial(map_and_loss, conv_filters=conv_filters, ode_basis=ode_basis),
-    #     num_params_model,
-    # ),
+    (
+        'GI-Net',
+        partial(map_and_loss, conv_filters=filter_layer, ode_basis=ode_basis),
+        num_params_model,
+    ),
     (
         'Baseline',
         partial(baseline_map_and_loss, ode_basis=ode_basis),
@@ -423,6 +420,7 @@ models = [
 ]
 
 for model_name, model, num_params in models:
+    print(f'Model {model_name}')
 
     key, subkey = random.split(key)
     params = 0.1*random.normal(subkey, shape=(num_params,))
@@ -433,9 +431,11 @@ for model_name, model, num_params in models:
         X_train, #reconstruction, so we want to get back to the input
         model,
         params,
-        key,
+        subkey,
         ml.EpochStop(epochs, verbose=verbose),
         batch_size=batch_size,
         optimizer=optax.adam(lr),
+        validation_X=X_val,
+        validation_Y=X_val, # reconstruction, reuse X_val as the Y
         save_params=save_file,
     )

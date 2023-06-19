@@ -134,5 +134,5 @@ def get_charge_data(N, D, num_charges, num_steps, delta_t, s, rand_key, num_imag
 
         final_fields.append(Qtransform(get_velocity_field(N, D, charges), s))
 
-    return initial_fields, final_fields
+    return geom.BatchLayer.from_images(initial_fields), geom.BatchLayer.from_images(final_fields)
 

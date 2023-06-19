@@ -31,12 +31,6 @@ def add_to_layer(layer, k, image):
 
     return layer
 
-def merge_layers(layer_a, layer_b):
-    for k, image in layer_b.items():
-        layer_a = add_to_layer(layer_a, k, image)
-
-    return layer_a
-
 @functools.partial(jit, static_argnums=[1,4,5,6,7,8,9])
 def conv_layer(
     params, #non-static
@@ -354,6 +348,9 @@ def batch_relu_layer(layer):
 @functools.partial(jit, static_argnums=1)
 def leaky_relu_layer(layer, negative_slope=0.01):
     return activation_layer(layer, functools.partial(jax.nn.leaky_relu, negative_slope=negative_slope))
+
+def batch_leaky_relu_layer(layer, negative_slope=0.01):
+    return vmap(leaky_relu_layer, in_axes=(0, None))(layer, negative_slope)
 
 @jit
 def sigmoid_layer(layer):

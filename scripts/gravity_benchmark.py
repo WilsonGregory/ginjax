@@ -244,7 +244,6 @@ if (not load_file):
                 all_train_loss[i,j,k] = train_loss[-1]
                 all_val_loss[i,j,k] = val_loss[-1]
 
-                vmap_map_loss = vmap(model, in_axes=(None, 0, 0))
                 test_loss = model(params, test_X, test_Y, None, None)
                 all_test_loss[i,j,k] = test_loss
                 print('Full Test loss:', test_loss)

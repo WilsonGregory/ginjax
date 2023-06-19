@@ -6,87 +6,94 @@ import time
 import math
 import matplotlib.pyplot as plt
 
-from jax import vmap, jit
+from jax import vmap
 import jax.numpy as jnp
 import jax.random as random
-import jax.nn
-import jax.lax
 import optax
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 from geometricconvolutions.data import get_charge_data as get_data
 
-def net(params, x, D, is_torus, conv_filters, target_img, return_params=False):
-    # Note that the target image is only used for its shape
-    _, img_k = geom.parse_shape(x.shape, D)
-    _, target_k = geom.parse_shape(target_img.shape, D)
-    layer = { img_k: jnp.expand_dims(x, axis=0) }
-    conv_filters = ml.make_layer(conv_filters)
+def batch_net(params, layer, conv_filters, return_params=False):
+    target_k = 1
     max_k = 5
 
-    param_idx = 0
-    for dilation in [1,2,4,2,1,1,2,1]:
-        layer, param_idx = ml.conv_layer(
-            params, 
-            int(param_idx), 
-            conv_filters, 
-            layer, 
-            D, 
-            is_torus, 
-            max_k=max_k,
-            rhs_dilation=(dilation,)*D, 
-        )
-        layer = ml.leaky_relu_layer(layer, D)
+    batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*3 + (0,) + (None,)*6), out_axes=(0,None))
+    batch_linear_combination = vmap(geom.linear_combination, in_axes=(0, None))
 
-    layer, param_idx = ml.conv_layer(
+    param_idx = 0
+    for dilation in [1,2,4,2,1,1,2,1]: #dilated layers in sequence
+        layer, param_idx = batch_conv_layer(
+            params,
+            int(param_idx), 
+            conv_filters,
+            layer,
+            None,
+            max_k,
+            None, 
+            None,
+            None, 
+            (dilation,)*layer.D, # rhs_dilation
+        )
+        layer = ml.batch_leaky_relu_layer(layer)
+
+    layer, param_idx = batch_conv_layer(
         params, 
         int(param_idx),
         conv_filters,
         layer,
-        D,
-        is_torus,
         target_k, #final_layer, make sure out output is target_img shaped
+        None,
+        None,
+        None,
+        None,
+        None,
     )
-    layer = ml.all_contractions(target_k, layer, D)
+    image_block = ml.batch_all_contractions(target_k, layer)
 
-    net_output = geom.linear_combination(layer, params[param_idx:(param_idx + len(layer))])
-    param_idx += len(layer)
+    net_output = batch_linear_combination(image_block, params[param_idx:(param_idx + image_block.shape[1])])
+    param_idx += image_block.shape[1]
     return (net_output, param_idx) if return_params else net_output
 
-def map_and_loss(params, x, y, conv_filters, D, is_torus):
+def map_and_loss(params, x, y, key, train, conv_filters):
     # Run x through the net, then return its loss with y
-    return ml.rmse_loss(net(params, x, D, is_torus, conv_filters, y), y)
+    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, conv_filters), y[1]))
 
-def baseline_net(params, x, D, is_torus, target_img, return_params=False):
+def baseline_net(params, layer, return_params=False):
     M = 3
     out_channels = 20
-    layer = { 0: jnp.moveaxis(x, -1, 0) } #move the vector to the channel slot
+    #move the vector to the channel slot
+    transposed_block = layer[1].transpose(0,1,4,2,3)
+    reshaped_block = transposed_block.reshape((transposed_block.shape[0],) + transposed_block.shape[2:])
+    layer = geom.BatchLayer({ 0: reshaped_block }, layer.D, layer.is_torus)
     param_idx = 0
 
     for dilation in [1,2,4,2,1,1,2,1]:
-        layer, param_idx = ml.conv_layer_free_filters(
+        layer, param_idx = ml.batch_conv_layer(
             params, 
             int(param_idx), 
             layer,
-            D,
-            is_torus,
-            out_channels, 
-            M, 
+            { 'type': 'free', 'M': M, 'filter_k_set': (0,) },
+            depth=out_channels, 
             rhs_dilation=(dilation,)*D,
         )
-        layer = { 0: jax.nn.leaky_relu(layer[0]) }
+        layer = ml.batch_leaky_relu_layer(layer)
 
-    layer, param_idx = ml.conv_layer_free_filters(params, int(param_idx), layer, D, is_torus, 2, M)
-    net_output = jnp.moveaxis(layer[0], 0, -1) # make the channels the vector dimensions
-    assert net_output.shape == x.shape
+    layer, param_idx = ml.batch_conv_layer(
+        params, 
+        int(param_idx), 
+        layer, 
+        { 'type': 'free', 'M': M, 'filter_k_set': (0,) }, 
+        depth=2,
+    )
+    net_output = jnp.moveaxis(layer[0], 1, -1) # make the channels the vector dimensions
 
     return (net_output, param_idx) if return_params else net_output
 
-def baseline_map_and_loss(params, x, y, D, is_torus):
+def baseline_map_and_loss(params, x, y, key, train):
     # Run x through the net, then return its loss with y
-    return ml.rmse_loss(baseline_net(params, x, D, is_torus, y), y)
-
+    return jnp.mean(vmap(ml.rmse_loss)(baseline_net(params, x), y[1]))
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -132,42 +139,37 @@ conv_filters = geom.get_invariant_filters(
     operators=group_actions,
     return_list=True,
 )
+filter_layer = geom.Layer.from_images(conv_filters)
 
 key, subkey = random.split(key)
-one_point_x, one_point_y = get_data(N, D, num_points, num_steps, delta_t, s, subkey, 1, warmup_steps=warmup_steps)
-one_point_x = one_point_x[0]
-one_point_y = one_point_y[0]
+one_point_x, _ = get_data(N, D, num_points, num_steps, delta_t, s, subkey, 1, warmup_steps=warmup_steps)
 
 huge_params = jnp.ones(100000)
 
-_, num_params = net(
+_, num_params = batch_net(
     huge_params,
-    one_point_x.data,
-    one_point_x.D,
-    one_point_x.is_torus,
-    conv_filters,
-    one_point_y.data,
+    one_point_x,
+    filter_layer,
     return_params=True,
 )
 print('Model Params:', num_params)
 
 _, baseline_num_params = baseline_net(
     huge_params,
-    one_point_x.data,
-    one_point_x.D,
-    one_point_x.is_torus,
-    one_point_y.data,
+    one_point_x,
     return_params=True,
 )
 print('Baseline Params:', baseline_num_params)
 models = [
     (
-        partial(map_and_loss, D=one_point_x.D, is_torus=one_point_x.is_torus, conv_filters=conv_filters), 
+        'GI-Net',
+        partial(map_and_loss, conv_filters=filter_layer), 
         num_params,
         0.005,
     ),
     (
-        partial(baseline_map_and_loss, D=one_point_x.D, is_torus=one_point_x.is_torus), 
+        'Baseline',
+        partial(baseline_map_and_loss), 
         baseline_num_params,
         0.001,
     ),
@@ -192,8 +194,8 @@ if (not load_file):
             key, subkey = random.split(key)
             train_X, train_Y = get_data(N, D, num_points, num_steps, delta_t, s, subkey, num_train_images, warmup_steps=warmup_steps)
 
-            for k, (model, num_params, lr) in enumerate(models):
-                print(f'Iter {i}, train size {num_train_images}, model {k}')
+            for k, (model_name, model, num_params, lr) in enumerate(models):
+                print(f'Iter {i}, train size {num_train_images}, model {model_name}')
                 key, subkey = random.split(key)
                 params = 0.1*random.normal(subkey, shape=(num_params,))
                 key, subkey = random.split(key)
@@ -215,12 +217,7 @@ if (not load_file):
                 all_train_loss[i,j,k] = train_loss[-1]
                 all_val_loss[i,j,k] = val_loss[-1]
 
-                vmap_map_loss = vmap(model, in_axes=(None, 0, 0))
-                test_loss = jnp.mean(vmap_map_loss(
-                    params, 
-                    geom.BatchGeometricImage.from_images(test_X).data, 
-                    geom.BatchGeometricImage.from_images(test_Y).data, 
-                ))
+                test_loss = model(params, test_X, test_Y, None, None)
                 all_test_loss[i,j,k] = test_loss
                 print('Full Test loss:', test_loss)
 

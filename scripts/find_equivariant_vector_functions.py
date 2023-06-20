@@ -126,7 +126,7 @@ conv_filters = geom.get_invariant_filters(
     D, 
     group_operators,
     scale='one', 
-    return_list=True,
+    return_type='list',
 )
 
 polynomial_degrees = [2]

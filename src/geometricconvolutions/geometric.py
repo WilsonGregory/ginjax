@@ -201,7 +201,7 @@ def get_unique_invariant_filters(M, k, parity, D, operators, scale='normalize'):
 
     return filters
 
-def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', return_list=False, return_maxn=False):
+def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', return_type='layer', return_maxn=False):
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and parities. By default
     it returns the filters in a dictionary with the key (D,M,k,parity), but flattens to a list if return_list=True
@@ -213,7 +213,7 @@ def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', ret
         operators (jnp-array): array of operators of a group
         scale (string): option for scaling the values of the filters, 'normalize' (default) to make amplitudes of each
         tensor +/- 1. 'one' to set them all to 1.
-        return_list (bool): defaults to False, if true return allfilters as a list
+        return_type (string): returns the filters as the dict, a list, or a Layer, defaults to layer
         return_maxn (bool): defaults to False, if true returns the length of the max list for each D, M
     returns:
         allfilters: a dictionary of filters of the specified D, M, k, and parity. If return_list=True, this is a list
@@ -221,6 +221,7 @@ def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', ret
             if return_list=True
     """
     assert scale == 'normalize' or scale == 'one'
+    assert return_type in { 'dict', 'list', 'layer' }
 
     allfilters = {}
     maxn = {}
@@ -234,8 +235,12 @@ def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', ret
                 if n > maxn[(D, M)]:
                     maxn[(D, M)] = n
 
-    if return_list:
-        allfilters = list(it.chain(*list(allfilters.values())))
+    allfilters_list = list(it.chain(*list(allfilters.values())))
+    if return_type == 'list':
+        allfilters = allfilters_list
+    elif return_type == 'layer':
+        allfilters = Layer.from_images(allfilters_list)
+    # else, allfilters is the default structure
 
     if return_maxn:
         return allfilters, maxn

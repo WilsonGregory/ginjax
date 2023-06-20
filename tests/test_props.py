@@ -123,7 +123,7 @@ class TestPropositions:
         # Test that the outer product of two invariant filters is also invariant
         D = 2
         group_operators = geom.make_all_operators(D)
-        all_filters = geom.get_invariant_filters([3], [0,1,2], [0,1], D, group_operators, return_list=True)
+        all_filters = geom.get_invariant_filters([3], [0,1,2], [0,1], D, group_operators, return_type='list')
         for g in group_operators:
             for c1 in all_filters:
                 for c2 in all_filters:
@@ -167,7 +167,7 @@ class TestPropositions:
         group_operators = geom.make_all_operators(D)
         max_k = 5
 
-        conv_filters_dict = geom.get_invariant_filters([N], range(max_k+1), [0,1], D, group_operators, scale='one')
+        conv_filters_dict = geom.get_invariant_filters([N], range(max_k+1), [0,1], D, group_operators, scale='one', return_type='dict')
         for k in range(max_k - 1):
             for parity in [0,1]:
                 for conv_filter in conv_filters_dict[(D, N, k, parity)]:

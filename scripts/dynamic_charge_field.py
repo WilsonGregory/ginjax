@@ -83,7 +83,7 @@ def handleArgs(argv):
     parser.add_argument('--data_gif', help='where the save the gif of the charges moving', type=str)
     parser.add_argument('-lr', help='learning rate', type=float, default=0.01)
     parser.add_argument('-d', '--decay', help='decay rate of learning rate', type=float, default=0.995)
-    parser.add_argument('-batch', help='batch size', type=int, default=1)
+    parser.add_argument('-batch', help='batch size', type=int, default=10)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-s', '--save', help='file name to save the params', type=str, default=None)
     parser.add_argument('-l', '--load', help='file name to load params from', type=str, default=None)
@@ -131,15 +131,7 @@ train_X, train_Y = get_data(N, D, num_points, num_steps, delta_t, s, subkey, num
 
 # start with basic 3x3 scalar, vector, and 2nd order tensor images
 group_actions = geom.make_all_operators(D)
-conv_filters = geom.get_invariant_filters(
-    Ms=[3],
-    ks=[1,2],
-    parities=[0],
-    D=D,
-    operators=group_actions,
-    return_list=True,
-)
-filter_layer = geom.Layer.from_images(conv_filters)
+conv_filters = geom.get_invariant_filters(Ms=[3], ks=[1,2], parities=[0], D=D, operators=group_actions)
 
 one_point = train_X.get_subset(jnp.array([0]))
 
@@ -151,7 +143,7 @@ else:
     _, num_params = batch_net(
         huge_params,
         one_point,
-        filter_layer,
+        conv_filters,
         return_params=True,
     )
 
@@ -167,7 +159,7 @@ else:
     params, train_loss, val_loss = ml.train(
         train_X,
         train_Y,
-        partial(map_and_loss, conv_filters=filter_layer),
+        partial(map_and_loss, conv_filters=conv_filters),
         params,
         key,
         ml.ValLoss(patience=20, verbose=verbose),
@@ -187,17 +179,17 @@ plt.tight_layout()
 
 titles = ['Input', 'Ground Truth', 'Prediction', 'Difference']
 fig, axs = plt.subplots(nrows=2, ncols=4, figsize=(24,12))
-plot_results(train_X.get_subset(jnp.array([0])), train_Y.get_subset(jnp.array([0])), axs[0], titles, filter_layer)
-plot_results(test_X.get_subset(jnp.array([0])), test_Y.get_subset(jnp.array([0])), axs[1], titles, filter_layer)
+plot_results(train_X.get_subset(jnp.array([0])), train_Y.get_subset(jnp.array([0])), axs[0], titles, conv_filters)
+plot_results(test_X.get_subset(jnp.array([0])), test_Y.get_subset(jnp.array([0])), axs[1], titles, conv_filters)
 plt.savefig(outfile)
 
-print('Full Test loss:', map_and_loss(params, test_X, test_Y, None, None, conv_filters=filter_layer))
+print('Full Test loss:', map_and_loss(params, test_X, test_Y, None, None, conv_filters=conv_filters))
 one_test_loss = map_and_loss(
     params, 
     test_X.get_subset(jnp.array([0])), 
     test_Y.get_subset(jnp.array([0])), 
     None,
     None,
-    conv_filters=filter_layer,
+    conv_filters=conv_filters,
 )
 print(f'One Test loss: {one_test_loss}')

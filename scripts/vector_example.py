@@ -72,7 +72,7 @@ conv_filters = geom.get_invariant_filters(
     parities=[0,1],
     D=D,
     operators=group_actions,
-    return_list=True,
+    return_type='list',
 )
 filter_layer = geom.Layer.from_images(conv_filters)
 

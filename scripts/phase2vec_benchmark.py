@@ -351,15 +351,8 @@ D = 2
 key = random.PRNGKey(seed if seed else time.time_ns())
 
 # start with basic 3x3 scalar, vector, and 2nd order tensor images
-conv_filters = geom.get_invariant_filters(
-    Ms=[3],
-    ks=[0,1],
-    parities=[0],
-    D=D,
-    operators=geom.make_all_operators(D),
-    return_list=True,
-)
-filter_layer = geom.Layer.from_images(conv_filters)
+operators = geom.make_all_operators(D)
+conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1], parities=[0], D=D, operators=operators)
 
 train_data_path = '../phase2vec/output/data/polynomial'
 X_train_data, X_val_data, y_train, y_val, p_train, p_val = load_dataset(train_data_path)
@@ -388,7 +381,7 @@ huge_params = jnp.ones(100000000) #hundred million
 _, _, num_params_model = net(
     huge_params,
     one_point,
-    filter_layer,
+    conv_filters,
     ode_basis,
     key,
     train=True,
@@ -409,7 +402,7 @@ print(f'Baseline Params {num_params_baseline}')
 models = [
     (
         'GI-Net',
-        partial(map_and_loss, conv_filters=filter_layer, ode_basis=ode_basis),
+        partial(map_and_loss, conv_filters=conv_filters, ode_basis=ode_basis),
         num_params_model,
     ),
     (

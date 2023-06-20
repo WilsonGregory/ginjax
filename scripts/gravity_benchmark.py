@@ -129,6 +129,7 @@ def baseline_map_and_loss(params, x, y, key, train):
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
+    parser.add_argument('-n', '--num_times', help='number of runs in the benchmark', type=int, default=5)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-s', '--save', help='file name to save the params', type=str, default=None)
     parser.add_argument('-l', '--load', help='file name to load params from', type=str, default=None)
@@ -137,6 +138,7 @@ def handleArgs(argv):
     args = parser.parse_args()
 
     return (
+        args.num_times,
         args.seed,
         args.save,
         args.load,
@@ -144,9 +146,8 @@ def handleArgs(argv):
     )
 
 # Main
-seed, save_file, load_file, verbose = handleArgs(sys.argv)
+num_times, seed, save_file, load_file, verbose = handleArgs(sys.argv)
 
-num_times = 5
 N = 16
 D = 2
 num_points = 5
@@ -158,15 +159,7 @@ key = random.PRNGKey(seed if seed else time.time_ns())
 
 # start with basic 3x3 scalar, vector, and 2nd order tensor images
 group_actions = geom.make_all_operators(D)
-conv_filters = geom.get_invariant_filters(
-    Ms=[3],
-    ks=[0,1],
-    parities=[0],
-    D=D,
-    operators=group_actions,
-    return_list=True,
-)
-filter_layer = geom.Layer.from_images(conv_filters)
+conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1], parities=[0], D=D, operators=group_actions)
 
 key, subkey = random.split(key)
 one_point_x, _ = get_data(N, D, num_points, subkey, 1)
@@ -177,7 +170,7 @@ huge_params = jnp.ones(100000)
 _, num_params = batch_net(
     huge_params,
     one_point_x,
-    conv_filters=filter_layer,
+    conv_filters=conv_filters,
     return_params=True,
 )
 print('Model Params:', num_params)
@@ -191,7 +184,7 @@ print('Baseline Params:', baseline_num_params)
 models = [
     (
         'GI-Net',
-        partial(map_and_loss, conv_filters=filter_layer), 
+        partial(map_and_loss, conv_filters=conv_filters), 
         num_params,
         0.005,
     ),

@@ -380,8 +380,6 @@ def handleArgs(argv):
 epochs, lr, batch_size, seed, save_folder, load_folder, verbose = handleArgs(sys.argv)
 
 D = 2
-batch_norm = True
-dropout = True
 
 key = random.PRNGKey(time.time_ns() if (seed is None) else seed)
 

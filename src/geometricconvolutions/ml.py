@@ -552,13 +552,13 @@ def rmse_loss(x, y):
         x (jnp.array): the input image
         y (jnp.array): the associated output for x that we are comparing against
     """
-    return jnp.sqrt(jnp.mean((x - y) ** 2))
+    return jnp.sqrt(mse_loss(x, y))
 
 def mse_loss(x, y):
     return jnp.mean((x - y) ** 2)
 
 def l2_loss(x, y):
-    return jnp.sqrt(jnp.sum((x - y) ** 2))
+    return jnp.sqrt(l2_squared_loss(x, y))
 
 def l2_squared_loss(x, y):
     return jnp.sum((x - y) ** 2)

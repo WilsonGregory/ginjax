@@ -144,6 +144,7 @@ def conv_layer_build_filters(
     depth,
     target_k=None, 
     max_k=None,
+    bias=None,
     # Convolve kwargs that are passed directly along
     stride=None, 
     padding=None,
@@ -194,7 +195,17 @@ def conv_layer_build_filters(
         lhs_dilation,
         rhs_dilation, 
     )
-    return layer, param_idx
+    if bias: #is this equivariant?
+        out_layer = layer.empty()
+        for k,image_block in layer.items():
+            b = params[param_idx:(param_idx+depth)]
+            param_idx += depth
+            biased_image = vmap(lambda image,p: image + p)(image_block, b) #add a single scalar
+            out_layer.append(k, biased_image)
+    else:
+        out_layer = layer
+
+    return out_layer, param_idx
 
 def batch_conv_layer(
     params, 
@@ -204,6 +215,7 @@ def batch_conv_layer(
     depth,
     target_k=None, 
     max_k=None,
+    bias=None,
     # Convolve kwargs that are passed directly along
     stride=None, 
     padding=None,
@@ -213,7 +225,7 @@ def batch_conv_layer(
     """
     Vmap wrapper for conv_layer_build_filters that maps over the batch in the input layer.
     """
-    return vmap(conv_layer_build_filters, in_axes=((None,)*2 + (0,) + (None,)*8), out_axes=(0, None))(
+    return vmap(conv_layer_build_filters, in_axes=((None,)*2 + (0,) + (None,)*9), out_axes=(0, None))(
         params,
         param_idx,
         input_layer, #vmapped over this arg
@@ -221,6 +233,7 @@ def batch_conv_layer(
         depth,
         target_k, 
         max_k,
+        bias,
         stride, 
         padding,
         lhs_dilation, 
@@ -475,8 +488,8 @@ def all_contractions(target_k, input_layer):
 def batch_all_contractions(target_k, input_layer):
     return vmap(all_contractions, in_axes=(None, 0))(target_k, input_layer)
 
-@functools.partial(jit, static_argnums=1)
-def batch_norm(batch_layer, eps=1e-05):
+@functools.partial(jit, static_argnums=[1,3])
+def batch_norm(params, param_idx, batch_layer, eps=1e-05):
     """
     Batch norm, this may or may not be equivariant.
     args:
@@ -488,9 +501,20 @@ def batch_norm(batch_layer, eps=1e-05):
         mean_image = jnp.mean(image_block, axis=0) # shape (channels, (N,)*D, (D,)*k)
         image_var = jnp.var(image_block, axis=0) # shape (channels, (N,)*D, (D,)*k)
         centered_scaled_image = (image_block - mean_image)/jnp.sqrt(image_var + eps)
-        out_layer[k] = centered_scaled_image
+
+        # Now we multiply each channel by a scalar, then add a bias to each channel.
+        # This is following: https://pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html
+        num_channels = centered_scaled_image.shape[1]
+        params_mult = params[param_idx:(param_idx + num_channels)]
+        param_idx += num_channels
+        params_add = params[param_idx:(param_idx + num_channels)]
+        param_idx += num_channels
+
+        mult_images = vmap(vmap(lambda x,p: x * p), in_axes=(0,None))(centered_scaled_image, params_mult)
+        added_images = vmap(vmap(lambda x,p: x + p), in_axes=(0,None))(mult_images, params_add)
+        out_layer[k] = added_images
     
-    return out_layer
+    return out_layer, param_idx
 
 def max_pool_layer(input_layer, patch_len):
     return [image.max_pool(patch_len) for image in input_layer]
@@ -525,10 +549,19 @@ def rmse_loss(x, y):
     """
     Root Mean Squared Error Loss.
     args:
-        x (GeometricImage): the input image
-        y (GeometricImage): the associated output for x that we are comparing against
+        x (jnp.array): the input image
+        y (jnp.array): the associated output for x that we are comparing against
     """
+    return jnp.sqrt(jnp.mean((x - y) ** 2))
+
+def mse_loss(x, y):
+    return jnp.mean((x - y) ** 2)
+
+def l2_loss(x, y):
     return jnp.sqrt(jnp.sum((x - y) ** 2))
+
+def l2_squared_loss(x, y):
+    return jnp.sum((x - y) ** 2)
 
 ## Data and Batching operations
 
@@ -758,9 +791,16 @@ def train(
 
         epoch += 1
 
+        # We evaluate the validation loss in batches for memory reasons.
         if (validation_X and validation_Y):
             rand_key, subkey = random.split(rand_key)
-            epoch_val_loss = map_and_loss(params, validation_X, validation_Y, subkey, train=False)
+            X_val_batches, Y_val_batches = get_batch_layer(validation_X, validation_Y, batch_size, subkey)
+            epoch_val_loss = 0
+            for X_val_batch, Y_val_batch in zip(X_val_batches, Y_val_batches):
+                rand_key, subkey = random.split(rand_key)
+                epoch_val_loss += map_and_loss(params, X_val_batch, Y_val_batch, subkey, train=False)
+
+            epoch_val_loss /= len(X_val_batches)
             val_loss.append(epoch_val_loss)
 
         if (save_params and ((epoch % 10) == 0)):

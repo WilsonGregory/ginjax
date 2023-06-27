@@ -501,19 +501,38 @@ def all_contractions(target_k, input_layer):
 def batch_all_contractions(target_k, input_layer):
     return vmap(all_contractions, in_axes=(None, 0))(target_k, input_layer)
 
-@functools.partial(jit, static_argnums=[1,3])
-def batch_norm(params, param_idx, batch_layer, eps=1e-05):
+@functools.partial(jit, static_argnums=[1,3,6,7])
+def batch_norm(params, param_idx, batch_layer, train, running_mean, running_var, momentum=0.1, eps=1e-05):
     """
     Batch norm, this may or may not be equivariant.
     args:
+        params (jnp.array): array of learned params
+        param_idx (int): index of current location in params
         batch_layer (BatchLayer): layer to apply to batch norm on
+        train (bool): whether it is training, in which case update the mean and var
+        mean (dict of jnp.array): array of mean at each k
+        var (dict of jnp.array): array of var at each k
+        momentum (float): how much of the current batch stats to include in the mean and var
         eps (float): prevent val from being scaled to infinity when the variance is 0
     """
     out_layer = batch_layer.empty()
     for k, image_block in batch_layer.items():
-        mean_image = jnp.mean(image_block, axis=0) # shape (channels, (N,)*D, (D,)*k)
-        image_var = jnp.var(image_block, axis=0) # shape (channels, (N,)*D, (D,)*k)
-        centered_scaled_image = (image_block - mean_image)/jnp.sqrt(image_var + eps)
+
+        if (train):
+            mean = jnp.mean(image_block, axis=0) # shape (channels, (N,)*D, (D,)*k)
+            var = jnp.var(image_block, axis=0) # shape (channels, (N,)*D, (D,)*k)
+
+            if ((running_mean is None) and (running_var is None)):
+                running_mean = { k: mean }
+                running_var = { k: var }
+            else:
+                running_mean[k] = (1 - momentum)*running_mean[k] + momentum*mean
+                running_var[k] = (1 - momentum)*running_var[k] + momentum*var
+        else: # not train, use the final value from training
+            mean = running_mean[k]
+            var = running_var[k]
+
+        centered_scaled_image = (image_block - mean)/jnp.sqrt(var + eps)
 
         # Now we multiply each channel by a scalar, then add a bias to each channel.
         # This is following: https://pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html
@@ -527,7 +546,7 @@ def batch_norm(params, param_idx, batch_layer, eps=1e-05):
         added_images = vmap(vmap(lambda x,p: x + p), in_axes=(0,None))(mult_images, params_add)
         out_layer[k] = added_images
     
-    return out_layer, param_idx
+    return out_layer, param_idx, running_mean, running_var
 
 def max_pool_layer(input_layer, patch_len):
     return [image.max_pool(patch_len) for image in input_layer]
@@ -745,6 +764,8 @@ def train(
     validation_Y=None,
     noise_stdev=None, 
     save_params=None,
+    has_aux=False,
+    aux_data=None,
 ):
     """
     Method to train the model. It uses stochastic gradient descent (SGD) with the Adam optimizer to learn the
@@ -766,11 +787,15 @@ def train(
             of (images, channels, (N,)*D, (D,)*k)
         noise_stdev (float): standard deviation for any noise to add to training data, defaults to None
         save_params (str): if string, save params every 10 epochs, defaults to None
+        has_aux (bool): Passed to value_and_grad, specifies whether there is auxilliary data returned from
+            map_and_loss. If true, this auxilliary data will be passed back in to map_and_loss with the
+            name "aux_data". The last aux_data will also be returned from this function.
+        aux_data (any): initial aux data passed in to map_and_loss when has_aux is true.
     """
     if (isinstance(stop_condition, ValLoss)):
         assert validation_X and validation_Y
 
-    batch_loss_grad = value_and_grad(map_and_loss)
+    batch_loss_grad = value_and_grad(map_and_loss, has_aux=has_aux)
 
     if (optimizer is None):
         optimizer = optax.adam(0.1)
@@ -794,7 +819,18 @@ def train(
         epoch_loss = 0
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             rand_key, subkey = random.split(rand_key)
-            loss_val, grads = batch_loss_grad(params, X_batch, Y_batch, key=subkey, train=True)
+            if (has_aux):
+                (loss_val, aux_data), grads = batch_loss_grad(
+                    params, 
+                    X_batch, 
+                    Y_batch, 
+                    key=subkey, 
+                    train=True,
+                    aux_data=aux_data,
+                )
+            else:
+                loss_val, grads = batch_loss_grad(params, X_batch, Y_batch, key=subkey, train=True)
+
             updates, opt_state = optimizer.update(grads, opt_state)
             params = optax.apply_updates(params, updates)
             epoch_loss += loss_val
@@ -811,7 +847,18 @@ def train(
             epoch_val_loss = 0
             for X_val_batch, Y_val_batch in zip(X_val_batches, Y_val_batches):
                 rand_key, subkey = random.split(rand_key)
-                epoch_val_loss += map_and_loss(params, X_val_batch, Y_val_batch, subkey, train=False)
+                if (has_aux):
+                    one_val_loss, aux_data = map_and_loss(
+                        params, 
+                        X_val_batch, 
+                        Y_val_batch, 
+                        subkey,
+                        train=False,
+                        aux_data=aux_data,
+                    )
+                    epoch_val_loss += one_val_loss
+                else:
+                    epoch_val_loss += map_and_loss(params, X_val_batch, Y_val_batch, subkey, train=False)
 
             epoch_val_loss /= len(X_val_batches)
             val_loss.append(epoch_val_loss)
@@ -819,4 +866,7 @@ def train(
         if (save_params and ((epoch % 10) == 0)):
             jnp.save(save_params, stop_condition.best_params)
 
-    return stop_condition.best_params, jnp.array(train_loss), jnp.array(val_loss)
+    if (has_aux):
+        return stop_condition.best_params, aux_data, jnp.array(train_loss), jnp.array(val_loss)
+    else:
+        return stop_condition.best_params, jnp.array(train_loss), jnp.array(val_loss)

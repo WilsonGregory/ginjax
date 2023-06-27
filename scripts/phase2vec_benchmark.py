@@ -134,8 +134,8 @@ def fully_connected_layer(params, param_idx, x, width, bias=True):
 
     return out_vec, param_idx
 
-@partial(jit, static_argnums=[1,3])
-def batch_norm_1d(params, param_idx, x, eps=1e-05):
+@partial(jit, static_argnums=[1,3,6,7])
+def batch_norm_1d(params, param_idx, x, train, running_mean, running_var, momentum=0.1, eps=1e-05):
     # x is shape (batch, width)
     width = x.shape[1]
     params_mult = params[param_idx:(param_idx+width)]
@@ -143,9 +143,23 @@ def batch_norm_1d(params, param_idx, x, eps=1e-05):
     params_add = params[param_idx:(param_idx+width)]
     param_idx += width
 
-    layer_vec = (x - jnp.mean(x, axis=0))/jnp.sqrt(jnp.var(x, axis=0) + eps)
+    if (train):
+        mean = jnp.mean(x, axis=0)
+        var = jnp.var(x, axis=0)
+
+        if ((running_mean is None) and (running_var is None)):
+            running_mean = mean
+            running_var = var
+        else:
+            running_mean = (1 - momentum)*running_mean + momentum*mean
+            running_var = (1 - momentum)*running_var + momentum*var
+    else: # not train, use the final value from training
+        mean = running_mean 
+        var = running_var
+
+    layer_vec = (x - mean)/jnp.sqrt(var + eps)
     layer_vec = vmap(lambda x: x * params_mult)(layer_vec)
-    return vmap(lambda x: x + params_add)(layer_vec), param_idx
+    return vmap(lambda x: x + params_add)(layer_vec), param_idx, running_mean, running_var
 
 @partial(jit, static_argnums=[1,3])
 def dropout_layer(x, p, key, train):
@@ -162,11 +176,14 @@ def dropout_layer(x, p, key, train):
     
     return (x * (random.uniform(key, shape=x.shape) > p).astype(x.dtype))*(1/(1-p))
 
-def net(params, layer, key, train, conv_filters, ode_basis, batch_norm=True, dropout=True, return_params=False):
+def net(params, layer, key, train, batch_stats, conv_filters, ode_basis, batch_norm=True, dropout=True, return_params=False):
     # batch norm, dropout seem to make the network widely worse, not sure why.
     embedding_d = 100
     num_coeffs = ode_basis.shape[1]
+    depth = 4
     img_N = layer.N
+    if (batch_stats is None):
+        batch_stats = { int(num): { 'mean': None, 'var': None } for num in jnp.arange(5) }
 
     batch_fully_connected = vmap(fully_connected_layer, in_axes=(None, None, 0, None), out_axes=(0, None))
 
@@ -176,7 +193,7 @@ def net(params, layer, key, train, conv_filters, ode_basis, batch_norm=True, dro
         0,
         layer,
         { 'type': 'fixed', 'filters': conv_filters }, 
-        depth=4, 
+        depth, 
         stride=(2,)*layer.D, 
         padding='VALID',
     )
@@ -188,7 +205,7 @@ def net(params, layer, key, train, conv_filters, ode_basis, batch_norm=True, dro
         int(param_idx),
         layer, 
         { 'type': 'fixed', 'filters': conv_filters }, 
-        depth=4, 
+        depth, 
         stride=(2,)*layer.D, 
         padding='VALID',
     )
@@ -200,7 +217,7 @@ def net(params, layer, key, train, conv_filters, ode_basis, batch_norm=True, dro
         int(param_idx),
         layer, 
         { 'type': 'fixed', 'filters': conv_filters }, 
-        depth=4, #depth
+        depth, 
         stride=(2,)*layer.D, 
         padding='VALID', 
     )
@@ -217,7 +234,15 @@ def net(params, layer, key, train, conv_filters, ode_basis, batch_norm=True, dro
     # Pass the embedded ode through a 2 layer MLP to get the coefficients of poly ode
     layer_vec, param_idx = batch_fully_connected(params, int(param_idx), embedded_ode, 128)
     if batch_norm:
-        layer_vec, param_idx = batch_norm_1d(params, int(param_idx), layer_vec)
+        layer_vec, param_idx, mean, var = batch_norm_1d(
+            params, 
+            int(param_idx), 
+            layer_vec, 
+            train,
+            batch_stats[3]['mean'],
+            batch_stats[3]['var'],
+        )
+        batch_stats[3] = { 'mean': mean, 'var': var }
     layer_vec = jax.nn.relu(layer_vec)
     if dropout:
         key, subkey = random.split(key)
@@ -225,7 +250,15 @@ def net(params, layer, key, train, conv_filters, ode_basis, batch_norm=True, dro
 
     layer_vec, param_idx = batch_fully_connected(params, int(param_idx), layer_vec, 128)
     if batch_norm:
-        layer_vec, param_idx = batch_norm_1d(params, int(param_idx), layer_vec)
+        layer_vec, param_idx, mean, var = batch_norm_1d(
+            params, 
+            int(param_idx), 
+            layer_vec, 
+            train,
+            batch_stats[4]['mean'],
+            batch_stats[4]['var'],
+        )
+        batch_stats[4] = { 'mean': mean, 'var': var }
     layer_vec = jax.nn.relu(layer_vec)
     if dropout:
         key, subkey = random.split(key)
@@ -237,7 +270,7 @@ def net(params, layer, key, train, conv_filters, ode_basis, batch_norm=True, dro
     # multiply the functions by the coefficients
     vmap_mul = vmap(lambda coeffs_x: ode_basis @ coeffs_x)
     recon_x = vmap_mul(coeffs).reshape((layer.L,) + (img_N,)*layer.D + (layer.D,))
-    return (recon_x, coeffs, param_idx) if return_params else (recon_x, coeffs)
+    return (recon_x, coeffs, batch_stats, param_idx) if return_params else (recon_x, coeffs, batch_stats)
 
 def phase2vec_loss(recon_x, y, coeffs, eps=1e-5, beta=1e-3, reduce=True):
     """
@@ -259,17 +292,19 @@ def phase2vec_loss(recon_x, y, coeffs, eps=1e-5, beta=1e-3, reduce=True):
     return recon_loss if (beta is None) else recon_loss + beta * jnp.mean(jnp.abs(coeffs))
 
 partial(jit, static_argnums=[4,5,6])
-def map_and_loss(params, layer_x, layer_y, key, train, conv_filters, ode_basis, batch_norm, dropout, eps=1e-5, beta=1e-3):
-    recon, coeffs = net(params, layer_x, key, train, conv_filters, ode_basis, batch_norm, dropout)
-    return phase2vec_loss(recon, layer_y[1][:,0,...], coeffs, eps, beta)
+def map_and_loss(params, layer_x, layer_y, key, train, aux_data, conv_filters, ode_basis, batch_norm, dropout, eps=1e-5, beta=1e-3):
+    recon, coeffs, batch_stats = net(params, layer_x, key, train, aux_data, conv_filters, ode_basis, batch_norm, dropout)
+    return phase2vec_loss(recon, layer_y[1][:,0,...], coeffs, eps, beta), batch_stats
 
-def baseline_net(params, layer, key, train, ode_basis, batch_norm, dropout, return_params=False):
+def baseline_net(params, layer, key, train, batch_stats, ode_basis, batch_norm, dropout, return_params=False):
     embedding_d = 100
     num_coeffs = ode_basis.shape[1]
     img_N = layer.N
     # for the baseline model, the vector just becomes 2 channels
     layer = geom.BatchLayer({ 0: jnp.moveaxis(layer[1][:,0,...], -1, 1) }, layer.D, layer.is_torus)
     assert layer[0].shape[1:] == (2, img_N, img_N)
+    if (batch_stats is None):
+        batch_stats = { int(num): { 'mean': None, 'var': None } for num in jnp.arange(5) }
 
     batch_fully_connected = vmap(fully_connected_layer, in_axes=(None, None, 0, None), out_axes=(0, None))
 
@@ -285,7 +320,15 @@ def baseline_net(params, layer, key, train, ode_basis, batch_norm, dropout, retu
         padding='VALID',
     )
     if batch_norm:
-        layer, param_idx = ml.batch_norm(params, int(param_idx), layer)
+        layer, param_idx, mean, var = ml.batch_norm(
+            params, 
+            int(param_idx), 
+            layer, 
+            train,
+            batch_stats[0]['mean'],
+            batch_stats[0]['var'],
+        )
+        batch_stats[0] = { 'mean': mean, 'var': var }
     layer = ml.batch_relu_layer(layer)
 
     layer, param_idx = ml.batch_conv_layer(
@@ -299,7 +342,15 @@ def baseline_net(params, layer, key, train, ode_basis, batch_norm, dropout, retu
         padding='VALID', 
     )
     if batch_norm:
-        layer, param_idx = ml.batch_norm(params, int(param_idx), layer)
+        layer, param_idx, mean, var = ml.batch_norm(
+            params, 
+            int(param_idx), 
+            layer, 
+            train,
+            batch_stats[1]['mean'],
+            batch_stats[1]['var'],
+        )
+        batch_stats[1] = { 'mean': mean, 'var': var }
     layer = ml.batch_relu_layer(layer)
 
     layer, param_idx = ml.batch_conv_layer(
@@ -313,7 +364,15 @@ def baseline_net(params, layer, key, train, ode_basis, batch_norm, dropout, retu
         padding='VALID', 
     )
     if batch_norm:
-        layer, param_idx = ml.batch_norm(params, int(param_idx), layer)
+        layer, param_idx, mean, var = ml.batch_norm(
+            params, 
+            int(param_idx), 
+            layer, 
+            train,
+            batch_stats[2]['mean'],
+            batch_stats[2]['var'],
+        )
+        batch_stats[2] = { 'mean': mean, 'var': var }
     layer = ml.batch_relu_layer(layer)
     
     # Embed the ODE in a d=100 vector
@@ -326,16 +385,30 @@ def baseline_net(params, layer, key, train, ode_basis, batch_norm, dropout, retu
 
     # Pass the embedded ode through a 2 layer MLP to get the coefficients of poly ode
     layer_vec, param_idx = batch_fully_connected(params, int(param_idx), embedded_ode, 128)
-    if batch_norm:
-        layer_vec, param_idx = batch_norm_1d(params, int(param_idx), layer_vec)
+    layer_vec, param_idx, mean, var = batch_norm_1d(
+        params, 
+        int(param_idx), 
+        layer_vec, 
+        train,
+        batch_stats[3]['mean'],
+        batch_stats[3]['var'],
+    )
+    batch_stats[3] = { 'mean': mean, 'var': var }
     layer_vec = jax.nn.relu(layer_vec)
     if dropout:
         key, subkey = random.split(key)
         layer_vec = dropout_layer(layer_vec, 0.1, subkey, train)
 
     layer_vec, param_idx = batch_fully_connected(params, int(param_idx), layer_vec, 128)
-    if batch_norm:
-        layer_vec, param_idx = batch_norm_1d(params, int(param_idx), layer_vec)
+    layer_vec, param_idx, mean, var = batch_norm_1d(
+        params, 
+        int(param_idx), 
+        layer_vec, 
+        train,
+        batch_stats[4]['mean'],
+        batch_stats[4]['var'],
+    )
+    batch_stats[4] = { 'mean': mean, 'var': var }
     layer_vec = jax.nn.relu(layer_vec)
     if dropout:
         key, subkey = random.split(key)
@@ -347,12 +420,12 @@ def baseline_net(params, layer, key, train, ode_basis, batch_norm, dropout, retu
     # multiply the functions by the coefficients
     vmap_mul = vmap(lambda coeffs_x: ode_basis @ coeffs_x)
     recon_x = vmap_mul(coeffs).reshape((layer.L,) + (img_N,)*layer.D + (layer.D,))
-    return (recon_x, coeffs, param_idx) if return_params else (recon_x, coeffs)
+    return (recon_x, coeffs, batch_stats, param_idx) if return_params else (recon_x, coeffs, batch_stats)
 
 # partial(jit, static_argnums=[4,5,6])
-def baseline_map_and_loss(params, layer_x, layer_y, key, train, ode_basis, batch_norm, dropout, eps=1e-5, beta=1e-3):
-    recon, coeffs = baseline_net(params, layer_x, key, train, ode_basis, batch_norm, dropout)
-    return phase2vec_loss(recon, layer_y[1][:,0,...], coeffs, eps, beta)
+def baseline_map_and_loss(params, layer_x, layer_y, key, train, aux_data, ode_basis, batch_norm, dropout, eps=1e-5, beta=1e-3):
+    recon, coeffs, batch_stats = baseline_net(params, layer_x, key, train, aux_data, ode_basis, batch_norm, dropout)
+    return phase2vec_loss(recon, layer_y[1][:,0,...], coeffs, eps, beta), batch_stats
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -423,24 +496,29 @@ ode_basis, _ = sindy_library(L.reshape(X_train.N**D,D), 3)
 models = [
     (
         'gi_net',
-        partial(map_and_loss, conv_filters=conv_filters, ode_basis=ode_basis, batch_norm=True, dropout=True),
+        partial(map_and_loss, conv_filters=conv_filters, ode_basis=ode_basis, batch_norm=True, dropout=True, beta=0),
         partial(net, conv_filters=conv_filters, ode_basis=ode_basis, batch_norm=True, dropout=True),
     ),
-    (
-        'gi_net_no_batch_norm',
-        partial(map_and_loss, conv_filters=conv_filters, ode_basis=ode_basis, batch_norm=False, dropout=False),
-        partial(net, conv_filters=conv_filters, ode_basis=ode_basis, batch_norm=False, dropout=False),
-    ),
+    # (
+    #     'gi_net_no_batch_norm',
+    #     partial(map_and_loss, conv_filters=conv_filters, ode_basis=ode_basis, batch_norm=False, dropout=False),
+    #     partial(net, conv_filters=conv_filters, ode_basis=ode_basis, batch_norm=False, dropout=False),
+    # ),
     (
         'baseline',
-        partial(baseline_map_and_loss, ode_basis=ode_basis, batch_norm=True, dropout=True),
+        partial(baseline_map_and_loss, ode_basis=ode_basis, batch_norm=True, dropout=True, beta=0),
         partial(baseline_net, ode_basis=ode_basis, batch_norm=True, dropout=True),
     ),
     (
-        'baseline_no_batch_norm',
-        partial(baseline_map_and_loss, ode_basis=ode_basis, batch_norm=False, dropout=False),
-        partial(baseline_net, ode_basis=ode_basis, batch_norm=False, dropout=False),
+        'baseline_beta',
+        partial(baseline_map_and_loss, ode_basis=ode_basis, batch_norm=True, dropout=True),
+        partial(baseline_net, ode_basis=ode_basis, batch_norm=True, dropout=True),
     ),
+    # (
+    #     'baseline_no_batch_norm', # to compare to gi_net, no batch norm after the cnn layers
+    #     partial(baseline_map_and_loss, ode_basis=ode_basis, batch_norm=False, dropout=False),
+    #     partial(baseline_net, ode_basis=ode_basis, batch_norm=False, dropout=False),
+    # ),
 ]
 
 # For each model, calculate the size of the parameters and add it to the tuple.
@@ -448,7 +526,7 @@ huge_params = jnp.ones(100000000) #hundred million
 one_point = X_train.get_subset(jnp.array([0]))
 models_init = []
 for model_name, model_map_and_loss, model in models:
-    num_params = model(huge_params, one_point, key, train=True, return_params=True)[2]
+    num_params = model(huge_params, one_point, key, train=True, batch_stats=None, return_params=True)[3]
     print(f'{model_name}: {num_params} params')
     models_init.append((model_name, model_map_and_loss, model, num_params))
 
@@ -483,7 +561,7 @@ for model_name, model, eval_net, num_params in models_init:
         params = 0.1*random.normal(subkey, shape=(num_params,))
 
         key, subkey = random.split(key)
-        params, _, _ = ml.train(
+        params, batch_stats, _, _ = ml.train(
             X_train,
             X_train, #reconstruction, so we want to get back to the input
             model,
@@ -494,6 +572,7 @@ for model_name, model, eval_net, num_params in models_init:
             optimizer=optax.adam(lr),
             validation_X=X_val,
             validation_Y=X_val, # reconstruction, reuse X_val as the Y
+            has_aux=True,
         )
 
         if save_folder:
@@ -517,11 +596,12 @@ for model_name, model, eval_net, num_params in models_init:
             ))
 
             key, subkey = random.split(key)
-            recon, coeffs = eval_net(
+            recon, coeffs, _ = eval_net(
                 params, 
                 batch_layer, 
                 key=subkey, 
                 train=False,
+                batch_stats=batch_stats,
             )
 
             if full_recon is None:

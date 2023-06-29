@@ -96,15 +96,17 @@ conv_filters = geom.get_invariant_filters(Ms=[3], ks=[1,2], parities=[0], D=D, o
 
 # Get Training data
 data = np.load('../data/3d_turb/downsampled_1024_to_64.npz')
-print(data.files)
 
 rho = jnp.array(data['rho'])
-vel = jnp.stack([data['vel1'], data['vel2'], data['vel3']]).transpose((1,2,3,0))
-raw_tau = jnp.stack([
-    data['T11'], data['T12'], data['T13'], 
-    data['T12'], data['T22'], data['T23'], 
-    data['T13'], data['T23'], data['T33'],
-]).transpose((1,2,3,0))
+vel = jnp.stack([data['vel1'], data['vel2'], data['vel3']], axis=-1)
+raw_tau = jnp.stack(
+    [
+        data['T11'], data['T12'], data['T13'], 
+        data['T12'], data['T22'], data['T23'], 
+        data['T13'], data['T23'], data['T33'],
+    ],
+    axis=-1,
+)
 tau = raw_tau.reshape(raw_tau.shape[:3] + (D,D))
 
 layer_x = geom.BatchLayer(

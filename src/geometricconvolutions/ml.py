@@ -475,6 +475,19 @@ def all_contractions(target_k, input_layer):
     final_image = None
     for k, image_block in input_layer.items():
         idx_shift = 1 + input_layer.D # layer plus N x N x ... x N (D times)
+        if ((k - target_k) % 2 != 0):
+            print(
+                'ml::all_contractions WARNING: Attempted contractions when input_layer is odd k away. '\
+                'Use target_k parameter of the final conv_layer to prevent wasted convolutions.',
+            )
+            continue
+        if (k < target_k):
+            print(
+                'ml::all_contractions WARNING: Attempted contractions when input_layer is smaller than '\
+                'target_k. This means there may be wasted operations in the network.',
+            ) #not actually sure the best way to resolve this
+            continue
+
         for contract_idx in geom.get_contraction_indices(k, target_k):
             shifted_idx = tuple((i + idx_shift, j + idx_shift) for i,j in contract_idx)
             contracted_img = geom.multicontract(image_block, shifted_idx)

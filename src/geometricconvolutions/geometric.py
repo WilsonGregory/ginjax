@@ -1290,6 +1290,13 @@ class Layer:
 
         return out_layer
 
+    def __str__(self):
+        layer_repr = f'{self.__class__} D: {self.D}, is_torus: {self.is_torus}\n'
+        for k, image_block in self.items():
+            layer_repr += f'\t{k}: {image_block.shape}\n'
+
+        return layer_repr
+
     # Functions that map directly to calling the function on data
 
     def keys(self):

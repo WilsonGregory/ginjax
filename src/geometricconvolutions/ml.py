@@ -21,14 +21,14 @@ def add_to_layer(layer, k, image):
 
     return layer
 
-@functools.partial(jit, static_argnums=[1,4,5,6,7,8,9])
+@functools.partial(jit, static_argnums=[3,4,5,6,7,8,9])
 def conv_layer(
     params, #non-static
-    param_idx, 
     conv_filters, #non-static
     input_layer, #non-static
     target_k=None, 
     max_k=None,
+    mold_params=False,
     # Convolve kwargs that are passed directly along
     stride=None, 
     padding=None,
@@ -54,25 +54,27 @@ def conv_layer(
         lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D
         rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D
     """
+    params_idx, this_params = get_this_params(params, mold_params, 'conv_old')
+
     # map over dilations, then filters
     vmap_sums = vmap(geom.linear_combination, in_axes=(None, 0))
     vmap_convolve = vmap(geom.convolve, in_axes=(None, 0, 0, None, None, None, None, None))
 
     out_layer = input_layer.empty()
     for k, prods_group in input_layer.items():
+        if mold_params:
+            this_params[k] = {}
+
         for filter_k, filter_group in conv_filters.items():
             if ((target_k is not None) and ((k + target_k - filter_k) % 2 != 0)):
                 continue
 
+            if mold_params:
+                this_params[k][filter_k] = jnp.ones((len(filter_group), len(prods_group)))
+
             res_k = k + filter_k
 
-            param_shape = (len(filter_group), len(prods_group))
-            num_params = np.multiply.reduce(param_shape)
-            group_sums = vmap_sums(
-                prods_group, 
-                params[param_idx:(param_idx + num_params)].reshape(param_shape),
-            )
-            param_idx += num_params
+            group_sums = vmap_sums(prods_group, this_params[k][filter_k])
             res = vmap_convolve(
                 input_layer.D, 
                 group_sums, 
@@ -88,33 +90,45 @@ def conv_layer(
     if (max_k is not None):
         out_layer = order_cap_layer(out_layer, max_k)
 
-    return out_layer, param_idx
+    params = update_params(params, params_idx, this_params, mold_params)
 
-@functools.partial(jit, static_argnums=[1,4])
-def get_filter_block_from_invariants(params, param_idx, input_layer, invariant_filters, out_depth):
+    return out_layer, params
+
+@functools.partial(jit, static_argnums=[3,4])
+def get_filter_block_from_invariants(params, input_layer, invariant_filters, out_depth, mold_params):
     """
     For each k in the input_layer and each k of the invariant filters, return a block of filters of shape
     (out_depth,in_depth, (M,)*D, (D,)*filter_k). Note that in_depth is the size of the input_layer.
     """
     vmap_sum = vmap(vmap(geom.linear_combination, in_axes=(None, 0)), in_axes=(None, 0))
 
+    if (mold_params):
+        params = {}
+
     filter_layer = {}
     for k, image_block in input_layer.items():
         filter_layer[k] = {}
         in_depth = image_block.shape[0]
 
+        if (mold_params):
+            params[k] = {}
+
         for filter_k, filter_block in invariant_filters.items():
-            param_shape = (out_depth, in_depth, len(filter_block))
-            param_size = out_depth * in_depth * len(filter_block)
-            filter_sum = vmap_sum(filter_block, params[param_idx:param_idx + param_size].reshape(param_shape))
-            param_idx += param_size
+            if (mold_params):
+                params[k][filter_k] = jnp.ones((out_depth, in_depth, len(filter_block)))
+
+            filter_sum = vmap_sum(filter_block, params[k][filter_k])
+
+            # param_shape = (out_depth, in_depth, len(filter_block))
+            # param_size = out_depth * in_depth * len(filter_block)
+            # filter_sum = vmap_sum(filter_block, params[param_idx:param_idx + param_size].reshape(param_shape))
 
             filter_layer[k][filter_k] = filter_sum
 
-    return filter_layer, param_idx 
+    return filter_layer, params
 
-@functools.partial(jit, static_argnums=[1,3,4,5])
-def get_filter_block(params, param_idx, input_layer, M, out_depth, filter_k_set=None):
+@functools.partial(jit, static_argnums=[2,3,4,5])
+def get_filter_block(params, input_layer, M, out_depth, filter_k_set=None, mold_params=False):
     """
     For each k in the input_layer and each k of the invariant filters, form a filter block from params 
     of shape (out_depth,in_depth, (M,)*D, (D,)*filter_k). Note that in_depth is the size of the input_layer.
@@ -122,29 +136,34 @@ def get_filter_block(params, param_idx, input_layer, M, out_depth, filter_k_set=
     if filter_k_set is None:
         filter_k_set = { 0 }
 
+    if mold_params:
+        params = {}
+
     filter_layer = {}
     for k, image_block in input_layer.items():
         filter_layer[k] = {}
         in_depth = image_block.shape[0]
 
-        for filter_k in filter_k_set:
-            filter_shape = (out_depth,in_depth) + (M,)*input_layer.D + (input_layer.D,)*filter_k
-            filter_size = np.multiply.reduce(filter_shape)
+        if mold_params:
+            params[k] = {}
 
-            filter_layer[k][filter_k] = params[param_idx:param_idx + filter_size].reshape(filter_shape)
-            param_idx += filter_size
+        for filter_k in filter_k_set:
+            if mold_params:
+                params[k][filter_k] = jnp.ones((out_depth,in_depth) + (M,)*input_layer.D + (input_layer.D,)*filter_k)
+
+            filter_layer[k][filter_k] = params[k][filter_k]
     
-    return filter_layer, param_idx
+    return filter_layer, params
 
 def conv_layer_build_filters(
     params, 
-    param_idx,
     input_layer,
     filter_info, 
     depth,
     target_k=None, 
     max_k=None,
     bias=None,
+    mold_params=False,
     # Convolve kwargs that are passed directly along
     stride=None, 
     padding=None,
@@ -155,33 +174,38 @@ def conv_layer_build_filters(
     Wrapper for conv_layer_alt that constructs the filter_block from either invariant filters or 
     free parameters, i.e. regular convolution with fully learned filters. 
     """
+    params_idx, this_params = get_this_params(params, mold_params, 'conv')
+
     if (isinstance(filter_info, geom.Layer)): #if just a layer is passed, defaults to fixed filters
-        filter_block, param_idx = get_filter_block_from_invariants(
-            params, 
-            int(param_idx), 
+        filter_block, filter_block_params = get_filter_block_from_invariants(
+            this_params['fixed'], 
             input_layer, 
             filter_info, 
             depth,
+            mold_params,
         )
+        this_params['fixed'] = filter_block_params
     elif (filter_info['type'] == 'raw'):
         filter_block = filter_info['filters']
     elif (filter_info['type'] == 'fixed'):
-        filter_block, param_idx = get_filter_block_from_invariants(
-            params, 
-            int(param_idx), 
+        filter_block, filter_block_params = get_filter_block_from_invariants(
+            this_params['fixed'], 
             input_layer, 
             filter_info['filters'], 
             depth,
+            mold_params,
         )
+        this_params['fixed'] = filter_block_params
     elif (filter_info['type'] == 'free'):
-        filter_block, param_idx = filter_block, param_idx = get_filter_block(
-            params, 
-            int(param_idx), 
+        filter_block, filter_block_params = get_filter_block(
+            this_params['free'], 
             input_layer, 
             filter_info['M'],
             depth,
             filter_info['filter_k_set'],
+            mold_params,
         )
+        this_params['free'] = filter_block_params
     else:
         raise Exception('conv_layer_build_filters: filter_info["type"] must be one of: raw, fixed, free')
     
@@ -197,25 +221,31 @@ def conv_layer_build_filters(
     )
     if bias: #is this equivariant?
         out_layer = layer.empty()
+        if (mold_params):
+            this_params['bias'] = {}
         for k,image_block in layer.items():
-            b = params[param_idx:(param_idx+depth)]
-            param_idx += depth
+            if (mold_params):
+                this_params['bias'][k] = jnp.ones(depth) 
+
+            b = this_params['bias'][k]
             biased_image = vmap(lambda image,p: image + p)(image_block, b) #add a single scalar
             out_layer.append(k, biased_image)
     else:
         out_layer = layer
 
-    return out_layer, param_idx
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return out_layer, params
 
 def batch_conv_layer(
     params, 
-    param_idx,
     input_layer, 
     filter_info, 
     depth,
     target_k=None, 
     max_k=None,
     bias=None,
+    mold_params=False,
     # Convolve kwargs that are passed directly along
     stride=None, 
     padding=None,
@@ -225,15 +255,15 @@ def batch_conv_layer(
     """
     Vmap wrapper for conv_layer_build_filters that maps over the batch in the input layer.
     """
-    return vmap(conv_layer_build_filters, in_axes=((None,)*2 + (0,) + (None,)*9), out_axes=(0, None))(
+    return vmap(conv_layer_build_filters, in_axes=((None,) + (0,) + (None,)*10), out_axes=(0, None))(
         params,
-        param_idx,
         input_layer, #vmapped over this arg
         filter_info, 
         depth,
         target_k, 
         max_k,
         bias,
+        mold_params,
         stride, 
         padding,
         lhs_dilation, 
@@ -312,33 +342,10 @@ def get_bias_image(params, param_idx, x):
     elif (x.__class__ == geom.GeometricImage):
         return x.__class__.fill(x.N, x.parity, x.D, fill, x.is_torus), param_idx
 
-def make_p_k_dict(images, filters=False, rollup_set={}):
-    """
-    Given a list of images, sort them into a dictionary of even/odd parity, then even/odd k. If they are not filters,
-    instead do by the exact k. If k is in rollup_set, anticontract(2) to rollup to k+2.
-    args:
-        images (list of GeometricImages): images that we are sorting into the dict
-        filters (bool): filters can be sorted into even/odd k, defaults to false
-        rollup_set (set): values of k to rollup to k+2, only works for k=0,1 (see anticontract)
-    """
-    assert not (filters and len(rollup_set)) #filters shouldn't be rolled up b/c they get split into even/odd
-    images_dict = { 0: defaultdict(list), 1: defaultdict(list) }
-
-    for image in images:
-        if filters:
-            images_dict[image.parity % 2][image.k % 2].append(image)
-        else:
-            if image.k in rollup_set:
-                image = image.anticontract(2)
-
-            images_dict[image.parity % 2][image.k].append(image)
-
-    return images_dict
-
 @functools.partial(jit, static_argnums=1)
 def activation_layer(layer, activation_function):
-    scalar_image = contract_to_scalars(layer)
-    layer[0] = activation_function(scalar_image)
+    scalar_layer = contract_to_scalars(layer)
+    layer[0] = activation_function(scalar_layer[0])
     return layer
 
 @jit
@@ -434,45 +441,51 @@ def contract_to_scalars(input_layer):
 
     return all_contractions(0, suitable_images)
 
-def cascading_contractions(params, param_idx, input_layer, target_k):
+def cascading_contractions(params, input_layer, target_k, mold_params=False):
     """
     Starting with the highest k, sum all the images into a single image, perform all possible contractions,
     then add it to the layer below.
     args:
         params (list of floats): model params
-        param_idx (int): index of current location in params
         target_k (int): what tensor order you want to end up at
         input_layer (list of GeometricImages): images to contract
-        D (int): dimension of the images
+        mold_params (bool): if True, use jnp.ones as the params and keep track of their shape
     """
+    params_idx, this_params = get_this_params(params, mold_params, 'cascading_contractions')
+
     max_k = np.max(list(input_layer.keys()))
-    out_layer = input_layer.copy()
+    temp_layer = input_layer.copy()
     for k in reversed(range(target_k+2, max_k+2, 2)):
-        image_block = out_layer[k]
+        image_block = temp_layer[k]
+        if mold_params:
+            this_params[k] = {}
 
         idx_shift = 1 + input_layer.D # layer plus N x N x ... x N (D times)
         for u,v in it.combinations(range(idx_shift, k + idx_shift), 2):
-            group_sum = jnp.expand_dims(
-                geom.linear_combination(image_block, params[param_idx:(param_idx + len(image_block))]),
-                axis=0,
-            )
+            if mold_params:
+                this_params[k][(u,v)] = jnp.ones(len(image_block))
+
+            group_sum = jnp.expand_dims(geom.linear_combination(image_block, this_params[k][(u,v)]), axis=0)
             contracted_img = geom.multicontract(group_sum, ((u,v),))
-            param_idx += len(image_block)
 
-            out_layer.append(k-2, contracted_img)
+            temp_layer.append(k-2, contracted_img)
 
-    return out_layer[target_k], param_idx
+    params = update_params(params, params_idx, this_params, mold_params)
 
-def batch_cascading_contractions(params, param_idx, input_layer, target_k):
-    return vmap(cascading_contractions, in_axes=(None, None, 0, None), out_axes=(0, None))(
+    out_layer = temp_layer.empty()
+    out_layer.append(target_k, temp_layer[target_k])
+    return out_layer, params
+
+def batch_cascading_contractions(params, input_layer, target_k, mold_params=False):
+    return vmap(cascading_contractions, in_axes=(None, 0, None, None), out_axes=(0, None))(
         params,
-        param_idx,
         input_layer,
         target_k,
+        mold_params,
     )
 
 def all_contractions(target_k, input_layer):
-    final_image = None
+    out_layer = input_layer.empty()
     for k, image_block in input_layer.items():
         idx_shift = 1 + input_layer.D # layer plus N x N x ... x N (D times)
         if ((k - target_k) % 2 != 0):
@@ -491,18 +504,39 @@ def all_contractions(target_k, input_layer):
         for contract_idx in geom.get_contraction_indices(k, target_k):
             shifted_idx = tuple((i + idx_shift, j + idx_shift) for i,j in contract_idx)
             contracted_img = geom.multicontract(image_block, shifted_idx)
-            if final_image is not None:
-                final_image = jnp.concatenate((final_image, contracted_img))
-            else:
-                final_image = contracted_img
+            out_layer.append(target_k, contracted_img)
 
-    return final_image
+    return out_layer
 
 def batch_all_contractions(target_k, input_layer):
     return vmap(all_contractions, in_axes=(None, 0))(target_k, input_layer)
 
-@functools.partial(jit, static_argnums=[1,3,6,7])
-def batch_norm(params, param_idx, batch_layer, train, running_mean, running_var, momentum=0.1, eps=1e-05):
+def channel_collapse(params, input_layer, mold_params=False):
+    """
+    Combine multiple channels into a single channel. Often the final step before exiting a GI-Net.
+    args:
+        params (params dict): the usual
+        input_layer (Layer): input layer whose channels we will take a parameterized linear combination of
+        mold_params (bool): 
+    """
+    params_idx, this_params = get_this_params(params, mold_params, 'collapse')
+
+    out_layer = input_layer.empty()
+    for k, image_block in input_layer.items():
+        if (mold_params):
+            this_params[k] = jnp.ones(len(image_block))
+
+        out_layer.append(k, jnp.expand_dims(geom.linear_combination(image_block, this_params[k]), axis=0))
+
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return out_layer, params
+
+def batch_channel_collapse(params, input_layer, mold_params=False):
+    return vmap(channel_collapse, in_axes=(None, 0, None), out_axes=(0, None))(params, input_layer, mold_params)
+
+@functools.partial(jit, static_argnums=[2,5,6,7])
+def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0.1, eps=1e-05, mold_params=False):
     """
     Batch norm, this may or may not be equivariant.
     args:
@@ -515,8 +549,13 @@ def batch_norm(params, param_idx, batch_layer, train, running_mean, running_var,
         momentum (float): how much of the current batch stats to include in the mean and var
         eps (float): prevent val from being scaled to infinity when the variance is 0
     """
+    params_idx, this_params = get_this_params(params, mold_params, 'batch_norm')
+
     out_layer = batch_layer.empty()
     for k, image_block in batch_layer.items():
+        if mold_params:
+            num_channels = image_block.shape[1]
+            this_params[k] = { 'mult': jnp.ones(num_channels), 'add': jnp.ones(num_channels) }
 
         if (train):
             mean = jnp.mean(image_block, axis=0) # shape (channels, (N,)*D, (D,)*k)
@@ -536,17 +575,13 @@ def batch_norm(params, param_idx, batch_layer, train, running_mean, running_var,
 
         # Now we multiply each channel by a scalar, then add a bias to each channel.
         # This is following: https://pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html
-        num_channels = centered_scaled_image.shape[1]
-        params_mult = params[param_idx:(param_idx + num_channels)]
-        param_idx += num_channels
-        params_add = params[param_idx:(param_idx + num_channels)]
-        param_idx += num_channels
-
-        mult_images = vmap(vmap(lambda x,p: x * p), in_axes=(0,None))(centered_scaled_image, params_mult)
-        added_images = vmap(vmap(lambda x,p: x + p), in_axes=(0,None))(mult_images, params_add)
+        mult_images = vmap(vmap(lambda x,p: x * p), in_axes=(0,None))(centered_scaled_image, this_params[k]['mult'])
+        added_images = vmap(vmap(lambda x,p: x + p), in_axes=(0,None))(mult_images, this_params[k]['add'])
         out_layer[k] = added_images
     
-    return out_layer, param_idx, running_mean, running_var
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return out_layer, params, running_mean, running_var
 
 def max_pool_layer(input_layer, patch_len):
     return [image.max_pool(patch_len) for image in input_layer]
@@ -574,6 +609,61 @@ def param_count(x, conv_filters, deg):
     #vague idea of possible contractions, no way this is right
 
     return math.comb(len(conv_filters)+deg-1, deg) * len(conv_filters) * math.comb((max_k**(deg+1))+(x.k**deg), 2)
+
+def get_this_params(params, mold_params, layer_name):
+    if (mold_params):
+        params_key_idx = (len(list(params.keys())), layer_name)
+        this_params = defaultdict(lambda: None)
+    else:
+        params_key_idx = next(iter(params.keys()))
+        this_params = params[params_key_idx]
+
+    return params_key_idx, this_params
+
+def update_params(params, params_idx, this_params, mold_params):
+    # In mold_params, we are adding params one layer at a time, so we add it. When not in mold_params,
+    # we are popping one set of params from the front each layer.
+    if (mold_params):
+        params[params_idx] = this_params
+    else:
+        del params[params_idx]
+
+    return params
+
+def print_params(params, leading_tabs=''):
+    print('{')
+    for k,v in params.items():
+        if isinstance(v, dict):
+            print(f'{leading_tabs}{k}: ', end='')
+            print_params(v, leading_tabs=leading_tabs + '\t')
+        else:
+            print(f'{leading_tabs}{k}: {v.shape}')
+    print(leading_tabs + '}')
+
+def count_params(params):
+    num_params = 0
+    for k,v in params.items():
+        num_params += count_params(v) if isinstance(v, dict) else v.size
+
+    return num_params
+
+def init_params(net_func, input_layer, rand_key):
+    rand_key, subkey = random.split(rand_key)
+    _, params = net_func(defaultdict(lambda: None), input_layer, subkey, True, return_params=True)
+
+    rand_key, subkey = random.split(rand_key)
+    return recursive_init_params(params, subkey)
+
+def recursive_init_params(params, rand_key):
+    out_tree = {}
+    for k,v in params.items():
+        rand_key, subkey = random.split(rand_key)
+        if isinstance(v, dict):
+            out_tree[k] = recursive_init_params(v, subkey)
+        else: #future TODO, allow for different initialization schemes
+            out_tree[k] = 0.1*random.normal(key=subkey, shape=v.shape)
+
+    return out_tree
 
 ## Losses
 

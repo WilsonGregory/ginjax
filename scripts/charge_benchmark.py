@@ -5,6 +5,7 @@ import argparse
 import time
 import math
 import matplotlib.pyplot as plt
+from collections import defaultdict
 
 from jax import vmap
 import jax.numpy as jnp
@@ -15,22 +16,20 @@ import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 from geometricconvolutions.data import get_charge_data as get_data
 
-def batch_net(params, layer, conv_filters, return_params=False):
+def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
     max_k = 5
 
-    batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*3 + (0,) + (None,)*6), out_axes=(0,None))
-    batch_linear_combination = vmap(geom.linear_combination, in_axes=(0, None))
+    batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
 
-    param_idx = 0
     for dilation in [1,2,4,2,1,1,2,1]: #dilated layers in sequence
-        layer, param_idx = batch_conv_layer(
+        layer, params = batch_conv_layer(
             params,
-            int(param_idx), 
             conv_filters,
             layer,
             None,
             max_k,
+            return_params, #mold_params
             None, 
             None,
             None, 
@@ -38,62 +37,60 @@ def batch_net(params, layer, conv_filters, return_params=False):
         )
         layer = ml.batch_leaky_relu_layer(layer)
 
-    layer, param_idx = batch_conv_layer(
+    layer, params = batch_conv_layer(
         params, 
-        int(param_idx),
         conv_filters,
         layer,
         target_k, #final_layer, make sure out output is target_img shaped
         None,
+        return_params, #mold_params
         None,
         None,
         None,
         None,
     )
-    image_block = ml.batch_all_contractions(target_k, layer)
+    layer = ml.batch_all_contractions(target_k, layer)
+    layer, params = ml.batch_channel_collapse(params, layer, mold_params=return_params)
 
-    net_output = batch_linear_combination(image_block, params[param_idx:(param_idx + image_block.shape[1])])
-    param_idx += image_block.shape[1]
-    return (net_output, param_idx) if return_params else net_output
+    return (layer, params) if return_params else layer
 
 def map_and_loss(params, x, y, key, train, conv_filters):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, conv_filters), y[1]))
+    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[1], y[1]))
 
-def baseline_net(params, layer, return_params=False):
+def baseline_net(params, layer, key, train, return_params=False):
     M = 3
     out_channels = 20
     #move the vector to the channel slot
     transposed_block = layer[1].transpose(0,1,4,2,3)
     reshaped_block = transposed_block.reshape((transposed_block.shape[0],) + transposed_block.shape[2:])
     layer = geom.BatchLayer({ 0: reshaped_block }, layer.D, layer.is_torus)
-    param_idx = 0
 
     for dilation in [1,2,4,2,1,1,2,1]:
-        layer, param_idx = ml.batch_conv_layer(
+        layer, params = ml.batch_conv_layer(
             params, 
-            int(param_idx), 
             layer,
             { 'type': 'free', 'M': M, 'filter_k_set': (0,) },
             depth=out_channels, 
+            mold_params=return_params,
             rhs_dilation=(dilation,)*D,
         )
         layer = ml.batch_leaky_relu_layer(layer)
 
-    layer, param_idx = ml.batch_conv_layer(
+    layer, params = ml.batch_conv_layer(
         params, 
-        int(param_idx), 
         layer, 
         { 'type': 'free', 'M': M, 'filter_k_set': (0,) }, 
         depth=2,
+        mold_params=return_params,
     )
-    net_output = jnp.moveaxis(layer[0], 1, -1) # make the channels the vector dimensions
+    layer = geom.BatchLayer({ 1: jnp.expand_dims(jnp.moveaxis(layer[0], 1, -1), 1) }, layer.D, layer.is_torus)
 
-    return (net_output, param_idx) if return_params else net_output
+    return (layer, params) if return_params else layer
 
 def baseline_map_and_loss(params, x, y, key, train):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.rmse_loss)(baseline_net(params, x), y[1]))
+    return jnp.mean(vmap(ml.l2_loss)(baseline_net(params, x, key, train)[1], y[1]))
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -137,36 +134,26 @@ conv_filters = geom.get_invariant_filters(Ms=[3], ks=[1,2], parities=[0], D=D, o
 key, subkey = random.split(key)
 one_point_x, _ = get_data(N, D, num_points, num_steps, delta_t, s, subkey, 1, warmup_steps=warmup_steps)
 
-huge_params = jnp.ones(100000)
-
-_, num_params = batch_net(
-    huge_params,
-    one_point_x,
-    conv_filters,
-    return_params=True,
-)
-print('Model Params:', num_params)
-
-_, baseline_num_params = baseline_net(
-    huge_params,
-    one_point_x,
-    return_params=True,
-)
-print('Baseline Params:', baseline_num_params)
 models = [
     (
         'GI-Net',
         partial(map_and_loss, conv_filters=conv_filters), 
-        num_params,
+        partial(batch_net, conv_filters=conv_filters),
         0.005,
     ),
     (
         'Baseline',
         partial(baseline_map_and_loss), 
-        baseline_num_params,
+        baseline_net,
         0.001,
     ),
 ]
+
+models_init = []
+for model_name, model_map_and_loss, model, lr in models:
+    params_tree = model(defaultdict(lambda: None), one_point_x, None, True, return_params=True)[1]
+    print(f'{model_name}: {ml.count_params(params_tree)} params')
+    models_init.append((model_name, model_map_and_loss, params_tree, lr))
 
 if (not load_file):
     all_train_loss = np.zeros((num_times, len(num_train_images_range), len(models)))
@@ -187,10 +174,10 @@ if (not load_file):
             key, subkey = random.split(key)
             train_X, train_Y = get_data(N, D, num_points, num_steps, delta_t, s, subkey, num_train_images, warmup_steps=warmup_steps)
 
-            for k, (model_name, model, num_params, lr) in enumerate(models):
+            for k, (model_name, model, params_tree, lr) in enumerate(models_init):
                 print(f'Iter {i}, train size {num_train_images}, model {model_name}')
                 key, subkey = random.split(key)
-                params = 0.1*random.normal(subkey, shape=(num_params,))
+                params = ml.recursive_init_params(params_tree, subkey)
                 key, subkey = random.split(key)
 
                 start_time = time.time()

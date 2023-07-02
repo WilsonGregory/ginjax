@@ -6,6 +6,7 @@ import argparse
 import time
 import math
 import matplotlib.pyplot as plt
+from collections import defaultdict
 
 import jax.numpy as jnp
 import jax.random as random
@@ -16,23 +17,22 @@ import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 from geometricconvolutions.data import get_gravity_data as get_data
 
-def batch_net(params, layer, conv_filters, return_params=False):
+def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
 
-    batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*3 + (0,) + (None,)*6), out_axes=(0,None))
+    batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
     batch_add_layer = vmap(lambda layer_a, layer_b: layer_a + layer_b) #better way of doing this?
-    batch_linear_combination = vmap(geom.linear_combination, in_axes=(0, None))
 
-    layer, param_idx = batch_conv_layer(params, 0, conv_filters, layer, None, None, None, None, None, None)
+    layer, params = batch_conv_layer(params, conv_filters, layer, None, None, return_params, None, None, None, None)
     out_layer = layer.empty()
     for dilation in range(1,layer.N): #dilations in parallel
-        dilation_out_layer, param_idx = batch_conv_layer(
+        dilation_out_layer, params = batch_conv_layer(
             params, 
-            int(param_idx), 
             conv_filters, 
             layer, 
             None,
             None,
+            return_params, #mold_params
             None,
             None,
             None,
@@ -44,13 +44,13 @@ def batch_net(params, layer, conv_filters, return_params=False):
 
     out_layer = layer.empty()
     for dilation in range(1,int(layer.N / 2)): #dilations in parallel
-        dilation_out_layer, param_idx = batch_conv_layer(
+        dilation_out_layer, params = batch_conv_layer(
             params, 
-            int(param_idx), 
             conv_filters, 
             layer, 
             target_k,
             None,
+            return_params, #mold_params
             None,
             None,
             None,
@@ -60,38 +60,35 @@ def batch_net(params, layer, conv_filters, return_params=False):
 
     layer = out_layer
     layer = ml.batch_all_contractions(target_k, layer)
-
-    net_output = batch_linear_combination(layer, params[param_idx:(param_idx + layer.shape[1])])
-    param_idx += layer.shape[1]
-    return (net_output, param_idx) if return_params else net_output
+    layer, params = ml.batch_channel_collapse(params, layer, mold_params=return_params)
+    return (layer, params) if return_params else layer
 
 def map_and_loss(params, x, y, key, train, conv_filters):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, conv_filters), y[1]))
+    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, key, train, conv_filters)[1], y[1]))
 
-def baseline_net(params, layer, return_params=False):
+def baseline_net(params, layer, key, train, return_params=False):
     M = 3
     out_channels = 2
 
     batch_add_layer = vmap(lambda layer_a, layer_b: layer_a + layer_b)
-    batch_linear_combination = vmap(geom.linear_combination, in_axes=(0, None))
 
-    layer, param_idx = ml.batch_conv_layer(
+    layer, params = ml.batch_conv_layer(
         params,
-        0, # param_idx
         layer, 
         { 'type': 'free', 'M': M, 'filter_k_set': (0,) },
         depth=out_channels,
+        mold_params=return_params,
     )
 
     out_layer = layer.empty()
     for dilation in range(1,layer.N): #dilations in parallel
-        dilation_out_layer, param_idx = ml.batch_conv_layer(
+        dilation_out_layer, params = ml.batch_conv_layer(
             params, 
-            int(param_idx), 
             layer,
             { 'type': 'free', 'M': M, 'filter_k_set': (0,) },
             depth=out_channels,
+            mold_params=return_params,
             rhs_dilation=(dilation,)*D,
         )
         out_layer = batch_add_layer(out_layer, dilation_out_layer)
@@ -100,12 +97,12 @@ def baseline_net(params, layer, return_params=False):
 
     out_layer = layer.empty()
     for dilation in range(1,int(layer.N / 2)): #dilations in parallel
-        dilation_out_layer, param_idx = ml.batch_conv_layer(
+        dilation_out_layer, params = ml.batch_conv_layer(
             params, 
-            int(param_idx), 
             layer,
             { 'type': 'free', 'M': M, 'filter_k_set': (0,) },
             depth=D, #out depth is D because we turn it into k=1
+            mold_params=return_params,
             rhs_dilation=(dilation,)*D,
         )
         # turn the out channels into the vector field k=1
@@ -117,15 +114,12 @@ def baseline_net(params, layer, return_params=False):
         )
         out_layer = batch_add_layer(out_layer, reshaped_layer)
 
-    last_image = out_layer[1]
-
-    net_output = batch_linear_combination(last_image, params[param_idx:(param_idx + last_image.shape[1])])
-    param_idx += last_image.shape[1]
-    return (net_output, param_idx) if return_params else net_output
+    layer, params = ml.batch_channel_collapse(params, out_layer, mold_params=return_params)
+    return (layer, params) if return_params else layer
 
 def baseline_map_and_loss(params, x, y, key, train):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.rmse_loss)(baseline_net(params, x), y[1]))
+    return jnp.mean(vmap(ml.l2_loss)(baseline_net(params, x, key, train)[1], y[1]))
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -167,34 +161,26 @@ one_point_x = one_point_x
 
 huge_params = jnp.ones(100000)
 
-_, num_params = batch_net(
-    huge_params,
-    one_point_x,
-    conv_filters=conv_filters,
-    return_params=True,
-)
-print('Model Params:', num_params)
-
-_, baseline_num_params = baseline_net(
-    huge_params,
-    one_point_x,
-    return_params=True,
-)
-print('Baseline Params:', baseline_num_params)
 models = [
     (
         'GI-Net',
         partial(map_and_loss, conv_filters=conv_filters), 
-        num_params,
+        partial(batch_net, conv_filters=conv_filters), #get params tree
         0.005,
     ),
     (
         'Baseline',
         baseline_map_and_loss, 
-        baseline_num_params,
+        baseline_net,
         0.005,
     ),
 ]
+
+models_init = []
+for model_name, model_map_and_loss, model, lr in models:
+    params_tree = model(defaultdict(lambda: None), one_point_x, None, True, return_params=True)[1]
+    print(f'{model_name}: {ml.count_params(params_tree)} params')
+    models_init.append((model_name, model_map_and_loss, params_tree, lr))
 
 if (not load_file):
     all_train_loss = np.zeros((num_times, len(num_train_images_range), len(models)))
@@ -214,10 +200,11 @@ if (not load_file):
             key, subkey = random.split(key)
             train_X, train_Y = get_data(N, D, num_points, subkey, num_train_images)
 
-            for k, (model_name, model, num_params, lr) in enumerate(models):
+            for k, (model_name, model, params_tree, lr) in enumerate(models_init):
                 print(f'Iter {i}, train size {num_train_images}, model {model_name}')
+
                 key, subkey = random.split(key)
-                params = 0.1*random.normal(subkey, shape=(num_params,))
+                params = ml.recursive_init_params(params_tree, subkey)
                 key, subkey = random.split(key)
 
                 start_time = time.time()

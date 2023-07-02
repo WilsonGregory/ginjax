@@ -19,7 +19,7 @@ def plot_results(layer_x, layer_y, axs, titles, conv_filters):
     assert len(axs) == len(titles)
 
     learned_x = geom.GeometricImage(
-        batch_net(params, layer_x, conv_filters)[0],
+        batch_net(params, layer_x, None, False, conv_filters)[1][0,0],
         0,
         layer_x.D,
         layer_x.is_torus,
@@ -32,23 +32,22 @@ def plot_results(layer_x, layer_y, axs, titles, conv_filters):
         utils.plot_image(image, ax=ax)
         ax.set_title(title, fontsize=24)
 
-def batch_net(params, layer, conv_filters, return_params=False):
+def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
 
-    batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*3 + (0,) + (None,)*6), out_axes=(0,None))
+    batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
     batch_add_layer = vmap(lambda layer_a, layer_b: layer_a + layer_b) #better way of doing this?
-    batch_linear_combination = vmap(geom.linear_combination, in_axes=(0, None))
 
-    layer, param_idx = batch_conv_layer(params, 0, conv_filters, layer, None, None, None, None, None, None)
+    layer, params = batch_conv_layer(params, conv_filters, layer, None, None, return_params, None, None, None, None)
     out_layer = layer.empty()
     for dilation in range(1,layer.N): #dilations in parallel
-        dilation_out_layer, param_idx = batch_conv_layer(
+        dilation_out_layer, params = batch_conv_layer(
             params, 
-            int(param_idx), 
             conv_filters, 
             layer, 
             None,
             None,
+            return_params, #mold_params
             None,
             None,
             None,
@@ -60,13 +59,13 @@ def batch_net(params, layer, conv_filters, return_params=False):
 
     out_layer = layer.empty()
     for dilation in range(1,int(layer.N / 2)): #dilations in parallel
-        dilation_out_layer, param_idx = batch_conv_layer(
+        dilation_out_layer, params = batch_conv_layer(
             params, 
-            int(param_idx), 
             conv_filters, 
             layer, 
             target_k,
             None,
+            return_params, #mold_params
             None,
             None,
             None,
@@ -76,14 +75,12 @@ def batch_net(params, layer, conv_filters, return_params=False):
 
     layer = out_layer
     layer = ml.batch_all_contractions(target_k, layer)
-
-    net_output = batch_linear_combination(layer, params[param_idx:(param_idx + layer.shape[1])])
-    param_idx += layer.shape[1]
-    return (net_output, param_idx) if return_params else net_output
+    layer, params = ml.batch_channel_collapse(params, layer, mold_params=return_params)
+    return (layer, params) if return_params else layer
 
 def map_and_loss(params, x, y, key, train, conv_filters):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, conv_filters), y[1]))
+    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[1], y[1]))
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -137,18 +134,9 @@ one_point = train_X.get_subset(jnp.array([0]))
 if load_file:
     params = jnp.load(load_file)
 else:
-    huge_params = jnp.ones(100000)
-    _, num_params = batch_net(
-        huge_params,
-        one_point,
-        conv_filters,
-        return_params=True,
-    )
-
-    print('Num params:', num_params)
-
     key, subkey = random.split(key)
-    params = 0.1*random.normal(subkey, shape=(num_params,))
+    params = ml.init_params(partial(batch_net, conv_filters=conv_filters), one_point, subkey)
+    print('Num params:', ml.count_params(params))
 
     optimizer = optax.adam(optax.exponential_decay(
         lr, 

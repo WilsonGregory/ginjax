@@ -19,7 +19,7 @@ def plot_results(layer_x, layer_y, axs, titles, conv_filters):
     assert len(axs) == len(titles)
 
     learned_x = geom.GeometricImage(
-        batch_net(params, layer_x, conv_filters)[0],
+        batch_net(params, layer_x, None, False, conv_filters)[1][0,0],
         0,
         layer_x.D,
         layer_x.is_torus,
@@ -32,22 +32,20 @@ def plot_results(layer_x, layer_y, axs, titles, conv_filters):
         utils.plot_image(image, ax=ax)
         ax.set_title(title, fontsize=24)
 
-def batch_net(params, layer, conv_filters, return_params=False):
+def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
     max_k = 5
 
-    batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*3 + (0,) + (None,)*6), out_axes=(0,None))
-    batch_linear_combination = vmap(geom.linear_combination, in_axes=(0, None))
+    batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
 
-    param_idx = 0
     for dilation in [1,2,4,2,1,1,2,1]: #dilated layers in sequence
-        layer, param_idx = batch_conv_layer(
+        layer, params = batch_conv_layer(
             params,
-            int(param_idx), 
             conv_filters,
             layer,
             None,
             max_k,
+            return_params, #mold_params
             None, 
             None,
             None, 
@@ -55,27 +53,26 @@ def batch_net(params, layer, conv_filters, return_params=False):
         )
         layer = ml.batch_leaky_relu_layer(layer)
 
-    layer, param_idx = batch_conv_layer(
+    layer, params = batch_conv_layer(
         params, 
-        int(param_idx),
         conv_filters,
         layer,
         target_k, #final_layer, make sure out output is target_img shaped
         None,
+        return_params, #mold_params
         None,
         None,
         None,
         None,
     )
-    image_block = ml.batch_all_contractions(target_k, layer)
+    layer = ml.batch_all_contractions(target_k, layer)
+    layer, params = ml.batch_channel_collapse(params, layer, mold_params=return_params)
 
-    net_output = batch_linear_combination(image_block, params[param_idx:(param_idx + image_block.shape[1])])
-    param_idx += image_block.shape[1]
-    return (net_output, param_idx) if return_params else net_output
+    return (layer, params) if return_params else layer
 
 def map_and_loss(params, x, y, key, train, conv_filters):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, conv_filters), y[1]))
+    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[1], y[1]))
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -138,19 +135,9 @@ one_point = train_X.get_subset(jnp.array([0]))
 if load_file:
     params = jnp.load(load_file)
 else:
-    huge_params = jnp.ones(10000000)
-
-    _, num_params = batch_net(
-        huge_params,
-        one_point,
-        conv_filters,
-        return_params=True,
-    )
-
-    print('Num params:', num_params)
-
     key, subkey = random.split(key)
-    params = 0.1*random.normal(subkey, shape=(num_params,))
+    params = ml.init_params(partial(batch_net, conv_filters=conv_filters), one_point, subkey)
+    print('Num params:', ml.count_params(params))
 
     optimizer = optax.adam(
         optax.exponential_decay(lr, transition_steps=int(train_X.L / batch_size), decay_rate=decay)

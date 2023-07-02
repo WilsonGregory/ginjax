@@ -20,25 +20,21 @@ def quadratic(layer):
 
     return geom.Layer.from_images(out_images)
 
-def batch_net(params, layer, conv_filters, return_params=False):
+def batch_net(params, layer, key, train, conv_filters, return_params=False):
     img_k = list(layer.keys())[0]
 
-    batch_linear_combination = vmap(geom.linear_combination, in_axes=(0, None))
-
-    layer, param_idx = ml.batch_conv_layer(params, 0, layer, conv_filters, depth=1)
+    layer, params = ml.batch_conv_layer(params, layer, conv_filters, depth=1, mold_params=return_params)
     layer = geom.BatchLayer(vmap(quadratic)(layer).data, layer.D, layer.is_torus)
 
-    layer, param_idx = ml.batch_conv_layer(params, param_idx, layer, conv_filters, depth=1, target_k=img_k)
-    layer, param_idx = ml.batch_cascading_contractions(params, param_idx, layer, img_k)
-    net_output = batch_linear_combination(layer, params[param_idx:(param_idx + layer.shape[1])])
-    net_output = jnp.expand_dims(net_output, axis=1)
-    param_idx += layer.shape[1]
+    layer, params = ml.batch_conv_layer(params, layer, conv_filters, depth=1, target_k=img_k, mold_params=return_params)
+    layer, params = ml.batch_cascading_contractions(params, layer, img_k, mold_params=return_params)
+    layer, params = ml.batch_channel_collapse(params, layer, mold_params=return_params)
 
-    return (net_output, param_idx) if return_params else net_output
+    return (layer, params) if return_params else layer
 
 def map_and_loss(params, x, y, key, train, conv_filters,):
     # Run the neural network, then calculate the MSE loss with the expected output y
-    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, conv_filters), y[1]))
+    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, key, train, conv_filters)[1], y[1]))
 
 def target_function(x, conv_filters):
     prod = x.convolve_with(conv_filters[1]) * x.convolve_with(conv_filters[2])
@@ -90,12 +86,9 @@ layer_y = geom.BatchLayer.from_images(Y)
 
 one_point = geom.BatchLayer.from_images([X[0]])
 
-huge_params = jnp.ones(ml.param_count(X[0], conv_filters, 2))
-_, num_params = batch_net(huge_params, one_point, filter_layer, return_params=True)
-print('Number of params:', num_params)
-
 key, subkey = random.split(key)
-params = random.normal(subkey, shape=(num_params,))
+params = ml.init_params(partial(batch_net, conv_filters=filter_layer), one_point, subkey)
+print('Number of params:', ml.count_params(params))
 
 key, subkey = random.split(key)
 params, _, _ = ml.train(

@@ -136,7 +136,6 @@ if load_file:
 else:
     key, subkey = random.split(key)
     params = ml.init_params(partial(batch_net, conv_filters=conv_filters), one_point, subkey)
-    ml.print_params(params)
     print('Num params:', ml.count_params(params))
 
     optimizer = optax.adam(optax.exponential_decay(

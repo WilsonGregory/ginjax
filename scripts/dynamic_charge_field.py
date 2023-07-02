@@ -149,7 +149,7 @@ else:
         partial(map_and_loss, conv_filters=conv_filters),
         params,
         key,
-        ml.ValLoss(patience=10, verbose=verbose),
+        ml.ValLoss(patience=20, verbose=verbose),
         batch_size=batch_size,
         optimizer=optimizer,
         validation_X=validation_X,

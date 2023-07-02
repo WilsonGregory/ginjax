@@ -54,7 +54,7 @@ def conv_layer(
         lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D
         rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D
     """
-    params_idx, this_params = get_this_params(params, mold_params, 'conv_old')
+    params_idx, this_params = get_layer_params(params, mold_params, 'conv_old')
 
     # map over dilations, then filters
     vmap_sums = vmap(geom.linear_combination, in_axes=(None, 0))
@@ -117,13 +117,7 @@ def get_filter_block_from_invariants(params, input_layer, invariant_filters, out
             if (mold_params):
                 params[k][filter_k] = jnp.ones((out_depth, in_depth, len(filter_block)))
 
-            filter_sum = vmap_sum(filter_block, params[k][filter_k])
-
-            # param_shape = (out_depth, in_depth, len(filter_block))
-            # param_size = out_depth * in_depth * len(filter_block)
-            # filter_sum = vmap_sum(filter_block, params[param_idx:param_idx + param_size].reshape(param_shape))
-
-            filter_layer[k][filter_k] = filter_sum
+            filter_layer[k][filter_k] = vmap_sum(filter_block, params[k][filter_k])
 
     return filter_layer, params
 
@@ -174,7 +168,7 @@ def conv_layer_build_filters(
     Wrapper for conv_layer_alt that constructs the filter_block from either invariant filters or 
     free parameters, i.e. regular convolution with fully learned filters. 
     """
-    params_idx, this_params = get_this_params(params, mold_params, 'conv')
+    params_idx, this_params = get_layer_params(params, mold_params, 'conv')
 
     if (isinstance(filter_info, geom.Layer)): #if just a layer is passed, defaults to fixed filters
         filter_block, filter_block_params = get_filter_block_from_invariants(
@@ -227,8 +221,7 @@ def conv_layer_build_filters(
             if (mold_params):
                 this_params['bias'][k] = jnp.ones(depth) 
 
-            b = this_params['bias'][k]
-            biased_image = vmap(lambda image,p: image + p)(image_block, b) #add a single scalar
+            biased_image = vmap(lambda image,p: image + p)(image_block, this_params['bias'][k]) #add a single scalar
             out_layer.append(k, biased_image)
     else:
         out_layer = layer
@@ -451,7 +444,7 @@ def cascading_contractions(params, input_layer, target_k, mold_params=False):
         input_layer (list of GeometricImages): images to contract
         mold_params (bool): if True, use jnp.ones as the params and keep track of their shape
     """
-    params_idx, this_params = get_this_params(params, mold_params, 'cascading_contractions')
+    params_idx, this_params = get_layer_params(params, mold_params, 'cascading_contractions')
 
     max_k = np.max(list(input_layer.keys()))
     temp_layer = input_layer.copy()
@@ -519,7 +512,7 @@ def channel_collapse(params, input_layer, mold_params=False):
         input_layer (Layer): input layer whose channels we will take a parameterized linear combination of
         mold_params (bool): 
     """
-    params_idx, this_params = get_this_params(params, mold_params, 'collapse')
+    params_idx, this_params = get_layer_params(params, mold_params, 'collapse')
 
     out_layer = input_layer.empty()
     for k, image_block in input_layer.items():
@@ -549,7 +542,7 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
         momentum (float): how much of the current batch stats to include in the mean and var
         eps (float): prevent val from being scaled to infinity when the variance is 0
     """
-    params_idx, this_params = get_this_params(params, mold_params, 'batch_norm')
+    params_idx, this_params = get_layer_params(params, mold_params, 'batch_norm')
 
     out_layer = batch_layer.empty()
     for k, image_block in batch_layer.items():
@@ -594,23 +587,15 @@ def unpool_layer(input_layer, patch_len):
 
 ## Params
 
-def param_count(x, conv_filters, deg):
+def get_layer_params(params, mold_params, layer_name):
     """
-    Do some napkin math to figure out an upper bound on the number of paramaters that we will need.
+    Given a network params tree, create a key, value (empty defaultdict) for the next layer if
+    mold_params is true, or return the next key and value from the tree if mold_params is False
     args:
-        x (GeometricImage): the input to the net
-        conv_filters (list of GeometricFilters): the set of convolutional filters we will be using
-        deg (int): degree of the net, e.g. for quadratic it is 2
+        params (dict tree of jnp.array): the entire params tree for a neural network function
+        mold_params (bool): whether the layer is building the params tree or using it
+        layer_name (string): type of layer, currently just a label
     """
-    max_k = np.max([conv_filter.k for conv_filter in conv_filters])
-
-    #combos w/ replacement, there are (n + deg -1) choose (deg)
-    # final layer convolutions upper bound
-    #vague idea of possible contractions, no way this is right
-
-    return math.comb(len(conv_filters)+deg-1, deg) * len(conv_filters) * math.comb((max_k**(deg+1))+(x.k**deg), 2)
-
-def get_this_params(params, mold_params, layer_name):
     if (mold_params):
         params_key_idx = (len(list(params.keys())), layer_name)
         this_params = defaultdict(lambda: None)
@@ -620,17 +605,29 @@ def get_this_params(params, mold_params, layer_name):
 
     return params_key_idx, this_params
 
-def update_params(params, params_idx, this_params, mold_params):
+def update_params(params, params_idx, layer_params, mold_params):
+    """
+    If mold_params is true, save the layer_params at the slot params_idx, building up the
+    params tree. If mold_params is false, we are consuming layers so pop that set of params
+    args:
+        params (dict tree of jnp.array): the entire params tree for a neural network function
+        params_idx (tuple (int,str)): the key of the params that we are updating
+        layer_params (dict tree of params): the shaped param if mold_params is True
+        mold_params (bool): whether the layer is building the params tree or using it
+    """
     # In mold_params, we are adding params one layer at a time, so we add it. When not in mold_params,
     # we are popping one set of params from the front each layer.
     if (mold_params):
-        params[params_idx] = this_params
+        params[params_idx] = layer_params
     else:
         del params[params_idx]
 
     return params
 
 def print_params(params, leading_tabs=''):
+    """
+    Print the params tree in a structured fashion.
+    """
     print('{')
     for k,v in params.items():
         if isinstance(v, dict):
@@ -641,13 +638,27 @@ def print_params(params, leading_tabs=''):
     print(leading_tabs + '}')
 
 def count_params(params):
+    """
+    Count the total number of params in the params tree
+    args:
+        params (dict tree of params): the params of a neural network function
+    """
     num_params = 0
-    for k,v in params.items():
+    for v in params.values():
         num_params += count_params(v) if isinstance(v, dict) else v.size
 
     return num_params
 
 def init_params(net_func, input_layer, rand_key):
+    """
+    Use this function to construct and initialize the tree of params used by the neural network function. The
+    first argument should be a function that takes (params, input_layer, rand_key, train) as arguments. Any other
+    arguments should be provided already, possibly using functools.partial
+    args:
+        net_func (function): neural network function
+        input_layer (geom.Layer): One piece of data to give the initial shape, doesn't have to match batch size
+        rand_key (rand key): key used both as input and for the initialization of the params (gets split)
+    """
     rand_key, subkey = random.split(rand_key)
     _, params = net_func(defaultdict(lambda: None), input_layer, subkey, True, return_params=True)
 
@@ -655,6 +666,12 @@ def init_params(net_func, input_layer, rand_key):
     return recursive_init_params(params, subkey)
 
 def recursive_init_params(params, rand_key):
+    """
+    Given a tree of params, initialize all the params with normal 0 mean, 0.01 variance.
+    args:
+        params (dict tree of jnp.array): properly shaped dict tree
+        rand_key (rand key): used for initializing the parameters
+    """
     out_tree = {}
     for k,v in params.items():
         rand_key, subkey = random.split(rand_key)

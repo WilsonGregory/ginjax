@@ -122,7 +122,7 @@ def sindy_library(X, poly_order, include_sine=False, include_exp=False):
     return library, library_terms
 
 def dense_layer(params, x, width, bias=True, mold_params=False):
-    params_idx, this_params = ml.get_this_params(params, mold_params, 'dense')
+    params_idx, this_params = ml.get_layer_params(params, mold_params, 'dense')
     if mold_params:
         this_params['W'] = jnp.ones((width, len(x)))
 
@@ -140,7 +140,7 @@ def dense_layer(params, x, width, bias=True, mold_params=False):
 
 @partial(jit, static_argnums=[2,5,6,7])
 def batch_norm_1d(params, x, train, running_mean, running_var, momentum=0.1, eps=1e-05, mold_params=False):
-    params_idx, this_params = ml.get_this_params(params, mold_params, 'batch_norm_1d')
+    params_idx, this_params = ml.get_layer_params(params, mold_params, 'batch_norm_1d')
     if mold_params:
         width = x.shape[1]
         this_params['mult'] = jnp.ones(width)

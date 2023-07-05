@@ -16,6 +16,25 @@ import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 from geometricconvolutions.data import get_charge_data as get_data
 
+def channel_collapse_init(rand_key, tree):
+    # Use old guassian normal initialization instead of Kaiming
+    out_params = {}
+    for k, params_block in tree.items():
+        rand_key, subkey = random.split(rand_key)
+        out_params[k] = 0.1*random.normal(subkey, params_block.shape)
+
+    return out_params
+
+def conv_init(rand_key, tree):
+    params = {}
+    for k, d in tree[ml.CONV_FREE].items():
+        params[k] = {}
+        for filter_k, filter_block in d.items():
+            rand_key, subkey = random.split(rand_key)
+            params[k][filter_k] = 0.1*random.normal(subkey, shape=filter_block.shape)
+
+    return { ml.CONV_FREE: params }
+
 def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
     max_k = 5
@@ -177,7 +196,15 @@ if (not load_file):
             for k, (model_name, model, params_tree, lr) in enumerate(models_init):
                 print(f'Iter {i}, train size {num_train_images}, model {model_name}')
                 key, subkey = random.split(key)
-                params = ml.recursive_init_params(params_tree, subkey)
+                params = ml.recursive_init_params(
+                    params_tree, 
+                    subkey,
+                    initializers={ 
+                        ml.CHANNEL_COLLAPSE: channel_collapse_init, 
+                        ml.CONV: conv_init,
+                        ml.CONV_OLD: ml.conv_old_init,
+                    },
+                )
                 key, subkey = random.split(key)
 
                 start_time = time.time()

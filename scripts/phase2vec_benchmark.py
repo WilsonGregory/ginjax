@@ -18,6 +18,9 @@ import optax
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 
+DENSE = 'dense'
+BATCH_NORM_1D = 'batch_norm_1d'
+
 # Copied from phase2vec
 
 def load_dataset(data_path):
@@ -122,29 +125,39 @@ def sindy_library(X, poly_order, include_sine=False, include_exp=False):
     return library, library_terms
 
 def dense_layer(params, x, width, bias=True, mold_params=False):
-    params_idx, this_params = ml.get_layer_params(params, mold_params, 'dense')
+    params_idx, this_params = ml.get_layer_params(params, mold_params, DENSE)
     if mold_params:
-        this_params['W'] = jnp.ones((width, len(x)))
+        this_params[ml.SCALE] = jnp.ones((width, len(x)))
 
-    out_vec = this_params['W'] @ x
+    out_vec = this_params[ml.SCALE] @ x
 
     if bias:
-        if mold_params:
-            this_params['b'] = jnp.ones(width)
+        if mold_params: #unclear whether this should be initialized to 0s
+            this_params[ml.BIAS] = jnp.ones(width)
 
-        out_vec = out_vec + this_params['b']
+        out_vec = out_vec + this_params[ml.BIAS]
 
     params = ml.update_params(params, params_idx, this_params, mold_params)
 
     return out_vec, params
 
+def dense_layer_init(rand_key, tree):
+    bound = 1/jnp.sqrt(tree[ml.SCALE].shape[1])
+    rand_key, subkey = random.split(rand_key)
+    params = { ml.SCALE: random.uniform(subkey, shape=tree[ml.SCALE].shape, minval=-bound, maxval=bound) }
+    if (ml.BIAS in tree):
+        rand_key, subkey = random.split(rand_key)
+        params[ml.BIAS] = random.uniform(subkey, shape=tree[ml.BIAS].shape, minval=-bound, maxval=bound)
+
+    return params
+
 @partial(jit, static_argnums=[2,5,6,7])
 def batch_norm_1d(params, x, train, running_mean, running_var, momentum=0.1, eps=1e-05, mold_params=False):
-    params_idx, this_params = ml.get_layer_params(params, mold_params, 'batch_norm_1d')
+    params_idx, this_params = ml.get_layer_params(params, mold_params, BATCH_NORM_1D)
     if mold_params:
         width = x.shape[1]
-        this_params['mult'] = jnp.ones(width)
-        this_params['add'] = jnp.ones(width)
+        this_params[ml.SCALE] = jnp.ones(width)
+        this_params[ml.BIAS] = jnp.ones(width)
 
     if (train):
         mean = jnp.mean(x, axis=0)
@@ -161,8 +174,8 @@ def batch_norm_1d(params, x, train, running_mean, running_var, momentum=0.1, eps
         var = running_var
 
     layer_vec = (x - mean)/jnp.sqrt(var + eps)
-    layer_vec = vmap(lambda x: x * this_params['mult'])(layer_vec)
-    layer_vec = vmap(lambda x: x + this_params['add'])(layer_vec)
+    layer_vec = vmap(lambda x: x * this_params[ml.SCALE])(layer_vec)
+    layer_vec = vmap(lambda x: x + this_params[ml.BIAS])(layer_vec)
 
     params = ml.update_params(params, params_idx, this_params, mold_params)
 
@@ -211,16 +224,16 @@ def net(params, layer, key, train, batch_stats, conv_filters, ode_basis, batch_n
         layer = ml.batch_relu_layer(layer)
 
     # Embed the ODE in a d=100 vector
-    embedded_ode = jnp.zeros(embedding_d)
+    layer_vec = jnp.zeros(embedding_d)
     for image in layer.values():
         vectorized_image = image.reshape(layer.L,-1)
         layer_out, params = batch_dense_layer(params, vectorized_image, embedding_d, True, return_params)
-        embedded_ode += layer_out
+        layer_vec += layer_out
 
     # Pass the embedded ode through a 2 layer MLP to get the coefficients of poly ode
     batch_stats_idx = 3
     for _ in range(num_hidden_layers):
-        layer_vec, params = batch_dense_layer(params, embedded_ode, 128, True, return_params)
+        layer_vec, params = batch_dense_layer(params, layer_vec, 128, True, return_params)
         if batch_norm:
             layer_vec, params, mean, var = batch_norm_1d(
                 params, 
@@ -311,11 +324,11 @@ def baseline_net(params, layer, key, train, batch_stats, ode_basis, batch_norm, 
         batch_stats_idx += 1
     
     # Embed the ODE in a d=100 vector
-    embedded_ode, params = batch_dense_layer(params, layer[0].reshape(layer.L,-1), embedding_d, True, return_params)
+    layer_vec, params = batch_dense_layer(params, layer[0].reshape(layer.L,-1), embedding_d, True, return_params)
 
     # Pass the embedded ode through a 2 layer MLP to get the coefficients of poly ode
     for _ in range(num_hidden_layers):
-        layer_vec, params = batch_dense_layer(params, embedded_ode, 128, True, return_params)
+        layer_vec, params = batch_dense_layer(params, layer_vec, 128, True, return_params)
         layer_vec, params, mean, var = batch_norm_1d(
             params, 
             layer_vec, 
@@ -443,9 +456,18 @@ models = [
 one_point = X_train.get_subset(jnp.array([0]))
 models_init = []
 for model_name, model_map_and_loss, model in models:
-    params_tree = model(defaultdict(lambda: None), one_point, key, train=True, batch_stats=None, return_params=True)[3]
-    print(f'{model_name}: {ml.count_params(params_tree)} params')
-    models_init.append((model_name, model_map_and_loss, model, params_tree))
+    get_params = ml.init_params(
+        partial(model, batch_stats=None), 
+        one_point, 
+        key, 
+        return_func=True, 
+        override_initializers={
+            DENSE: dense_layer_init,
+            BATCH_NORM_1D: lambda _,tree: { ml.SCALE: jnp.ones(tree[ml.SCALE].shape), ml.BIAS: jnp.zeros(tree[ml.BIAS].shape) },
+        }
+    )
+    print(f'{model_name}: {ml.count_params(get_params(key))} params')
+    models_init.append((model_name, model_map_and_loss, model, get_params))
 
 labels = ['saddle_node 0',
     'saddle_node 1',
@@ -466,7 +488,7 @@ labels = ['saddle_node 0',
     'polynomial',
 ]
 
-for model_name, model, eval_net, params_tree in models_init:
+for model_name, model, eval_net, get_params in models_init:
     print(f'Model: {model_name}')
 
     if load_folder:
@@ -474,7 +496,7 @@ for model_name, model, eval_net, params_tree in models_init:
     else:
         key, subkey = random.split(key)
         # might want to try to do kaiming initialization here
-        params = ml.recursive_init_params(params_tree, subkey)
+        params = get_params(subkey)
 
         key, subkey = random.split(key)
         params, batch_stats, _, _ = ml.train(

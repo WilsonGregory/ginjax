@@ -11,6 +11,20 @@ import optax
 
 import geometricconvolutions.geometric as geom
 
+## Constants
+
+CONV_OLD = 'conv_old'
+CONV = 'conv'
+CHANNEL_COLLAPSE = 'collapse'
+CASCADING_CONTRACTIONS = 'cascading_contractions'
+BATCH_NORM = 'batch_norm'
+
+SCALE = 'scale'
+BIAS = 'bias'
+
+CONV_FREE = 'free'
+CONV_FIXED = 'fixed'
+
 ## GeometricImageNet Layers
 
 def add_to_layer(layer, k, image):
@@ -54,7 +68,7 @@ def conv_layer(
         lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D
         rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D
     """
-    params_idx, this_params = get_layer_params(params, mold_params, 'conv_old')
+    params_idx, this_params = get_layer_params(params, mold_params, CONV_OLD)
 
     # map over dilations, then filters
     vmap_sums = vmap(geom.linear_combination, in_axes=(None, 0))
@@ -168,40 +182,40 @@ def conv_layer_build_filters(
     Wrapper for conv_layer_alt that constructs the filter_block from either invariant filters or 
     free parameters, i.e. regular convolution with fully learned filters. 
     """
-    params_idx, this_params = get_layer_params(params, mold_params, 'conv')
+    params_idx, this_params = get_layer_params(params, mold_params, CONV)
 
     if (isinstance(filter_info, geom.Layer)): #if just a layer is passed, defaults to fixed filters
         filter_block, filter_block_params = get_filter_block_from_invariants(
-            this_params['fixed'], 
+            this_params[CONV_FIXED], 
             input_layer, 
             filter_info, 
             depth,
             mold_params,
         )
-        this_params['fixed'] = filter_block_params
+        this_params[CONV_FIXED] = filter_block_params
     elif (filter_info['type'] == 'raw'):
         filter_block = filter_info['filters']
-    elif (filter_info['type'] == 'fixed'):
+    elif (filter_info['type'] == CONV_FIXED):
         filter_block, filter_block_params = get_filter_block_from_invariants(
-            this_params['fixed'], 
+            this_params[CONV_FIXED], 
             input_layer, 
             filter_info['filters'], 
             depth,
             mold_params,
         )
-        this_params['fixed'] = filter_block_params
-    elif (filter_info['type'] == 'free'):
+        this_params[CONV_FIXED] = filter_block_params
+    elif (filter_info['type'] == CONV_FREE):
         filter_block, filter_block_params = get_filter_block(
-            this_params['free'], 
+            this_params[CONV_FREE], 
             input_layer, 
             filter_info['M'],
             depth,
             filter_info['filter_k_set'],
             mold_params,
         )
-        this_params['free'] = filter_block_params
+        this_params[CONV_FREE] = filter_block_params
     else:
-        raise Exception('conv_layer_build_filters: filter_info["type"] must be one of: raw, fixed, free')
+        raise Exception(f'conv_layer_build_filters: filter_info["type"] must be one of: raw, {CONV_FIXED}, {CONV_FREE}')
     
     layer = conv_layer_alt(
         input_layer, 
@@ -216,12 +230,12 @@ def conv_layer_build_filters(
     if bias: #is this equivariant?
         out_layer = layer.empty()
         if (mold_params):
-            this_params['bias'] = {}
+            this_params[BIAS] = {}
         for k,image_block in layer.items():
             if (mold_params):
-                this_params['bias'][k] = jnp.ones(depth) 
+                this_params[BIAS][k] = jnp.ones(depth)
 
-            biased_image = vmap(lambda image,p: image + p)(image_block, this_params['bias'][k]) #add a single scalar
+            biased_image = vmap(lambda image,p: image + p)(image_block, this_params[BIAS][k]) #add a single scalar
             out_layer.append(k, biased_image)
     else:
         out_layer = layer
@@ -444,7 +458,7 @@ def cascading_contractions(params, input_layer, target_k, mold_params=False):
         input_layer (list of GeometricImages): images to contract
         mold_params (bool): if True, use jnp.ones as the params and keep track of their shape
     """
-    params_idx, this_params = get_layer_params(params, mold_params, 'cascading_contractions')
+    params_idx, this_params = get_layer_params(params, mold_params, CASCADING_CONTRACTIONS)
 
     max_k = np.max(list(input_layer.keys()))
     temp_layer = input_layer.copy()
@@ -512,7 +526,7 @@ def channel_collapse(params, input_layer, mold_params=False):
         input_layer (Layer): input layer whose channels we will take a parameterized linear combination of
         mold_params (bool): 
     """
-    params_idx, this_params = get_layer_params(params, mold_params, 'collapse')
+    params_idx, this_params = get_layer_params(params, mold_params, CHANNEL_COLLAPSE)
 
     out_layer = input_layer.empty()
     for k, image_block in input_layer.items():
@@ -542,13 +556,13 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
         momentum (float): how much of the current batch stats to include in the mean and var
         eps (float): prevent val from being scaled to infinity when the variance is 0
     """
-    params_idx, this_params = get_layer_params(params, mold_params, 'batch_norm')
+    params_idx, this_params = get_layer_params(params, mold_params, BATCH_NORM)
 
     out_layer = batch_layer.empty()
     for k, image_block in batch_layer.items():
         if mold_params:
             num_channels = image_block.shape[1]
-            this_params[k] = { 'mult': jnp.ones(num_channels), 'add': jnp.ones(num_channels) }
+            this_params[k] = { SCALE: jnp.ones(num_channels), BIAS: jnp.ones(num_channels) }
 
         if (train):
             mean = jnp.mean(image_block, axis=0) # shape (channels, (N,)*D, (D,)*k)
@@ -568,8 +582,8 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
 
         # Now we multiply each channel by a scalar, then add a bias to each channel.
         # This is following: https://pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html
-        mult_images = vmap(vmap(lambda x,p: x * p), in_axes=(0,None))(centered_scaled_image, this_params[k]['mult'])
-        added_images = vmap(vmap(lambda x,p: x + p), in_axes=(0,None))(mult_images, this_params[k]['add'])
+        mult_images = vmap(vmap(lambda x,p: x * p), in_axes=(0,None))(centered_scaled_image, this_params[k][SCALE])
+        added_images = vmap(vmap(lambda x,p: x + p), in_axes=(0,None))(mult_images, this_params[k][BIAS])
         out_layer[k] = added_images
     
     params = update_params(params, params_idx, this_params, mold_params)
@@ -649,7 +663,7 @@ def count_params(params):
 
     return num_params
 
-def init_params(net_func, input_layer, rand_key):
+def init_params(net_func, input_layer, rand_key, return_func=False, override_initializers={}):
     """
     Use this function to construct and initialize the tree of params used by the neural network function. The
     first argument should be a function that takes (params, input_layer, rand_key, train) as arguments. Any other
@@ -660,27 +674,99 @@ def init_params(net_func, input_layer, rand_key):
         rand_key (rand key): key used both as input and for the initialization of the params (gets split)
     """
     rand_key, subkey = random.split(rand_key)
-    _, params = net_func(defaultdict(lambda: None), input_layer, subkey, True, return_params=True)
+    params = net_func(defaultdict(lambda: None), input_layer, subkey, True, return_params=True)[-1]
 
-    rand_key, subkey = random.split(rand_key)
-    return recursive_init_params(params, subkey)
+    initializers = {
+        BATCH_NORM: batch_norm_init,
+        CHANNEL_COLLAPSE: channel_collapse_init,
+        CONV: functools.partial(conv_init, D=input_layer.D),
+        CONV_OLD: conv_old_init,
+        CASCADING_CONTRACTIONS: cascading_contractions_init,
+    }
 
-def recursive_init_params(params, rand_key):
+    for k,v in override_initializers.items():
+        initializers[k] = v 
+
+    if return_func:
+        return lambda in_key: recursive_init_params(params, in_key, initializers)
+    else:
+        rand_key, subkey = random.split(rand_key)
+        return recursive_init_params(params, subkey, initializers)
+
+def recursive_init_params(params, rand_key, initializers):
     """
-    Given a tree of params, initialize all the params with normal 0 mean, 0.01 variance.
+    Given a tree of params, initialize all the params according to the initializers.
     args:
         params (dict tree of jnp.array): properly shaped dict tree
         rand_key (rand key): used for initializing the parameters
     """
     out_tree = {}
-    for k,v in params.items():
+    for (i, layer_name), v in params.items():
         rand_key, subkey = random.split(rand_key)
-        if isinstance(v, dict):
-            out_tree[k] = recursive_init_params(v, subkey)
-        else: #future TODO, allow for different initialization schemes
-            out_tree[k] = 0.1*random.normal(key=subkey, shape=v.shape)
+        out_tree[(i, layer_name)] = initializers[layer_name](subkey, v)
 
     return out_tree
+
+def batch_norm_init(rand_key, tree):
+    out_params = {}
+    for k, inner_tree in tree.items():
+        out_params[k] = { SCALE: jnp.ones(inner_tree[SCALE].shape), BIAS: jnp.zeros(inner_tree[BIAS].shape) }
+
+    return out_params
+
+def channel_collapse_init(rand_key, tree):
+    out_params = {}
+    for k, params_block in tree.items():
+        rand_key, subkey = random.split(rand_key)
+        bound = 1/jnp.sqrt(params_block.shape[0])
+        out_params[k] = random.uniform(subkey, params_block.shape, minval=-bound, maxval=bound)
+
+    return out_params
+
+def conv_init(rand_key, tree, D):
+    assert (CONV_FREE in tree) or (CONV_FIXED in tree)
+    out_params = {}
+    filter_type = CONV_FREE if CONV_FREE in tree else CONV_FIXED
+    params = {}
+    for k, d in tree[filter_type].items():
+        params[k] = {}
+        for filter_k, filter_block in d.items():
+            rand_key, subkey = random.split(rand_key)
+            bound = 1/jnp.sqrt(filter_block.shape[1]* (filter_block.shape[2]**D))
+            params[k][filter_k] = random.uniform(subkey, shape=filter_block.shape, minval=-bound, maxval=bound)
+
+    out_params[filter_type] = params
+
+    if (BIAS in tree):
+        bias_params = {}
+        for k, params_block in tree[BIAS].items():
+            # reuse the bound from above, it shouldn't be any different
+            bias_params[k] = random.uniform(subkey, shape=params_block.shape, minval=-bound, maxval=bound)
+        
+        out_params[BIAS] = bias_params
+
+    return out_params
+
+def conv_old_init(rand_key, tree):
+    # Keep this how it was originally initialized so old code still works the same.
+    out_params = {}
+    for k, d in tree.items():
+        out_params[k] = {}
+        for filter_k, params_block in d.items():
+            rand_key, subkey = random.split(rand_key)
+            out_params[k][filter_k] = 0.1*random.normal(subkey, shape=params_block.shape)
+
+    return out_params
+
+def cascading_contractions_init(rand_key, tree):
+    out_params = {}
+    for k, d in tree.items():
+        out_params[k] = {}
+        for contraction_idx, params_block in d.items():
+            rand_key, subkey = random.split(rand_key)
+            out_params[k][contraction_idx] = 0.1*random.normal(subkey, shape=params_block.shape)
+
+    return out_params
 
 ## Losses
 

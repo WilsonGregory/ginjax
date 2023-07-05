@@ -17,6 +17,25 @@ import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 from geometricconvolutions.data import get_gravity_data as get_data
 
+def channel_collapse_init(rand_key, tree):
+    # Use old guassian normal initialization instead of Kaiming
+    out_params = {}
+    for k, params_block in tree.items():
+        rand_key, subkey = random.split(rand_key)
+        out_params[k] = 0.1*random.normal(subkey, params_block.shape)
+
+    return out_params
+
+def conv_init(rand_key, tree):
+    params = {}
+    for k, d in tree[ml.CONV_FREE].items():
+        params[k] = {}
+        for filter_k, filter_block in d.items():
+            rand_key, subkey = random.split(rand_key)
+            params[k][filter_k] = 0.1*random.normal(subkey, shape=filter_block.shape)
+
+    return { ml.CONV_FREE: params }
+
 def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
 
@@ -65,7 +84,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
 
 def map_and_loss(params, x, y, key, train, conv_filters):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, key, train, conv_filters)[1], y[1]))
+    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[1], y[1]))
 
 def baseline_net(params, layer, key, train, return_params=False):
     M = 3
@@ -159,8 +178,6 @@ key, subkey = random.split(key)
 one_point_x, _ = get_data(N, D, num_points, subkey, 1)
 one_point_x = one_point_x
 
-huge_params = jnp.ones(100000)
-
 models = [
     (
         'GI-Net',
@@ -204,7 +221,15 @@ if (not load_file):
                 print(f'Iter {i}, train size {num_train_images}, model {model_name}')
 
                 key, subkey = random.split(key)
-                params = ml.recursive_init_params(params_tree, subkey)
+                params = ml.recursive_init_params(
+                    params_tree, 
+                    subkey,
+                    initializers={ 
+                        ml.CHANNEL_COLLAPSE: channel_collapse_init, 
+                        ml.CONV: conv_init,
+                        ml.CONV_OLD: ml.conv_old_init,
+                    },
+                )
                 key, subkey = random.split(key)
 
                 start_time = time.time()

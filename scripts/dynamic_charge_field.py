@@ -32,6 +32,15 @@ def plot_results(layer_x, layer_y, axs, titles, conv_filters):
         utils.plot_image(image, ax=ax)
         ax.set_title(title, fontsize=24)
 
+def channel_collapse_init(rand_key, tree):
+    # Use old guassian normal initialization instead of Kaiming
+    out_params = {}
+    for k, params_block in tree.items():
+        rand_key, subkey = random.split(rand_key)
+        out_params[k] = 0.1*random.normal(subkey, params_block.shape)
+
+    return out_params
+
 def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
     max_k = 5
@@ -136,7 +145,12 @@ if load_file:
     params = jnp.load(load_file)
 else:
     key, subkey = random.split(key)
-    params = ml.init_params(partial(batch_net, conv_filters=conv_filters), one_point, subkey)
+    params = ml.init_params(
+        partial(batch_net, conv_filters=conv_filters), 
+        one_point, 
+        subkey,
+        override_initializers={ ml.CHANNEL_COLLAPSE: channel_collapse_init },
+    )
     print('Num params:', ml.count_params(params))
 
     optimizer = optax.adam(

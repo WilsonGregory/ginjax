@@ -16,6 +16,25 @@ import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 from geometricconvolutions.data import get_charge_data as get_data
 
+def channel_collapse_init(rand_key, tree):
+    # Use old guassian normal initialization instead of Kaiming
+    out_params = {}
+    for k, params_block in tree.items():
+        rand_key, subkey = random.split(rand_key)
+        out_params[k] = 0.1*random.normal(subkey, params_block.shape)
+
+    return out_params
+
+def conv_init(rand_key, tree):
+    params = {}
+    for k, d in tree[ml.CONV_FREE].items():
+        params[k] = {}
+        for filter_k, filter_block in d.items():
+            rand_key, subkey = random.split(rand_key)
+            params[k][filter_k] = 0.1*random.normal(subkey, shape=filter_block.shape)
+
+    return { ml.CONV_FREE: params }
+
 def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
     max_k = 5
@@ -121,7 +140,8 @@ delta_t = 1 #distance taken in a single step
 s = 0.2 # used for transforming the input/output data
 
 num_points = 3
-num_train_images_range = [5,10,20,50,100]
+# num_train_images_range = [5,10,20,50,100]
+num_train_images_range = [5]
 num_test_images = 10
 num_val_images = 10
 
@@ -151,9 +171,20 @@ models = [
 
 models_init = []
 for model_name, model_map_and_loss, model, lr in models:
-    params_tree = model(defaultdict(lambda: None), one_point_x, None, True, return_params=True)[1]
-    print(f'{model_name}: {ml.count_params(params_tree)} params')
-    models_init.append((model_name, model_map_and_loss, params_tree, lr))
+    key, subkey = random.split(key)
+    get_params = ml.init_params(
+        model, 
+        one_point_x, 
+        subkey, 
+        return_func=True, 
+        override_initializers={
+            ml.CHANNEL_COLLAPSE: channel_collapse_init, 
+            ml.CONV: conv_init,
+        },
+    )
+    # params_tree = model(defaultdict(lambda: None), one_point_x, None, True, return_params=True)[1]
+    print(f'{model_name}: {ml.count_params(get_params(subkey))} params')
+    models_init.append((model_name, model_map_and_loss, get_params, lr))
 
 if (not load_file):
     all_train_loss = np.zeros((num_times, len(num_train_images_range), len(models)))
@@ -174,10 +205,19 @@ if (not load_file):
             key, subkey = random.split(key)
             train_X, train_Y = get_data(N, D, num_points, num_steps, delta_t, s, subkey, num_train_images, warmup_steps=warmup_steps)
 
-            for k, (model_name, model, params_tree, lr) in enumerate(models_init):
+            for k, (model_name, model, get_params, lr) in enumerate(models_init):
                 print(f'Iter {i}, train size {num_train_images}, model {model_name}')
                 key, subkey = random.split(key)
-                params = ml.recursive_init_params(params_tree, subkey)
+                params = get_params(subkey)
+                # ml.recursive_init_params(
+                #     params_tree, 
+                #     subkey,
+                #     initializers={ 
+                #         ml.CHANNEL_COLLAPSE: channel_collapse_init, 
+                #         ml.CONV: conv_init,
+                #         ml.CONV_OLD: ml.conv_old_init,
+                #     },
+                # )
                 key, subkey = random.split(key)
 
                 start_time = time.time()
@@ -187,7 +227,7 @@ if (not load_file):
                     model,
                     params,
                     subkey,
-                    ml.ValLoss(patience=20, verbose=verbose),
+                    ml.ValLoss(patience=5, verbose=verbose),
                     batch_size=batch_size,
                     optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(num_train_images / batch_size), decay_rate=0.995)),
                     validation_X=validation_X,

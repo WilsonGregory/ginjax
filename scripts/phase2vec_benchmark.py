@@ -132,7 +132,7 @@ def dense_layer(params, x, width, bias=True, mold_params=False):
     out_vec = this_params[ml.SCALE] @ x
 
     if bias:
-        if mold_params: #unclear whether this should be initialized to 0s
+        if mold_params: 
             this_params[ml.BIAS] = jnp.ones(width)
 
         out_vec = out_vec + this_params[ml.BIAS]

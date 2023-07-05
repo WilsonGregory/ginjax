@@ -666,12 +666,17 @@ def count_params(params):
 def init_params(net_func, input_layer, rand_key, return_func=False, override_initializers={}):
     """
     Use this function to construct and initialize the tree of params used by the neural network function. The
-    first argument should be a function that takes (params, input_layer, rand_key, train) as arguments. Any other
-    arguments should be provided already, possibly using functools.partial
+    first argument should be a function that takes (params, input_layer, rand_key, train, return_params) as 
+    arguments. Any other arguments should be provided already, possibly using functools.partial. When return_params
+    is true, the function should return params as the last element of a tuple or list.
     args:
         net_func (function): neural network function
         input_layer (geom.Layer): One piece of data to give the initial shape, doesn't have to match batch size
         rand_key (rand key): key used both as input and for the initialization of the params (gets split)
+        return_func (bool): if False, return params, if True return a func that takes a rand_key and returns 
+            the params. Defaults to False.
+        override_initializers (dict): Pass custom initializers with this dictionary. The key is the layer name
+            and the value is a function that takes (rand_key, tree) and returns the tree of initialized params.
     """
     rand_key, subkey = random.split(rand_key)
     params = net_func(defaultdict(lambda: None), input_layer, subkey, True, return_params=True)[-1]
@@ -695,7 +700,7 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
 
 def recursive_init_params(params, rand_key, initializers):
     """
-    Given a tree of params, initialize all the params according to the initializers.
+    Given a tree of params, initialize all the params according to the initializers. No longer recursive.
     args:
         params (dict tree of jnp.array): properly shaped dict tree
         rand_key (rand key): used for initializing the parameters

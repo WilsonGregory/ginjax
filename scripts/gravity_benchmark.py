@@ -164,7 +164,8 @@ num_times, seed, save_file, load_file, verbose = handleArgs(sys.argv)
 N = 16
 D = 2
 num_points = 5
-num_train_images_range = [5,10,20,50]
+# num_train_images_range = [5,10,20,50]
+num_train_images_range = [5]
 num_test_images = 10
 num_val_images = 5
 
@@ -176,7 +177,6 @@ conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1], parities=[0], D=D, o
 
 key, subkey = random.split(key)
 one_point_x, _ = get_data(N, D, num_points, subkey, 1)
-one_point_x = one_point_x
 
 models = [
     (
@@ -195,9 +195,19 @@ models = [
 
 models_init = []
 for model_name, model_map_and_loss, model, lr in models:
-    params_tree = model(defaultdict(lambda: None), one_point_x, None, True, return_params=True)[1]
-    print(f'{model_name}: {ml.count_params(params_tree)} params')
-    models_init.append((model_name, model_map_and_loss, params_tree, lr))
+    key, subkey = random.split(key)
+    get_params = ml.init_params(
+        model, 
+        one_point_x, 
+        subkey, 
+        return_func=True, 
+        override_initializers={
+            ml.CHANNEL_COLLAPSE: channel_collapse_init, 
+            ml.CONV: conv_init,
+        },
+    )
+    print(f'{model_name}: {ml.count_params(get_params(subkey))} params')
+    models_init.append((model_name, model_map_and_loss, get_params, lr))
 
 if (not load_file):
     all_train_loss = np.zeros((num_times, len(num_train_images_range), len(models)))
@@ -217,19 +227,11 @@ if (not load_file):
             key, subkey = random.split(key)
             train_X, train_Y = get_data(N, D, num_points, subkey, num_train_images)
 
-            for k, (model_name, model, params_tree, lr) in enumerate(models_init):
+            for k, (model_name, model, get_params, lr) in enumerate(models_init):
                 print(f'Iter {i}, train size {num_train_images}, model {model_name}')
 
                 key, subkey = random.split(key)
-                params = ml.recursive_init_params(
-                    params_tree, 
-                    subkey,
-                    initializers={ 
-                        ml.CHANNEL_COLLAPSE: channel_collapse_init, 
-                        ml.CONV: conv_init,
-                        ml.CONV_OLD: ml.conv_old_init,
-                    },
-                )
+                params = get_params(subkey)
                 key, subkey = random.split(key)
 
                 start_time = time.time()

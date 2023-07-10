@@ -89,3 +89,22 @@ class TestMisc:
         assert len(idxs) == len(known_list)
         for pair in known_list:
             assert pair in idxs
+
+    def testGetInvariantImage(self):
+        N = 5
+
+        D = 2
+        operators = geom.make_all_operators(D)
+        for k in [0,2,4]:
+            invariant_basis = geom.get_invariant_image(N, D, k, 0, data_only=False)
+
+            for gg in operators:
+                assert invariant_basis == invariant_basis.times_group_element(gg)
+
+        D = 3
+        operators = geom.make_all_operators(D)
+        for k in [0,2,4]: 
+            invariant_basis = geom.get_invariant_image(N, D, k, 0, data_only=False)
+
+            for gg in operators:
+                assert invariant_basis == invariant_basis.times_group_element(gg)

@@ -247,6 +247,19 @@ def get_invariant_filters(Ms, ks, parities, D, operators, scale='normalize', ret
     else:
         return allfilters
 
+def get_invariant_image(N, D, k, parity=0, is_torus=True, data_only=True):
+    """
+    Get the G_{N,D} invariant image
+    """
+    # is this assertion true for odd parity?
+    assert (k % 2) == 0, 'get_invariant_image: There only exists even tensor order invariant images'
+    if parity != 0:
+        raise Exception('get_invariant_image: Odd parity currently not implemented')
+    
+    images = [GeometricImage.fill(N, parity, D, KroneckerDeltaSymbol.get(D, 2), is_torus) for _ in range(k // 2)]
+    image = reduce(lambda a,b: a * b, images, GeometricImage.fill(N, parity, D, 1, is_torus))
+
+    return image.data if data_only else image
 
 # ------------------------------------------------------------------------------
 # PART 4: Functional Programming GeometricImages
@@ -527,6 +540,55 @@ def linear_combination(images, params):
     """
     return jnp.sum(vmap(lambda image, param: image * param)(images, params), axis=0)
 
+def get_rotated_keys(D, data, gg):
+        """
+        Slightly messier than with GeometricFilter because self.N-1 / 2 might not be an integer, but should work
+        args:
+            gg (jnp array-like): group operation
+        """
+        N, _ = parse_shape(data.shape, D)
+        key_array = jnp.array([key for key in it.product(range(N), repeat=D)])
+        shifted_key_array = key_array - ((N-1) / 2)
+        return jnp.rint((shifted_key_array @ gg) + (N-1) / 2).astype(int)
+
+def times_group_element(D, data, parity, gg, precision=None):
+        """
+        Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the location of the
+        pixels, then apply the action to the pixels themselves.
+        args:
+            gg (group operation matrix): a DxD matrix that rotates the tensor
+            precision (jax.lax.Precision): eisnum precision, normally uses lower precision, use 
+                jax.lax.Precision.HIGHEST for testing equality in unit tests
+        """
+        _, k = parse_shape(data.shape, D)
+        sign, logdet = np.linalg.slogdet(gg)
+        assert logdet == 0. #determinant is +- 1, so abs(log(det)) should be 0
+        parity_flip = sign ** parity #if parity=1, the flip operators don't flip the tensors
+
+        rotated_keys = get_rotated_keys(D, data, gg)
+        rotated_pixels = data[hash(D, data, rotated_keys)].reshape(data.shape)
+
+        if k == 0:
+            newdata = 1. * rotated_pixels * parity_flip
+        else:
+            # applying the rotation to tensors is essentially multiplying each index, which we can think of as a
+            # vector, by the group action. The image pixels have already been rotated.
+            einstr = LETTERS[:len(data.shape)] + ','
+            einstr += ",".join([LETTERS[i+13] + LETTERS[i + D] for i in range(k)])
+            tensor_inputs = (rotated_pixels, ) + k * (gg, )
+            newdata = jnp.einsum(einstr, *tensor_inputs, precision=precision) * (parity_flip)
+
+        return newdata
+
+def norm(D, data):
+    """
+    Perform the frobenius norm on each pixel tensor, returning a scalar image
+    args:
+        D (int): dimension of the image
+        data (jnp.array): image data, shape (N,)*D + (D,)*k
+    """
+    return jnp.linalg.norm(data.reshape(data.shape[:D] + (-1,)), axis=D)
+
 # ------------------------------------------------------------------------------
 # PART 5: Define geometric (k-tensor, torus) images.
 
@@ -576,7 +638,7 @@ class GeometricImage:
             fill (jnp.ndarray or number): tensor to fill the image with
             is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
         """
-        k = len(fill.shape) if isinstance(fill, jnp.ndarray) else 0
+        k = len(fill.shape) if (isinstance(fill, jnp.ndarray) or isinstance(fill, np.ndarray)) else 0
         data = jnp.stack([fill for _ in range(N ** D)]).reshape((N,)*D + (D,)*k)
         return cls(data, parity, D, is_torus)
 
@@ -853,12 +915,7 @@ class GeometricImage:
         """
         Calculate the norm pixel-wise
         """
-        #not sure if there is a jax way to avoid unrolling this loop
-        #construct a norm function that takes the norm of each pixel, so it maps over all the image_shape axes
-        vmap_norm = reduce(lambda f,_: vmap(f), range(len(self.image_shape())), jnp.linalg.norm)
-
-        # it is possible that the parity of the new image is always 0
-        return self.__class__(vmap_norm(self.data), self.parity, self.D, self.is_torus)
+        return self.__class__(norm(self.D, self.data), self.parity, self.D, self.is_torus)
 
     def normalize(self):
         """
@@ -958,33 +1015,23 @@ class GeometricImage:
         key_array = self.key_array() - ((self.N-1) / 2)
         return jnp.rint((key_array @ gg) + (self.N-1) / 2).astype(int)
 
-    def times_group_element(self, gg):
+    def times_group_element(self, gg, precision=None):
         """
         Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the location of the
         pixels, then apply the action to the pixels themselves.
         args:
             gg (group operation matrix): a DxD matrix that rotates the tensor
+            precision (jax.lax.Precision): precision level for einsum, for equality use Precision.HIGH
         """
         assert self.k < 14
         assert gg.shape == (self.D, self.D)
-        sign, logdet = np.linalg.slogdet(gg)
-        assert logdet == 0. #determinant is +- 1, so abs(log(det)) should be 0
-        parity_flip = sign ** self.parity #if parity=1, the flip operators don't flip the tensors
 
-        rotated_keys = self.get_rotated_keys(gg)
-        rotated_pixels = self[self.hash(rotated_keys)].reshape(self.shape())
-
-        if self.k == 0:
-            newdata = 1. * rotated_pixels * parity_flip
-        else:
-            # applying the rotation to tensors is essentially multiplying each index, which we can think of as a
-            # vector, by the group action. The image pixels have already been rotated.
-            einstr = LETTERS[:len(self.shape())] + ','
-            einstr += ",".join([LETTERS[i+13] + LETTERS[i + len(self.image_shape())] for i in range(self.k)])
-            tensor_inputs = (rotated_pixels, ) + self.k * (gg, )
-            newdata = np.einsum(einstr, *tensor_inputs) * (parity_flip)
-
-        return self.__class__(newdata, self.parity, self.D, self.is_torus)
+        return self.__class__(
+            times_group_element(self.D, self.data, self.parity, gg, precision=precision), 
+            self.parity, 
+            self.D, 
+            self.is_torus,
+        )
 
     def tree_flatten(self):
         """
@@ -1114,7 +1161,7 @@ class BatchGeometricImage(GeometricImage):
             D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
             fill (jnp.ndarray or number): tensor to fill the image with
         """
-        k = len(fill.shape) if isinstance(fill, jnp.ndarray) else 0
+        k = len(fill.shape) if (isinstance(fill, jnp.ndarray) or isinstance(fill, np.ndarray)) else 0
         data = jnp.stack([fill for _ in range(L * (N ** D))]).reshape((L,) + (N,)*D + (D,)*k)
         return cls(data, parity, D, is_torus)
 
@@ -1247,6 +1294,17 @@ class BatchGeometricImage(GeometricImage):
             self.is_torus,
         )
 
+    def times_group_element(self, gg):
+        assert self.k < 14
+        assert gg.shape == (self.D, self.D)
+
+        return self.__class__(
+            vmap(times_group_element, in_axes=(None, 0, None, None))(self.D, self.data, self.parity, gg), 
+            self.parity, 
+            self.D, 
+            self.is_torus,
+        )
+
 @register_pytree_node_class
 class Layer:
 
@@ -1317,6 +1375,20 @@ class Layer:
     
     def __contains__(self, idx):
         return idx in self.data
+
+    def __eq__(self, other, rtol=TINY, atol=TINY):
+        if (
+            (self.D != other.D) or
+            (self.is_torus != other.is_torus) or
+            (self.keys() != other.keys())
+        ):
+            return False
+        
+        for k in self.keys():
+            if not jnp.allclose(self[k], other[k], rtol, atol):
+                return False
+            
+        return True
     
     # Other functions
 
@@ -1364,6 +1436,14 @@ class Layer:
                 images.append(GeometricImage(image, 0, self.D, self.is_torus)) # for now, assume 0 parity
 
         return images
+    
+    def times_group_element(self, gg, precision=None):
+        vmap_rotate = vmap(times_group_element, in_axes=(None, 0, None, None, None))
+        out_layer = self.empty()
+        for k, image_block in self.items():
+            out_layer.append(k, vmap_rotate(self.D, image_block, 0, gg, precision))
+
+        return out_layer
 
     #JAX helpers
     def tree_flatten(self):
@@ -1437,3 +1517,6 @@ class BatchLayer(Layer):
             self.D,
             self.is_torus,
         )
+    
+    def times_group_element(self, gg, precision=None):
+        return vmap(super.times_group_element, in_axes=(0, None, None))(gg, precision=precision)

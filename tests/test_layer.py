@@ -55,7 +55,7 @@ class TestLayer:
         )
 
         layer2 = layer1.copy()
-        assert layer1 != layer2
+        assert layer1 is not layer2
 
         layer2[1] = jnp.arange(1*(N**D)*D).reshape((1,) + (N,)*D + (D,)*1)
         assert layer2[1].shape == (1, N, N, D)
@@ -81,6 +81,30 @@ class TestLayer:
         assert list(layer2.keys()) == [1,2]
         assert layer2[1].shape == (10, N, N, D)
         assert layer2[2].shape == (33, N, N, D, D)
+
+    def testEq(self):
+        key = random.PRNGKey(time.time_ns())
+        D = 2
+        N = 3
+
+        key, subkey = random.split(key)
+        layer1 = geom.Layer({ 0: random.normal(subkey, shape=((10,) + (N,)*D + (D,)*0))}, D, True)
+        layer1.append(1, random.normal(subkey, shape=((10,) + (N,)*D + (D,)*1)))
+
+        layer2 = layer1.copy()
+        assert layer1 == layer2 
+
+        # keys do not match
+        layer3 = geom.Layer({ 0: jnp.ones((10,) + (N,)*D + (D,)*0) }, D, True)
+        assert layer1 != layer3
+
+        # values do not match
+        layer4 = geom.Layer({ 0: jnp.ones((10,) + (N,)*D + (D,)*0), 1: jnp.ones((10,) + (N,)*D + (D,)*1) }, D, True)
+        assert layer1 != layer4 
+
+        # is_torus does not match
+        layer5 = geom.Layer(layer1.data, D, False)
+        assert layer1 != layer5
 
     def testAppend(self):
         key = random.PRNGKey(time.time_ns())

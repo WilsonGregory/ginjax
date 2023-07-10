@@ -1,11 +1,13 @@
 import math
-
-import geometricconvolutions.geometric as geom
-import pytest
-import jax.numpy as jnp
-from jax import random
 import time
 import itertools as it
+import pytest
+
+import geometricconvolutions.geometric as geom
+import geometricconvolutions.ml as ml
+import jax.numpy as jnp
+from jax import random
+import jax.lax
 
 class TestPropositions:
     # Class to test various propositions, mostly about the GeometricImage
@@ -127,7 +129,7 @@ class TestPropositions:
         for g in group_operators:
             for c1 in all_filters:
                 for c2 in all_filters:
-                    assert (c1 * c2).times_group_element(g) == (c1 * c2)
+                    assert (c1 * c2).times_group_element(g, precision=jax.lax.Precision.HIGH) == (c1 * c2)
 
     def testKroneckerAdd(self):
         # Test that multiplying by the kronecker delta symbol, then contracting on those new indices
@@ -205,4 +207,33 @@ class TestPropositions:
         for c in [c1, c2]:
             for i,j in it.combinations(range(k), 2):
                 assert img1.contract(i,j).convolve_with(c) == img1.convolve_with(c).contract(i,j)
+
+    def testLayerNormEquivariant(self):
+        N = 3
+        D = 2
+        
+        key = random.PRNGKey(time.time_ns())
+        layer = geom.Layer({}, D)
+        params = { ml.LAYER_NORM: {} }
+        for k in range(5):
+            key, subkey = random.split(key)
+            layer.append(k, random.normal(subkey, shape=(2,) + (N,)*D + (D,)*k))
+
+            params[ml.LAYER_NORM][k] = {}
+            key, subkey = random.split(key)
+            params[ml.LAYER_NORM][k][ml.SCALE] = random.normal(subkey, shape=(1,))
+            key, subkey = random.split(key)
+            params[ml.LAYER_NORM][k][ml.BIAS] = random.normal(subkey, shape=(1,))
+
+        operators = geom.make_all_operators(D)
+        for gg in operators:
+            out_layer1 = ml.layer_norm(params, layer.times_group_element(
+                gg, 
+                precision=jax.lax.Precision.HIGH,
+            ))[0]
+            out_layer2 = ml.layer_norm(params, layer)[0].times_group_element(
+                gg, 
+                precision=jax.lax.Precision.HIGH,
+            )
+            assert out_layer1 == out_layer2
 

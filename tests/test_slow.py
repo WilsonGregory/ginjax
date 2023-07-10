@@ -2,6 +2,7 @@ import geometricconvolutions.geometric as geom
 import pytest
 import jax.numpy as jnp
 from jax import random
+import jax.lax
 
 TINY = 1.e-5
 
@@ -189,13 +190,22 @@ class TestSlowTests:
                             for geom_filter in filters:
 
                                 # test that the filters are invariant to the group operators
-                                assert jnp.allclose(geom_filter.data, geom_filter.times_group_element(gg).data)
+                                assert jnp.allclose(
+                                    geom_filter.data, 
+                                    geom_filter.times_group_element(gg, precision=jax.lax.Precision.HIGH).data
+                                )
 
                                 # test that the convolution with the invariant filters is equivariant to gg
                                 # convolutions are currently too slow to test this every time, but should be tested
                                 assert jnp.allclose(
-                                    image.convolve_with(geom_filter).times_group_element(gg).data,
-                                    image.times_group_element(gg).convolve_with(geom_filter).data,
+                                    image.convolve_with(geom_filter).times_group_element(
+                                        gg, 
+                                        precision=jax.lax.Precision.HIGH,
+                                    ).data,
+                                    image.times_group_element(
+                                        gg, 
+                                        precision=jax.lax.Precision.HIGH,
+                                    ).convolve_with(geom_filter).data,
                                 )
                                 
     def testGroup(self):

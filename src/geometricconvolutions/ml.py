@@ -7,6 +7,7 @@ import math
 from jax import jit, random, value_and_grad, vmap
 import jax.nn
 import jax.numpy as jnp
+import jax.debug
 import optax
 
 import geometricconvolutions.geometric as geom
@@ -18,6 +19,7 @@ CONV = 'conv'
 CHANNEL_COLLAPSE = 'collapse'
 CASCADING_CONTRACTIONS = 'cascading_contractions'
 BATCH_NORM = 'batch_norm'
+LAYER_NORM = 'layer_norm'
 
 SCALE = 'scale'
 BIAS = 'bias'
@@ -548,15 +550,19 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
     Batch norm, this may or may not be equivariant.
     args:
         params (jnp.array): array of learned params
-        param_idx (int): index of current location in params
         batch_layer (BatchLayer): layer to apply to batch norm on
         train (bool): whether it is training, in which case update the mean and var
-        mean (dict of jnp.array): array of mean at each k
-        var (dict of jnp.array): array of var at each k
+        running_mean (dict of jnp.array): array of mean at each k
+        running_var (dict of jnp.array): array of var at each k
         momentum (float): how much of the current batch stats to include in the mean and var
         eps (float): prevent val from being scaled to infinity when the variance is 0
+        mold_params (bool): True if we are learning the params shape, defaults to False
     """
     params_idx, this_params = get_layer_params(params, mold_params, BATCH_NORM)
+
+    if ((running_mean is None) and (running_var is None)):
+        running_mean = {}
+        running_var = {}
 
     out_layer = batch_layer.empty()
     for k, image_block in batch_layer.items():
@@ -568,12 +574,12 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
             mean = jnp.mean(image_block, axis=0) # shape (channels, (N,)*D, (D,)*k)
             var = jnp.var(image_block, axis=0) # shape (channels, (N,)*D, (D,)*k)
 
-            if ((running_mean is None) and (running_var is None)):
-                running_mean = { k: mean }
-                running_var = { k: var }
-            else:
+            if ((k in running_mean) and (k in running_var)):
                 running_mean[k] = (1 - momentum)*running_mean[k] + momentum*mean
                 running_var[k] = (1 - momentum)*running_var[k] + momentum*var
+            else:
+                running_mean[k] = mean
+                running_var[k] = var                
         else: # not train, use the final value from training
             mean = running_mean[k]
             var = running_var[k]
@@ -589,6 +595,41 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
     params = update_params(params, params_idx, this_params, mold_params)
 
     return out_layer, params, running_mean, running_var
+
+@functools.partial(jit, static_argnums=[2,3])
+def layer_norm(params, input_layer, eps=1e-05, mold_params=False):
+    """
+    Implementation of layer norm, just scaling by variance of the norm. There seems to be issues with this
+    layer however, it often results in values being NaN.
+    """
+    print('WARNING layer_norm: This layer is causing problems, for experimental use only.')
+    params_idx, this_params = get_layer_params(params, mold_params, LAYER_NORM)
+    vmap_norm = vmap(geom.norm, in_axes=(None, 0)) #expects channel, (N,)*D
+
+    out_layer = input_layer.empty()
+    for k, image_block in input_layer.items():
+        if mold_params:
+            this_params[k] = { SCALE: jnp.ones(1) }
+
+        num_image_idxs = 1 + input_layer.D # number of indices that are channel + spatial image indices
+        # get the variance of the frobenius norm of the pixels
+        norm = vmap_norm(input_layer.D, image_block) # (channel, (N,)*D)
+        var = jnp.var(norm, axis=range(num_image_idxs), keepdims=True) # (1, (1,)*D)
+        shaped_var = jnp.expand_dims(var, axis=range(len(var.shape), len(image_block.shape))) #(1, (1,)*D, (1,)*k)
+
+        centered_scaled_image = image_block/jnp.sqrt(shaped_var + eps)
+
+        centered_scaled_image *= this_params[k][SCALE]
+
+        out_layer[k] = centered_scaled_image
+
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return out_layer, params
+
+def batch_layer_norm(params, input_layer, eps=1e-05, mold_params=False):
+    vmap_layer_norm = vmap(layer_norm, in_axes=(None, 0, None, None), out_axes=(0, None))
+    return vmap_layer_norm(params, input_layer, eps, mold_params)
 
 def max_pool_layer(input_layer, patch_len):
     return [image.max_pool(patch_len) for image in input_layer]
@@ -683,6 +724,7 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
 
     initializers = {
         BATCH_NORM: batch_norm_init,
+        LAYER_NORM: layer_norm_init,
         CHANNEL_COLLAPSE: channel_collapse_init,
         CONV: functools.partial(conv_init, D=input_layer.D),
         CONV_OLD: conv_old_init,
@@ -716,6 +758,13 @@ def batch_norm_init(rand_key, tree):
     out_params = {}
     for k, inner_tree in tree.items():
         out_params[k] = { SCALE: jnp.ones(inner_tree[SCALE].shape), BIAS: jnp.zeros(inner_tree[BIAS].shape) }
+
+    return out_params
+
+def layer_norm_init(rand_key, tree):
+    out_params = {}
+    for k, inner_tree in tree.items():
+        out_params[k] = { SCALE: jnp.ones(inner_tree[SCALE].shape) }
 
     return out_params
 

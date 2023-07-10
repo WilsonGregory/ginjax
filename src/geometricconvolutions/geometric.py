@@ -558,7 +558,7 @@ def times_group_element(D, data, parity, gg, precision=None):
         args:
             gg (group operation matrix): a DxD matrix that rotates the tensor
             precision (jax.lax.Precision): eisnum precision, normally uses lower precision, use 
-                jax.lax.Precision.HIGHEST for testing equality in unit tests
+                jax.lax.Precision.HIGH for testing equality in unit tests
         """
         _, k = parse_shape(data.shape, D)
         sign, logdet = np.linalg.slogdet(gg)
@@ -1021,7 +1021,7 @@ class GeometricImage:
         pixels, then apply the action to the pixels themselves.
         args:
             gg (group operation matrix): a DxD matrix that rotates the tensor
-            precision (jax.lax.Precision): precision level for einsum, for equality use Precision.HIGH
+            precision (jax.lax.Precision): precision level for einsum, for equality tests use Precision.HIGH
         """
         assert self.k < 14
         assert gg.shape == (self.D, self.D)
@@ -1438,6 +1438,13 @@ class Layer:
         return images
     
     def times_group_element(self, gg, precision=None):
+        """
+        Apply a group element of SO(2) or SO(3) to the layer. First apply the action to the location of the
+        pixels, then apply the action to the pixels themselves.
+        args:
+            gg (group operation matrix): a DxD matrix that rotates the tensor
+            precision (jax.lax.Precision): precision level for einsum, for equality tests use Precision.HIGH
+        """
         vmap_rotate = vmap(times_group_element, in_axes=(None, 0, None, None, None))
         out_layer = self.empty()
         for k, image_block in self.items():

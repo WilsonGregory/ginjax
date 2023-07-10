@@ -765,8 +765,6 @@ def layer_norm_init(rand_key, tree):
     out_params = {}
     for k, inner_tree in tree.items():
         out_params[k] = { SCALE: jnp.ones(inner_tree[SCALE].shape) }
-        if BIAS in inner_tree:
-            out_params[k][BIAS] = jnp.zeros(inner_tree[BIAS].shape)
 
     return out_params
 

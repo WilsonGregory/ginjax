@@ -139,6 +139,39 @@ class LeviCivitaSymbol:
 # ------------------------------------------------------------------------------
 # PART 3: Use group averaging to find unique invariant filters.
 
+basis_cache = {}
+
+def get_tensor_basis(D,k):
+    """
+    Return a basis of a tensor, will be shape: (D**k, (D,)*k). Additionally, cache the basis so we 
+    only have to calculate them once.
+    args: 
+        D (int): dimension of image and tensors
+        k (int): order of tensors
+    """
+    if (D,k) not in basis_cache:
+        shape = (D,)*k
+        size = D**k
+        basis_cache[(D,k)] = vmap(lambda row: row.reshape(shape))(jnp.eye(size))
+
+    return basis_cache[(D,k)]
+
+def get_image_basis(N,D,k):
+    """
+    Return a basis of a geometric image, will be shape: (N**D * D**k, (N,)*D, (D,)*k). Additionally,
+    cache the basis so we only have to calculate them once.
+    args: 
+        N (int): image sidelength
+        D (int): dimension of image and tensors
+        k (int): order of tensors
+    """
+    if (N,D,k) not in basis_cache:
+        shape = (N,)*D + (D,)*k
+        size = np.multiply.reduce(shape)
+        basis_cache[(N,D,k)] = vmap(lambda row: row.reshape(shape))(jnp.eye(size))
+
+    return basis_cache[(N,D,k)]
+
 def get_unique_invariant_filters(M, k, parity, D, operators, scale='normalize'):
     """
     Use group averaging to generate all the unique invariant filters
@@ -155,25 +188,19 @@ def get_unique_invariant_filters(M, k, parity, D, operators, scale='normalize'):
 
     # make the seed filters
     shape = (M,)*D + (D,)*k
-    size = np.multiply.reduce(shape)
-    allfilters = []
+    operators = jnp.stack(operators)
 
-    for i in range(size):
-        data = [0]*size
-        data[i] = 1
-        allfilters.append(GeometricFilter(jnp.array(data).reshape(shape), parity, D))
-
-    # do the group averaging
-    bigshape = (len(allfilters), size)
-    filter_matrix = np.zeros(bigshape)
-    for i, f1 in enumerate(allfilters):
-        ff = GeometricFilter.zeros(M, k, parity, D)
-        for gg in operators:
-            ff = ff + f1.times_group_element(gg)
-        filter_matrix[i] = ff.data.flatten()
+    basis = get_image_basis(M, D, k) # (N**D * D**k, (N,)*D, (D,)*k)
+    # vmap (over the group actions) the times_group_element function
+    vmap_times_group = vmap(times_group_element, in_axes=(None, None, None, 0, None))
+    # vmap over the elements of the basis
+    group_average = vmap(
+        lambda ff: jnp.sum(vmap_times_group(D, ff, parity, operators, jax.lax.Precision.HIGH), axis=0),
+    )
+    filter_matrix = group_average(basis).reshape(len(basis), -1)
 
     # do the SVD
-    u, s, v = np.linalg.svd(filter_matrix)
+    _, s, v = np.linalg.svd(filter_matrix)
     sbig = s > TINY
     if not np.any(sbig):
         return []
@@ -260,6 +287,28 @@ def get_invariant_image(N, D, k, parity=0, is_torus=True, data_only=True):
     image = reduce(lambda a,b: a * b, images, GeometricImage.fill(N, parity, D, 1, is_torus))
 
     return image.data if data_only else image
+
+def get_contraction_map(D, k, indices):
+    """
+    Get the linear map of contracting a tensor. Since contractions of geometric images happen pixel wise,
+    we only need this map to apply to every pixel (tensor), saving space over finding the entire map.
+    args:
+        D (int): dimension of the tensor
+        k (int): order of the tensor
+        indices (tuple of tuple of int pairs): the indices of one multicontraction
+    """
+    basis = get_tensor_basis(D,k)
+
+    out = vmap(multicontract, in_axes=(0, None))(basis, indices).reshape((len(basis), -1))
+    return jnp.transpose(out)
+
+def apply_contraction_map(D, image_data, contract_map, final_k):
+    """
+    Contract the image_data using the contraction map.
+    """
+    N, k = parse_shape(image_data.shape, D)
+    vmap_mult = vmap(lambda image,map: map @ image, in_axes=(0, None))
+    return vmap_mult(image_data.reshape(((N**D), (D**k))), contract_map).reshape((N,)*D + (D,)*final_k)
 
 # ------------------------------------------------------------------------------
 # PART 4: Functional Programming GeometricImages
@@ -510,14 +559,16 @@ def get_contraction_indices(initial_k, final_k, swappable_idxs=()):
 
     return [tuple((x,y) for x,y in zip(idxs[0::2], idxs[1::2])) for idxs in unique_sorted_rows]
 
-@partial(jit, static_argnums=1)
-def multicontract(data, indices):
+@partial(jit, static_argnums=[1,2])
+def multicontract(data, indices, idx_shift=0):
     """
     Perform the Kronecker Delta contraction on the data. Must have at least 2 dimensions, and because we implement with
     einsum, must have at most 52 dimensions. Indices a tuple of pairs of indices, also tuples.
     args:
         data (np.array-like): data to perform the contraction on
         indices (tuple of tuples of ints): index pairs to perform the contractions on
+        idx_shift (int): indices are the tensor indices, so if data has spatial indices or channel/batch 
+            indices in the beginning we shift over by idx_shift
     """
     dimensions = len(data.shape)
     assert dimensions + len(indices) < 52
@@ -526,7 +577,7 @@ def multicontract(data, indices):
 
     einstr = list(LETTERS[:dimensions])
     for i, (idx1, idx2) in enumerate(indices):
-        einstr[idx1] = einstr[idx2] = LETTERS[-(i+1)]
+        einstr[idx1 + idx_shift] = einstr[idx2 + idx_shift] = LETTERS[-(i+1)]
     
     return jnp.einsum(''.join(einstr), data)
 
@@ -561,8 +612,7 @@ def times_group_element(D, data, parity, gg, precision=None):
                 jax.lax.Precision.HIGH for testing equality in unit tests
         """
         _, k = parse_shape(data.shape, D)
-        sign, logdet = np.linalg.slogdet(gg)
-        assert logdet == 0. #determinant is +- 1, so abs(log(det)) should be 0
+        sign, logdet = jnp.linalg.slogdet(gg)
         parity_flip = sign ** parity #if parity=1, the flip operators don't flip the tensors
 
         rotated_keys = get_rotated_keys(D, data, gg)
@@ -941,12 +991,7 @@ class GeometricImage:
         """
         assert self.k >= 2
         idx_shift = len(self.image_shape())
-        return self.__class__(
-            multicontract(self.data, ((i + idx_shift, j + idx_shift),)),
-            self.parity,
-            self.D,
-            self.is_torus,
-        )
+        return self.__class__(multicontract(self.data, ((i,j),), idx_shift), self.parity, self.D, self.is_torus)
 
     @partial(jit, static_argnums=1)
     def multicontract(self, indices):
@@ -957,8 +1002,7 @@ class GeometricImage:
         """
         assert self.k >= 2
         idx_shift = len(self.image_shape())
-        shifted_indices = tuple((i + idx_shift, j + idx_shift) for i,j in indices)
-        return self.__class__(multicontract(self.data, shifted_indices), self.parity, self.D, self.is_torus)
+        return self.__class__(multicontract(self.data, indices, idx_shift), self.parity, self.D, self.is_torus)
 
     def levi_civita_contract(self, indices):
         """

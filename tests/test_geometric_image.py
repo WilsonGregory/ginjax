@@ -383,6 +383,33 @@ class TestGeometricImage:
         with pytest.raises(AssertionError):
             img3.contract(0,1) #k < 2
 
+    def testMulticontract(self):
+        D = 2
+        N = 3
+        k = 5
+        key = random.PRNGKey(time.time_ns())
+        img1 = geom.GeometricImage(random.normal(key, shape=((N,)*D + (D,)*k)), 0, D)
+
+        for idxs in geom.get_contraction_indices(k, 1):
+            (i1, j1), (i2, j2) = idxs
+            i2_shift = int(i2 > i1) + int(i2 > j1)
+            j2_shift = int(j2 > i1) + int(j2 > j1)
+            assert img1.multicontract(idxs) == img1.contract(i1,j1).contract(i2 - i2_shift,j2 - j2_shift)
+
+    def testContractionByLinearMap(self):
+        D = 2
+        N = 3
+        k = 5
+        key = random.PRNGKey(time.time_ns())
+        img1 = geom.GeometricImage(random.normal(key, shape=((N,)*D + (D,)*k)), 0, D)
+
+        for idxs in geom.get_contraction_indices(k, 1):
+            contraction_map = geom.get_contraction_map(D, k, idxs)
+            assert jnp.allclose(
+                img1.multicontract(idxs).data,
+                geom.apply_contraction_map(D, img1.data, contraction_map, 1),
+            )
+
     def testLeviCivitaContract(self):
         key = random.PRNGKey(0)
         key, subkey = random.split(key)

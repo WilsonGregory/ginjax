@@ -302,14 +302,6 @@ def get_contraction_map(D, k, indices):
     out = vmap(multicontract, in_axes=(0, None))(basis, indices).reshape((len(basis), -1))
     return jnp.transpose(out)
 
-def apply_contraction_map(D, image_data, contract_map, final_k):
-    """
-    Contract the image_data using the contraction map.
-    """
-    N, k = parse_shape(image_data.shape, D)
-    vmap_mult = vmap(lambda image,map: map @ image, in_axes=(0, None))
-    return vmap_mult(image_data.reshape(((N**D), (D**k))), contract_map).reshape((N,)*D + (D,)*final_k)
-
 # ------------------------------------------------------------------------------
 # PART 4: Functional Programming GeometricImages
 # This section contains pure functions of geometric images that allows easier use of JAX fundamentals 
@@ -580,6 +572,14 @@ def multicontract(data, indices, idx_shift=0):
         einstr[idx1 + idx_shift] = einstr[idx2 + idx_shift] = LETTERS[-(i+1)]
     
     return jnp.einsum(''.join(einstr), data)
+
+def apply_contraction_map(D, image_data, contract_map, final_k):
+    """
+    Contract the image_data using the contraction map.
+    """
+    N, k = parse_shape(image_data.shape, D)
+    vmap_mult = vmap(lambda image,map: map @ image, in_axes=(0, None))
+    return vmap_mult(image_data.reshape(((N**D), (D**k))), contract_map).reshape((N,)*D + (D,)*final_k)
 
 @jit
 def linear_combination(images, params):

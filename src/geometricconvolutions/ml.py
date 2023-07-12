@@ -18,6 +18,7 @@ CONV_OLD = 'conv_old'
 CONV = 'conv'
 CHANNEL_COLLAPSE = 'collapse'
 CASCADING_CONTRACTIONS = 'cascading_contractions'
+PARAMED_CONTRACTIONS = 'paramed_contractions'
 BATCH_NORM = 'batch_norm'
 LAYER_NORM = 'layer_norm'
 
@@ -520,6 +521,83 @@ def all_contractions(target_k, input_layer):
 def batch_all_contractions(target_k, input_layer):
     return vmap(all_contractions, in_axes=(None, 0))(target_k, input_layer)
 
+@functools.partial(jit, static_argnums=[2,3,4])
+def paramed_contractions(params, input_layer, target_k, depth, mold_params=False, contraction_maps=None):
+    params_idx, this_params = get_layer_params(params, mold_params, PARAMED_CONTRACTIONS)
+    D = input_layer.D
+
+    out_layer = input_layer.empty()
+    for k, image_block in input_layer.items():
+        if ((k - target_k) % 2 != 0):
+            print(
+                'ml::all_contractions WARNING: Attempted contractions when input_layer is odd k away. '\
+                'Use target_k parameter of the final conv_layer to prevent wasted convolutions.',
+            )
+            continue
+        if (k < target_k):
+            print(
+                'ml::all_contractions WARNING: Attempted contractions when input_layer is smaller than '\
+                'target_k. This means there may be wasted operations in the network.',
+            ) #not actually sure the best way to resolve this
+            continue
+        if (k == target_k):
+            out_layer.append(target_k, image_block)
+            continue
+
+        N, _ = geom.parse_shape(image_block.shape[1:], D)
+        if contraction_maps is None:
+            maps = jnp.stack(
+                [geom.get_contraction_map(input_layer.D, k, idxs) for idxs in geom.get_contraction_indices(k, target_k)]
+            ) # (maps, out_size, in_size)
+        else:
+            maps = contraction_maps[k]
+
+        if mold_params:
+            this_params[k] = jnp.ones((depth, len(image_block), len(maps))) # (depth, channels, maps)
+
+        def channel_contract(maps, p, image_block):
+            # Given an image_block, contract in all the ways for each channel, then sum up the channels
+            # maps.shape: (maps, out_tensor_size, in_tensor_size)
+            # p.shape: (channels, maps)
+            # image_block.shape: (channels, (N,)*D, (D,)*k)
+
+            map_sum = vmap(geom.linear_combination, in_axes=(None, 0))(maps, p) #(channels, out_size, in_size)
+            image_block.reshape((len(image_block), (N**D), (D**k)))
+            vmap_contract = vmap(geom.apply_contraction_map, in_axes=(None, 0, 0, None))
+            return jnp.sum(vmap_contract(D, image_block, map_sum, target_k), axis=0)
+
+        vmap_contract = vmap(channel_contract, in_axes=(None, 0, None)) #vmap over depth in params
+        depth_block = vmap_contract(
+            maps, 
+            this_params[k], 
+            image_block, 
+        ) #(depth, image_shape)
+
+        out_layer.append(target_k, depth_block)
+
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return out_layer, params
+
+def batch_paramed_contractions(params, input_layer, target_k, depth, mold_params=False):
+    vmap_paramed_contractions = vmap(
+        paramed_contractions, 
+        in_axes=(None, 0, None, None, None, None),
+        out_axes=(0, None),
+    )
+
+    # do this here because we already cache it, don't want to do slow loop-unrolling by jitting it
+    contraction_maps = {}
+    for k in input_layer.keys():
+        if k < 2:
+            continue
+
+        contraction_maps[k] = jnp.stack(
+            [geom.get_contraction_map(input_layer.D, k, idxs) for idxs in geom.get_contraction_indices(k, target_k)]
+        )
+
+    return vmap_paramed_contractions(params, input_layer, target_k, depth, mold_params, contraction_maps)
+
 def channel_collapse(params, input_layer, mold_params=False):
     """
     Combine multiple channels into a single channel. Often the final step before exiting a GI-Net.
@@ -729,6 +807,7 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
         CONV: functools.partial(conv_init, D=input_layer.D),
         CONV_OLD: conv_old_init,
         CASCADING_CONTRACTIONS: cascading_contractions_init,
+        PARAMED_CONTRACTIONS: paramed_contractions_init,
     }
 
     for k,v in override_initializers.items():
@@ -819,6 +898,16 @@ def cascading_contractions_init(rand_key, tree):
         for contraction_idx, params_block in d.items():
             rand_key, subkey = random.split(rand_key)
             out_params[k][contraction_idx] = 0.1*random.normal(subkey, shape=params_block.shape)
+
+    return out_params
+
+def paramed_contractions_init(rand_key, tree):
+    out_params = {}
+    for k, param_block in tree.items():
+        _, channels, maps = param_block.shape
+        bound = 1/jnp.sqrt(channels * maps)
+        rand_key, subkey = random.split(rand_key)
+        out_params[k] = random.uniform(subkey, shape=param_block.shape, minval=-bound, maxval=bound)
 
     return out_params
 

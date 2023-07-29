@@ -7,7 +7,6 @@ import argparse
 import time
 from scipy.special import binom
 import math
-from collections import defaultdict
 
 import jax.numpy as jnp
 import jax.random as random
@@ -385,6 +384,7 @@ def handleArgs(argv):
 epochs, lr, batch_size, seed, save_folder, load_folder, verbose = handleArgs(sys.argv)
 
 D = 2
+N = 64 
 
 key = random.PRNGKey(time.time_ns() if (seed is None) else seed)
 
@@ -395,6 +395,7 @@ conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1], parities=[0], D=D, o
 # Get Training data
 train_data_path = '../phase2vec/output/data/polynomial'
 X_train_data, X_val_data, y_train, y_val, p_train, p_val = load_dataset(train_data_path)
+assert N == X_train_data.shape[2] == X_train_data.shape[3]
 X_train = geom.BatchLayer(
     { 1: jnp.expand_dims(X_train_data.transpose(0,2,3,1), axis=1) }, #(batch, channel, (N,)*D, (D,)*k)
     D,
@@ -420,31 +421,26 @@ X_test = geom.BatchLayer(
 
 # generate function library
 spatial_coords = [jnp.linspace(mn, mx, X_train.N) for (mn, mx) in zip([-1.,-1.], [1.,1.])]
-mesh = jnp.meshgrid(*spatial_coords)
+mesh = jnp.meshgrid(*spatial_coords, indexing='ij')
 L = jnp.concatenate([ms[..., None] for ms in mesh], axis=-1)
 ode_basis, _ = sindy_library(L.reshape(X_train.N**D,D), 3)
 
 # Define the models that we are benchmarking
 models = [
     (
-        'gi_net',
+        'gi_net',  # batch norm after MLP, but not CNN
         partial(map_and_loss, conv_filters=conv_filters, ode_basis=ode_basis, batch_norm=True, dropout=True),
         partial(net, conv_filters=conv_filters, ode_basis=ode_basis, batch_norm=True, dropout=True),
     ),
     (
-        'gi_net_no_batch_norm',
-        partial(map_and_loss, conv_filters=conv_filters, ode_basis=ode_basis, batch_norm=False, dropout=False),
-        partial(net, conv_filters=conv_filters, ode_basis=ode_basis, batch_norm=False, dropout=False),
-    ),
-    (
-        'baseline_beta',
+        'baseline_beta', # batch norm after MLP and CNN
         partial(baseline_map_and_loss, ode_basis=ode_basis, batch_norm=True, dropout=True),
         partial(baseline_net, ode_basis=ode_basis, batch_norm=True, dropout=True),
     ),
     (
-        'baseline_no_batch_norm', # to compare to gi_net, no batch norm after the cnn layers
-        partial(baseline_map_and_loss, ode_basis=ode_basis, batch_norm=False, dropout=False),
-        partial(baseline_net, ode_basis=ode_basis, batch_norm=False, dropout=False),
+        'baseline_no_batch_norm', # batch norm after MLP, but not CNN
+        partial(baseline_map_and_loss, ode_basis=ode_basis, batch_norm=False, dropout=True),
+        partial(baseline_net, ode_basis=ode_basis, batch_norm=False, dropout=True),
     ),
 ]
 
@@ -488,7 +484,7 @@ for model_name, model, eval_net, get_params in models_init:
     print(f'Model: {model_name}')
 
     if load_folder:
-        params = jnp.load(f'{load_folder}/{model_name}_s{seed}.npy')
+        params = jnp.load(f'{load_folder}/{model_name}_s{seed}_e{epochs}.npy')
     else:
         key, subkey = random.split(key)
         # might want to try to do kaiming initialization here
@@ -510,7 +506,7 @@ for model_name, model, eval_net, get_params in models_init:
         )
 
         if save_folder:
-            jnp.save(f'{save_folder}/{model_name}_s{seed}.npy', params)
+            jnp.save(f'{save_folder}/{model_name}_s{seed}_e{epochs}.npy', params)
 
     par_losses = []
     recon_losses = []

@@ -598,12 +598,15 @@ def batch_paramed_contractions(params, input_layer, target_k, depth, mold_params
 
     return vmap_paramed_contractions(params, input_layer, target_k, depth, mold_params, contraction_maps)
 
-def channel_collapse(params, input_layer, mold_params=False):
+@functools.partial(jit, static_argnums=[2,3])
+def channel_collapse(params, input_layer, depth=1, mold_params=False):
     """
-    Combine multiple channels into a single channel. Often the final step before exiting a GI-Net.
+    Combine multiple channels into depth number of channels. Often the final step before exiting a GI-Net.
+    In some ways this is akin to a fully connected layer, where each channel image is an input.
     args:
         params (params dict): the usual
         input_layer (Layer): input layer whose channels we will take a parameterized linear combination of
+        depth (int): output channel depth, defaults to 1
         mold_params (bool): 
     """
     params_idx, this_params = get_layer_params(params, mold_params, CHANNEL_COLLAPSE)
@@ -611,16 +614,17 @@ def channel_collapse(params, input_layer, mold_params=False):
     out_layer = input_layer.empty()
     for k, image_block in input_layer.items():
         if (mold_params):
-            this_params[k] = jnp.ones(len(image_block))
+            this_params[k] = jnp.ones((depth, len(image_block)))
 
-        out_layer.append(k, jnp.expand_dims(geom.linear_combination(image_block, this_params[k]), axis=0))
+        out_layer.append(k, vmap(geom.linear_combination, in_axes=(None, 0))(image_block, this_params[k]))
 
     params = update_params(params, params_idx, this_params, mold_params)
 
     return out_layer, params
 
-def batch_channel_collapse(params, input_layer, mold_params=False):
-    return vmap(channel_collapse, in_axes=(None, 0, None), out_axes=(0, None))(params, input_layer, mold_params)
+def batch_channel_collapse(params, input_layer, depth=1, mold_params=False):
+    vmap_channel_collapse = vmap(channel_collapse, in_axes=(None, 0, None, None), out_axes=(0, None))
+    return vmap_channel_collapse(params, input_layer, depth, mold_params)
 
 @functools.partial(jit, static_argnums=[2,5,6,7])
 def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0.1, eps=1e-05, mold_params=False):
@@ -717,6 +721,35 @@ def average_pool_layer(input_layer, patch_len):
 
 def unpool_layer(input_layer, patch_len):
     return [image.unpool(patch_len) for image in input_layer]
+
+@jit
+def integration_layer(input_layer, basis_layer):
+    """
+    input_layer and basis_layer must have the same number of channels
+    args:
+        basis (Layer): basis
+    """
+    assert list(input_layer.keys()) == [1] #assume this input is just a vector image
+    assert list(basis_layer.keys()) == [1] #assume basis is a vector basis
+    assert len(input_layer[1]) == len(basis_layer[1]) #input and basis must same number of channels
+
+    out_vec_image = jnp.zeros(basis_layer[1].shape[1:])
+    img = input_layer[1] 
+    basis_block = basis_layer[1]
+
+    vmap_mul = vmap(geom.mul, in_axes=(None, 0, 0))
+    mul_out = vmap_mul(input_layer.D, img, basis_block)
+    coeffs_image = geom.multicontract(mul_out, ((0,1),), idx_shift=input_layer.D+1)
+    coeffs = jnp.sum(coeffs_image, axis=range(1, 1+input_layer.D)) #does this need to be translation equiv?
+
+    out_vec_image = jnp.sum(vmap(lambda p,img: p*img)(coeffs, basis_block), axis=0, keepdims=True)
+
+    out_layer = input_layer.empty()
+    out_layer.append(1, out_vec_image)
+    return out_layer, coeffs
+
+def batch_integration_layer(input_layer, basis_layer):
+    return vmap(integration_layer, in_axes=(0,None))(input_layer, basis_layer)
 
 ## Params
 
@@ -851,7 +884,7 @@ def channel_collapse_init(rand_key, tree):
     out_params = {}
     for k, params_block in tree.items():
         rand_key, subkey = random.split(rand_key)
-        bound = 1/jnp.sqrt(params_block.shape[0])
+        bound = 1/jnp.sqrt(params_block.shape[1])
         out_params[k] = random.uniform(subkey, params_block.shape, minval=-bound, maxval=bound)
 
     return out_params

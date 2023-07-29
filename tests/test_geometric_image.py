@@ -803,6 +803,32 @@ class TestGeometricImage:
             ],
         ])).all()
 
+    def testTimesGroupElementEven(self):
+        left90 = jnp.array([[0,-1],[1,0]])
+        flipX = jnp.array([[-1, 0], [0,1]])
+
+        img1 = geom.GeometricImage(jnp.arange(4).reshape((2,2)), 0, 2)
+
+        assert jnp.allclose(img1.times_group_element(left90).data, jnp.array([[1,3],[0,2]]))
+        assert jnp.allclose(img1.times_group_element(flipX).data, jnp.array([[2,3],[0,1]]))
+
+        img2 = geom.GeometricImage(jnp.arange(8).reshape((2,2,2)), 0, 2)
+
+        assert jnp.allclose(
+            img2.times_group_element(left90).data, 
+            jnp.array([
+                [[-3,2],[-7,6]],
+                [[-1,0],[-5,4]],
+            ]),
+        )
+        assert jnp.allclose(
+            img2.times_group_element(flipX).data,
+            jnp.array([
+                [[-4,5],[-6,7]],
+                [[0,1],[-2,3]],
+            ]),
+        )
+
     def testAnticontract(self):
         D = 2
         N = 10

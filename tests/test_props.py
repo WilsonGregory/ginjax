@@ -6,7 +6,7 @@ import pytest
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 import jax.numpy as jnp
-from jax import random
+from jax import random, vmap
 import jax.lax
 
 class TestPropositions:
@@ -236,4 +236,30 @@ class TestPropositions:
                 precision=jax.lax.Precision.HIGH,
             )
             assert out_layer1 == out_layer2
+
+    def testDiagEquivalence(self):
+        # test that the tensor product and contraction is indeed the diag operator
+        N = 3
+        D = 2
+        k = 1
+        
+        key = random.PRNGKey(time.time_ns())
+        data = random.normal(key, shape=(N,)*D + (D,)*k)
+        flattened_data = data.reshape((N**D,) + (D,)*k)
+
+        kd_3 = geom.KroneckerDeltaSymbol.get(D, 3)
+        assert jnp.allclose(
+            vmap(jnp.diag)(flattened_data),
+            vmap(lambda vec: geom.multicontract(jnp.tensordot(vec, kd_3, axes=0), ((0,1),)))(flattened_data)
+        )
+
+        D = 3
+        data = random.normal(key, shape=(N,)*D + (D,)*k)
+        flattened_data = data.reshape((N**D,) + (D,)*k)
+
+        kd_3 = geom.KroneckerDeltaSymbol.get(D, 3)
+        assert jnp.allclose(
+            vmap(jnp.diag)(flattened_data),
+            vmap(lambda vec: geom.multicontract(jnp.tensordot(vec, kd_3, axes=0), ((0,1),)))(flattened_data)
+        )
 

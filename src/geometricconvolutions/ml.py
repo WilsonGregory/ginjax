@@ -731,6 +731,7 @@ def integration_layer(input_layer, basis_layer):
     """
     assert list(input_layer.keys()) == [1] #assume this input is just a vector image
     assert list(basis_layer.keys()) == [1] #assume basis is a vector basis
+    assert len(input_layer[1]) == len(basis_layer[1]) #input and basis must same number of channels
 
     out_vec_image = jnp.zeros(basis_layer[1].shape[1:])
     img = input_layer[1] 

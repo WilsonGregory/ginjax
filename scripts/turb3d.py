@@ -7,7 +7,9 @@ import time
 
 import jax.numpy as jnp
 import jax.random as random
-from jax import vmap, jit
+from jax import vmap, jit, checkpoint
+import jax
+from jax.ad_checkpoint import print_saved_residuals, checkpoint_name
 import optax
 
 import geometricconvolutions.geometric as geom
@@ -15,11 +17,11 @@ import geometricconvolutions.ml as ml
 
 def net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 2
-    depth = 1
+    depth = 4
     max_k = 3 # this is tough
-    num_conv_layers = 2
+    num_conv_layers = 10
 
-    for i in range(num_conv_layers):
+    for _ in range(num_conv_layers):
         layer, params = ml.batch_conv_layer(
             params,
             layer,
@@ -29,8 +31,6 @@ def net(params, layer, key, train, conv_filters, return_params=False):
             mold_params=return_params,
         )
         layer = ml.batch_leaky_relu_layer(layer)
-        if (return_params):
-            print(layer)
 
     layer, params = ml.batch_conv_layer(
         params, 
@@ -41,16 +41,9 @@ def net(params, layer, key, train, conv_filters, return_params=False):
         max_k=max_k, 
         mold_params=return_params,
     )
-    if (return_params):
-        print(layer)
 
     layer = ml.batch_all_contractions(target_k, layer)
-    if (return_params):
-        print(layer)
-
     layer, params = ml.batch_channel_collapse(params, layer, mold_params=return_params)
-    if (return_params):
-        print(layer)
 
     return (layer, params) if return_params else layer
 
@@ -91,7 +84,7 @@ key = random.PRNGKey(time.time_ns() if (seed is None) else seed)
 
 # start with basic 3x3 scalar, vector, and 2nd order tensor images
 operators = geom.make_all_operators(D)
-conv_filters = geom.get_invariant_filters(Ms=[3], ks=[1,2], parities=[0], D=D, operators=operators)
+conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1], parities=[0], D=D, operators=operators)
 
 # Get Training data
 data = np.load('../data/3d_turb/downsampled_1024_to_64.npz')
@@ -119,18 +112,39 @@ key, subkey = random.split(key)
 params = ml.init_params(partial(net, conv_filters=conv_filters), layer_x, subkey)
 print(f'Model params: {ml.count_params(params)}')
 
+# net_checkpoint = checkpoint(
+#     net,
+#     policy=jax.checkpoint_policies.nothing_saveable, 
+#     static_argnums=3,
+# )
+# print_saved_residuals(net_checkpoint, params, layer_x, key, False, conv_filters)
+# exit()
+
 del data
 del raw_tau
 
-key, subkey = random.split(key)
+if load_folder:
+    params = jnp.load(f'{load_folder}/params_{seed}.npy', allow_pickle=True).item()
+else:
+    key, subkey = random.split(key)
+    params, _, _ = ml.train(
+        layer_x, 
+        layer_y, 
+        partial(map_and_loss, conv_filters=conv_filters),
+        # checkpoint(
+        #     partial(map_and_loss, conv_filters=conv_filters),
+        #     policy=jax.checkpoint_policies.nothing_saveable, 
+        #     static_argnums=4,
+        # ),
+        params,
+        subkey,
+        ml.EpochStop(epochs=epochs, verbose=verbose),
+        batch_size=1,
+        optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=1, decay_rate=0.999)),
+    )
 
-params, _, _ = ml.train(
-    layer_x, 
-    layer_y, 
-    partial(map_and_loss, conv_filters=conv_filters),
-    params,
-    subkey,
-    ml.EpochStop(epochs=epochs, verbose=verbose),
-    batch_size=1,
-    optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=1, decay_rate=0.999)),
-)
+    if (save_folder):
+        jnp.save(f'{save_folder}/params_{seed}.npy', params, allow_pickle=True)
+
+key, subkey = random.split(key)
+net_out = net(params, layer_x, subkey, False, conv_filters)

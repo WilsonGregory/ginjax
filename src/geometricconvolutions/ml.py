@@ -4,7 +4,7 @@ from collections import defaultdict
 import numpy as np
 import math
 
-from jax import jit, random, value_and_grad, vmap
+from jax import jit, random, value_and_grad, vmap, checkpoint
 import jax.nn
 import jax.numpy as jnp
 import jax.debug
@@ -166,6 +166,7 @@ def get_filter_block(params, input_layer, M, out_depth, filter_k_set=None, mold_
     
     return filter_layer, params
 
+@functools.partial(checkpoint, static_argnums=(2,3,4,5,6,7,8,9,10,11))
 def conv_layer_build_filters(
     params, 
     input_layer,
@@ -1193,12 +1194,12 @@ def train(
                     params, 
                     X_batch, 
                     Y_batch, 
-                    key=subkey, 
-                    train=True,
+                    subkey, 
+                    True,
                     aux_data=aux_data,
                 )
             else:
-                loss_val, grads = batch_loss_grad(params, X_batch, Y_batch, key=subkey, train=True)
+                loss_val, grads = batch_loss_grad(params, X_batch, Y_batch, subkey, True)
 
             updates, opt_state = optimizer.update(grads, opt_state)
             params = optax.apply_updates(params, updates)

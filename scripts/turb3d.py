@@ -17,7 +17,7 @@ import geometricconvolutions.ml as ml
 
 def net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 2
-    depth = 1
+    depth = 4
     max_k = 3 # this is tough
     num_conv_layers = 10
 
@@ -31,8 +31,6 @@ def net(params, layer, key, train, conv_filters, return_params=False):
             mold_params=return_params,
         )
         layer = ml.batch_leaky_relu_layer(layer)
-        if (return_params):
-            print(layer)
 
     layer, params = ml.batch_conv_layer(
         params, 
@@ -43,16 +41,9 @@ def net(params, layer, key, train, conv_filters, return_params=False):
         max_k=max_k, 
         mold_params=return_params,
     )
-    if (return_params):
-        print(layer)
 
     layer = ml.batch_all_contractions(target_k, layer)
-    if (return_params):
-        print(layer)
-
     layer, params = ml.batch_channel_collapse(params, layer, mold_params=return_params)
-    if (return_params):
-        print(layer)
 
     return (layer, params) if return_params else layer
 
@@ -93,7 +84,7 @@ key = random.PRNGKey(time.time_ns() if (seed is None) else seed)
 
 # start with basic 3x3 scalar, vector, and 2nd order tensor images
 operators = geom.make_all_operators(D)
-conv_filters = geom.get_invariant_filters(Ms=[3], ks=[1,2], parities=[0], D=D, operators=operators)
+conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1], parities=[0], D=D, operators=operators)
 
 # Get Training data
 data = np.load('../data/3d_turb/downsampled_1024_to_64.npz')
@@ -157,5 +148,3 @@ else:
 
 key, subkey = random.split(key)
 net_out = net(params, layer_x, subkey, False, conv_filters)
-print('net_out', net_out[2][0,0][0,0,0])
-print('layer_y', layer_y[2][0,0][0,0,0])

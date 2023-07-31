@@ -16,6 +16,7 @@ import geometricconvolutions.geometric as geom
 
 CONV_OLD = 'conv_old'
 CONV = 'conv'
+NOT_CONV = 'not_conv'
 CHANNEL_COLLAPSE = 'collapse'
 CASCADING_CONTRACTIONS = 'cascading_contractions'
 PARAMED_CONTRACTIONS = 'paramed_contractions'
@@ -336,6 +337,94 @@ def conv_layer_alt(
         out_layer = order_cap_layer(out_layer, max_k)
 
     return out_layer
+
+def not_conv_layer(
+    params,
+    input_layer, 
+    invariant_filters,
+    depth,
+    target_k=None, 
+    max_k=None,
+    # bias=None,
+    mold_params=False,
+):
+    """
+    This is a convolution layer where for each input pixel, the filter can be different. This means that
+    it is not an identical function at each pixel, so it is not translation equivariant. However, by 
+    constructing the filters from B_d-invariant filters, we can make a B_d-equivariant layer.
+    """
+    params_idx, this_params = get_layer_params(params, mold_params, NOT_CONV)
+
+    N,D = input_layer.N, input_layer.D
+    filter_block, filter_block_params = get_filter_block_from_invariants(
+        this_params,
+        input_layer,
+        invariant_filters,
+        depth * (N**D), #make a different filter per pixel (stride/dilations?)
+        mold_params,
+    )
+    this_params[CONV_FIXED] = filter_block_params
+
+    # map over filters
+    vmap_not_convolve = vmap(geom.depth_not_convolve, in_axes=(None, None, 0, None))
+
+    out_layer = input_layer.empty()
+    for k, images_block in input_layer.items():
+        for filter_k, filter_group_raw in filter_block[k].items():
+            if ((target_k is not None) and ((k + target_k - filter_k) % 2 != 0)):
+                continue
+
+            #reshape filter block so it works with not_convolve
+            filter_group = jnp.transpose(
+                filter_group_raw.reshape((N**D, depth) + filter_group_raw.shape[1:]),
+                (1,2,0) + tuple(range(3,D+filter_k+3)) 
+            ) # split up depth and filter per pixel, then put it in (depth, in, filters, ...)
+
+            convolved_images_block = vmap_not_convolve(
+                input_layer.D, 
+                images_block, 
+                filter_group, 
+                input_layer.is_torus,
+                # stride, 
+                # padding,
+                # lhs_dilation, 
+                # rhs_dilation,
+            )
+            out_layer.append(k + filter_k, convolved_images_block)
+
+    if (max_k is not None):
+        out_layer = order_cap_layer(out_layer, max_k)
+
+
+    # if bias: #is this equivariant?
+    #     out_layer = layer.empty()
+    #     if (mold_params):
+    #         this_params[BIAS] = {}
+    #     for k,image_block in layer.items():
+    #         if (mold_params):
+    #             this_params[BIAS][k] = jnp.ones(depth)
+
+    #         biased_image = vmap(lambda image,p: image + p)(image_block, this_params[BIAS][k]) #add a single scalar
+    #         out_layer.append(k, biased_image)
+    # else:
+    #     out_layer = layer
+
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return out_layer, params
+
+def batch_not_conv_layer(
+    params,
+    input_layer, 
+    invariant_filters,
+    depth,
+    target_k=None, 
+    max_k=None,
+    # bias=None,
+    mold_params=False,
+):
+    vmap_not_conv = vmap(not_conv_layer, in_axes=(None, 0, None, None, None, None, None))
+    return vmap_not_conv(params, input_layer, invariant_filters, depth, target_k, max_k, mold_params)
 
 def get_bias_image(params, param_idx, x):
     """

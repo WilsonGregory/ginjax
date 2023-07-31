@@ -507,6 +507,99 @@ def depth_convolve(
     res = vmap_convolve(D, image, filter_image, is_torus, stride, padding, lhs_dilation, rhs_dilation)
     return jnp.sum(res, axis=0)
 
+
+# @partial(jit, static_argnums=[0,3])
+def not_convolve(
+    D,
+    image,
+    filter_image, 
+    is_torus,
+):
+    """
+    This function is like convolution, but the filter applied to each pixel region of the input image
+    can be different. This means the function is not translation equivariant, but if the filter_image
+    is rotational/reflection invariant, the function is rotationally/reflectionally equivariant.
+    args:
+        D (int): dimension of the images
+        image (jnp.array): image data
+        filter_image (jnp.array): the convolution filter
+        is_torus (bool): whether the images data is on the torus or not
+    """
+    assert (D == 2) or (D == 3)
+
+    img_N, img_k = parse_shape(image.shape, D)
+    filter_N, filter_k = parse_shape(filter_image.shape[1:], D)
+    filter_m = (filter_N - 1) // 2
+    output_k = img_k + filter_k
+
+    rhs_dilation = (1,)*D #start with simplest case
+
+    # if padding is None: #if unspecified, infer from is_torus
+    padding = 'TORUS' if is_torus else 'SAME'
+
+    if padding == 'TORUS':
+        padded_image = get_torus_expanded(D, image, filter_image[0], rhs_dilation[0])
+    elif padding == 'SAME': #pad with enough zeros so that the size doesn't change
+        padded_image = jnp.zeros((img_N+(2*filter_m),)*D + (D,)*img_k)
+        padded_image = padded_image.at[(slice(filter_m, img_N+filter_m, None),)*D].set(image)
+
+    # if padding == 'TORUS':
+    #     image = get_torus_expanded(D, image, filter_image[0], rhs_dilation[0])
+    #     padding_literal = ((0,0),)*D
+    # else:
+    #     if padding == 'VALID':
+    #         padding_literal = ((0,0),)*D
+    #     elif padding == 'SAME':
+    #         filter_m = (filter_N - 1) // 2
+    #         padding_literal = ((filter_m * dilation,) * 2 for dilation in rhs_dilation)
+    #     else:
+    #         padding_literal = padding
+
+    filter_img_shaped = filter_image.reshape((img_N,)*D + (filter_N,)*D + (D,)*filter_k)
+    out_img = jnp.zeros((img_N,)*D + (D,)*output_k)
+
+    # def scan_f(carry, element)
+
+    # jax.lax.scan()
+
+
+    for idx in it.product(range(img_N), repeat=D): #should be able to vmap this
+        # print(idx)
+        # print(padded_image[tuple(slice(i,i+filter_N,None) for i in idx)].shape)
+        # print(filter_img_shaped[idx].shape)
+        # print(jnp.sum(mul(D, padded_image[tuple(slice(i,i+filter_N,None) for i in idx)], filter_img_shaped[idx]), axis=range(D)).shape)
+        out_img = out_img.at[idx].set(jnp.sum(
+            mul(D, padded_image[tuple(slice(i,i+filter_N,None) for i in idx)], filter_img_shaped[idx]),
+            axis=range(D),
+        ))
+
+    return out_img
+
+# @partial(jit, static_argnums=[0,3,4,5,6,7])
+# @partial(jit, static_argnums=[0,3])
+def depth_not_convolve(
+    D,
+    image,
+    filter_image, 
+    is_torus,
+    # stride=None, 
+    # padding=None,
+    # lhs_dilation=None, 
+    # rhs_dilation=None, 
+):
+    """
+    See convolve for a full description. This function performs depth convolutions by applying a vmap
+    over regular convolutions to the image and filter_image arguments, then taking the sum of the result.
+    Possibly would be faster to do this inside convolve.
+    args:
+        image (jnp.array): array of shape (depth, (N,)*D, (D,)*img_k)
+        filter_image (jnp.array): array of shape (depth, (N,)*D, (D,)*filter_k)
+    """
+    assert image.shape[0] == filter_image.shape[0]
+    vmap_not_convolve = vmap(not_convolve, in_axes=(None, 0, 0, None))
+    res = vmap_not_convolve(D, image, filter_image, is_torus)
+    return jnp.sum(res, axis=0)
+
 def get_contraction_indices(initial_k, final_k, swappable_idxs=()):
     """
     Get all possible unique indices for multicontraction. Returns a list of indices. The indices are a tuple of tuples

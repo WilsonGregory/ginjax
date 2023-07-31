@@ -19,20 +19,22 @@ def net(params, layer, key, train, basis_layer, return_params=False):
     num_conv_layers = 3
 
     for _ in range(num_conv_layers):
-        layer, params = ml.batch_conv_layer(
+        layer, params = ml.batch_not_conv_layer(
             params,
             layer,
-            { 'type': 'fixed', 'filters': conv_filters }, 
+            conv_filters,
             depth, 
             max_k=max_k,
             mold_params=return_params,
         )
+        print(layer)
+        exit()
         layer = ml.batch_relu_layer(layer)
 
-    layer, params = ml.batch_conv_layer(
+    layer, params = ml.batch_not_conv_layer(
         params,
         layer, 
-        { 'type': 'fixed', 'filters': conv_filters }, 
+        conv_filters, 
         depth,
         target_k,
         mold_params=return_params,
@@ -54,7 +56,7 @@ def handleArgs(argv):
     parser.add_argument('-e', '--epochs', help='number of epochs', type=float, default=200)
     parser.add_argument('-lr', '--learning_rate', help='learning rate', type=float, default=1e-4)
     parser.add_argument('-d', '--decay', help='learning rate decay', type=float, default=0.995)
-    parser.add_argument('-b', '--batch', help='batch size', type=int, default=64)
+    parser.add_argument('-b', '--batch', help='batch size', type=int, default=16)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-s', '--save', help='folder name to save the results', type=str, default=None)
     parser.add_argument('-l', '--load', help='folder name to load results from', type=str, default=None)

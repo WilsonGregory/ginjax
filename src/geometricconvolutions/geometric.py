@@ -141,36 +141,97 @@ class LeviCivitaSymbol:
 
 basis_cache = {}
 
-def get_tensor_basis(D,k):
+def get_basis(key, shape):
     """
-    Return a basis of a tensor, will be shape: (D**k, (D,)*k). Additionally, cache the basis so we 
-    only have to calculate them once.
+    Return a basis for the given shape. Bases are cached so we only have to calculate them once. The
+    result will be a jnp.array of shape (len, shape) where len is the shape all multiplied together.
     args: 
-        D (int): dimension of image and tensors
-        k (int): order of tensors
+        key (string): basis cache key for this basis, will be combined with the shape
+        shape (tuple of ints): the shape of the basis
     """
-    if (D,k) not in basis_cache:
-        shape = (D,)*k
-        size = D**k
-        basis_cache[(D,k)] = vmap(lambda row: row.reshape(shape))(jnp.eye(size))
-
-    return basis_cache[(D,k)]
-
-def get_image_basis(N,D,k):
-    """
-    Return a basis of a geometric image, will be shape: (N**D * D**k, (N,)*D, (D,)*k). Additionally,
-    cache the basis so we only have to calculate them once.
-    args: 
-        N (int): image sidelength
-        D (int): dimension of image and tensors
-        k (int): order of tensors
-    """
-    if (N,D,k) not in basis_cache:
-        shape = (N,)*D + (D,)*k
+    actual_key = key + ':' + str(shape)
+    if actual_key not in basis_cache:
         size = np.multiply.reduce(shape)
-        basis_cache[(N,D,k)] = vmap(lambda row: row.reshape(shape))(jnp.eye(size))
+        basis_cache[actual_key] = jnp.eye(size).reshape((size,) + shape)
 
-    return basis_cache[(N,D,k)]
+    return basis_cache[actual_key]
+
+def get_invariant_gen_filter_dict(N, M, D, ks, parity, operators):
+    """
+    get_invariant_gen_filters, but accepts a list of tensor order ks, and returns a dictionary by k of the
+    generalized filters.
+    args:
+        ks (list of int): tensor orders of the filters
+    """
+    gen_filter_dict = {}
+    for k in ks:
+        gen_filter_dict[k] = get_invariant_gen_filters(N, M, D, k, parity, operators)
+
+    return gen_filter_dict
+
+def get_invariant_gen_filters(N, M, D, k, parity, operators):
+    """
+    Get a basis of the invariant generalized filters. This is like a convolution filter, but for 
+    each input the filters can be different. For now, operators is pretty much assumed to be B_d.
+    args:
+        N (int): input image side length
+        M (int): filter side length
+        D (int): dimension of the input image
+        k (int): tensor order of the generalized filter
+        parity (int): parity of the generalized filter
+        operators (list): list of the matrix representation of the group operators, assumed to be B_d
+    """
+    spatial_shape = (N,)*D 
+    filter_shape = (M,)*D + (D,)*k 
+
+    operators = jnp.stack(operators)
+
+    # okay, this is a bit of a dirty hack. When our group is the rotations by 90 degrees, we only
+    # need our basis to start in a single quadrant to get all the elements when we do all rotations.
+    quadrant_len = (N + (N % 2)) // 2
+    small_basis = get_basis('gen_filter', (quadrant_len,)*D + filter_shape)
+    basis = jnp.zeros((len(small_basis),) + spatial_shape + filter_shape)
+    if D == 2:
+        basis = basis.at[:,:quadrant_len,:quadrant_len,...].set(small_basis)
+    elif D == 3:
+        basis = basis.at[:,:quadrant_len,:quadrant_len,:quadrant_len,...].set(small_basis)
+
+    del small_basis
+
+    def gen_filter_times_gg(D, gen_filter, parity, gg, precision=jax.lax.Precision.HIGH):
+        rotated_keys = get_rotated_keys(D, gen_filter, gg)
+        rotated_filters = gen_filter[hash(D, gen_filter, rotated_keys)] # (N**D, (M,)*D (D,)*k)
+        vmap_times_gg = vmap(times_group_element, in_axes=(None, 0, None, None, None))
+        return vmap_times_gg(D, rotated_filters, parity, gg, precision).reshape(gen_filter.shape)
+
+    # vmap over the group actions
+    vmap_times_group = vmap(gen_filter_times_gg, in_axes=(None, None, None, 0))
+
+    # vmap over the elements of the basis
+    group_average = vmap(lambda ff: jnp.sum(vmap_times_group(D, ff, parity, operators), axis=0))
+
+    filter_matrix = group_average(basis).reshape(len(basis), -1)
+
+    # remove rows that are all zeros
+    filter_matrix = jnp.delete(filter_matrix, jnp.all(filter_matrix==0, axis=1), axis=0)
+
+    # swap signs so that the first nonzero in each row is positive
+    filter_matrix *= jnp.expand_dims(
+        filter_matrix[jnp.arange(len(filter_matrix)),jnp.argmax(filter_matrix !=0, axis=1)],
+        axis=1,
+    )
+
+    distinct_filters = np.unique(filter_matrix, axis=0)
+
+    # normalize the amplitudes so they max out at +/- 1.
+    distinct_filters = distinct_filters / jnp.max(jnp.abs(distinct_filters), axis=1, keepdims=True)
+
+    # make sure the rows are generally positive
+    signs = jnp.sign(jnp.sum(distinct_filters, axis=1, keepdims=True))
+    signs = jnp.where(signs == 0, jnp.ones(signs.shape), signs) #if signs is 0, just want to multiply by 1
+    distinct_filters *= signs
+
+    return distinct_filters.reshape((len(distinct_filters),) + spatial_shape + filter_shape)
 
 def get_unique_invariant_filters(M, k, parity, D, operators, scale='normalize'):
     """
@@ -190,7 +251,7 @@ def get_unique_invariant_filters(M, k, parity, D, operators, scale='normalize'):
     shape = (M,)*D + (D,)*k
     operators = jnp.stack(operators)
 
-    basis = get_image_basis(M, D, k) # (N**D * D**k, (N,)*D, (D,)*k)
+    basis = get_basis('image', shape) # (N**D * D**k, (N,)*D, (D,)*k)
     # vmap (over the group actions) the times_group_element function
     vmap_times_group = vmap(times_group_element, in_axes=(None, None, None, 0, None))
     # vmap over the elements of the basis
@@ -206,13 +267,13 @@ def get_unique_invariant_filters(M, k, parity, D, operators, scale='normalize'):
         return []
 
     # normalize the amplitudes so they max out at +/- 1.
-    amps = v[sbig] / np.max(np.abs(v[sbig]), axis=1)[:, None]
+    amps = v[sbig] / jnp.max(jnp.abs(v[sbig]), axis=1, keepdims=True)
     # make sure the amps are positive, generally
-    for i in range(len(amps)):
-        if np.sum(amps[i]) < 0:
-            amps[i] *= -1
+    signs = jnp.sign(jnp.sum(amps, axis=1, keepdims=True))
+    signs = jnp.where(signs == 0, jnp.ones(signs.shape), signs) #if signs is 0, just want to multiply by 1
+    amps *= signs
     # make sure that the zeros are zeros.
-    amps[np.abs(amps) < TINY] = 0.
+    amps = jnp.round(amps, decimals=5) + 0.
 
     # order them
     filters = [GeometricFilter(aa.reshape(shape), parity, D) for aa in amps]
@@ -297,7 +358,7 @@ def get_contraction_map(D, k, indices):
         k (int): order of the tensor
         indices (tuple of tuple of int pairs): the indices of one multicontraction
     """
-    basis = get_tensor_basis(D,k)
+    basis = get_basis('tensor', (D,)*k)
 
     out = vmap(multicontract, in_axes=(0, None))(basis, indices).reshape((len(basis), -1))
     return jnp.transpose(out)
@@ -508,7 +569,7 @@ def depth_convolve(
     return jnp.sum(res, axis=0)
 
 
-# @partial(jit, static_argnums=[0,3])
+@partial(jit, static_argnums=[0,3])
 def not_convolve(
     D,
     image,
@@ -528,13 +589,13 @@ def not_convolve(
     assert (D == 2) or (D == 3)
 
     img_N, img_k = parse_shape(image.shape, D)
-    filter_N, filter_k = parse_shape(filter_image.shape[1:], D)
-    filter_m = (filter_N - 1) // 2
+    filter_N, filter_k = parse_shape(filter_image.shape[D:], D) # two spatial layers at the front
+    filter_m = (filter_N - (filter_N % 2)) // 2 #odds subtract 1, evens don't
+
     output_k = img_k + filter_k
 
     rhs_dilation = (1,)*D #start with simplest case
 
-    # if padding is None: #if unspecified, infer from is_torus
     padding = 'TORUS' if is_torus else 'SAME'
 
     if padding == 'TORUS':
@@ -543,49 +604,29 @@ def not_convolve(
         padded_image = jnp.zeros((img_N+(2*filter_m),)*D + (D,)*img_k)
         padded_image = padded_image.at[(slice(filter_m, img_N+filter_m, None),)*D].set(image)
 
-    # if padding == 'TORUS':
-    #     image = get_torus_expanded(D, image, filter_image[0], rhs_dilation[0])
-    #     padding_literal = ((0,0),)*D
-    # else:
-    #     if padding == 'VALID':
-    #         padding_literal = ((0,0),)*D
-    #     elif padding == 'SAME':
-    #         filter_m = (filter_N - 1) // 2
-    #         padding_literal = ((filter_m * dilation,) * 2 for dilation in rhs_dilation)
-    #     else:
-    #         padding_literal = padding
+    filter_img_shaped = filter_image.reshape((img_N**D,) + (filter_N,)*D + (D,)*filter_k)
 
-    filter_img_shaped = filter_image.reshape((img_N,)*D + (filter_N,)*D + (D,)*filter_k)
-    out_img = jnp.zeros((img_N,)*D + (D,)*output_k)
-
-    # def scan_f(carry, element)
-
-    # jax.lax.scan()
-
-
-    for idx in it.product(range(img_N), repeat=D): #should be able to vmap this
-        # print(idx)
-        # print(padded_image[tuple(slice(i,i+filter_N,None) for i in idx)].shape)
-        # print(filter_img_shaped[idx].shape)
-        # print(jnp.sum(mul(D, padded_image[tuple(slice(i,i+filter_N,None) for i in idx)], filter_img_shaped[idx]), axis=range(D)).shape)
-        out_img = out_img.at[idx].set(jnp.sum(
-            mul(D, padded_image[tuple(slice(i,i+filter_N,None) for i in idx)], filter_img_shaped[idx]),
+    def scan_f(elem):
+        return jnp.sum(
+            mul(
+                D, 
+                jax.lax.dynamic_slice(padded_image, tuple(elem['idxs']) + (0,)*img_k, (filter_N,)*D + (D,)*img_k), 
+                elem['filter_img'],
+            ),
             axis=range(D),
-        ))
+        )
 
-    return out_img
+    idxs = jnp.array(list(it.product(range(img_N), repeat=D)))
+    out_img = jax.lax.map(scan_f, { 'idxs': idxs, 'filter_img': filter_img_shaped })
 
-# @partial(jit, static_argnums=[0,3,4,5,6,7])
-# @partial(jit, static_argnums=[0,3])
+    return out_img.reshape((img_N,)*D + (D,)*output_k)
+
+@partial(jit, static_argnums=[0,3])
 def depth_not_convolve(
     D,
     image,
     filter_image, 
     is_torus,
-    # stride=None, 
-    # padding=None,
-    # lhs_dilation=None, 
-    # rhs_dilation=None, 
 ):
     """
     See convolve for a full description. This function performs depth convolutions by applying a vmap
@@ -596,7 +637,7 @@ def depth_not_convolve(
         filter_image (jnp.array): array of shape (depth, (N,)*D, (D,)*filter_k)
     """
     assert image.shape[0] == filter_image.shape[0]
-    vmap_not_convolve = vmap(not_convolve, in_axes=(None, 0, 0, None))
+    vmap_not_convolve = vmap(not_convolve, in_axes=(None, 0, 0, None)) #vmap over image, filter_image
     res = vmap_not_convolve(D, image, filter_image, is_torus)
     return jnp.sum(res, axis=0)
 
@@ -731,6 +772,24 @@ def norm(D, data):
         data (jnp.array): image data, shape (N,)*D + (D,)*k
     """
     return jnp.linalg.norm(data.reshape(data.shape[:D] + (-1,)), axis=D)
+
+@partial(jit, static_argnums=[0,2])
+def average_pool(D, image_data, patch_len):
+        """
+        Perform a average pooling operation where the length of the side of each patch is patch_len. This is 
+        equivalent to doing a convolution where each element of the filter is 1 over the number of pixels in the 
+        filter, the stride length is patch_len, and the padding is 'VALID'.
+        args:
+            D (int): dimension of data
+            image_data (jnp.array): image data
+            patch_len (int): the side length of the patches, must evenly divide the sidelength
+        """
+        N,_ = parse_shape(image_data.shape, D)
+        assert (N % patch_len) == 0
+
+        filter_data = (1/(patch_len ** D)) * jnp.ones((patch_len,)*D)
+
+        return convolve(D, image_data, filter_data, False, stride=(patch_len,)*D, padding='VALID')
 
 # ------------------------------------------------------------------------------
 # PART 5: Define geometric (k-tensor, torus) images.
@@ -1030,10 +1089,12 @@ class GeometricImage:
         args:
             patch_len (int): the side length of the patches, must evenly divide self.N
         """
-        assert (self.N % patch_len) == 0
-
-        avg_filter = GeometricImage((1/(patch_len ** self.D)) * jnp.ones((patch_len,)*self.D), 0, self.D)
-        return self.convolve_with(avg_filter, stride=(patch_len,) * self.D, padding='VALID')
+        return self.__class__(
+            average_pool(self.D, self.data, patch_len),
+            self.parity,
+            self.D,
+            self.is_torus,
+        )
 
     @partial(jit, static_argnums=1)
     def unpool(self, patch_len):

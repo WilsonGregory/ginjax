@@ -16,6 +16,7 @@ import geometricconvolutions.geometric as geom
 
 CONV_OLD = 'conv_old'
 CONV = 'conv'
+NOT_CONV = 'not_conv'
 CHANNEL_COLLAPSE = 'collapse'
 CASCADING_CONTRACTIONS = 'cascading_contractions'
 PARAMED_CONTRACTIONS = 'paramed_contractions'
@@ -166,7 +167,6 @@ def get_filter_block(params, input_layer, M, out_depth, filter_k_set=None, mold_
     
     return filter_layer, params
 
-@functools.partial(checkpoint, static_argnums=(2,3,4,5,6,7,8,9,10,11))
 def conv_layer_build_filters(
     params, 
     input_layer,
@@ -336,6 +336,68 @@ def conv_layer_alt(
         out_layer = order_cap_layer(out_layer, max_k)
 
     return out_layer
+
+@functools.partial(jit, static_argnums=[3,4,5,6])
+def not_conv_layer(
+    params,
+    input_layer, 
+    invariant_filters,
+    depth,
+    target_k=None, 
+    max_k=None,
+    mold_params=False,
+):
+    """
+    This is a convolution layer where for each input pixel, the filter can be different. This means that
+    it is not an identical function at each pixel, so it is not translation equivariant. However, by 
+    constructing the filters from B_d-invariant filters, we can make a B_d-equivariant layer.
+    """
+    params_idx, this_params = get_layer_params(params, mold_params, NOT_CONV)
+
+    filter_block, filter_block_params = get_filter_block_from_invariants(
+        this_params[CONV_FIXED],
+        input_layer,
+        invariant_filters,
+        depth,
+        mold_params,
+    )
+    this_params[CONV_FIXED] = filter_block_params
+
+    # map over filters, out depth
+    vmap_not_convolve = vmap(geom.depth_not_convolve, in_axes=(None, None, 0, None))
+
+    out_layer = input_layer.empty()
+    for k, images_block in input_layer.items():
+        for filter_k, filter_group in filter_block[k].items():
+            if ((target_k is not None) and ((k + target_k - filter_k) % 2 != 0)):
+                continue
+
+            convolved_images_block = vmap_not_convolve(
+                input_layer.D, 
+                images_block, 
+                filter_group, 
+                input_layer.is_torus,
+            )
+            out_layer.append(k + filter_k, convolved_images_block)
+
+    if (max_k is not None):
+        out_layer = order_cap_layer(out_layer, max_k)
+
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return out_layer, params
+
+def batch_not_conv_layer(
+    params,
+    input_layer, 
+    invariant_filters,
+    depth,
+    target_k=None, 
+    max_k=None,
+    mold_params=False,
+):
+    vmap_not_conv = vmap(not_conv_layer, in_axes=(None, 0, None, None, None, None, None), out_axes=(0,None))
+    return vmap_not_conv(params, input_layer, invariant_filters, depth, target_k, max_k, mold_params)
 
 def get_bias_image(params, param_idx, x):
     """
@@ -513,8 +575,7 @@ def all_contractions(target_k, input_layer):
             continue
 
         for contract_idx in geom.get_contraction_indices(k, target_k):
-            shifted_idx = tuple((i + idx_shift, j + idx_shift) for i,j in contract_idx)
-            contracted_img = geom.multicontract(image_block, shifted_idx)
+            contracted_img = geom.multicontract(image_block, contract_idx, idx_shift=idx_shift)
             out_layer.append(target_k, contracted_img)
 
     return out_layer
@@ -717,40 +778,50 @@ def batch_layer_norm(params, input_layer, eps=1e-05, mold_params=False):
 def max_pool_layer(input_layer, patch_len):
     return [image.max_pool(patch_len) for image in input_layer]
 
+@functools.partial(jit, static_argnums=1)
 def average_pool_layer(input_layer, patch_len):
-    return [image.average_pool(patch_len) for image in input_layer]
+    out_layer = input_layer.empty()
+    vmap_avg_pool = vmap(geom.average_pool, in_axes=(None, 0, None))
+    for k,image_block in input_layer.items():
+        out_layer.append(k, vmap_avg_pool(input_layer.D, image_block, patch_len))
+
+    return out_layer
+
+def batch_average_pool(input_layer, patch_len):
+    return vmap(average_pool_layer, in_axes=(0, None))(input_layer, patch_len)
 
 def unpool_layer(input_layer, patch_len):
     return [image.unpool(patch_len) for image in input_layer]
 
 @jit
-def integration_layer(input_layer, basis_layer):
+def integration_layer(input_layer, basis_layer_in, basis_layer_out):
     """
     input_layer and basis_layer must have the same number of channels
     args:
         basis (Layer): basis
     """
     assert list(input_layer.keys()) == [1] #assume this input is just a vector image
-    assert list(basis_layer.keys()) == [1] #assume basis is a vector basis
-    assert len(input_layer[1]) == len(basis_layer[1]) #input and basis must same number of channels
+    assert list(basis_layer_in.keys()) == list(basis_layer_out.keys()) == [1] #assume basis is a vector basis
+    assert len(input_layer[1]) == len(basis_layer_in[1]) #input and basis must same number of channels
 
-    out_vec_image = jnp.zeros(basis_layer[1].shape[1:])
+    out_vec_image = jnp.zeros(basis_layer_out[1].shape[1:])
     img = input_layer[1] 
-    basis_block = basis_layer[1]
+    basis_block_in = basis_layer_in[1]
+    basis_block_out = basis_layer_out[1]
 
     vmap_mul = vmap(geom.mul, in_axes=(None, 0, 0))
-    mul_out = vmap_mul(input_layer.D, img, basis_block)
+    mul_out = vmap_mul(input_layer.D, img, basis_block_in)
     coeffs_image = geom.multicontract(mul_out, ((0,1),), idx_shift=input_layer.D+1)
     coeffs = jnp.sum(coeffs_image, axis=range(1, 1+input_layer.D)) #does this need to be translation equiv?
 
-    out_vec_image = jnp.sum(vmap(lambda p,img: p*img)(coeffs, basis_block), axis=0, keepdims=True)
+    out_vec_image = jnp.sum(vmap(lambda p,img: p*img)(coeffs, basis_block_out), axis=0, keepdims=True)
 
     out_layer = input_layer.empty()
     out_layer.append(1, out_vec_image)
     return out_layer, coeffs
 
-def batch_integration_layer(input_layer, basis_layer):
-    return vmap(integration_layer, in_axes=(0,None))(input_layer, basis_layer)
+def batch_integration_layer(input_layer, basis_layer_in, basis_layer_out):
+    return vmap(integration_layer, in_axes=(0,None,None))(input_layer, basis_layer_in, basis_layer_out)
 
 ## Params
 
@@ -840,6 +911,7 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
         CHANNEL_COLLAPSE: channel_collapse_init,
         CONV: functools.partial(conv_init, D=input_layer.D),
         CONV_OLD: conv_old_init,
+        NOT_CONV: functools.partial(not_conv_init, D=input_layer.D),
         CASCADING_CONTRACTIONS: cascading_contractions_init,
         PARAMED_CONTRACTIONS: paramed_contractions_init,
     }
@@ -899,7 +971,11 @@ def conv_init(rand_key, tree, D):
         params[k] = {}
         for filter_k, filter_block in d.items():
             rand_key, subkey = random.split(rand_key)
-            bound = 1/jnp.sqrt(filter_block.shape[1]* (filter_block.shape[2]**D))
+            if filter_type == CONV_FIXED:
+                bound = 1/jnp.sqrt(filter_block.shape[1]*filter_block.shape[2])
+            else: # filter_type == CONV_FREE:
+                bound = 1/jnp.sqrt(filter_block.shape[1]*(filter_block.shape[2]**D))
+
             params[k][filter_k] = random.uniform(subkey, shape=filter_block.shape, minval=-bound, maxval=bound)
 
     out_params[filter_type] = params
@@ -922,6 +998,20 @@ def conv_old_init(rand_key, tree):
         for filter_k, params_block in d.items():
             rand_key, subkey = random.split(rand_key)
             out_params[k][filter_k] = 0.1*random.normal(subkey, shape=params_block.shape)
+
+    return out_params
+
+def not_conv_init(rand_key, tree, D):
+    out_params = {}
+    params = {}
+    for k, d in tree[CONV_FIXED].items():
+        params[k] = {}
+        for filter_k, filter_block in d.items():
+            rand_key, subkey = random.split(rand_key)
+            bound = 1/jnp.sqrt(filter_block.shape[1]*(filter_block.shape[2]))
+            params[k][filter_k] = random.uniform(subkey, shape=filter_block.shape, minval=-bound, maxval=bound)
+
+    out_params[CONV_FIXED] = params
 
     return out_params
 

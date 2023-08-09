@@ -971,7 +971,11 @@ def conv_init(rand_key, tree, D):
         params[k] = {}
         for filter_k, filter_block in d.items():
             rand_key, subkey = random.split(rand_key)
-            bound = 1/jnp.sqrt(filter_block.shape[1]*filter_block.shape[2])
+            if filter_type == CONV_FIXED:
+                bound = 1/jnp.sqrt(filter_block.shape[1]*filter_block.shape[2])
+            else: # filter_type == CONV_FREE:
+                bound = 1/jnp.sqrt(filter_block.shape[1]*(filter_block.shape[2]**D))
+
             params[k][filter_k] = random.uniform(subkey, shape=filter_block.shape, minval=-bound, maxval=bound)
 
     out_params[filter_type] = params

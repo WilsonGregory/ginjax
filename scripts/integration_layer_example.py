@@ -39,9 +39,10 @@ def net(params, layer, key, train, conv_filters, gen_filters, basis_in, basis_ou
     target_k = 1
     max_k = 4
     depth = 4
+    num_conv_layers = 3
     num_not_conv_layers = 2
 
-    for _ in range(3):
+    for _ in range(num_conv_layers):
         layer, params = ml.batch_conv_layer(
             params,
             layer,

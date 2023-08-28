@@ -22,6 +22,7 @@ See the paper for more details: https://arxiv.org/abs/2305.12585
   - Clone the repository `git clone https://github.com/WilsonGregory/GeometricConvolutions.git`
   - Navigate to the GeometricConvolutions directory `cd GeometricConvolutions`
   - Locally install the package `pip install -e .` (may have to use pip3 if your system has both python2 and python3 installed)
+  - In order to run JAX on a GPU, you will likely need to follow some additional steps detailed in https://github.com/google/jax#installation. You will probably need to know your CUDA version, which can be found with `nvidia-smi` and/or `nvcc --version`.
 
 ## Quick Start
 

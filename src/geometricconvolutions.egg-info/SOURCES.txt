@@ -14,6 +14,7 @@ src/geometricconvolutions.egg-info/requires.txt
 src/geometricconvolutions.egg-info/top_level.txt
 tests/test_batch_geometric_image.py
 tests/test_geometric_image.py
+tests/test_layer.py
 tests/test_misc.py
 tests/test_ml.py
 tests/test_props.py

@@ -1,3 +1,6 @@
 matplotlib
 numpy
 jax
+cmastro
+optax
+imageio

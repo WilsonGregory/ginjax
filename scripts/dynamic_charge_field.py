@@ -19,7 +19,7 @@ def plot_results(layer_x, layer_y, axs, titles, conv_filters):
     assert len(axs) == len(titles)
 
     learned_x = geom.GeometricImage(
-        batch_net(params, layer_x, None, False, conv_filters)[1][0,0],
+        batch_net(params, layer_x, None, False, conv_filters)[(1,0)][0,0],
         0,
         layer_x.D,
         layer_x.is_torus,
@@ -43,6 +43,7 @@ def channel_collapse_init(rand_key, tree):
 
 def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
+    target_parity = 0
     max_k = 5
 
     batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
@@ -66,7 +67,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
         params, 
         conv_filters,
         layer,
-        target_k, #final_layer, make sure out output is target_img shaped
+        (target_k,target_parity), #final_layer, make sure out output is target_img shaped
         None,
         return_params, #mold_params
         None,
@@ -81,7 +82,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
 
 def map_and_loss(params, x, y, key, train, conv_filters):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[1], y[1]))
+    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[(1,0)], y[(1,0)]))
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()

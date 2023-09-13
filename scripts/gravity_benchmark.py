@@ -6,7 +6,6 @@ import argparse
 import time
 import math
 import matplotlib.pyplot as plt
-from collections import defaultdict
 
 import jax.numpy as jnp
 import jax.random as random
@@ -28,16 +27,17 @@ def channel_collapse_init(rand_key, tree):
 
 def conv_init(rand_key, tree):
     params = {}
-    for k, d in tree[ml.CONV_FREE].items():
-        params[k] = {}
-        for filter_k, filter_block in d.items():
+    for key, d in tree[ml.CONV_FREE].items():
+        params[key] = {}
+        for filter_key, filter_block in d.items():
             rand_key, subkey = random.split(rand_key)
-            params[k][filter_k] = 0.1*random.normal(subkey, shape=filter_block.shape)
+            params[key][filter_key] = 0.1*random.normal(subkey, shape=filter_block.shape)
 
     return { ml.CONV_FREE: params }
 
 def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
+    target_parity = 0
 
     batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
     batch_add_layer = vmap(lambda layer_a, layer_b: layer_a + layer_b) #better way of doing this?
@@ -67,7 +67,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
             params, 
             conv_filters, 
             layer, 
-            target_k,
+            (target_k,target_parity),
             None,
             return_params, #mold_params
             None,
@@ -84,7 +84,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
 
 def map_and_loss(params, x, y, key, train, conv_filters):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[1], y[1]))
+    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[(1,0)], y[(1,0)]))
 
 def baseline_net(params, layer, key, train, return_params=False):
     M = 3
@@ -95,7 +95,7 @@ def baseline_net(params, layer, key, train, return_params=False):
     layer, params = ml.batch_conv_layer(
         params,
         layer, 
-        { 'type': 'free', 'M': M, 'filter_k_set': (0,) },
+        { 'type': 'free', 'M': M, 'filter_key_set': { (0,0) } },
         depth=out_channels,
         mold_params=return_params,
     )
@@ -105,7 +105,7 @@ def baseline_net(params, layer, key, train, return_params=False):
         dilation_out_layer, params = ml.batch_conv_layer(
             params, 
             layer,
-            { 'type': 'free', 'M': M, 'filter_k_set': (0,) },
+            { 'type': 'free', 'M': M, 'filter_key_set': { (0,0) } },
             depth=out_channels,
             mold_params=return_params,
             rhs_dilation=(dilation,)*D,
@@ -119,15 +119,15 @@ def baseline_net(params, layer, key, train, return_params=False):
         dilation_out_layer, params = ml.batch_conv_layer(
             params, 
             layer,
-            { 'type': 'free', 'M': M, 'filter_k_set': (0,) },
+            { 'type': 'free', 'M': M, 'filter_key_set': { (0,0) } },
             depth=D, #out depth is D because we turn it into k=1
             mold_params=return_params,
             rhs_dilation=(dilation,)*D,
         )
         # turn the out channels into the vector field k=1
-        dilation_out_image = dilation_out_layer[0].transpose(0,2,3,1) # move channel to end
+        dilation_out_image = dilation_out_layer[(0,0)].transpose(0,2,3,1) # move channel to end
         reshaped_layer = geom.BatchLayer(
-            { 1: jnp.expand_dims(dilation_out_image, axis=1) },
+            { (1,0): jnp.expand_dims(dilation_out_image, axis=1) },
             dilation_out_layer.D,
             dilation_out_layer.is_torus,
         )
@@ -138,7 +138,7 @@ def baseline_net(params, layer, key, train, return_params=False):
 
 def baseline_map_and_loss(params, x, y, key, train):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.l2_loss)(baseline_net(params, x, key, train)[1], y[1]))
+    return jnp.mean(vmap(ml.l2_loss)(baseline_net(params, x, key, train)[(1,0)], y[(1,0)]))
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -243,7 +243,11 @@ if (not load_file):
                     subkey,
                     ml.ValLoss(patience=20, verbose=verbose),
                     batch_size=batch_size,
-                    optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(num_train_images / batch_size), decay_rate=0.995)),
+                    optimizer=optax.adam(optax.exponential_decay(
+                        lr, 
+                        transition_steps=int(num_train_images / batch_size), 
+                        decay_rate=0.995,
+                    )),
                     validation_X=validation_X,
                     validation_Y=validation_Y,
                 )

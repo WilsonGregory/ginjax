@@ -19,24 +19,25 @@ from geometricconvolutions.data import get_charge_data as get_data
 def channel_collapse_init(rand_key, tree):
     # Use old guassian normal initialization instead of Kaiming
     out_params = {}
-    for k, params_block in tree.items():
+    for key, params_block in tree.items():
         rand_key, subkey = random.split(rand_key)
-        out_params[k] = 0.1*random.normal(subkey, params_block.shape)
+        out_params[key] = 0.1*random.normal(subkey, params_block.shape)
 
     return out_params
 
 def conv_init(rand_key, tree):
     params = {}
-    for k, d in tree[ml.CONV_FREE].items():
-        params[k] = {}
-        for filter_k, filter_block in d.items():
+    for key, d in tree[ml.CONV_FREE].items():
+        params[key] = {}
+        for filter_key, filter_block in d.items():
             rand_key, subkey = random.split(rand_key)
-            params[k][filter_k] = 0.1*random.normal(subkey, shape=filter_block.shape)
+            params[key][filter_key] = 0.1*random.normal(subkey, shape=filter_block.shape)
 
     return { ml.CONV_FREE: params }
 
 def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
+    target_parity = 0
     max_k = 5
 
     batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
@@ -60,7 +61,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
         params, 
         conv_filters,
         layer,
-        target_k, #final_layer, make sure out output is target_img shaped
+        (target_k,target_parity), #final_layer, make sure out output is target_img shaped
         None,
         return_params, #mold_params
         None,
@@ -75,21 +76,21 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
 
 def map_and_loss(params, x, y, key, train, conv_filters):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[1], y[1]))
+    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[(1,0)], y[(1,0)]))
 
 def baseline_net(params, layer, key, train, return_params=False):
     M = 3
     out_channels = 20
     #move the vector to the channel slot
-    transposed_block = layer[1].transpose(0,1,4,2,3)
+    transposed_block = layer[(1,0)].transpose(0,1,4,2,3)
     reshaped_block = transposed_block.reshape((transposed_block.shape[0],) + transposed_block.shape[2:])
-    layer = geom.BatchLayer({ 0: reshaped_block }, layer.D, layer.is_torus)
+    layer = geom.BatchLayer({ (0,0): reshaped_block }, layer.D, layer.is_torus)
 
     for dilation in [1,2,4,2,1,1,2,1]:
         layer, params = ml.batch_conv_layer(
             params, 
             layer,
-            { 'type': 'free', 'M': M, 'filter_k_set': (0,) },
+            { 'type': 'free', 'M': M, 'filter_key_set': { (0,0) } },
             depth=out_channels, 
             mold_params=return_params,
             rhs_dilation=(dilation,)*D,
@@ -99,17 +100,17 @@ def baseline_net(params, layer, key, train, return_params=False):
     layer, params = ml.batch_conv_layer(
         params, 
         layer, 
-        { 'type': 'free', 'M': M, 'filter_k_set': (0,) }, 
+        { 'type': 'free', 'M': M, 'filter_key_set': { (0,0) } }, 
         depth=2,
         mold_params=return_params,
     )
-    layer = geom.BatchLayer({ 1: jnp.expand_dims(jnp.moveaxis(layer[0], 1, -1), 1) }, layer.D, layer.is_torus)
+    layer = geom.BatchLayer({ (1,0): jnp.expand_dims(jnp.moveaxis(layer[(0,0)], 1, -1), 1) }, layer.D, layer.is_torus)
 
     return (layer, params) if return_params else layer
 
 def baseline_map_and_loss(params, x, y, key, train):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.l2_loss)(baseline_net(params, x, key, train)[1], y[1]))
+    return jnp.mean(vmap(ml.l2_loss)(baseline_net(params, x, key, train)[(1,0)], y[(1,0)]))
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -182,7 +183,6 @@ for model_name, model_map_and_loss, model, lr in models:
             ml.CONV: conv_init,
         },
     )
-    # params_tree = model(defaultdict(lambda: None), one_point_x, None, True, return_params=True)[1]
     print(f'{model_name}: {ml.count_params(get_params(subkey))} params')
     models_init.append((model_name, model_map_and_loss, get_params, lr))
 
@@ -209,15 +209,6 @@ if (not load_file):
                 print(f'Iter {i}, train size {num_train_images}, model {model_name}')
                 key, subkey = random.split(key)
                 params = get_params(subkey)
-                # ml.recursive_init_params(
-                #     params_tree, 
-                #     subkey,
-                #     initializers={ 
-                #         ml.CHANNEL_COLLAPSE: channel_collapse_init, 
-                #         ml.CONV: conv_init,
-                #         ml.CONV_OLD: ml.conv_old_init,
-                #     },
-                # )
                 key, subkey = random.split(key)
 
                 start_time = time.time()
@@ -227,7 +218,7 @@ if (not load_file):
                     model,
                     params,
                     subkey,
-                    ml.ValLoss(patience=5, verbose=verbose),
+                    ml.ValLoss(patience=20, verbose=verbose),
                     batch_size=batch_size,
                     optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(num_train_images / batch_size), decay_rate=0.995)),
                     validation_X=validation_X,

@@ -35,14 +35,15 @@ def plot_results(layer_x, layer_y, axs, titles, conv_filters):
 def channel_collapse_init(rand_key, tree):
     # Use old guassian normal initialization instead of Kaiming
     out_params = {}
-    for k, params_block in tree.items():
+    for key, params_block in tree.items():
         rand_key, subkey = random.split(rand_key)
-        out_params[k] = 0.1*random.normal(subkey, params_block.shape)
+        out_params[key] = 0.1*random.normal(subkey, params_block.shape)
 
     return out_params
 
 def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
+    target_parity = 0
 
     batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
     batch_add_layer = vmap(lambda layer_a, layer_b: layer_a + layer_b) #better way of doing this?
@@ -72,7 +73,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
             params, 
             conv_filters, 
             layer, 
-            target_k,
+            (target_k,target_parity),
             None,
             return_params, #mold_params
             None,
@@ -89,7 +90,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
 
 def map_and_loss(params, x, y, key, train, conv_filters):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[1], y[1]))
+    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[(1,0)], y[(1,0)]))
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()

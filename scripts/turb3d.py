@@ -17,9 +17,10 @@ import geometricconvolutions.ml as ml
 
 def net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 2
+    target_parity = 0
     depth = 4
     max_k = 3 # this is tough
-    num_conv_layers = 10
+    num_conv_layers = 1
 
     for _ in range(num_conv_layers):
         layer, params = ml.batch_conv_layer(
@@ -37,7 +38,7 @@ def net(params, layer, key, train, conv_filters, return_params=False):
         layer,
         { 'type': 'fixed', 'filters': conv_filters }, 
         depth,
-        target_k=target_k,
+        target_key=(target_k,target_parity),
         max_k=max_k, 
         mold_params=return_params,
     )
@@ -50,7 +51,7 @@ def net(params, layer, key, train, conv_filters, return_params=False):
 @partial(jit, static_argnums=4)
 def map_and_loss(params, layer_x, layer_y, key, train, conv_filters):
     learned_x = net(params, layer_x, key, train, conv_filters)
-    return ml.rmse_loss(learned_x[2], layer_y[2])
+    return ml.rmse_loss(learned_x[(2,0)], layer_y[(2,0)])
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -84,7 +85,7 @@ key = random.PRNGKey(time.time_ns() if (seed is None) else seed)
 
 # start with basic 3x3 scalar, vector, and 2nd order tensor images
 operators = geom.make_all_operators(D)
-conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1], parities=[0], D=D, operators=operators)
+conv_filters = geom.get_invariant_filters(Ms=[3], ks=[1,2], parities=[0,1], D=D, operators=operators)
 
 # Get Training data
 data = np.load('../data/3d_turb/downsampled_1024_to_64.npz')
@@ -102,11 +103,11 @@ raw_tau = jnp.stack(
 tau = raw_tau.reshape(raw_tau.shape[:3] + (D,D))
 
 layer_x = geom.BatchLayer(
-    { 0: jnp.expand_dims(rho, axis=(0,1)), 1: jnp.expand_dims(vel, axis=(0,1)) }, 
+    { (0,0): jnp.expand_dims(rho, axis=(0,1)), (1,0): jnp.expand_dims(vel, axis=(0,1)) }, 
     D, 
     is_torus,
 )
-layer_y = geom.BatchLayer({ 2: jnp.expand_dims(tau, axis=(0,1))}, D, is_torus)
+layer_y = geom.BatchLayer({ (2,0): jnp.expand_dims(tau, axis=(0,1))}, D, is_torus)
 
 key, subkey = random.split(key)
 params = ml.init_params(partial(net, conv_filters=conv_filters), layer_x, subkey)

@@ -21,12 +21,20 @@ def quadratic(layer):
     return geom.Layer.from_images(out_images)
 
 def batch_net(params, layer, key, train, conv_filters, return_params=False):
-    img_k = list(layer.keys())[0]
+    img_k,_ = list(layer.keys())[0]
+    target_parity = 0
 
     layer, params = ml.batch_conv_layer(params, layer, conv_filters, depth=1, mold_params=return_params)
     layer = geom.BatchLayer(vmap(quadratic)(layer).data, layer.D, layer.is_torus)
 
-    layer, params = ml.batch_conv_layer(params, layer, conv_filters, depth=1, target_k=img_k, mold_params=return_params)
+    layer, params = ml.batch_conv_layer(
+        params, 
+        layer, 
+        conv_filters, 
+        depth=1, 
+        target_key=(img_k,target_parity), 
+        mold_params=return_params,
+    )
     layer, params = ml.batch_cascading_contractions(params, layer, img_k, mold_params=return_params)
     layer, params = ml.batch_channel_collapse(params, layer, mold_params=return_params)
 
@@ -34,7 +42,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
 
 def map_and_loss(params, x, y, key, train, conv_filters,):
     # Run the neural network, then calculate the MSE loss with the expected output y
-    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, key, train, conv_filters)[1], y[1]))
+    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, key, train, conv_filters)[(1,0)], y[(1,0)]))
 
 def target_function(x, conv_filters):
     prod = x.convolve_with(conv_filters[1]) * x.convolve_with(conv_filters[2])

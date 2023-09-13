@@ -121,8 +121,16 @@ def conv_layer(
 @functools.partial(jit, static_argnums=[3,4])
 def get_filter_block_from_invariants(params, input_layer, invariant_filters, out_depth, mold_params):
     """
-    For each k in the input_layer and each k of the invariant filters, return a block of filters of shape
-    (out_depth,in_depth, (M,)*D, (D,)*filter_k). Note that in_depth is the size of the input_layer.
+    For each (k,parity) in the input_layer and each (k,parity) of the invariant filters, return a block
+    of filters of shape (out_depth,in_depth, (M,)*D, (D,)*filter_k). Note that in_depth is the size of
+    the input_layer.
+    args:
+        params (params tree): the learned params tree
+        input_layer (Layer): input layer so that we know the input depth at each (k,parity) that we need
+        invariant_filters (Layer): layer of invariant filters at each (k,parity) that are linearly combined
+            to form the filter blocks that we apply.
+        out_depth (int): the output depth of this conv layer
+        mold_params (bool): True if we are building the params shape, defaults to False
     """
     vmap_sum = vmap(vmap(geom.linear_combination, in_axes=(None, 0)), in_axes=(None, 0))
 
@@ -153,7 +161,7 @@ def get_filter_block(params, input_layer, M, out_depth, filter_key_set=None, mol
     size of the input_layer.
     args:
         params (params tree): the learned params tree
-        input_layer (Layer): 
+        input_layer (Layer): input layer so that we know the input depth at each (k,parity) that we need
         M (int): the edge length of the filters
         out_depth (int): the output depth of this conv layer
         filter_key_set (frozenset of 2-tuples of (k,parity)): a set of the type of filters to build
@@ -250,7 +258,7 @@ def conv_layer_build_filters(
         out_layer = layer.empty()
         if (mold_params):
             this_params[BIAS] = {}
-        for (k,parity),image_block in layer.items():
+        for (k,parity), image_block in layer.items():
             if (mold_params):
                 this_params[BIAS][(k,parity)] = jnp.ones(depth)
 

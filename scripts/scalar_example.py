@@ -24,10 +24,10 @@ def batch_net(params, layer, conv_filters):
 
     out_image_block = None
 
-    for i,j in it.combinations_with_replacement(range(len(conv_filters[0])), 2):
-        filter_a = conv_filters[0][i]
-        filter_b = conv_filters[0][j]
-        convolved_image = batch_convolve(layer.D, layer[0], filter_a, layer.is_torus, None, None, None, None)
+    for i,j in it.combinations_with_replacement(range(len(conv_filters[(0,0)])), 2):
+        filter_a = conv_filters[(0,0)][i]
+        filter_b = conv_filters[(0,0)][j]
+        convolved_image = batch_convolve(layer.D, layer[(0,0)], filter_a, layer.is_torus, None, None, None, None)
         res_image = batch_convolve(layer.D, convolved_image, filter_b, layer.is_torus, None, None, None, None)
 
         if (out_image_block is None):
@@ -51,7 +51,7 @@ def map_and_loss(params, x, y, key, train, conv_filters):
         conv_filters (Layer): the convolution filters as a Layer, the version of the function passed
             to ml.train will already have this set using functools.partial
     """
-    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, conv_filters), y[0]))
+    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, conv_filters), y[(0,0)]))
 
 def target_function(image, conv_filter_a, conv_filter_b):
     """

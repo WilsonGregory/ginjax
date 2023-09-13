@@ -217,13 +217,13 @@ class TestPropositions:
         params = { ml.LAYER_NORM: {} }
         for k in range(5):
             key, subkey = random.split(key)
-            layer.append(k, random.normal(subkey, shape=(2,) + (N,)*D + (D,)*k))
+            layer.append(k, 0, random.normal(subkey, shape=(2,) + (N,)*D + (D,)*k))
 
-            params[ml.LAYER_NORM][k] = {}
+            params[ml.LAYER_NORM][(k,0)] = {}
             key, subkey = random.split(key)
-            params[ml.LAYER_NORM][k][ml.SCALE] = random.normal(subkey, shape=(1,))
+            params[ml.LAYER_NORM][(k,0)][ml.SCALE] = random.normal(subkey, shape=(1,))
             key, subkey = random.split(key)
-            params[ml.LAYER_NORM][k][ml.BIAS] = random.normal(subkey, shape=(1,))
+            params[ml.LAYER_NORM][(k,0)][ml.BIAS] = random.normal(subkey, shape=(1,))
 
         operators = geom.make_all_operators(D)
         for gg in operators:

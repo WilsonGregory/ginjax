@@ -260,7 +260,7 @@ def phase2vec_loss(recon_x, y, coeffs, eps=1e-5, beta=1e-3, reduce=True):
 @partial(jit, static_argnums=[4,8,9])
 def map_and_loss(params, layer_x, layer_y, key, train, aux_data, conv_filters, ode_basis, eps=1e-5, beta=1e-3):
     recon, coeffs, batch_stats = net(params, layer_x, key, train, aux_data, conv_filters, ode_basis)
-    return phase2vec_loss(recon, layer_y[1][:,0,...], coeffs, eps, beta), batch_stats
+    return phase2vec_loss(recon, layer_y[(1,0)][:,0,...], coeffs, eps, beta), batch_stats
 
 def baseline_net(params, layer, key, train, batch_stats, ode_basis, batch_norm, dropout, relu, return_params=False):
     embedding_d = 100
@@ -269,8 +269,8 @@ def baseline_net(params, layer, key, train, batch_stats, ode_basis, batch_norm, 
     num_hidden_layers = 2
     img_N = layer.N
     # for the baseline model, the vector just becomes 2 channels
-    layer = geom.BatchLayer({ 0: jnp.moveaxis(layer[1][:,0,...], -1, 1) }, layer.D, layer.is_torus)
-    assert layer[0].shape[1:] == (2, img_N, img_N)
+    layer = geom.BatchLayer({ (0,0): jnp.moveaxis(layer[(1,0)][:,0,...], -1, 1) }, layer.D, layer.is_torus)
+    assert layer[(0,0)].shape[1:] == (2, img_N, img_N)
     if (batch_stats is None):
         batch_stats = { num: { 'mean': None, 'var': None } for num in range(5) }
 
@@ -282,7 +282,7 @@ def baseline_net(params, layer, key, train, batch_stats, ode_basis, batch_norm, 
         layer, params = ml.batch_conv_layer(
             params,
             layer, 
-            { 'type': 'free', 'M': 3, 'filter_k_set': (0,) },
+            { 'type': 'free', 'M': 3, 'filter_key_set': { (0,0) } },
             depth=128,
             bias=True,
             mold_params=return_params,
@@ -303,7 +303,7 @@ def baseline_net(params, layer, key, train, batch_stats, ode_basis, batch_norm, 
         batch_stats_idx += 1
     
     # Embed the ODE in a d=100 vector
-    layer_vec, params = batch_dense_layer(params, layer[0].reshape(layer.L,-1), embedding_d, True, return_params)
+    layer_vec, params = batch_dense_layer(params, layer[(0,0)].reshape(layer.L,-1), embedding_d, True, return_params)
 
     # Pass the embedded ode through a 2 layer MLP to get the coefficients of poly ode
     for _ in range(num_hidden_layers):
@@ -337,7 +337,7 @@ def baseline_net(params, layer, key, train, batch_stats, ode_basis, batch_norm, 
 @partial(jit, static_argnums=[4,7,8,9,10,11])
 def baseline_map_and_loss(params, layer_x, layer_y, key, train, aux_data, ode_basis, batch_norm, dropout, relu, eps=1e-5, beta=1e-3):
     recon, coeffs, batch_stats = baseline_net(params, layer_x, key, train, aux_data, ode_basis, batch_norm, dropout, relu)
-    return phase2vec_loss(recon, layer_y[1][:,0,...], coeffs, eps, beta), batch_stats
+    return phase2vec_loss(recon, layer_y[(1,0)][:,0,...], coeffs, eps, beta), batch_stats
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -378,12 +378,12 @@ train_data_path = '../phase2vec/output/data/polynomial'
 X_train_data, X_val_data, y_train, y_val, p_train, p_val = load_dataset(train_data_path)
 assert N == X_train_data.shape[2] == X_train_data.shape[3]
 X_train = geom.BatchLayer(
-    { 1: jnp.expand_dims(X_train_data.transpose(0,2,3,1), axis=1) }, #(batch, channel, (N,)*D, (D,)*k)
+    { (1,0): jnp.expand_dims(X_train_data.transpose(0,2,3,1), axis=1) }, #(batch, channel, (N,)*D, (D,)*k)
     D,
     False,
 )
 X_val = geom.BatchLayer(
-    { 1: jnp.expand_dims(X_train_data.transpose(0,2,3,1), axis=1) },
+    { (1,0): jnp.expand_dims(X_train_data.transpose(0,2,3,1), axis=1) },
     D,
     False,
 )
@@ -395,7 +395,7 @@ X_test_data = jnp.concatenate([X_test1, X_test2, X_val_data])
 y_test = jnp.concatenate([y_test1, y_test2, 16 * np.ones_like(y_val)])
 p_test = jnp.concatenate([p_test1, p_test2, p_val])
 X_test = geom.BatchLayer(
-    { 1: jnp.expand_dims(X_test_data.transpose(0,2,3,1), axis=1) },
+    { (1,0): jnp.expand_dims(X_test_data.transpose(0,2,3,1), axis=1) },
     D,
     False,
 )
@@ -500,7 +500,7 @@ for model_name, model, eval_net, get_params in models_init:
 
         class_layer = X_test.get_subset(y_test == label)
         class_pars = p_test[y_test == label]
-        class_data = class_layer[1][:,0,...]
+        class_data = class_layer[(1,0)][:,0,...]
 
         full_recon = None
         full_coeffs = None

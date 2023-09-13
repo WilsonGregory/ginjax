@@ -1448,6 +1448,22 @@ class BatchGeometricImage(GeometricImage):
         else: #its an integer or a float, or something that can we can multiply a Jax array by (like a DeviceArray)
             return self.__class__(self.data * other, self.parity, self.D, self.is_torus)
 
+    @partial(jit, static_argnums=1)
+    def average_pool(self, patch_len):
+        """
+        Perform a average pooling operation where the length of the side of each patch is patch_len. This is 
+        equivalent to doing a convolution where each element of the filter is 1 over the number of pixels in the 
+        filter, the stride length is patch_len, and the padding is 'VALID'.
+        args:
+            patch_len (int): the side length of the patches, must evenly divide self.N
+        """
+        return self.__class__(
+            vmap(average_pool, in_axes=(None,0,None))(self.D, self.data, patch_len),
+            self.parity,
+            self.D,
+            self.is_torus,
+        )
+
     def max_pool(self, patch_len):
         """
         Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined by
@@ -1513,14 +1529,13 @@ class Layer:
         Construct a layer
         args:
             data (dictionary of jnp.array): dictionary by k of jnp.array
-            parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
             D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
             is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
         """
         self.D = D
         self.is_torus = is_torus
         #copy dict, but image_block is immutable jnp array
-        self.data = { k: image_block for k, image_block in data.items() } 
+        self.data = { key: image_block for key, image_block in data.items() } 
 
         self.N = None
         for image_block in data.values(): #if empty, this won't get set
@@ -1542,7 +1557,7 @@ class Layer:
         
         out_layer = cls({}, images[0].D, images[0].is_torus)
         for image in images:
-            out_layer.append(image.k, image.data.reshape((1,) + image.data.shape))
+            out_layer.append(image.k, image.parity, image.data.reshape((1,) + image.data.shape))
 
         return out_layer
 
@@ -1582,27 +1597,27 @@ class Layer:
         ):
             return False
         
-        for k in self.keys():
-            if not jnp.allclose(self[k], other[k], rtol, atol):
+        for key in self.keys():
+            if not jnp.allclose(self[key], other[key], rtol, atol):
                 return False
             
         return True
     
     # Other functions
 
-    def append(self, k, image_block):
+    def append(self, k, parity, image_block):
         """
-        Append an image block at k=k. It will be concatenated along axis=0, so channel for Layer
+        Append an image block at (k,parity). It will be concatenated along axis=0, so channel for Layer
         and vmapped BatchLayer, and batch for normal BatchLayer
         """
         # will this work for BatchLayer?
         if k > 0: #very light shape checking, other problematic cases should be caught in concatenate
             assert image_block.shape[-k:] == (self.D,)*k
 
-        if (k in self):
-            self[k] = jnp.concatenate((self[k], image_block))
+        if ((k,parity) in self):
+            self[(k,parity)] = jnp.concatenate((self[(k,parity)], image_block))
         else:
-            self[k] = image_block
+            self[(k,parity)] = image_block
 
         if self.N is None:
             self.N = image_block.shape[1]
@@ -1621,8 +1636,8 @@ class Layer:
             f'{self.__class__}::__add__: is_torus of layers must match, had {self.is_torus} and {other.is_torus}'
 
         new_layer = self.copy()
-        for k, image_block in other.items():
-            new_layer.append(k, image_block)
+        for (k,parity), image_block in other.items():
+            new_layer.append(k, parity, image_block)
 
         return new_layer
     
@@ -1645,8 +1660,8 @@ class Layer:
         """
         vmap_rotate = vmap(times_group_element, in_axes=(None, 0, None, None, None))
         out_layer = self.empty()
-        for k, image_block in self.items():
-            out_layer.append(k, vmap_rotate(self.D, image_block, 0, gg, precision))
+        for (k,parity), image_block in self.items():
+            out_layer.append(k, parity, vmap_rotate(self.D, image_block, 0, gg, precision))
 
         return out_layer
 
@@ -1702,7 +1717,7 @@ class BatchLayer(Layer):
         
         out_layer = cls({}, images[0].D, images[0].is_torus)
         for image in images:
-            out_layer.append(image.k, image.data.reshape((1,1) + image.data.shape))
+            out_layer.append(image.k, image.parity, image.data.reshape((1,1) + image.data.shape))
 
         batch_image_block = list(out_layer.values())[0]
         out_layer.L = batch_image_block.shape[0]

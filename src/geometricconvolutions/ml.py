@@ -5,10 +5,12 @@ import numpy as np
 import math
 
 from jax import jit, random, value_and_grad, vmap, checkpoint
-import jax.nn
+import jax
 import jax.numpy as jnp
 import jax.debug
 import optax
+from jax.experimental import mesh_utils
+from jax.sharding import PositionalSharding
 
 import geometricconvolutions.geometric as geom
 
@@ -1243,6 +1245,7 @@ def train(
     save_params=None,
     has_aux=False,
     aux_data=None,
+    checkpoint_kwargs=None,
 ):
     """
     Method to train the model. It uses stochastic gradient descent (SGD) with the Adam optimizer to learn the
@@ -1268,11 +1271,19 @@ def train(
             map_and_loss. If true, this auxilliary data will be passed back in to map_and_loss with the
             name "aux_data". The last aux_data will also be returned from this function.
         aux_data (any): initial aux data passed in to map_and_loss when has_aux is true.
+        checkpoint_kwargs (dict): dictionary of kwargs to pass to jax.checkpoint. If None, checkpoint will
+            not be called, defaults to None.
     """
     if (isinstance(stop_condition, ValLoss)):
         assert validation_X and validation_Y
 
-    batch_loss_grad = value_and_grad(map_and_loss, has_aux=has_aux)
+    if checkpoint_kwargs is None:
+        batch_loss_grad = value_and_grad(map_and_loss, has_aux=has_aux)
+    else:
+        batch_loss_grad = checkpoint(value_and_grad(map_and_loss, has_aux=has_aux), **checkpoint_kwargs)
+
+    gpus = len(jax.devices())
+    assert (batch_size % gpus) == 0
 
     if (optimizer is None):
         optimizer = optax.adam(0.1)
@@ -1306,6 +1317,13 @@ def train(
                     aux_data=aux_data,
                 )
             else:
+                # Create a Sharding object to distribute a value across devices:
+                sharding = PositionalSharding(mesh_utils.create_device_mesh((gpus,)))
+
+                X_batch = X_batch.device_put(sharding, gpus)
+                Y_batch = Y_batch.device_put(sharding, gpus)
+                params = jax.device_put(params, sharding.replicate())
+
                 loss_val, grads = batch_loss_grad(params, X_batch, Y_batch, subkey, True)
 
             updates, opt_state = optimizer.update(grads, opt_state)

@@ -1664,6 +1664,15 @@ class Layer:
             out_layer.append(k, parity, vmap_rotate(self.D, image_block, 0, gg, precision))
 
         return out_layer
+    
+    def device_replicate(self, sharding):
+        """
+        Put the BatchLayer on particular devices according to the sharding and num_devices
+        args:
+            sharding (jax sharding): jax positional sharding to be reshaped
+            num_devices (int): number of gpus to split the batches over
+        """
+        return self.__class__(jax.device_put(self.data, sharding.replicate()), self.D, self.is_torus)
 
     #JAX helpers
     def tree_flatten(self):
@@ -1740,3 +1749,19 @@ class BatchLayer(Layer):
     
     def times_group_element(self, gg, precision=None):
         return vmap(super.times_group_element, in_axes=(0, None, None))(gg, precision=precision)
+    
+    def device_put(self, sharding, num_devices):
+        """
+        Put the BatchLayer on particular devices according to the sharding and num_devices
+        args:
+            sharding (jax sharding): jax positional sharding to be reshaped
+            num_devices (int): number of gpus to split the batches over
+        """
+        assert (self.L % num_devices) == 0 #number of batches must device evenly into number of devices
+
+        new_data = {}
+        for key, image_block in self.items():
+            sharding_shape = (num_devices,) + (1,)*len(image_block.shape[1:])
+            new_data[key] = jax.device_put(image_block, sharding.reshape(sharding_shape))
+
+        return self.__class__(new_data, self.D, self.is_torus)

@@ -6,6 +6,10 @@ import math
 import optax
 from functools import partial
 
+import jax
+from jax.experimental import mesh_utils
+from jax.sharding import PositionalSharding
+
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 
@@ -84,6 +88,17 @@ params = random.normal(subkey, shape=(len(conv_filters) + math.comb(len(conv_fil
 filter_layer = geom.Layer.from_images(conv_filters)
 X_layer = geom.BatchLayer.from_images(X_images)
 Y_layer = geom.BatchLayer.from_images(Y_images)
+
+# This section below demonstrates how to shard across multiple GPUs. 
+# Create a Sharding object to distribute a value across devices:
+num_gpus = len(jax.devices())
+assert (num_images % num_gpus) == 0 # batch size should distribute across the number of gpus evenly
+sharding = PositionalSharding(mesh_utils.create_device_mesh((num_gpus,)))
+
+X_layer = X_layer.device_put(sharding, num_gpus)
+Y_layer = Y_layer.device_put(sharding, num_gpus)
+params = jax.device_put(params, sharding.replicate())
+filter_layer = filter_layer.device_replicate(sharding)
 
 params, _, _ = ml.train(
     X_layer,

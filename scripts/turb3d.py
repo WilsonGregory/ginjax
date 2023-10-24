@@ -18,9 +18,9 @@ import geometricconvolutions.ml as ml
 def net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 2
     target_parity = 0
-    depth = 4
+    depth = 1
     max_k = 3 # this is tough
-    num_conv_layers = 1
+    num_conv_layers = 2
 
     for _ in range(num_conv_layers):
         layer, params = ml.batch_conv_layer(
@@ -85,7 +85,7 @@ key = random.PRNGKey(time.time_ns() if (seed is None) else seed)
 
 # start with basic 3x3 scalar, vector, and 2nd order tensor images
 operators = geom.make_all_operators(D)
-conv_filters = geom.get_invariant_filters(Ms=[3], ks=[1,2], parities=[0,1], D=D, operators=operators)
+conv_filters = geom.get_invariant_filters(Ms=[3], ks=[1,2], parities=[0], D=D, operators=operators)
 
 # Get Training data
 data = np.load('../data/3d_turb/downsampled_1024_to_64.npz')
@@ -113,13 +113,15 @@ key, subkey = random.split(key)
 params = ml.init_params(partial(net, conv_filters=conv_filters), layer_x, subkey)
 print(f'Model params: {ml.count_params(params)}')
 
-# net_checkpoint = checkpoint(
-#     net,
-#     policy=jax.checkpoint_policies.nothing_saveable, 
-#     static_argnums=3,
+# chkpt_func = checkpoint(
+#     jax.value_and_grad(partial(map_and_loss, conv_filters=conv_filters)),
+#     policy=jax.checkpoint_policies.nothing_saveable,
+#     static_argnums=4,
 # )
-# print_saved_residuals(net_checkpoint, params, layer_x, key, False, conv_filters)
-# exit()
+# X_batches, Y_batches = ml.get_batch_layer(layer_x, layer_y, 1, subkey)
+# X_batch = X_batches[0]
+# Y_batch = Y_batches[0]
+# print_saved_residuals(chkpt_func, params, X_batch, Y_batch, key, True)
 
 del data
 del raw_tau
@@ -132,16 +134,12 @@ else:
         layer_x, 
         layer_y, 
         partial(map_and_loss, conv_filters=conv_filters),
-        # checkpoint(
-        #     partial(map_and_loss, conv_filters=conv_filters),
-        #     policy=jax.checkpoint_policies.nothing_saveable, 
-        #     static_argnums=4,
-        # ),
         params,
         subkey,
         ml.EpochStop(epochs=epochs, verbose=verbose),
         batch_size=1,
         optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=1, decay_rate=0.999)),
+        checkpoint_kwargs={ 'policy': jax.checkpoint_policies.nothing_saveable, 'static_argnums': 4 },
     )
 
     if (save_folder):

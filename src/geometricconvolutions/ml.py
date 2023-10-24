@@ -9,8 +9,6 @@ import jax
 import jax.numpy as jnp
 import jax.debug
 import optax
-from jax.experimental import mesh_utils
-from jax.sharding import PositionalSharding
 
 import geometricconvolutions.geometric as geom
 
@@ -1281,9 +1279,6 @@ def train(
         batch_loss_grad = value_and_grad(map_and_loss, has_aux=has_aux)
     else:
         batch_loss_grad = checkpoint(value_and_grad(map_and_loss, has_aux=has_aux), **checkpoint_kwargs)
-
-    gpus = len(jax.devices())
-    assert (batch_size % gpus) == 0
 
     if (optimizer is None):
         optimizer = optax.adam(0.1)

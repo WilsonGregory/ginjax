@@ -1317,13 +1317,6 @@ def train(
                     aux_data=aux_data,
                 )
             else:
-                # Create a Sharding object to distribute a value across devices:
-                sharding = PositionalSharding(mesh_utils.create_device_mesh((gpus,)))
-
-                X_batch = X_batch.device_put(sharding, gpus)
-                Y_batch = Y_batch.device_put(sharding, gpus)
-                params = jax.device_put(params, sharding.replicate())
-
                 loss_val, grads = batch_loss_grad(params, X_batch, Y_batch, subkey, True)
 
             updates, opt_state = optimizer.update(grads, opt_state)

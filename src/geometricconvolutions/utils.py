@@ -197,7 +197,7 @@ def setup_image_plot():
     ff = plt.figure(figsize=(8, 6))
     return ff
 
-def plot_scalar_image(image, vmin=-1., vmax=1., ax=None, colorbar=False):
+def plot_scalar_image(image, vmin=-1., vmax=1., ax=None, colorbar=False, title=''):
     assert image.D == 2
     assert image.k == 0
     if ax is None:
@@ -212,17 +212,18 @@ def plot_scalar_image(image, vmin=-1., vmax=1., ax=None, colorbar=False):
         vmax = np.percentile(plotdata[:, 2], 97.5)
     plot_scalars(ax, image.N, plotdata[:, 0], plotdata[:, 1], plotdata[:, 2],
                  symbols=False, vmin=vmin, vmax=vmax, colorbar=colorbar)
-    image_axis(ax, plotdata)
+    image_axis(ax, plotdata, title)
     return ax
 
-def image_axis(ax, plotdata):
+def image_axis(ax, plotdata, title=''):
     ax.set_xlim(np.min(plotdata[:, 0])-0.5, np.max(plotdata[:, 0])+0.5)
     ax.set_ylim(np.min(plotdata[:, 1])-0.5, np.max(plotdata[:, 1])+0.5)
     ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
+    ax.title.set_text(title)
 
-def plot_vector_image(image, ax=None):
+def plot_vector_image(image, ax=None, title=''):
     assert image.D == 2
     assert image.k == 1
     if ax is None:
@@ -232,7 +233,7 @@ def plot_vector_image(image, ax=None):
                          for key in image.keys()])
     plot_vectors(ax, plotdata[:, 0], plotdata[:, 1], plotdata[:, 2:4],
                  boxes=True, fill=True, scaling=0.5)
-    image_axis(ax, plotdata)
+    image_axis(ax, plotdata, title)
     return ax
 
 def plot_image(image, **kwargs):

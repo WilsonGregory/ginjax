@@ -1,4 +1,3 @@
-#generate gravitational field
 import sys
 from functools import partial
 import argparse
@@ -25,6 +24,12 @@ def gen_data(N, num_imgs, key):
     )
 
 def gen_scalar_gradient_imgs(N, coeffs):
+    """
+    Generate scalar and gradient images from the provided coefficients for a 3rd degree polynomial basis
+    args:
+        N (int): side length of the images
+        coeffs (int): length 10 vector of the coefficients for the 3rd degree polynomial basis
+    """
     # Dimension D=2
     mesh = jnp.meshgrid(jnp.linspace(-1.2,1.2,N),jnp.linspace(-1.2,1.2,N),indexing='ij')
     x = mesh[0]
@@ -143,7 +148,7 @@ one_point = train_scalar_layer.get_subset(jnp.array([0]))
 key, subkey = random.split(key)
 div_net_f = partial(div_net, conv_filters=conv_filters)
 params = ml.init_params(div_net_f, one_point, subkey)
-print(ml.count_params(params))
+print(f'Number of params: {ml.count_params(params)}')
 
 key, subkey = random.split(key)
 params, train_loss, val_loss = ml.train(

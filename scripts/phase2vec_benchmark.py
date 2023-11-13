@@ -1,4 +1,3 @@
-#generate gravitational field
 import os
 import numpy as np
 import sys
@@ -7,6 +6,7 @@ import argparse
 import time
 from scipy.special import binom
 import math
+import matplotlib.pyplot as plt
 
 import jax.numpy as jnp
 import jax.random as random
@@ -22,19 +22,54 @@ BATCH_NORM_1D = 'batch_norm_1d'
 
 # Copied from phase2vec
 
-def load_dataset(data_path):
+def load_dataset(D, train_data_path, test_data_path):
+    assert D == 2 # layer construction transpose is hardcoded, so make sure this is 2
     # Load data
-    X_train = np.load(os.path.join(data_path, 'X_train.npy'))
-    X_test = np.load(os.path.join(data_path, 'X_test.npy'))
+    X_train_data = np.load(os.path.join(train_data_path, 'X_train.npy'))
+    X_val_data = np.load(os.path.join(train_data_path, 'X_test.npy'))
 
     # Load labels
-    y_train = np.load(os.path.join(data_path, 'y_train.npy'))
-    y_test = np.load(os.path.join(data_path, 'y_test.npy'))
+    y_train = np.load(os.path.join(train_data_path, 'y_train.npy'))
+    y_val = np.load(os.path.join(train_data_path, 'y_test.npy'))
 
     # Load pars
-    p_train = np.load(os.path.join(data_path, 'p_train.npy'))
-    p_test = np.load(os.path.join(data_path, 'p_test.npy'))
-    return X_train, X_test, y_train, y_test, p_train, p_test
+    p_train = np.load(os.path.join(train_data_path, 'p_train.npy'))
+    p_val = np.load(os.path.join(train_data_path, 'p_test.npy'))
+
+    X_train = geom.BatchLayer(
+        { (1,0): jnp.expand_dims(X_train_data.transpose(0,2,3,1), axis=1) }, #(batch, channel, (N,)*D, (D,)*k)
+        D,
+        False,
+    )
+    X_val = geom.BatchLayer(
+        { (1,0): jnp.expand_dims(X_val_data.transpose(0,2,3,1), axis=1) },
+        D,
+        False,
+    )
+
+    # Load data
+    X_test_data1 = np.load(os.path.join(test_data_path, 'X_train.npy'))
+    X_test_data2 = np.load(os.path.join(test_data_path, 'X_test.npy'))
+
+    # Load labels
+    y_test1 = np.load(os.path.join(test_data_path, 'y_train.npy'))
+    y_test2 = np.load(os.path.join(test_data_path, 'y_test.npy'))
+
+    # Load pars
+    p_test1 = np.load(os.path.join(test_data_path, 'p_train.npy'))
+    p_test2 = np.load(os.path.join(test_data_path, 'p_test.npy'))
+
+    # add validation data to the test data set, as they do in the phase2vec paper
+    X_test_data = jnp.concatenate([X_test_data1, X_test_data2, X_val_data])
+    y_test = jnp.concatenate([y_test1, y_test2, 16 * np.ones_like(y_val)])
+    p_test = jnp.concatenate([p_test1, p_test2, p_val])
+    X_test = geom.BatchLayer(
+        { (1,0): jnp.expand_dims(X_test_data.transpose(0,2,3,1), axis=1) },
+        D,
+        False,
+    )
+
+    return X_train, X_val, X_test, y_train, y_val, y_test, p_train, p_val, p_test
 
 def library_size(dim, poly_order, include_sine=False, include_exp=False, include_constant=True):
     """
@@ -123,6 +158,31 @@ def sindy_library(X, poly_order, include_sine=False, include_exp=False):
     library_terms.insert(0,'1')
     return library, library_terms
 
+def pinv_baseline_map(data, rand_key, library):
+    _, _, _, _, X_test, Y_test = data 
+
+    rand_key, subkey = random.split(rand_key)
+    return get_par_recon_loss(X_test, Y_test, subkey, partial(pinv_baseline, library=library))
+
+# handles a batch input layer
+def pinv_baseline(layer, key, library):
+    N = layer.N
+    D = layer.D
+    # library is 4096 x 10
+    batch_img = jnp.transpose(layer[(1,0)], [0,4,1,2,3]).reshape(layer.L, layer.D,-1)
+    library_pinv = jnp.linalg.pinv(library.T)
+
+    batch_mul = vmap(lambda batch_arr,single_arr: batch_arr @ single_arr, in_axes=(0,None))
+
+    batch_coeffs = batch_mul(batch_img, library_pinv) # L,2,10
+    batch_recon = batch_mul(batch_coeffs, library.T) # L, 2, 4096
+
+    return (
+        jnp.moveaxis(batch_recon.reshape((layer.L,D) + (N,)*D), 1, -1),
+        jnp.moveaxis(batch_coeffs, 1, -1), 
+        None, # this is the "batch_stats" for convenience in this script
+    )
+
 def dense_layer(params, x, width, bias=True, mold_params=False):
     params_idx, this_params = ml.get_layer_params(params, mold_params, DENSE)
     if mold_params:
@@ -195,7 +255,85 @@ def dropout_layer(x, p, key, train):
     
     return (x * (random.uniform(key, shape=x.shape) > p).astype(x.dtype))*(1/(1-p))
 
-def net(params, layer, key, train, batch_stats, conv_filters, ode_basis, return_params=False):
+def get_par_recon_loss(X_test, Y_test_tuple, rand_key, eval_net, print_errs=False):
+    labels = [
+        'saddle_node 0',
+        'saddle_node 1',
+        'pitchfork 0',
+        'pitchfork 1',
+        'transcritical 0',
+        'transcritical 1',
+        'selkov 0',
+        'selkov 1',
+        'homoclinic 0',
+        'homoclinic 1',
+        'vanderpol 0',
+        'simple_oscillator 0',
+        'simple_oscillator 1',
+        'fitzhugh_nagumo 0',
+        'fitzhugh_nagumo 1',
+        'lotka_volterra 0', #idx 15, skip this one cause its bugged
+        'polynomial',
+    ]
+
+    Y_test, true_labels, p_test = Y_test_tuple
+
+    par_losses = []
+    recon_losses = []
+    recon_dict = {}
+    coeffs_dict = {}
+    for label in jnp.unique(true_labels):
+        if (label == 15): # skip this one cause its bugged
+            continue
+
+        X_class = X_test.get_subset(true_labels == label)
+        Y_class = Y_test.get_subset(true_labels == label)
+        class_pars = p_test[true_labels == label]
+        Y_class_img = Y_class[(1,0)][:,0,...]
+        class_size = len(class_pars)
+
+        full_recon = None
+        full_coeffs = None
+        for i in range(math.ceil(class_size / batch_size)): #split into batches if its too big
+            batch_layer = X_class.get_subset(jnp.arange(
+                batch_size*i, 
+                min(batch_size*(i+1), class_size),
+            ))
+
+            rand_key, subkey = random.split(rand_key)
+            recon, coeffs, _ = eval_net(layer=batch_layer, key=subkey)
+
+            if full_recon is None:
+                full_recon = recon
+                full_coeffs = coeffs
+            else:
+                full_recon = jnp.concatenate([full_recon, recon])
+                full_coeffs = jnp.concatenate([full_coeffs, coeffs])
+
+        recon_dict[int(label)] = np.array(full_recon)
+        coeffs_dict[int(label)] = np.array(full_coeffs)
+
+        assert full_coeffs.shape == class_pars.shape
+        assert full_recon.shape == Y_class_img.shape
+        par_loss = ml.mse_loss(full_coeffs, class_pars)
+        recon_loss = phase2vec_loss(full_recon, Y_class_img, full_coeffs, beta=None, reduce=False)
+
+        if (print_errs):
+            print(f'{labels[label]}, par: {par_loss:0.5f} --- recon: {recon_loss:0.5f}')
+
+        par_losses.append(par_loss)
+        recon_losses.append(recon_loss)
+
+    mean_par_loss = jnp.mean(jnp.stack(par_losses))
+    mean_recon_loss = jnp.mean(jnp.stack(recon_losses))
+    if (print_errs):
+        print('Mean par loss: ', mean_par_loss)
+        print('Mean recon loss: ', mean_recon_loss)
+
+    return mean_par_loss, mean_recon_loss
+
+@partial(jit, static_argnums=[3,7])
+def gi_net(params, layer, key, train, batch_stats, conv_filters, ode_basis, return_params=False):
     # batch norm, dropout seem to make the network widely worse, not sure why.
     embedding_d = 100
     num_coeffs = ode_basis.shape[1]
@@ -257,11 +395,11 @@ def phase2vec_loss(recon_x, y, coeffs, eps=1e-5, beta=1e-3, reduce=True):
 
     return recon_loss if (beta is None) else recon_loss + beta * jnp.mean(jnp.abs(coeffs))
 
-@partial(jit, static_argnums=[4,8,9])
-def map_and_loss(params, layer_x, layer_y, key, train, aux_data, conv_filters, ode_basis, eps=1e-5, beta=1e-3):
-    recon, coeffs, batch_stats = net(params, layer_x, key, train, aux_data, conv_filters, ode_basis)
+def map_and_loss(params, layer_x, layer_y, key, train, aux_data, net, eps=1e-5, beta=1e-3):
+    recon, coeffs, batch_stats = net(params, layer_x, key, train, aux_data)
     return phase2vec_loss(recon, layer_y[(1,0)][:,0,...], coeffs, eps, beta), batch_stats
 
+@partial(jit, static_argnums=[3,6,7,8,9])
 def baseline_net(params, layer, key, train, batch_stats, ode_basis, batch_norm, dropout, relu, return_params=False):
     embedding_d = 100
     num_coeffs = ode_basis.shape[1]
@@ -334,35 +472,78 @@ def baseline_net(params, layer, key, train, batch_stats, ode_basis, batch_norm, 
     recon_x = vmap_mul(coeffs).reshape((layer.L,) + (img_N,)*layer.D + (layer.D,))
     return (recon_x, coeffs, batch_stats, params) if return_params else (recon_x, coeffs, batch_stats)
 
-@partial(jit, static_argnums=[4,7,8,9,10,11])
-def baseline_map_and_loss(params, layer_x, layer_y, key, train, aux_data, ode_basis, batch_norm, dropout, relu, eps=1e-5, beta=1e-3):
-    recon, coeffs, batch_stats = baseline_net(params, layer_x, key, train, aux_data, ode_basis, batch_norm, dropout, relu)
-    return phase2vec_loss(recon, layer_y[(1,0)][:,0,...], coeffs, eps, beta), batch_stats
+def train_and_eval(data, rand_key, net, batch_size, lr):
+    X_train, Y_train, X_val, Y_val, X_test, Y_test = data 
+
+    rand_key, subkey = random.split(rand_key)
+    init_params = ml.init_params(
+        partial(net, batch_stats=None),
+        X_train.get_subset(jnp.array([0])), 
+        subkey, 
+        override_initializers={
+            DENSE: dense_layer_init,
+            BATCH_NORM_1D: lambda _,tree: { ml.SCALE: jnp.ones(tree[ml.SCALE].shape), ml.BIAS: jnp.zeros(tree[ml.BIAS].shape) },
+        },
+    )
+
+    rand_key, subkey = random.split(rand_key)
+    params, batch_stats, _, _ = ml.train(
+        X_train,
+        Y_train, 
+        partial(map_and_loss, net=net),
+        init_params,
+        subkey,
+        ml.EpochStop(epochs, verbose=verbose),
+        batch_size=batch_size,
+        optimizer=optax.adam(lr),
+        validation_X=X_val,
+        validation_Y=Y_val,
+        has_aux=True,
+    )
+
+    rand_key, subkey = random.split(rand_key)
+    return get_par_recon_loss(
+        X_test,
+        Y_test,
+        subkey,
+        partial(net, params=params, train=False, batch_stats=batch_stats),
+    )
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
+    parser.add_argument('save_folder', help='where to save the image', type=str)
     parser.add_argument('-e', '--epochs', help='number of epochs', type=float, default=200)
     parser.add_argument('-lr', help='learning rate', type=float, default=1e-4)
     parser.add_argument('-batch', help='batch size', type=int, default=64)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
-    parser.add_argument('-s', '--save', help='folder name to save the results', type=str, default=None)
-    parser.add_argument('-l', '--load', help='folder name to load results from', type=str, default=None)
     parser.add_argument('-v', '--verbose', help='levels of print statements during training', type=int, default=1)
+    parser.add_argument('-t', '--trials', help='number of trials', type=int, default=1)
+    parser.add_argument(
+        '-b', 
+        '--benchmark', 
+        help='what to benchmark over', 
+        type=str, 
+        choices=['masking_noise', 'gaussian_noise', 'parameter_noise'], 
+        default='gaussian_noise',
+    )
+    parser.add_argument('-benchmark_steps', help='the number of steps in the benchmark_range', type=int, default=10)
 
     args = parser.parse_args()
 
     return (
+        args.save_folder,
         args.epochs,
         args.lr,
         args.batch,
         args.seed,
-        args.save,
-        args.load,
         args.verbose,
+        args.trials,
+        args.benchmark,
+        args.benchmark_steps,
     )
 
 # Main
-epochs, lr, batch_size, seed, save_folder, load_folder, verbose = handleArgs(sys.argv)
+save_folder, epochs, lr, batch_size, seed, verbose, trials, benchmark, benchmark_steps = handleArgs(sys.argv)
 
 D = 2
 N = 64 
@@ -373,31 +554,13 @@ key = random.PRNGKey(time.time_ns() if (seed is None) else seed)
 operators = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1], parities=[0], D=D, operators=operators)
 
-# Get Training data
+# Get data
 train_data_path = '../phase2vec/output/data/polynomial'
-X_train_data, X_val_data, y_train, y_val, p_train, p_val = load_dataset(train_data_path)
-assert N == X_train_data.shape[2] == X_train_data.shape[3]
-X_train = geom.BatchLayer(
-    { (1,0): jnp.expand_dims(X_train_data.transpose(0,2,3,1), axis=1) }, #(batch, channel, (N,)*D, (D,)*k)
-    D,
-    False,
-)
-X_val = geom.BatchLayer(
-    { (1,0): jnp.expand_dims(X_train_data.transpose(0,2,3,1), axis=1) },
-    D,
-    False,
-)
-
-# Get testing data. We add the validation data set to the test data, as they do in the paper
 test_data_path = '../phase2vec/output/data/classical'
-X_test1, X_test2, y_test1, y_test2, p_test1, p_test2 = load_dataset(test_data_path)
-X_test_data = jnp.concatenate([X_test1, X_test2, X_val_data])
-y_test = jnp.concatenate([y_test1, y_test2, 16 * np.ones_like(y_val)])
-p_test = jnp.concatenate([p_test1, p_test2, p_val])
-X_test = geom.BatchLayer(
-    { (1,0): jnp.expand_dims(X_test_data.transpose(0,2,3,1), axis=1) },
-    D,
-    False,
+X_train, X_val, X_test, y_train, y_val, y_test, p_train, p_val, p_test = load_dataset(
+    D, 
+    train_data_path, 
+    test_data_path,
 )
 
 # generate function library
@@ -409,135 +572,71 @@ ode_basis, _ = sindy_library(L.reshape(X_train.N**D,D), 3)
 # Define the models that we are benchmarking
 models = [
     (
-        'gi_net',  # no batchnorm, dropout, only relu in cnn, cnn is equivariant GI-Net layers
-        partial(map_and_loss, conv_filters=conv_filters, ode_basis=ode_basis),
-        partial(net, conv_filters=conv_filters, ode_basis=ode_basis),
+        'gi_net', 
+        partial(
+            train_and_eval, 
+            net=partial(gi_net, conv_filters=conv_filters, ode_basis=ode_basis), 
+            batch_size=batch_size, 
+            lr=lr,
+        ),
     ),
     (
         'baseline', # identical to the paper architecture
-        partial(baseline_map_and_loss, ode_basis=ode_basis, batch_norm=True, dropout=True, relu=True),
-        partial(baseline_net, ode_basis=ode_basis, batch_norm=True, dropout=True, relu=True),
+        partial(
+            train_and_eval,
+            net=partial(baseline_net, ode_basis=ode_basis, batch_norm=True, dropout=True, relu=True),
+            batch_size=batch_size,
+            lr=lr,
+        ),
     ),
     (
         'baseline_no_extras', # paper architecture, but no batchnorm or dropout, only relu in cnn
-        partial(baseline_map_and_loss, ode_basis=ode_basis, batch_norm=False, dropout=False, relu=False),
-        partial(baseline_net, ode_basis=ode_basis, batch_norm=False, dropout=False, relu=False),
-    ),
-]
-
-# For each model, calculate the size of the parameters and add it to the tuple.
-one_point = X_train.get_subset(jnp.array([0]))
-models_init = []
-for model_name, model_map_and_loss, model in models:
-    get_params = ml.init_params(
-        partial(model, batch_stats=None),
-        one_point, 
-        key, 
-        return_func=True, 
-        override_initializers={
-            DENSE: dense_layer_init,
-            BATCH_NORM_1D: lambda _,tree: { ml.SCALE: jnp.ones(tree[ml.SCALE].shape), ml.BIAS: jnp.zeros(tree[ml.BIAS].shape) },
-        }
-    )
-    print(f'{model_name}: {ml.count_params(get_params(key))} params')
-    models_init.append((model_name, model_map_and_loss, model, get_params))
-
-labels = [
-    'saddle_node 0',
-    'saddle_node 1',
-    'pitchfork 0',
-    'pitchfork 1',
-    'transcritical 0',
-    'transcritical 1',
-    'selkov 0',
-    'selkov 1',
-    'homoclinic 0',
-    'homoclinic 1',
-    'vanderpol 0',
-    'simple_oscillator 0',
-    'simple_oscillator 1',
-    'fitzhugh_nagumo 0',
-    'fitzhugh_nagumo 1',
-    'lotka_volterra 0', #idx 15, skip this one cause its bugged
-    'polynomial',
-]
-
-for model_name, model, eval_net, get_params in models_init:
-    print(f'Model: {model_name}')
-
-    if load_folder:
-        params = jnp.load(f'{load_folder}/{model_name}_s{seed}_e{epochs}.npy')
-    else:
-        key, subkey = random.split(key)
-        # might want to try to do kaiming initialization here
-        params = get_params(subkey)
-
-        key, subkey = random.split(key)
-        params, batch_stats, _, _ = ml.train(
-            X_train,
-            X_train, #reconstruction, so we want to get back to the input
-            model,
-            params,
-            subkey,
-            ml.EpochStop(epochs, verbose=verbose),
+        partial(
+            train_and_eval,
+            net=partial(baseline_net, ode_basis=ode_basis, batch_norm=False, dropout=False, relu=False),
             batch_size=batch_size,
-            optimizer=optax.adam(lr),
-            validation_X=X_val,
-            validation_Y=X_val, # reconstruction, reuse X_val as the Y
-            has_aux=True,
-        )
+            lr=lr,
+        ),
+    ),
+    ('pinv_baseline', partial(pinv_baseline_map, library=ode_basis)),
+]
 
-        if save_folder:
-            jnp.save(f'{save_folder}/{model_name}_s{seed}_e{epochs}.npy', params)
+benchmark_range = np.linspace(0,0.3,benchmark_steps) # should be 20
+key, subkey = random.split(key)
+results = ml.benchmark(
+    (X_train, X_train, X_val, X_val, X_test, (X_test, y_test, p_test)),
+    models,
+    subkey,
+    benchmark,
+    benchmark_range, 
+    num_trials=trials,
+    ode_basis=ode_basis,
+    num_results=2,
+)
+print(results)
+num_metrics = results.shape[-1]
 
-    par_losses = []
-    recon_losses = []
-    recon_dict = {}
-    coeffs_dict = {}
-    for label in jnp.unique(y_test):
-        if (label == 15): # skip this one cause its bugged
-            continue
+# Plot the results
+plt.rcParams['font.family'] = 'serif'
+plt.rcParams['font.serif'] = 'STIXGeneral'
+plt.tight_layout()
 
-        class_layer = X_test.get_subset(y_test == label)
-        class_pars = p_test[y_test == label]
-        class_data = class_layer[(1,0)][:,0,...]
+fig, axs = plt.subplots(ncols=num_metrics, figsize=(num_metrics*8,6))
+for k, (model_name, _) in enumerate(models):
+    for i in range(num_metrics):
+        loss_mean = np.mean(results[:,:,k,i], axis=0) # average over the trials
+        axs[i].plot(benchmark_range, loss_mean, label=model_name)
 
-        full_recon = None
-        full_coeffs = None
-        for i in range(math.ceil(len(class_data) / batch_size)): #split into batches if its too big
-            batch_layer = class_layer.get_subset(jnp.arange(
-                batch_size*i, 
-                min(batch_size*(i+1), len(class_data)),
-            ))
+        if trials > 1:
+            loss_stdev = np.std(results[:,:,k,i], axis=0) # take the stdev over the trials
+            axs[i].fill_between(benchmark_range, loss_mean - loss_stdev, loss_mean + loss_stdev, alpha=0.2)
 
-            key, subkey = random.split(key)
-            recon, coeffs, _ = eval_net(
-                params, 
-                batch_layer, 
-                key=subkey, 
-                train=False,
-                batch_stats=batch_stats,
-            )
-
-            if full_recon is None:
-                full_recon = recon
-                full_coeffs = coeffs
-            else:
-                full_recon = jnp.concatenate([full_recon, recon])
-                full_coeffs = jnp.concatenate([full_coeffs, coeffs])
-
-        recon_dict[int(label)] = np.array(full_recon)
-        coeffs_dict[int(label)] = np.array(full_coeffs)
-
-        assert full_coeffs.shape == class_pars.shape
-        assert full_recon.shape == class_data.shape
-        par_loss = ml.mse_loss(full_coeffs, class_pars)
-        recon_loss = phase2vec_loss(full_recon, class_data, full_coeffs, beta=None, reduce=False)
-
-        print(f'{labels[label]}, par: {par_loss:0.5f} --- recon: {recon_loss:0.5f}')
-
-        par_losses.append(par_loss)
-        recon_losses.append(recon_loss)
-
-    print('Mean par loss: ', jnp.mean(jnp.stack(par_losses)))
-    print('Mean recon loss: ', jnp.mean(jnp.stack(recon_losses)))
+plt.legend()
+# Just gonna hard code these names
+axs[0].set_title(f'Param Loss vs. {benchmark}')
+axs[0].set_ylabel('Parameter Loss')
+axs[0].set_xlabel(f'{benchmark} Magnitude')
+axs[1].set_title(f'Recon Loss vs. {benchmark}')
+axs[1].set_ylabel('Reconstruction Loss')
+axs[1].set_xlabel(f'{benchmark} Magnitude')
+plt.savefig(f'{save_folder}benchmark_{benchmark}_t{trials}_s{seed}_steps{benchmark_steps}.png')

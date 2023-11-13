@@ -1353,3 +1353,76 @@ def train(
         return stop_condition.best_params, aux_data, jnp.array(train_loss), jnp.array(val_loss)
     else:
         return stop_condition.best_params, jnp.array(train_loss), jnp.array(val_loss)
+
+def benchmark(
+    data,
+    models,
+    rand_key, 
+    benchmark,
+    benchmark_range,
+    num_trials=1,
+    ode_basis=None,
+    num_results=1,
+):
+    """
+    Method to benchmark multiple models as a particular benchmark over the specified range.
+    args:
+        data (tuple of pytrees): should be X_train, Y_train, X_val, Y_val, X_test, Y_test. All of these
+            will be passed to model as a tuple 
+        models (list of tuples): the elements of the tuple are (str) model_name, and (func) model.
+            Model is a function that takes data and a rand_key and returns either a single float score
+            or an iterable of length num_results of float scores.
+        rand_key (jnp.random key): key for randomness
+        benchmark (str): the type of benchmarking to do
+        benchmark_range (iterable): iterable of the benchmark values to range over
+        num_trials (int): number of trials to run, defaults to 1
+        ode_basis (jnp.array): for phase2vec only, used with parameter_noise to construct the noisy data
+        num_results (int): the number of results that will come out of the model function. If num_results is
+            greater than 1, it should be indexed by range(num_results)
+    returns:
+        an np.array of shape (trials, benchmark_range, models, num_results) with the results all filled in
+    """
+    benchmark_options = { 'masking_noise', 'gaussian_noise', 'parameter_noise' }
+    assert benchmark in benchmark_options, f'ERROR ml.benchmark: benchmark must be in {benchmark_options}'
+    
+    X_train, Y_train, X_val, Y_val, X_test_in, Y_test = data
+
+    results = np.zeros((num_trials, len(benchmark_range), len(models), num_results))
+    for i in range(num_trials):
+        for j, benchmark_val in enumerate(benchmark_range):
+
+            # apply noise to the test data inputs
+            if benchmark == 'masking_noise':
+                X_test = X_test_in.empty()
+                for key,val in X_test_in.items():
+                    rand_key, subkey = random.split(rand_key)
+                    X_test[key] = val * (1.*(random.uniform(subkey, shape=(val.shape)) > benchmark_val))
+            elif benchmark == 'gaussian_noise':
+                X_test = X_test_in.empty()
+                for key,val in X_test_in.items():
+                    rand_key, subkey = random.split(rand_key)
+                    noise_std = jnp.std(val) * benchmark_val # magnitude scales the existing stdev
+                    X_test[key] = val + noise_std * random.normal(subkey, shape=val.shape)
+            elif benchmark == 'parameter_noise': # this should only be used w/ phase2vec
+                _, _, p_test = Y_test
+
+                X_test = X_test_in.empty()
+                for key,val in X_test_in.items():
+                    rand_key, subkey = random.split(rand_key)
+                    p_test_noisy = p_test + benchmark_val * random.normal(subkey, shape=p_test.shape)
+                    vmap_mul = vmap(lambda basis, coeffs: basis @ coeffs, in_axes=(None, 0))
+                    X_test[key] = vmap_mul(ode_basis, p_test_noisy).reshape(val.shape)
+
+            for k, (model_name, model) in enumerate(models):
+                print(f'trial {i} {benchmark}: {benchmark_val:.4f} {model_name}')
+
+                rand_key, subkey = random.split(rand_key)
+                res = model((X_train, Y_train, X_val, Y_val, X_test, Y_test), subkey)
+
+                if num_results > 1:
+                    for q in range(num_results):
+                        results[i,j,k,q] = res[q]
+                else:
+                    results[i,j,k,0] = res
+
+    return results

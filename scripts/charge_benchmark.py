@@ -178,7 +178,7 @@ def train_and_eval(data, rand_key, net, lr, override_initializers={}):
         partial(map_and_loss, net=net),
         init_params,
         subkey,
-        ml.ValLoss(patience=5, verbose=verbose), # change back to 20
+        ml.ValLoss(patience=20, verbose=verbose),
         batch_size=batch_size,
         optimizer=optax.adam(optax.exponential_decay(lr, transition_steps=int(X_train.L / batch_size), decay_rate=0.995)),
         validation_X=X_val,
@@ -191,7 +191,7 @@ def train_and_eval(data, rand_key, net, lr, override_initializers={}):
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument('-n', '--num_times', help='number of runs in the benchmark', type=int, default=5)
+    parser.add_argument('-n', '--num_trials', help='number of runs in the benchmark', type=int, default=5)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-s', '--save', help='file name to save loss values', type=str, default=None)
     parser.add_argument('-l', '--load', help='file name to load loss values', type=str, default=None)
@@ -200,7 +200,7 @@ def handleArgs(argv):
     args = parser.parse_args()
 
     return (
-        args.num_times,
+        args.num_trials,
         args.seed,
         args.save,
         args.load,
@@ -208,13 +208,12 @@ def handleArgs(argv):
     )
 
 # Main
-num_times, seed, save_file, load_file, verbose = handleArgs(sys.argv)
+num_trials, seed, save_file, load_file, verbose = handleArgs(sys.argv)
 
 N = 16
 D = 2
 
-# num_train_images_range = [5,10,20,50,100]
-num_train_images_range = [5,10]
+num_train_images_range = [5,10,20,50,100]
 
 key = random.PRNGKey(time.time_ns() if (seed is None) else seed)
 
@@ -262,7 +261,7 @@ if (not load_file):
         subkey,
         'Num points',
         num_train_images_range, 
-        num_trials=num_times,
+        num_trials=num_trials,
         num_results=4,
     )
 

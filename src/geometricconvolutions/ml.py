@@ -154,6 +154,18 @@ def get_filter_block_from_invariants(params, input_layer, invariant_filters, out
     return filter_layer, params
 
 def get_filter_block_invariants2(params, input_layer, invariant_filters, target_keys, out_depth, mold_params):
+    """
+    Alternative get_filter_block function for conv_contract layers. In this case there is an input keys and
+    specific targetted output keys, and we use the available invariant_filters to build the connections 
+    between those two layers.
+    args:
+        params (params tree): the learned params tree
+        input_layer (Layer): input layer so that we know the input depth at each (k,parity) that we need
+        invariant_filters (Layer): available invariant filters of each (k,parity) that will be used 
+        target_keys (tuple of (k,parity) tuples): targeted keys for the output layer
+        out_depth (int): the output depth of this conv layer
+        mold_params (bool): True if we are building the params shape, defaults to False
+    """
     vmap_sum = vmap(vmap(geom.linear_combination, in_axes=(None, 0)), in_axes=(None, 0))
 
     if (mold_params):
@@ -412,6 +424,21 @@ def conv_contract(
     Per the theory, a linear map from kp -> k'p' can be characterized by a convolution with a
     (k+k')(pp') tensor filter, followed by k contractions. The filters are constructed from invariant
     filters.
+    args:
+        params (jnp.array): array of parameters, how learning will happen
+        input_layer (Layer): layer of the input images, can think of each image 
+            as a channel in the traditional cnn case.
+        invariant_filters (Layer): conv filters we are using as a layer
+        depth (int): number of output channels
+        target_keys (tuple of (k,parity) tuples): the output (k,parity) types
+        bias (bool): whether to include a bias image, defaults to None
+        mold_params (bool): whether we are calculating the params tree or running the alg, defaults to False
+
+        # Below, these are all parameters that are passed to the convolve function.
+        stride (tuple of ints): convolution stride
+        padding (either 'TORUS', 'VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
+        lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D
+        rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D
     """
     params_idx, this_params = get_layer_params(params, mold_params, CONV)
     filter_dict, filter_block_params = get_filter_block_invariants2(

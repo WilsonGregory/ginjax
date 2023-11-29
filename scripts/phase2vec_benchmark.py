@@ -563,6 +563,49 @@ X_train, X_val, X_test, y_train, y_val, y_test, p_train, p_val, p_test = load_da
     test_data_path,
 )
 
+# apply noise to the test data inputs
+if benchmark == 'masking_noise':
+    def apply_noise(masked_percent, rand_key, X_train, Y_train, X_val, Y_val, X_test, Y_test):
+        X_test_out = X_test.empty()
+        for key,val in X_test.items():
+            rand_key, subkey = random.split(rand_key)
+            X_test_out[key] = val * (1.*(random.uniform(subkey, shape=(val.shape)) > masked_percent))
+
+        return X_train, Y_train, X_val, Y_val, X_test_out, Y_test
+
+elif benchmark == 'gaussian_noise':
+    def apply_noise(stdev_scale, rand_key, X_train, Y_train, X_val, Y_val, X_test, Y_test):
+        X_test_out = X_test.empty()
+        for key,val in X_test.items():
+            rand_key, subkey = random.split(rand_key)
+            noise_std = jnp.std(val) * stdev_scale # magnitude scales the existing stdev
+            X_test_out[key] = val + noise_std * random.normal(subkey, shape=val.shape)
+
+        return X_train, Y_train, X_val, Y_val, X_test_out, Y_test
+
+elif benchmark == 'parameter_noise': # this should only be used w/ phase2vec
+    def apply_noise(noise_stdev, rand_key, X_train, Y_train, X_val, Y_val, X_test, Y_test):
+        _, _, p_test = Y_test
+
+        X_test_out = X_test.empty()
+        for key,val in X_test.items():
+            rand_key, subkey = random.split(rand_key)
+            p_test_noisy = p_test + noise_stdev * random.normal(subkey, shape=p_test.shape)
+            vmap_mul = vmap(lambda basis, coeffs: basis @ coeffs, in_axes=(None, 0))
+            X_test_out[key] = vmap_mul(ode_basis, p_test_noisy).reshape(val.shape)
+
+        return X_train, Y_train, X_val, Y_val, X_test_out, Y_test
+
+get_data = partial(
+    apply_noise, 
+    X_train=X_train, 
+    Y_train=X_train, 
+    X_val=X_val, 
+    Y_val=X_val,
+    X_test=X_test,
+    Y_test=(X_test, y_test, p_test),
+)
+
 # generate function library
 spatial_coords = [jnp.linspace(mn, mx, X_train.N) for (mn, mx) in zip([-1.,-1.], [1.,1.])]
 mesh = jnp.meshgrid(*spatial_coords, indexing='ij')
@@ -604,13 +647,12 @@ models = [
 benchmark_range = np.linspace(0,0.3,benchmark_steps) # should be 20
 key, subkey = random.split(key)
 results = ml.benchmark(
-    (X_train, X_train, X_val, X_val, X_test, (X_test, y_test, p_test)),
+    get_data,
     models,
     subkey,
     benchmark,
     benchmark_range, 
     num_trials=trials,
-    ode_basis=ode_basis,
     num_results=2,
 )
 print(results)

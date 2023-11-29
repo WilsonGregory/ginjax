@@ -153,6 +153,34 @@ def get_filter_block_from_invariants(params, input_layer, invariant_filters, out
 
     return filter_layer, params
 
+def get_filter_block_invariants2(params, input_layer, invariant_filters, target_keys, out_depth, mold_params):
+    vmap_sum = vmap(vmap(geom.linear_combination, in_axes=(None, 0)), in_axes=(None, 0))
+
+    if (mold_params):
+        params = {}
+
+    filter_layer = {}
+    for key, image_block in input_layer.items():
+        filter_layer[key] = {}
+        in_depth = image_block.shape[0]
+
+        if (mold_params):
+            params[key] = {}
+
+        for target_key in target_keys:
+            k, parity = key
+            target_k, target_parity = target_key
+            if (k+target_k, (parity + target_parity) % 2) not in invariant_filters:
+                continue # relevant when there isn't an N=3, (0,1) filter
+
+            filter_block = invariant_filters[(k+target_k, (parity + target_parity) % 2)]
+            if (mold_params):
+                params[key][target_key] = jnp.ones((out_depth, in_depth, len(filter_block)))
+
+            filter_layer[key][target_key] = vmap_sum(filter_block, params[key][target_key])
+
+    return filter_layer, params
+
 @functools.partial(jit, static_argnums=[2,3,4,5])
 def get_filter_block(params, input_layer, M, out_depth, filter_key_set=None, mold_params=False):
     """
@@ -365,6 +393,108 @@ def conv_layer_alt(
 
     return out_layer
 
+@functools.partial(jit, static_argnums=[3,4,5,6,7,8,9,10])
+def conv_contract(
+    params, 
+    input_layer,
+    invariant_filters, 
+    depth,
+    target_keys, 
+    bias=None,
+    mold_params=False,
+    # Convolve kwargs that are passed directly along
+    stride=None, 
+    padding=None,
+    lhs_dilation=None, 
+    rhs_dilation=None,
+):
+    """
+    Per the theory, a linear map from kp -> k'p' can be characterized by a convolution with a
+    (k+k')(pp') tensor filter, followed by k contractions. The filters are constructed from invariant
+    filters.
+    """
+    params_idx, this_params = get_layer_params(params, mold_params, CONV)
+    filter_dict, filter_block_params = get_filter_block_invariants2(
+        this_params[CONV_FIXED], 
+        input_layer,
+        invariant_filters,
+        target_keys,
+        depth, 
+        mold_params,
+    )
+    this_params[CONV_FIXED] = filter_block_params
+
+    # map over filters
+    vmap_convolve = vmap(geom.depth_convolve, in_axes=(None, None, 0, None, None, None, None, None))
+
+    layer = input_layer.empty()
+    for (k,parity), images_block in input_layer.items():
+        for target_k, target_parity in target_keys:
+            if (target_k, target_parity) not in filter_dict[(k,parity)]:
+                continue
+            
+            filter_block = filter_dict[(k,parity)][(target_k, target_parity)]
+
+            convolved_imgs = vmap_convolve(
+                input_layer.D, 
+                images_block, 
+                filter_block, 
+                input_layer.is_torus,
+                stride, 
+                padding,
+                lhs_dilation, 
+                rhs_dilation,
+            )
+
+            contract_idxs = tuple((i,i+k) for i in range(k))
+            contracted_imgs = geom.multicontract(convolved_imgs, contract_idxs, idx_shift=input_layer.D+1)
+            layer.append(target_k, target_parity, contracted_imgs)
+
+    if bias: #is this equivariant?
+        out_layer = layer.empty()
+        if (mold_params):
+            this_params[BIAS] = {}
+        for (k,parity), image_block in layer.items():
+            if (mold_params):
+                this_params[BIAS][(k,parity)] = jnp.ones(depth)
+
+            biased_image = vmap(lambda image,p: image + p)(image_block, this_params[BIAS][(k,parity)]) #add a single scalar
+            out_layer.append(k, parity, biased_image)
+    else:
+        out_layer = layer
+
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return out_layer, params
+
+def batch_conv_contract(
+    params, 
+    input_layer,
+    invariant_filters, 
+    depth,
+    target_keys, 
+    bias=None,
+    mold_params=False,
+    # Convolve kwargs that are passed directly along
+    stride=None, 
+    padding=None,
+    lhs_dilation=None, 
+    rhs_dilation=None,
+):
+    return vmap(conv_contract, in_axes=((None, 0) + (None,)*9), out_axes=(0, None))(
+        params, 
+        input_layer, 
+        invariant_filters, 
+        depth, 
+        target_keys, 
+        bias, 
+        mold_params, 
+        stride, 
+        padding,
+        lhs_dilation,
+        rhs_dilation,
+    )
+
 @functools.partial(jit, static_argnums=[3,4,5,6])
 def not_conv_layer(
     params,
@@ -472,6 +602,21 @@ def batch_leaky_relu_layer(layer, negative_slope=0.01):
 @jit
 def sigmoid_layer(layer):
     return activation_layer(layer, jax.nn.sigmoid)
+
+def scalar_activation(layer, activation_function):
+    """
+    Given a layer, apply the nonlinear activation function to each scalar image_block. If the layer has
+    odd parity, then the activation should be an odd function.
+    """
+    out_layer = layer.empty()
+    for (k,parity), image_block in layer.items():
+        out_image_block = activation_function(image_block) if (k == 0) else image_block
+        out_layer.append(k, parity, out_image_block)
+
+    return out_layer
+
+def batch_scalar_activation(layer, activation_function):
+    return vmap(scalar_activation, in_axes=(0, None))(layer, activation_function)
 
 @functools.partial(jit, static_argnums=[1,3,4])
 def polynomial_layer(params, param_idx, layer, D, poly_degree):
@@ -1355,20 +1500,19 @@ def train(
         return stop_condition.best_params, jnp.array(train_loss), jnp.array(val_loss)
 
 def benchmark(
-    data,
+    get_data,
     models,
     rand_key, 
     benchmark,
     benchmark_range,
     num_trials=1,
-    ode_basis=None,
     num_results=1,
 ):
     """
     Method to benchmark multiple models as a particular benchmark over the specified range.
     args:
-        data (tuple of pytrees): should be X_train, Y_train, X_val, Y_val, X_test, Y_test. All of these
-            will be passed to model as a tuple 
+        get_data (function): function that takes as its first argument the benchmark_value, and a rand_key
+            as its second argument. It returns the data which later gets passed to model.
         models (list of tuples): the elements of the tuple are (str) model_name, and (func) model.
             Model is a function that takes data and a rand_key and returns either a single float score
             or an iterable of length num_results of float scores.
@@ -1376,48 +1520,23 @@ def benchmark(
         benchmark (str): the type of benchmarking to do
         benchmark_range (iterable): iterable of the benchmark values to range over
         num_trials (int): number of trials to run, defaults to 1
-        ode_basis (jnp.array): for phase2vec only, used with parameter_noise to construct the noisy data
         num_results (int): the number of results that will come out of the model function. If num_results is
             greater than 1, it should be indexed by range(num_results)
     returns:
         an np.array of shape (trials, benchmark_range, models, num_results) with the results all filled in
     """
-    benchmark_options = { 'masking_noise', 'gaussian_noise', 'parameter_noise' }
-    assert benchmark in benchmark_options, f'ERROR ml.benchmark: benchmark must be in {benchmark_options}'
-    
-    X_train, Y_train, X_val, Y_val, X_test_in, Y_test = data
-
     results = np.zeros((num_trials, len(benchmark_range), len(models), num_results))
     for i in range(num_trials):
         for j, benchmark_val in enumerate(benchmark_range):
 
-            # apply noise to the test data inputs
-            if benchmark == 'masking_noise':
-                X_test = X_test_in.empty()
-                for key,val in X_test_in.items():
-                    rand_key, subkey = random.split(rand_key)
-                    X_test[key] = val * (1.*(random.uniform(subkey, shape=(val.shape)) > benchmark_val))
-            elif benchmark == 'gaussian_noise':
-                X_test = X_test_in.empty()
-                for key,val in X_test_in.items():
-                    rand_key, subkey = random.split(rand_key)
-                    noise_std = jnp.std(val) * benchmark_val # magnitude scales the existing stdev
-                    X_test[key] = val + noise_std * random.normal(subkey, shape=val.shape)
-            elif benchmark == 'parameter_noise': # this should only be used w/ phase2vec
-                _, _, p_test = Y_test
-
-                X_test = X_test_in.empty()
-                for key,val in X_test_in.items():
-                    rand_key, subkey = random.split(rand_key)
-                    p_test_noisy = p_test + benchmark_val * random.normal(subkey, shape=p_test.shape)
-                    vmap_mul = vmap(lambda basis, coeffs: basis @ coeffs, in_axes=(None, 0))
-                    X_test[key] = vmap_mul(ode_basis, p_test_noisy).reshape(val.shape)
+            rand_key, subkey = random.split(rand_key)
+            data = get_data(benchmark_val, subkey)
 
             for k, (model_name, model) in enumerate(models):
                 print(f'trial {i} {benchmark}: {benchmark_val:.4f} {model_name}')
 
                 rand_key, subkey = random.split(rand_key)
-                res = model((X_train, Y_train, X_val, Y_val, X_test, Y_test), subkey)
+                res = model(data, subkey)
 
                 if num_results > 1:
                     for q in range(num_results):

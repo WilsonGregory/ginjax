@@ -443,6 +443,18 @@ def pre_tensor_product_expand(D, image_a, image_b):
 
     return image_a_expanded, image_b_expanded
 
+def conv_contract_image_expand(D, image, conv_filter):
+    """
+    For conv_contract, we will be immediately performing a contraction, so we don't need to fully expand
+    each tensor, just the k image to the k+k' conv filter.
+    """
+    _, img_k = parse_shape(image.shape, D)
+    _, filter_k = parse_shape(conv_filter.shape, D)
+    k_prime = filter_k - img_k # not to be confused with Coach Prime
+    assert k_prime >= 0
+
+    return jnp.tensordot(image, jnp.ones((D,)*k_prime), axes=0)
+
 def mul(D, image_a, image_b):
     """
     Multiplication operator between two images, implemented as a tensor product of the pixels.
@@ -568,6 +580,122 @@ def depth_convolve(
     res = vmap_convolve(D, image, filter_image, is_torus, stride, padding, lhs_dilation, rhs_dilation)
     return jnp.sum(res, axis=0)
 
+@partial(jit, static_argnums=[0,3,4,5,6,7])
+def convolve_contract(
+    D,
+    image,
+    filter_image, 
+    is_torus,
+    stride=None, 
+    padding=None,
+    lhs_dilation=None, 
+    rhs_dilation=None, 
+):
+    """
+    Given an input k image and a k+k' filter, take the tensor convolution that contract k times with one index
+    each from the image and filter. This implementation is slightly more efficient then doing the convolution
+    and contraction separately by avoiding constructing the k+k+k' intermediate tensor.
+    Here is how this function works:
+    1. Expand the geom_image to its torus shape, i.e. add filter.m cells all around the perimeter of the image
+    2. Do the tensor product (with 1s) to each k image so that it is now k+k' tensor, just like the filter.
+    That is if image.k=1, filter.k=2, do (D,) => (D,D) with tensors of 1s
+    3. Now we shape the inputs to work with jax.lax.conv_general_dilated
+    4. Put image in NHWC (batch, height, width, channel). Thus we vectorize the tensor
+    5. Put filter in HWIO (height, width, input, output). Input is 1, output is the vectorized tensor
+    6. Plug all that stuff in to conv_general_dilated, and feature_group_count is the length of the vectorized
+    tensor, and it is basically saying that each part of the vectorized tensor is treated separately in the filter.
+    It must be the case that channel = input * feature_group_count
+    See: https://jax.readthedocs.io/en/latest/notebooks/convolutions.html#id1 and
+    https://www.tensorflow.org/xla/operation_semantics#conv_convolution
+    7. Sum over the first k axes of the result, this completes the contraction so the result is now a k' tensor.
+
+    args:
+        D (int): dimension of the images
+        image (jnp.array): image data
+        filter_image (jnp.array): the convolution filter
+        is_torus (bool): whether the images data is on the torus or not
+        stride (tuple of ints): convolution stride, defaults to (1,)*self.D
+        padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
+            defaults to 'TORUS' if image.is_torus, else 'SAME'
+        lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
+        rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
+    """
+    assert (D == 2) or (D == 3)
+    dtype= 'float32'
+
+    _, img_k = parse_shape(image.shape, D)
+    filter_N, filter_k = parse_shape(filter_image.shape, D)
+    assert img_k <= filter_k
+
+    if rhs_dilation is None:
+        rhs_dilation = (1,)*D
+
+    if stride is None:
+        stride = (1,)*D
+
+    if padding is None: #if unspecified, infer from is_torus
+        padding = 'TORUS' if is_torus else 'SAME'
+
+    if padding == 'TORUS':
+        image = get_torus_expanded(D, image, filter_image, rhs_dilation[0])
+        padding_literal = ((0,0),)*D
+    else:
+        if padding == 'VALID':
+            padding_literal = ((0,0),)*D
+        elif padding == 'SAME':
+            filter_m = (filter_N - 1) // 2
+            padding_literal = ((filter_m * dilation,) * 2 for dilation in rhs_dilation)
+        else:
+            padding_literal = padding
+
+    img_expanded = conv_contract_image_expand(D, image, filter_image).astype(dtype)
+
+    channel_length = D**filter_k
+
+    # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
+    # batching is handled by using vmap on this function
+    img_formatted = img_expanded.reshape((1,) + tuple(img_expanded.shape[:D]) + (channel_length,))
+
+    # convert filter to HWIO (or HWDIO)
+    filter_formatted = filter_image.astype(dtype).reshape((filter_N,)*D + (1,channel_length))
+
+    convolved_array = jax.lax.conv_general_dilated(
+        img_formatted, #lhs
+        filter_formatted, #rhs
+        stride,
+        padding_literal,
+        lhs_dilation=lhs_dilation,
+        rhs_dilation=rhs_dilation,
+        dimension_numbers=(('NHWC','HWIO','NHWC') if D == 2 else ('NHWDC','HWDIO','NHWDC')),
+        feature_group_count=channel_length, #each tensor component is treated separately
+    )
+    shaped_convolved_img = convolved_array.reshape(convolved_array.shape[1:-1] + (D,)*filter_k)
+    # then sum along first img_k axes, this is the contraction
+    return jnp.sum(shaped_convolved_img, axis=range(D, D + img_k))
+
+@partial(jit, static_argnums=[0,3,4,5,6,7])
+def depth_convolve_contract(
+    D,
+    image,
+    filter_image, 
+    is_torus,
+    stride=None, 
+    padding=None,
+    lhs_dilation=None, 
+    rhs_dilation=None, 
+):
+    """
+    See convolve_contract for a full description. This function performs depth convolutions by applying a vmap
+    over regular convolutions to the image and filter_image arguments, then taking the sum of the result.
+    Possibly would be faster to do this inside convolve.
+    args:
+        image (jnp.array): array of shape (depth, (N,)*D, (D,)*img_k)
+        filter_image (jnp.array): array of shape (depth, (N,)*D, (D,)*filter_k)
+    """
+    assert image.shape[0] == filter_image.shape[0]
+    vmap_convolve_contract = vmap(convolve_contract, in_axes=(None, 0, 0, None, None, None, None, None))
+    res = vmap_convolve_contract(D, image, filter_image, is_torus, stride, padding, lhs_dilation, rhs_dilation)
+    return jnp.sum(res, axis=0)
 
 @partial(jit, static_argnums=[0,3])
 def not_convolve(

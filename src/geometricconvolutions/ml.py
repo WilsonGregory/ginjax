@@ -452,7 +452,7 @@ def conv_contract(
     this_params[CONV_FIXED] = filter_block_params
 
     # map over filters
-    vmap_convolve = vmap(geom.depth_convolve, in_axes=(None, None, 0, None, None, None, None, None))
+    vmap_convolve = vmap(geom.depth_convolve_contract, in_axes=(None, None, 0, None, None, None, None, None))
 
     layer = input_layer.empty()
     for (k,parity), images_block in input_layer.items():
@@ -462,7 +462,7 @@ def conv_contract(
             
             filter_block = filter_dict[(k,parity)][(target_k, target_parity)]
 
-            convolved_imgs = vmap_convolve(
+            convolve_contracted_imgs = vmap_convolve(
                 input_layer.D, 
                 images_block, 
                 filter_block, 
@@ -473,9 +473,7 @@ def conv_contract(
                 rhs_dilation,
             )
 
-            contract_idxs = tuple((i,i+k) for i in range(k))
-            contracted_imgs = geom.multicontract(convolved_imgs, contract_idxs, idx_shift=input_layer.D+1)
-            layer.append(target_k, target_parity, contracted_imgs)
+            layer.append(target_k, target_parity, convolve_contracted_imgs)
 
     if bias: #is this equivariant?
         out_layer = layer.empty()

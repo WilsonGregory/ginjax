@@ -1011,6 +1011,31 @@ def batch_average_pool(input_layer, patch_len):
 def unpool_layer(input_layer, patch_len):
     return [image.unpool(patch_len) for image in input_layer]
 
+@jit
+def basis_average_layer(input_layer, basis):
+    """
+    Experimental layer that finds an average over each basis element to get a coefficient for that basis
+    element.
+    """
+    # input_layer must be a only have (1,0)
+    # basis must be (basis_len, (N,)*D, (D,))
+    D = input_layer.D
+    num_coeffs = basis.shape[0]
+
+    def basis_prod(image, Qi):
+        return jnp.mean(
+            geom.multicontract(geom.mul(D, image, Qi), ((0,1),), idx_shift=D), 
+            axis=range(D),
+        )
+    
+    # outer (first in result) maps over basis, inner (second in result) maps over channels of image
+    vmap_basis_prod = vmap(vmap(basis_prod, in_axes=(0,None)), in_axes=(None,0))
+    coeffs = jnp.sum(vmap_basis_prod(input_layer[(1,0)], basis), axis=1) # (num_coeffs * D,)
+    return coeffs.reshape((D,int(num_coeffs/D))).transpose() # (num_coeffs/D,D)
+
+def batch_basis_average_layer(input_layer, basis):
+    return vmap(basis_average_layer, in_axes=(0,None))(input_layer, basis) # (L, num_coeffs, D)
+
 ## Params
 
 def get_layer_params(params, mold_params, layer_name):

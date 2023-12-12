@@ -1,22 +1,12 @@
 import os
 import numpy as np
-import sys
 from functools import partial
-import argparse
-import time
-import math
 from scipy.special import binom
-import matplotlib.pyplot as plt
-
-from sklearn.model_selection import KFold
-from sklearn.linear_model import LogisticRegressionCV
-from sklearn.metrics import classification_report
 
 import jax.numpy as jnp
 import jax.random as random
 import jax.nn
 from jax import vmap, jit
-import optax
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
@@ -26,7 +16,8 @@ BATCH_NORM_1D = 'batch_norm_1d'
 
 # Copied from phase2vec
 
-def load_dataset(data_path, combine=False):
+def load_dataset(D, data_path, as_layer=True):
+    assert D == 2 # layer construction transpose is hardcoded, so make sure this is 2
     # Load data
     X_train_data = np.load(os.path.join(data_path, 'X_train.npy'))
     X_test_data = np.load(os.path.join(data_path, 'X_test.npy'))
@@ -39,34 +30,51 @@ def load_dataset(data_path, combine=False):
     p_train = np.load(os.path.join(data_path, 'p_train.npy'))
     p_test = np.load(os.path.join(data_path, 'p_test.npy'))
 
-    if combine:
-        all_data = jnp.concatenate([X_train_data, X_test_data], axis=0)
+    if as_layer:
         X_train = geom.BatchLayer(
-            { (1,0): jnp.expand_dims(all_data.transpose(0,2,3,1), axis=1) }, #(batch, channel, (N,)*D, (D,)*k)
+            { (1,0): jnp.expand_dims(X_train_data.transpose(0,2,3,1), axis=1) }, #(batch, channel, (N,)*D, (D,)*k)
             D,
             False,
         )
-        y_train = np.concatenate([y_train, y_test], axis=0)
-        p_train = np.concatenate([p_train, p_test], axis=0)
-        return X_train, y_train, p_train
-    else:   
-        X_train = geom.BatchLayer(
-            { (1,0): jnp.expand_dims(X_train_data.transpose(0,2,3,1), axis=1) },
-            D,
-            False,
-        ) 
         X_test = geom.BatchLayer(
             { (1,0): jnp.expand_dims(X_test_data.transpose(0,2,3,1), axis=1) },
             D,
             False,
         )
-
         return X_train, X_test, y_train, y_test, p_train, p_test
+    else:
+        return X_train_data, X_test_data, y_train, y_test, p_train, p_test
+
+def load_and_combine_data(D, train_data_path, test_data_path):
+    X_train_data, X_val_data, y_train, y_val, p_train, p_val = load_dataset(D, train_data_path, as_layer=False)
+    X_test_data1, X_test_data2, y_test1, y_test2, p_test1, p_test2 = load_dataset(D, test_data_path, as_layer=False)
+
+    X_train = geom.BatchLayer(
+        { (1,0): jnp.expand_dims(X_train_data.transpose(0,2,3,1), axis=1) }, #(batch, channel, (N,)*D, (D,)*k)
+        D,
+        False,
+    )
+    X_val = geom.BatchLayer(
+        { (1,0): jnp.expand_dims(X_val_data.transpose(0,2,3,1), axis=1) },
+        D,
+        False,
+    )
+
+    # add validation data to the test data set, as they do in the phase2vec paper
+    X_test_data = jnp.concatenate([X_test_data1, X_test_data2, X_val_data])
+    y_test = jnp.concatenate([y_test1, y_test2, 16 * np.ones_like(y_val)])
+    p_test = jnp.concatenate([p_test1, p_test2, p_val])
+    X_test = geom.BatchLayer(
+        { (1,0): jnp.expand_dims(X_test_data.transpose(0,2,3,1), axis=1) },
+        D,
+        False,
+    )
+
+    return X_train, X_val, X_test, y_train, y_val, y_test, p_train, p_val, p_test
 
 def library_size(dim, poly_order, include_sine=False, include_exp=False, include_constant=True):
     """
     Calculate library size for a given polynomial order. Taken from `https://github.com/kpchamp/SindyAutoencoders`
-
     """
     l = 0
     for k in range(poly_order+1):
@@ -150,6 +158,42 @@ def sindy_library(X, poly_order, include_sine=False, include_exp=False):
     library_terms.insert(0,'1')
     return library, library_terms
 
+def get_ode_basis(D, N, min_xy, max_xy, poly_order, as_vector_images=False):
+    spatial_coords = [jnp.linspace(mn, mx, N) for (mn, mx) in zip(min_xy, max_xy)]
+    mesh = jnp.meshgrid(*spatial_coords, indexing='ij')
+    L = jnp.concatenate([ms[..., None] for ms in mesh], axis=-1)
+    ode_basis, _ = sindy_library(L.reshape(N**D,D), poly_order)
+
+    if as_vector_images:
+        num_coeffs = ode_basis.shape[1]
+        basis_img = ode_basis.transpose((1,0)).reshape((num_coeffs,N,N,1))
+
+        # for the number of dimensions, copy the basis in that coordinate of the vector, all
+        # others are 0. So there are num_coeffs * D elements of the ode basis
+        filled_img = jnp.full((num_coeffs,N,N,D),basis_img)
+        ode_basis = jnp.concatenate([jnp.eye(D)[i,:].reshape((1,1,1,D))*filled_img for i in range(D)])
+
+    return ode_basis
+
+# handles a batch input layer
+def pinv_baseline(layer, key, library):
+    N = layer.N
+    D = layer.D
+    # library is 4096 x 10
+    batch_img = jnp.transpose(layer[(1,0)], [0,4,1,2,3]).reshape(layer.L, layer.D,-1)
+    library_pinv = jnp.linalg.pinv(library.T)
+
+    batch_mul = vmap(lambda batch_arr,single_arr: batch_arr @ single_arr, in_axes=(0,None))
+
+    batch_coeffs = batch_mul(batch_img, library_pinv) # L,2,10
+    batch_recon = batch_mul(batch_coeffs, library.T) # L, 2, 4096
+
+    return (
+        jnp.moveaxis(batch_recon.reshape((layer.L,D) + (N,)*D), 1, -1),
+        jnp.moveaxis(batch_coeffs, 1, -1), 
+        None, # this is the "batch_stats" for convenience in this script
+    )
+
 def dense_layer(params, x, width, bias=True, mold_params=False):
     params_idx, this_params = ml.get_layer_params(params, mold_params, DENSE)
     if mold_params:
@@ -226,49 +270,53 @@ def dropout_layer(x, p, key, train):
 def gi_net(
     params, 
     layer, 
-    key,
+    key, 
     train, 
     batch_stats, 
     conv_filters, 
-    ode_basis, 
+    ode_basis,
     return_params=False, 
     return_embedding=False,
 ):
-    # batch norm, dropout seem to make the network widely worse, not sure why.
-    embedding_d = 100
     num_coeffs = ode_basis.shape[1]
-    depth = 4
+    depth = 30
     num_conv_layers = 3
-    num_hidden_layers = 2
     img_N = layer.N
 
     batch_dense_layer = vmap(dense_layer, in_axes=(None, 0, None, None, None), out_axes=(0, None))
 
     # Convolution on the vector field generated by the ODE
     for _ in range(num_conv_layers):
-        layer, params = ml.batch_conv_layer(
+        layer, params = ml.batch_conv_contract(
             params,
             layer,
-            { 'type': 'fixed', 'filters': conv_filters }, 
-            depth, 
+            conv_filters,
+            depth,
+            ((0,0),(1,0)),
             mold_params=return_params,
-            stride=(2,)*layer.D, 
+            stride=(2,)*layer.D,
             padding='VALID',
         )
-        layer = ml.batch_relu_layer(layer)
+        layer = ml.batch_scalar_activation(layer, jax.nn.leaky_relu)
 
-    # Embed the ODE in a d=100 vector
-    layer_vec = jnp.zeros(embedding_d)
+    layer, params = ml.batch_conv_contract(
+        params,
+        layer,
+        conv_filters,
+        depth,
+        ((0,0),(1,0),(2,0)),
+        mold_params=return_params,
+        padding='VALID',
+    ) # down to 5x5
+    layer, params = ml.batch_channel_collapse(params, layer, 1, mold_params=return_params)
+    # do the embedding from this!!
+
+    # Embed the ODE in a d=175 vector
+    layer_vec = jnp.array([]).reshape((layer.L, 0))
     for image in layer.values():
-        vectorized_image = image.reshape(layer.L,-1)
-        layer_out, params = batch_dense_layer(params, vectorized_image, embedding_d, True, return_params)
-        layer_vec += layer_out
+        layer_vec = jnp.concatenate([layer_vec, image.reshape(layer.L, -1)], axis=1)
 
-    embedding = layer_vec # save the embedding
-
-    # Pass the embedded ode through a 2 layer MLP to get the coefficients of poly ode
-    for _ in range(num_hidden_layers):
-        layer_vec, params = batch_dense_layer(params, layer_vec, 128, True, return_params)
+    embedding = layer_vec
 
     coeffs, params = batch_dense_layer(params, layer_vec, num_coeffs * layer.D, True, return_params)
     coeffs = coeffs.reshape((layer.L, num_coeffs, layer.D))
@@ -308,7 +356,7 @@ def map_and_loss(params, layer_x, layer_y, key, train, aux_data, net, eps=1e-5, 
     recon, coeffs, batch_stats = net(params, layer_x, key, train, aux_data)
     return phase2vec_loss(recon, layer_y[(1,0)][:,0,...], coeffs, eps, beta), batch_stats
 
-@partial(jit, static_argnums=[3,6,7,8,9,10])
+@partial(jit, static_argnums=[3,6,7,8,9,10,11])
 def baseline_net(
     params, 
     layer, 
@@ -319,13 +367,13 @@ def baseline_net(
     batch_norm, 
     dropout, 
     relu, 
+    num_hidden_layers,
     return_params=False,
     return_embedding=False,
 ):
     embedding_d = 100
     num_coeffs = ode_basis.shape[1]
     num_conv_layers = 3
-    num_hidden_layers = 2
     img_N = layer.N
     # for the baseline model, the vector just becomes 2 channels
     layer = geom.BatchLayer({ (0,0): jnp.moveaxis(layer[(1,0)][:,0,...], -1, 1) }, layer.D, layer.is_torus)
@@ -363,7 +411,7 @@ def baseline_net(
     
     # Embed the ODE in a d=100 vector
     layer_vec, params = batch_dense_layer(params, layer[(0,0)].reshape(layer.L,-1), embedding_d, True, return_params)
-    embedding = layer_vec # save the embedding
+    embedding = layer_vec
 
     # Pass the embedded ode through a 2 layer MLP to get the coefficients of poly ode
     for _ in range(num_hidden_layers):
@@ -400,230 +448,3 @@ def baseline_net(
         output += (params,)
 
     return output
-
-# handles a batch input layer
-def eval_baseline(data, key, library):
-    _, _, _, _, (X_eval_train, X_eval_test), (Y_eval_train, Y_eval_test) = data 
-
-    # library is 4096 x 10
-    library_pinv = jnp.linalg.pinv(library.T)
-    batch_mul = vmap(lambda batch_arr,single_arr: batch_arr @ single_arr, in_axes=(0,None))
-
-    batch_train_img = jnp.transpose(X_eval_train[(1,0)], [0,4,1,2,3]).reshape(X_eval_train.L, X_eval_train.D, -1)
-    z_train = batch_mul(batch_train_img, library_pinv).reshape(X_eval_train.L,-1) # L,20
-
-    batch_test_img = jnp.transpose(X_eval_test[(1,0)], [0,4,1,2,3]).reshape(X_eval_test.L, X_eval_test.D, -1)
-    z_test = batch_mul(batch_test_img, library_pinv).reshape(X_eval_test.L,-1) # L,20
-
-    num_c = 11 # default value
-    k = 10 # default value
-
-    clf_params = {
-        'cv': KFold(n_splits=int(len(Y_eval_train) / float(k))),
-        # 'random_state': 0,
-        'dual': False,
-        'solver': 'lbfgs',
-        'class_weight': 'balanced',
-        'multi_class': 'ovr',
-        'refit': True,
-        'scoring': 'accuracy',
-        'tol': 1e-2,
-        'max_iter': 5000,
-        'verbose': 0,
-        'Cs': np.logspace(-5, 5, num_c),
-        'penalty': 'l2',
-    }
-
-    clf = LogisticRegressionCV(**clf_params).fit(z_train, Y_eval_train)
-
-    for nm, lb_true, lb_pred in zip(
-        ['train', 'test'], 
-        [Y_eval_train, Y_eval_test], 
-        [clf.predict(z_train), clf.predict(z_test)],
-    ):
-        report = classification_report(lb_true, lb_pred, output_dict=True)
-        print(f"{nm}: {report['accuracy']}")
-
-def train_and_eval(data, rand_key, net, batch_size, lr):
-    X_train, Y_train, X_val, Y_val, (X_eval_train, X_eval_test), (Y_eval_train, Y_eval_test) = data 
-
-    rand_key, subkey = random.split(rand_key)
-    init_params = ml.init_params(
-        partial(net, batch_stats=None),
-        X_train.get_subset(jnp.array([0])), 
-        subkey, 
-        override_initializers={
-            DENSE: dense_layer_init,
-            BATCH_NORM_1D: lambda _,tree: { ml.SCALE: jnp.ones(tree[ml.SCALE].shape), ml.BIAS: jnp.zeros(tree[ml.BIAS].shape) },
-        },
-    )
-
-    rand_key, subkey = random.split(rand_key)
-    params, batch_stats, _, _ = ml.train(
-        X_train,
-        Y_train, 
-        partial(map_and_loss, net=net),
-        init_params,
-        subkey,
-        ml.EpochStop(epochs, verbose=verbose),
-        batch_size=batch_size,
-        optimizer=optax.adam(lr),
-        validation_X=X_val,
-        validation_Y=Y_val,
-        has_aux=True,
-    )
-
-    # get the embeddings of x_train and x_test, using batches if necessary
-    z_train = None
-    for i in range(math.ceil(X_eval_train.L / batch_size)): #split into batches if its too big
-        batch_layer = X_eval_train.get_subset(jnp.arange(
-            batch_size*i, 
-            min(batch_size*(i+1), X_eval_train.L),
-        ))
-
-        rand_key, subkey = random.split(rand_key)
-        batch_z_train = net(params, batch_layer, subkey, train=False, batch_stats=batch_stats, return_embedding=True)[3]
-        z_train = batch_z_train if z_train is None else jnp.concatenate([z_train,batch_z_train], axis=0)
-
-    z_test = None
-    for i in range(math.ceil(X_eval_test.L / batch_size)): #split into batches if its too big
-        batch_layer = X_eval_test.get_subset(jnp.arange(
-            batch_size*i, 
-            min(batch_size*(i+1), X_eval_test.L),
-        ))
-
-        rand_key, subkey = random.split(rand_key)
-        batch_z_test = net(params, batch_layer, subkey, train=False, batch_stats=batch_stats, return_embedding=True)[3]
-        z_test = batch_z_test if z_test is None else jnp.concatenate([z_test,batch_z_test], axis=0)
-
-    num_c = 11 # default value
-    k = 10 # default value
-
-    clf_params = {
-        'cv': KFold(n_splits=int(len(Y_eval_train) / float(k))),
-        # 'random_state': 0,
-        'dual': False,
-        'solver': 'lbfgs',
-        'class_weight': 'balanced',
-        'multi_class': 'ovr',
-        'refit': True,
-        'scoring': 'accuracy',
-        'tol': 1e-2,
-        'max_iter': 5000,
-        'verbose': 0,
-        'Cs': np.logspace(-5, 5, num_c),
-        'penalty': 'l2',
-    }
-
-    clf = LogisticRegressionCV(**clf_params).fit(z_train, Y_eval_train)
-
-    for nm, lb_true, lb_pred in zip(
-        ['train', 'test'], 
-        [Y_eval_train, Y_eval_test], 
-        [clf.predict(z_train), clf.predict(z_test)],
-    ):
-        report = classification_report(lb_true, lb_pred, output_dict=True)
-        print(f"{nm}: {report['accuracy']}")
-
-        # for (key, value) in report.items():
-        #     print(key + f': {value}')
-
-def handleArgs(argv):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('save_folder', help='where to save the image', type=str)
-    parser.add_argument('-e', '--epochs', help='number of epochs', type=float, default=200)
-    parser.add_argument('-lr', help='learning rate', type=float, default=1e-4)
-    parser.add_argument('-batch', help='batch size', type=int, default=64)
-    parser.add_argument('-seed', help='the random number seed', type=int, default=None)
-    parser.add_argument('-v', '--verbose', help='levels of print statements during training', type=int, default=1)
-    parser.add_argument('-t', '--trials', help='number of trials', type=int, default=1)
-    parser.add_argument(
-        '-b', 
-        '--benchmark', 
-        help='what to benchmark over', 
-        type=str, 
-        choices=['masking_noise', 'gaussian_noise', 'parameter_noise'], 
-        default='gaussian_noise',
-    )
-    parser.add_argument('-benchmark_steps', help='the number of steps in the benchmark_range', type=int, default=10)
-
-    args = parser.parse_args()
-
-    return (
-        args.save_folder,
-        args.epochs,
-        args.lr,
-        args.batch,
-        args.seed,
-        args.verbose,
-        args.trials,
-        args.benchmark,
-        args.benchmark_steps,
-    )
-
-# Main
-save_folder, epochs, lr, batch_size, seed, verbose, trials, benchmark, benchmark_steps = handleArgs(sys.argv)
-
-D = 2
-N = 64 
-
-key = random.PRNGKey(time.time_ns() if (seed is None) else seed)
-
-# start with basic 3x3 scalar, vector, and 2nd order tensor images
-operators = geom.make_all_operators(D)
-conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1], parities=[0], D=D, operators=operators)
-
-# Get data. Update these data paths to your own.
-train_data_path = '../phase2vec/output/data/polynomial'
-test_data_path = '../phase2vec/output/data/linear'
-# test_data_path = '../phase2vec/output/data/conservative_vs_nonconservative'
-# test_data_path = '../phase2vec/output/data/incompressible_vs_compressible'
-X_train, X_val, y_train, y_val, p_train, p_val = load_dataset(train_data_path)
-X_eval_train, X_eval_test, Y_eval_train, Y_eval_test, p_eval_train, p_eval_test = load_dataset(test_data_path)
-
-# generate function library
-spatial_coords = [jnp.linspace(mn, mx, X_train.N) for (mn, mx) in zip([-1.,-1.], [1.,1.])]
-mesh = jnp.meshgrid(*spatial_coords, indexing='ij')
-L = jnp.concatenate([ms[..., None] for ms in mesh], axis=-1)
-ode_basis, _ = sindy_library(L.reshape(X_train.N**D,D), 3)
-
-# Define the models that we are benchmarking
-models = [
-    (
-        'gi_net', 
-        partial(
-            train_and_eval, 
-            net=partial(gi_net, conv_filters=conv_filters, ode_basis=ode_basis), 
-            batch_size=batch_size, 
-            lr=lr,
-        ),
-    ),
-    (
-        'baseline', # identical to the paper architecture
-        partial(
-            train_and_eval,
-            net=partial(baseline_net, ode_basis=ode_basis, batch_norm=True, dropout=True, relu=True),
-            batch_size=batch_size,
-            lr=lr,
-        ),
-    ),
-    (
-        'baseline_no_extras', # paper architecture, but no batchnorm or dropout, only relu in cnn
-        partial(
-            train_and_eval,
-            net=partial(baseline_net, ode_basis=ode_basis, batch_norm=False, dropout=False, relu=False),
-            batch_size=batch_size,
-            lr=lr,
-        ),
-    ),
-    ('pinv', partial(eval_baseline, library=ode_basis)),
-]
-
-for k, (model_name, model) in enumerate(models):
-    print(f'{model_name}')
-
-    key, subkey = random.split(key)
-    res = model(
-        (X_train, X_train, X_val, X_val, (X_eval_train, X_eval_test), (Y_eval_train, Y_eval_test)), 
-        subkey,
-    )

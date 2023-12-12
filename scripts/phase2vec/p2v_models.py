@@ -266,7 +266,6 @@ def dropout_layer(x, p, key, train):
     
     return (x * (random.uniform(key, shape=x.shape) > p).astype(x.dtype))*(1/(1-p))
 
-
 @partial(jit, static_argnums=[3,7,8])
 def gi_net(
     params, 
@@ -306,7 +305,6 @@ def gi_net(
         conv_filters,
         depth,
         ((0,0),(1,0),(2,0)),
-        # ((1,0),),
         mold_params=return_params,
         padding='VALID',
     ) # down to 5x5

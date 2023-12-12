@@ -145,9 +145,6 @@ def train_and_eval(data, rand_key, net, batch_size, lr, epochs, verbose):
         report = classification_report(lb_true, lb_pred, output_dict=True)
         print(f"{nm}: {report['accuracy']}")
 
-        # for (key, value) in report.items():
-        #     print(key + f': {value}')
-
 def handleArgs(argv):
     test_datasets = ['linear', 'conservative_vs_nonconservative', 'incompressible_vs_compressible']
     parser = argparse.ArgumentParser()
@@ -157,7 +154,6 @@ def handleArgs(argv):
     parser.add_argument('-batch', help='batch size', type=int, default=64)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-v', '--verbose', help='levels of print statements during training', type=int, default=1)
-    parser.add_argument('-t', '--trials', help='number of trials', type=int, default=1)
     parser.add_argument('-test_dataset', help='test data set', type=str, choices=test_datasets, default='linear')
 
     args = parser.parse_args()
@@ -169,12 +165,11 @@ def handleArgs(argv):
         args.batch,
         args.seed,
         args.verbose,
-        args.trials,
         args.test_dataset,
     )
 
 # Main
-save_folder, epochs, lr, batch_size, seed, verbose, trials, test_dataset = handleArgs(sys.argv)
+save_folder, epochs, lr, batch_size, seed, verbose, test_dataset = handleArgs(sys.argv)
 
 D = 2
 N = 64 
@@ -189,7 +184,7 @@ conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2,3], parities=[0], D=
 train_data_path = '../phase2vec/output/data/polynomial'
 test_data_path = f'../phase2vec/output/data/{test_dataset}'
 X_train, X_val, _, _, _, _ = p2v_models.load_dataset(D, train_data_path)
-X_eval_train, X_eval_test, Y_eval_train, Y_eval_test, _, _ = p2v_models.load_dataset(D, test_data_path, as_layer=False)
+X_eval_train, X_eval_test, Y_eval_train, Y_eval_test, _, _ = p2v_models.load_dataset(D, test_data_path)
 
 # generate function library
 ode_basis = p2v_models.get_ode_basis(D, N, [-1.,-1.], [1.,1.], 3)

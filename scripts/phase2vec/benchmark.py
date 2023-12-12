@@ -66,12 +66,8 @@ def get_par_recon_loss(X_test, Y_test_tuple, rand_key, eval_net, batch_size, pri
             rand_key, subkey = random.split(rand_key)
             recon, coeffs, _ = eval_net(layer=batch_layer, key=subkey)
 
-            if full_recon is None:
-                full_recon = recon
-                full_coeffs = coeffs
-            else:
-                full_recon = jnp.concatenate([full_recon, recon])
-                full_coeffs = jnp.concatenate([full_coeffs, coeffs])
+            full_recon = recon if (full_recon is None) else jnp.concatenate([full_recon, recon])
+            full_coeffs = coeffs if (full_coeffs is None) else jnp.concatenate([full_coeffs, coeffs])
 
         recon_dict[int(label)] = np.array(full_recon)
         coeffs_dict[int(label)] = np.array(full_coeffs)
@@ -221,19 +217,19 @@ ode_basis = p2v_models.get_ode_basis(D, N, [-1.,-1.], [1.,1.], 3)
 if benchmark == 'masking_noise':
     def apply_noise(masked_percent, rand_key, X_train, Y_train, X_val, Y_val, X_test, Y_test):
         X_test_out = X_test.empty()
-        for key,val in X_test.items():
+        for (k,parity),val in X_test.items():
             rand_key, subkey = random.split(rand_key)
-            X_test_out[key] = val * (1.*(random.uniform(subkey, shape=(val.shape)) > masked_percent))
+            X_test_out.append(k, parity, val * (1.*(random.uniform(subkey, shape=(val.shape)) > masked_percent)))
 
         return X_train, Y_train, X_val, Y_val, X_test_out, Y_test
 
 elif benchmark == 'gaussian_noise':
     def apply_noise(stdev_scale, rand_key, X_train, Y_train, X_val, Y_val, X_test, Y_test):
         X_test_out = X_test.empty()
-        for key,val in X_test.items():
+        for (k,parity),val in X_test.items():
             rand_key, subkey = random.split(rand_key)
             noise_std = jnp.std(val) * stdev_scale # magnitude scales the existing stdev
-            X_test_out[key] = val + noise_std * random.normal(subkey, shape=val.shape)
+            X_test_out.append(k, parity, val + noise_std * random.normal(subkey, shape=val.shape))
 
         return X_train, Y_train, X_val, Y_val, X_test_out, Y_test
 
@@ -242,11 +238,11 @@ elif benchmark == 'parameter_noise':
         _, _, p_test = Y_test
 
         X_test_out = X_test.empty()
-        for key,val in X_test.items():
+        for (k,parity),val in X_test.items():
             rand_key, subkey = random.split(rand_key)
             p_test_noisy = p_test + noise_stdev * random.normal(subkey, shape=p_test.shape)
             vmap_mul = jax.vmap(lambda basis, coeffs: basis @ coeffs, in_axes=(None, 0))
-            X_test_out[key] = vmap_mul(ode_basis, p_test_noisy).reshape(val.shape)
+            X_test_out.append(k, parity, vmap_mul(ode_basis, p_test_noisy).reshape(val.shape))
 
         return X_train, Y_train, X_val, Y_val, X_test_out, Y_test
 
@@ -274,45 +270,45 @@ models = [
             print_errs=print_result,
         ),
     ),
-    # (
-    #     'baseline', # identical to the paper architecture
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             p2v_models.baseline_net, 
-    #             ode_basis=ode_basis, 
-    #             batch_norm=True, 
-    #             dropout=True, 
-    #             relu=True, 
-    #             num_hidden_layers=2,
-    #         ),
-    #         batch_size=batch_size,
-    #         lr=lr,
-    #         epochs=epochs,
-    #         verbose=verbose,
-    #         print_errs=print_result,
-    #     ),
-    # ),
-    # (
-    #     'baseline_no_extras', # paper architecture, but no batchnorm or dropout, only relu in cnn
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             p2v_models.baseline_net, 
-    #             ode_basis=ode_basis, 
-    #             batch_norm=False, 
-    #             dropout=False,
-    #             relu=False,
-    #             num_hidden_layers=0,
-    #         ),
-    #         batch_size=batch_size,
-    #         lr=lr,
-    #         epochs=epochs,
-    #         verbose=verbose,
-    #         print_errs=print_result,
-    #     ),
-    # ),
-    # ('pinv_baseline', partial(pinv_baseline_map, library=ode_basis, print_errs=print_result)),
+    (
+        'baseline', # identical to the paper architecture
+        partial(
+            train_and_eval,
+            net=partial(
+                p2v_models.baseline_net, 
+                ode_basis=ode_basis, 
+                batch_norm=True, 
+                dropout=True, 
+                relu=True, 
+                num_hidden_layers=2,
+            ),
+            batch_size=batch_size,
+            lr=lr,
+            epochs=epochs,
+            verbose=verbose,
+            print_errs=print_result,
+        ),
+    ),
+    (
+        'baseline_no_extras', # paper architecture, but no batchnorm or dropout, only relu in cnn
+        partial(
+            train_and_eval,
+            net=partial(
+                p2v_models.baseline_net, 
+                ode_basis=ode_basis, 
+                batch_norm=False, 
+                dropout=False,
+                relu=False,
+                num_hidden_layers=0,
+            ),
+            batch_size=batch_size,
+            lr=lr,
+            epochs=epochs,
+            verbose=verbose,
+            print_errs=print_result,
+        ),
+    ),
+    ('pinv_baseline', partial(pinv_baseline_map, library=ode_basis, print_errs=print_result)),
 ]
 
 for model_name, model in models:

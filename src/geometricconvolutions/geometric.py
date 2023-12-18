@@ -156,6 +156,25 @@ def get_basis(key, shape):
 
     return basis_cache[actual_key]
 
+def get_equivariant_maps(layer, operators):
+
+    # First, we construct basis of layer elements
+    basis_len = layer.size()
+    basis = [layer.__class__.from_vector(basis_element, layer) for basis_element in jnp.eye(basis_len)]
+
+    # Now we use this basis to get the representation of each group element on the layer
+    operator_reps = []
+    for gg in operators:
+
+        gg_rep = jnp.zeros((0,basis_len))
+        for basis_element in basis:
+            print(type(basis_element))
+            gg_rep = jnp.concatenate(
+                [gg_rep, basis_element.times_group_element(gg, None).to_vector().reshape((1,basis_len))],
+                axis=0,
+            )
+            print(gg_rep.size)
+
 def get_invariant_gen_filter_dict(N, M, D, ks, parity, operators):
     """
     get_invariant_gen_filters, but accepts a list of tensor order ks, and returns a dictionary by k of the
@@ -1688,6 +1707,22 @@ class Layer:
             out_layer.append(image.k, image.parity, image.data.reshape((1,) + image.data.shape))
 
         return out_layer
+    
+    @classmethod
+    def from_vector(cls, vector, layer):
+        """
+        Convert a vector to a layer, using the shape and parity of the provided layer.
+        args:
+            vector (jnp.array): a 1-D array of values
+            layer (Layer): a layer providing the parity and shape for the resulting new layer
+        """
+        idx = 0
+        out_layer = layer.empty()
+        for (k,parity), img in layer.items():
+            out_layer.append(k, parity, vector[idx:(idx+img.size)].reshape(img.shape))
+            idx += img.size
+
+        return out_layer
 
     def __str__(self):
         layer_repr = f'{self.__class__} D: {self.D}, is_torus: {self.is_torus}\n'
@@ -1695,6 +1730,9 @@ class Layer:
             layer_repr += f'\t{k}: {image_block.shape}\n'
 
         return layer_repr
+    
+    def size(self):
+        return reduce(lambda size,img: size + img.size, self.values(), 0)
 
     # Functions that map directly to calling the function on data
 
@@ -1777,10 +1815,16 @@ class Layer:
                 images.append(GeometricImage(image, 0, self.D, self.is_torus)) # for now, assume 0 parity
 
         return images
+
+    def to_vector(self):
+        """
+        Vectorize a layer in the natural way
+        """
+        return reduce(lambda x,y: jnp.concatenate([x, y.reshape(-1)]), self.values(), jnp.zeros(0))
     
     def times_group_element(self, gg, precision=None):
         """
-        Apply a group element of SO(2) or SO(3) to the layer. First apply the action to the location of the
+        Apply a group element of O(2) or O(3) to the layer. First apply the action to the location of the
         pixels, then apply the action to the pixels themselves.
         args:
             gg (group operation matrix): a DxD matrix that rotates the tensor
@@ -1789,6 +1833,7 @@ class Layer:
         vmap_rotate = vmap(times_group_element, in_axes=(None, 0, None, None, None))
         out_layer = self.empty()
         for (k,parity), image_block in self.items():
+            print(image_block.shape)
             out_layer.append(k, parity, vmap_rotate(self.D, image_block, 0, gg, precision))
 
         return out_layer
@@ -1875,8 +1920,12 @@ class BatchLayer(Layer):
             self.is_torus,
         )
     
+    @partial(vmap, in_axes=(0, None, None))
     def times_group_element(self, gg, precision=None):
-        return vmap(super.times_group_element, in_axes=(0, None, None))(gg, precision=precision)
+        print(self)
+        exit()
+        return super(BatchLayer, self).times_group_element(gg, precision)
+        # return vmap(super(BatchLayer, self).times_group_element, in_axes=(0, None, None))(gg, precision)
     
     def device_put(self, sharding, num_devices):
         """

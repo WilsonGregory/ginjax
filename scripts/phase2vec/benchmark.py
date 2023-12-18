@@ -210,6 +210,11 @@ X_train, X_val, X_test, y_train, y_val, y_test, p_train, p_val, p_test = p2v_mod
     test_data_path,
 )
 
+print(X_train)
+print(X_train.get_subset(jnp.array([0,1])))
+res = geom.get_equivariant_maps(X_train.get_subset(jnp.array([0,1])), operators)
+exit()
+
 # generate function library
 ode_basis = p2v_models.get_ode_basis(D, N, [-1.,-1.], [1.,1.], 3)
 

@@ -21,6 +21,7 @@ import numpy as np #removing this
 import jax.numpy as jnp
 import jax.lax
 import jax.nn
+import jax
 from jax import jit, vmap
 from jax.tree_util import register_pytree_node_class
 from functools import partial, reduce
@@ -156,25 +157,65 @@ def get_basis(key, shape):
 
     return basis_cache[actual_key]
 
-def get_equivariant_maps(layer, operators):
+def get_operators_on_coeffs(D, operators, library):
+    num_coeffs = library.shape[1]
+    library_N = int(jnp.power(library.shape[0], 1./D)) # N is the 1/D th root.
+    library_pinv = jnp.linalg.pinv(library) # library is (N**D, num_coeffs), pinv is (num_coeffs, N**D)
 
-    # First, we construct basis of layer elements
+    def action(basis_element, gg):
+        vec_img = library @ basis_element.reshape((num_coeffs, D)) # (N**D, D)
+        vec_img = vec_img.reshape((library_N,)*D + (D,)) 
+
+        rotated_img = times_group_element(D, vec_img, 0, gg).reshape((library_N**D,D))
+        rotated_coeffs = library_pinv @ rotated_img # (num_coeffs, D)
+        # this numerical method is a little messy, but in actually the rotation matrix on the 
+        # coefficients will all be either 1s or -1s. Thus we aggressively round them off.
+        return (jnp.round(rotated_coeffs, decimals=2) + 0.).reshape(-1)
+
+    return vmap(vmap(action, in_axes=(0,None)), in_axes=(None,0))(jnp.eye(num_coeffs * D), operators)
+
+def get_operators_on_layer(operators, layer):
     basis_len = layer.size()
-    basis = [layer.__class__.from_vector(basis_element, layer) for basis_element in jnp.eye(basis_len)]
+    layer_basis = vmap(lambda e: layer.__class__.from_vector(e, layer))(jnp.eye(basis_len))
 
     # Now we use this basis to get the representation of each group element on the layer
-    operator_reps = []
-    for gg in operators:
+    return vmap(
+        vmap(lambda gg, e: e.times_group_element(gg).to_vector(), in_axes=(None,0)), 
+        in_axes=(0,None),
+    )(operators, layer_basis)
 
-        gg_rep = jnp.zeros((0,basis_len))
-        for basis_element in basis:
-            print(type(basis_element))
-            gg_rep = jnp.concatenate(
-                [gg_rep, basis_element.times_group_element(gg, None).to_vector().reshape((1,basis_len))],
-                axis=0,
-            )
-            print(gg_rep.size)
+def get_equivariant_map_to_coeffs(layer, operators, library):
+    operators = jnp.stack(operators) # convert operators from a list to a jnp.array for easy vmapping
+    # First, we construct basis of layer elements
+    num_coeffs = library.shape[1]
+    basis_len = layer.size()
 
+    # Get the representation of the group operators on the specified layer
+    operators_on_layer = get_operators_on_layer(operators, layer)
+
+    # Get the representation of the group on the coefficients of the library
+    operators_on_coeffs = get_operators_on_coeffs(layer.D, operators, library)
+
+    # Now get a basis of the linear maps, and do the group averaging
+    lin_map_basis = get_basis('equivariant_linear_map', (num_coeffs * layer.D, basis_len))
+    conjugate = vmap(
+        vmap(lambda gg_coeffs, gg_layer, basis_elem: gg_coeffs.T @ basis_elem @ gg_layer, in_axes=(0,0,None)), 
+        in_axes=(None,None,0),
+    )
+
+    # before sum, (N**D * num_coeffs * D, group_size, num_coeffs*D, basis_len)
+    maps_matrix = jnp.sum(conjugate(operators_on_coeffs, operators_on_layer, lin_map_basis), axis=1) 
+    maps_matrix = maps_matrix.reshape((len(maps_matrix),-1))
+
+    # do the SVD
+    _, s, v = jnp.linalg.svd(maps_matrix)
+    sbig = s > TINY
+    if not jnp.any(sbig):
+        return []
+
+    return v[sbig].reshape((len(v[sbig]), num_coeffs * layer.D, basis_len))
+
+    
 def get_invariant_gen_filter_dict(N, M, D, ks, parity, operators):
     """
     get_invariant_gen_filters, but accepts a list of tensor order ks, and returns a dictionary by k of the
@@ -1833,7 +1874,6 @@ class Layer:
         vmap_rotate = vmap(times_group_element, in_axes=(None, 0, None, None, None))
         out_layer = self.empty()
         for (k,parity), image_block in self.items():
-            print(image_block.shape)
             out_layer.append(k, parity, vmap_rotate(self.D, image_block, 0, gg, precision))
 
         return out_layer
@@ -1914,18 +1954,26 @@ class BatchLayer(Layer):
             idxs (jnp.array): array of indices to select the subset
         """
         assert isinstance(idxs, jnp.ndarray)
+        assert len(idxs)
         return self.__class__(
             { k: image_block[idxs] for k, image_block in self.items() },
             self.D,
             self.is_torus,
         )
     
-    @partial(vmap, in_axes=(0, None, None))
+    def get_one(self, idx=0):
+        return self.get_subset(jnp.array([idx]))
+    
     def times_group_element(self, gg, precision=None):
-        print(self)
-        exit()
+        return self._times_group_element(gg, precision)
+
+    @partial(jax.vmap, in_axes=(0, None, None))
+    def _times_group_element(self, gg, precision):
         return super(BatchLayer, self).times_group_element(gg, precision)
-        # return vmap(super(BatchLayer, self).times_group_element, in_axes=(0, None, None))(gg, precision)
+
+    @jax.vmap
+    def to_vector(self):
+        return super(BatchLayer, self).to_vector()
     
     def device_put(self, sharding, num_devices):
         """

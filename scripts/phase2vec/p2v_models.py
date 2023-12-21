@@ -266,7 +266,7 @@ def dropout_layer(x, p, key, train):
     
     return (x * (random.uniform(key, shape=x.shape) > p).astype(x.dtype))*(1/(1-p))
 
-@partial(jit, static_argnums=[3,7,8])
+@partial(jit, static_argnums=[3,8,9])
 def gi_net(
     params, 
     layer, 
@@ -275,6 +275,7 @@ def gi_net(
     batch_stats, 
     conv_filters, 
     ode_basis,
+    maps_to_coeffs,
     return_params=False, 
     return_embedding=False,
 ):
@@ -312,13 +313,10 @@ def gi_net(
     # do the embedding from this!!
 
     # Embed the ODE in a d=175 vector
-    layer_vec = jnp.array([]).reshape((layer.L, 0))
-    for image in layer.values():
-        layer_vec = jnp.concatenate([layer_vec, image.reshape(layer.L, -1)], axis=1)
+    embedding = layer.to_vector()
 
-    embedding = layer_vec
+    coeffs, params = ml.batch_equiv_dense_layer(params, embedding, maps_to_coeffs, mold_params=return_params)
 
-    coeffs, params = batch_dense_layer(params, layer_vec, num_coeffs * layer.D, True, return_params)
     coeffs = coeffs.reshape((layer.L, num_coeffs, layer.D))
 
     # multiply the functions by the coefficients

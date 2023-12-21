@@ -2,7 +2,13 @@ import geometricconvolutions.geometric as geom
 import pytest
 import jax.numpy as jnp
 import jax.random as random
+import jax
 import math
+import time
+
+import sys
+sys.path.append('scripts/phase2vec/')
+import p2v_models
 
 class TestMisc:
 
@@ -108,3 +114,59 @@ class TestMisc:
 
             for gg in operators:
                 assert invariant_basis == invariant_basis.times_group_element(gg)
+
+    def testGetOperatorsOnCoeffs(self):
+        # Ensure that this representation has orthogonal group elements are orthogonal
+        D = 2
+        operators = jnp.stack(geom.make_all_operators(D))
+        library = p2v_models.get_ode_basis(D, 4, [-1.,-1.], [1.,1.], 3)
+
+        operators_on_coeffs = geom.get_operators_on_coeffs(D, operators, library)
+        for gg in operators_on_coeffs:
+            assert jnp.allclose(gg @ gg.T, jnp.eye(len(gg))), f'{jnp.max(gg @ gg.T - jnp.eye(len(gg)))}'
+            assert jnp.allclose(gg.T @ gg, jnp.eye(len(gg))), f'{jnp.max(gg.T @ gg - jnp.eye(len(gg)))}'
+
+    def testGetEquivariantMapToCoeffs(self):
+        # Ensure that the maps are indeed equivariant
+        key = random.PRNGKey(time.time_ns())
+        D = 2
+        N = 5
+        operators = jnp.stack(geom.make_all_operators(D))
+        library = p2v_models.get_ode_basis(D, 4, [-1.,-1.], [1.,1.], 3)
+
+        key, subkey1 = random.split(key)
+        key, subkey2 = random.split(key)
+        key, subkey3 = random.split(key)
+
+        rand_layer = geom.BatchLayer(
+            {
+                (0,0): random.normal(subkey1, shape=(1,1) + (N,)*D),
+                (1,0): random.normal(subkey2, shape=(1,1) + (N,)*D + (D,)),
+                (2,0): random.normal(subkey3, shape=(1,1) + (N,)*D + (D,D)),
+            },
+            D, 
+            False,
+        )
+
+        # First, we construct basis of layer elements
+        basis_len = rand_layer.size()
+        layer_basis = jax.vmap(lambda e: rand_layer.__class__.from_vector(e, rand_layer))(jnp.eye(basis_len))
+
+        # Now we use this basis to get the representation of each group element on the layer
+        operators_on_layer = jax.vmap(
+            jax.vmap(lambda gg, e: e.times_group_element(gg).to_vector(), in_axes=(None,0)), 
+            in_axes=(0,None),
+        )(operators, layer_basis)
+
+        operators_on_coeffs = geom.get_operators_on_coeffs(D, operators, library)
+        equiv_maps = geom.get_equivariant_map_to_coeffs(rand_layer, operators, library)
+
+        key,subkey = random.split(key)
+        rand_map = jnp.sum(random.normal(subkey, shape=(len(equiv_maps),1,1))*equiv_maps, axis=0)
+
+        # For this random layer and random map, ensure that it is equivariant to the group.
+        for gg_layer, coeffs_gg in zip(operators_on_layer, operators_on_coeffs):
+            assert jnp.allclose(
+                rand_map @ gg_layer @ rand_layer.to_vector(),
+                coeffs_gg @ rand_map @ rand_layer.to_vector(),
+            )

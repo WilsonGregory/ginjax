@@ -22,9 +22,11 @@ CASCADING_CONTRACTIONS = 'cascading_contractions'
 PARAMED_CONTRACTIONS = 'paramed_contractions'
 BATCH_NORM = 'batch_norm'
 LAYER_NORM = 'layer_norm'
+EQUIV_DENSE = 'equiv_dense'
 
 SCALE = 'scale'
 BIAS = 'bias'
+SUM = 'sum'
 
 CONV_FREE = 'free'
 CONV_FIXED = 'fixed'
@@ -628,6 +630,9 @@ def batch_leaky_relu_layer(layer, negative_slope=0.01):
 def sigmoid_layer(layer):
     return activation_layer(layer, jax.nn.sigmoid)
 
+def kink(x, outer_slope=0.5, inner_slope=2):
+    return jnp.where((x<=-1) | (x>=1), outer_slope*x, inner_slope*x)
+
 def scalar_activation(layer, activation_function):
     """
     Given a layer, apply the nonlinear activation function to each scalar image_block. If the layer has
@@ -906,6 +911,32 @@ def batch_channel_collapse(params, input_layer, depth=1, mold_params=False):
     vmap_channel_collapse = vmap(channel_collapse, in_axes=(None, 0, None, None), out_axes=(0, None))
     return vmap_channel_collapse(params, input_layer, depth, mold_params)
 
+@functools.partial(jax.jit, static_argnums=3)
+def equiv_dense_layer(params, input, basis, mold_params=False):
+    """
+    A dense layer with a specific basis of linear maps, rather than any possible linear map. This
+    allows you to pass an equivariant basis so the whole layer is equivariant.
+    args:
+        params (params dict): a tree of params 
+        input (jnp.array): array of data, shape (in_d,)
+        basis (jnp.array): basis of linear maps, shape (basis_len,out_d,in_d)
+    """
+    params_idx, this_params = get_layer_params(params, mold_params, EQUIV_DENSE)
+
+    if (mold_params):
+        this_params[SUM] = jnp.ones((len(basis),1,1))
+
+    equiv_map = jnp.sum(this_params[SUM] * basis, axis=0) # (out_d, in_d)
+    output = equiv_map @ input
+
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return output, params
+
+def batch_equiv_dense_layer(params, input, basis, mold_params=False):
+    vmap_equiv_dense_layer = vmap(equiv_dense_layer, in_axes=(None,0,None,None), out_axes=(0, None))
+    return vmap_equiv_dense_layer(params, input, basis, mold_params)
+
 @functools.partial(jit, static_argnums=[2,5,6,7])
 def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0.1, eps=1e-05, mold_params=False):
     """
@@ -1127,6 +1158,7 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
         NOT_CONV: functools.partial(not_conv_init, D=input_layer.D),
         CASCADING_CONTRACTIONS: cascading_contractions_init,
         PARAMED_CONTRACTIONS: paramed_contractions_init,
+        EQUIV_DENSE: equiv_dense_init,
     }
 
     initializers = { **initializers, **override_initializers }
@@ -1243,6 +1275,15 @@ def paramed_contractions_init(rand_key, tree):
         _, channels, maps = param_block.shape
         bound = 1/jnp.sqrt(channels * maps)
         rand_key, subkey = random.split(rand_key)
+        out_params[key] = random.uniform(subkey, shape=param_block.shape, minval=-bound, maxval=bound)
+
+    return out_params
+
+def equiv_dense_init(rand_key, tree):
+    out_params = {}
+    for key, param_block in tree.items():
+        rand_key, subkey = random.split(rand_key)
+        bound = 1./jnp.sqrt(param_block.size)
         out_params[key] = random.uniform(subkey, shape=param_block.shape, minval=-bound, maxval=bound)
 
     return out_params

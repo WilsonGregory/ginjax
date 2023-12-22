@@ -275,7 +275,7 @@ def gi_net(
     batch_stats, 
     conv_filters, 
     ode_basis,
-    maps_to_coeffs,
+    maps_to_coeffs=None,
     return_params=False, 
     return_embedding=False,
 ):
@@ -310,12 +310,14 @@ def gi_net(
         padding='VALID',
     ) # down to 5x5
     layer, params = ml.batch_channel_collapse(params, layer, 1, mold_params=return_params)
-    # do the embedding from this!!
 
     # Embed the ODE in a d=175 vector
     embedding = layer.to_vector()
 
-    coeffs, params = ml.batch_equiv_dense_layer(params, embedding, maps_to_coeffs, mold_params=return_params)
+    if maps_to_coeffs is None:
+        coeffs, params = batch_dense_layer(params, embedding, num_coeffs * layer.D, True, return_params)
+    else:
+        coeffs, params = ml.batch_equiv_dense_layer(params, embedding, maps_to_coeffs, mold_params=return_params)
 
     coeffs = coeffs.reshape((layer.L, num_coeffs, layer.D))
 

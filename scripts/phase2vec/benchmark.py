@@ -115,13 +115,9 @@ def train_and_eval(data, rand_key, net, batch_size, lr, epochs, verbose, print_e
         partial(p2v_models.map_and_loss, net=net),
         init_params,
         subkey,
-        ml.ValLoss(patience=10, verbose=verbose),
-        # ml.EpochStop(epochs, verbose=verbose),
+        ml.EpochStop(epochs, verbose=verbose),
         batch_size=batch_size,
-        # optimizer=optax.adam(lr),
-        optimizer=optax.adam(
-            optax.exponential_decay(lr, transition_steps=int(X_train.L / batch_size), decay_rate=0.999),
-        ),
+        optimizer=optax.adam(lr),
         validation_X=X_val,
         validation_Y=Y_val,
         has_aux=True,
@@ -227,22 +223,6 @@ embedding_layer = geom.Layer(
     D, 
     X_train.is_torus,
 )
-
-# embedding_layer = geom.Layer(
-#     {
-#         (0,0): jnp.zeros((1,) + (embedding_N,)*D),
-#         (0,1): jnp.zeros((1,) + (embedding_N,)*D),
-#         (1,0): jnp.zeros((1,) + (embedding_N,)*D + (D,)),
-#         (1,1): jnp.zeros((1,) + (embedding_N,)*D + (D,)),
-#         (2,0): jnp.zeros((1,) + (embedding_N,)*D + (D,D)),
-#         (2,1): jnp.zeros((1,) + (embedding_N,)*D + (D,D)),
-#         # (3,0): jnp.zeros((2,) + (5,)*D + (D,D,D)),
-#     },
-#     D, 
-#     X_train.is_torus,
-# )
-print('embedding_d:', embedding_layer.to_vector().shape)
-
 small_ode_basis = p2v_models.get_ode_basis(D, 5, [-1.,-1.], [1.,1.], 3) # (N**D, 10)
 Bd_equivariant_maps = geom.get_equivariant_map_to_coeffs(embedding_layer, operators, small_ode_basis)
 
@@ -295,6 +275,18 @@ models = [
         'gi_net', 
         partial(
             train_and_eval, 
+            net=partial(p2v_models.gi_net, conv_filters=conv_filters, ode_basis=ode_basis), 
+            batch_size=batch_size, 
+            lr=lr,
+            epochs=epochs,
+            verbose=verbose,
+            print_errs=print_result,
+        ),
+    ),
+    (
+        'gi_net_full', # last layer is also rotation/reflection equivariant
+        partial(
+            train_and_eval, 
             net=partial(
                 p2v_models.gi_net, 
                 conv_filters=conv_filters, 
@@ -308,45 +300,45 @@ models = [
             print_errs=print_result,
         ),
     ),
-    # (
-    #     'baseline', # identical to the paper architecture
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             p2v_models.baseline_net, 
-    #             ode_basis=ode_basis, 
-    #             batch_norm=True, 
-    #             dropout=True, 
-    #             relu=True, 
-    #             num_hidden_layers=2,
-    #         ),
-    #         batch_size=batch_size,
-    #         lr=lr,
-    #         epochs=epochs,
-    #         verbose=verbose,
-    #         print_errs=print_result,
-    #     ),
-    # ),
-    # (
-    #     'baseline_no_extras', # paper architecture, but no batchnorm or dropout, only relu in cnn
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             p2v_models.baseline_net, 
-    #             ode_basis=ode_basis, 
-    #             batch_norm=False, 
-    #             dropout=False,
-    #             relu=False,
-    #             num_hidden_layers=0,
-    #         ),
-    #         batch_size=batch_size,
-    #         lr=lr,
-    #         epochs=epochs,
-    #         verbose=verbose,
-    #         print_errs=print_result,
-    #     ),
-    # ),
-    # ('pinv_baseline', partial(pinv_baseline_map, library=ode_basis, print_errs=print_result)),
+    (
+        'baseline', # identical to the paper architecture
+        partial(
+            train_and_eval,
+            net=partial(
+                p2v_models.baseline_net, 
+                ode_basis=ode_basis, 
+                batch_norm=True, 
+                dropout=True, 
+                relu=True, 
+                num_hidden_layers=2,
+            ),
+            batch_size=batch_size,
+            lr=lr,
+            epochs=epochs,
+            verbose=verbose,
+            print_errs=print_result,
+        ),
+    ),
+    (
+        'baseline_no_extras', # paper architecture, but no batchnorm or dropout, only relu in cnn
+        partial(
+            train_and_eval,
+            net=partial(
+                p2v_models.baseline_net, 
+                ode_basis=ode_basis, 
+                batch_norm=False, 
+                dropout=False,
+                relu=False,
+                num_hidden_layers=0,
+            ),
+            batch_size=batch_size,
+            lr=lr,
+            epochs=epochs,
+            verbose=verbose,
+            print_errs=print_result,
+        ),
+    ),
+    ('pinv_baseline', partial(pinv_baseline_map, library=ode_basis, print_errs=print_result)),
 ]
 
 for model_name, model in models:

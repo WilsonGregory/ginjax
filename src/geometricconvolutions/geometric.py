@@ -166,23 +166,30 @@ def get_operators_on_coeffs(D, operators, library):
         vec_img = library @ basis_element.reshape((num_coeffs, D)) # (N**D, D)
         vec_img = vec_img.reshape((library_N,)*D + (D,)) 
 
-        rotated_img = times_group_element(D, vec_img, 0, gg).reshape((library_N**D,D))
+        rotated_img = times_group_element(D, vec_img, 0, gg, jax.lax.Precision.HIGHEST).reshape((library_N**D,D))
         rotated_coeffs = library_pinv @ rotated_img # (num_coeffs, D)
         # this numerical method is a little messy, but in actually the rotation matrix on the 
         # coefficients will all be either 1s or -1s. Thus we aggressively round them off.
         return (jnp.round(rotated_coeffs, decimals=2) + 0.).reshape(-1)
 
-    return vmap(vmap(action, in_axes=(0,None)), in_axes=(None,0))(jnp.eye(num_coeffs * D), operators)
+    vmap_action = vmap(vmap(action, in_axes=(0,None)), in_axes=(None,0))
+    # the output vector of the innermost vmap is the column of the operator, so we take the transpose
+    return vmap_action(jnp.eye(num_coeffs * D), operators).transpose((0,2,1))
 
 def get_operators_on_layer(operators, layer):
     basis_len = layer.size()
     layer_basis = vmap(lambda e: layer.__class__.from_vector(e, layer))(jnp.eye(basis_len))
 
-    # Now we use this basis to get the representation of each group element on the layer
-    return vmap(
-        vmap(lambda gg, e: e.times_group_element(gg).to_vector(), in_axes=(None,0)), 
+    operators_on_layer = vmap(
+        vmap(
+            lambda gg, e: e.times_group_element(gg, jax.lax.Precision.HIGHEST).to_vector(), 
+            in_axes=(None,0),
+        ), 
         in_axes=(0,None),
     )(operators, layer_basis)
+    
+    # the output vector of the innermost vmap is the column of the operator, so we take the transpose
+    return operators_on_layer.transpose((0,2,1)) 
 
 def get_equivariant_map_to_coeffs(layer, operators, library):
     operators = jnp.stack(operators) # convert operators from a list to a jnp.array for easy vmapping

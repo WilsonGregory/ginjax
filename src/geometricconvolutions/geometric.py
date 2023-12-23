@@ -21,6 +21,7 @@ import numpy as np #removing this
 import jax.numpy as jnp
 import jax.lax
 import jax.nn
+import jax
 from jax import jit, vmap
 from jax.tree_util import register_pytree_node_class
 from functools import partial, reduce
@@ -156,6 +157,98 @@ def get_basis(key, shape):
 
     return basis_cache[actual_key]
 
+def get_operators_on_coeffs(D, operators, library):
+    """
+    Given the operators of a group and a library of vector image basis functions, find the action of 
+    the group on the coefficients of the library of basis functions.
+    args:
+        D (int): dimension of the space
+        operators (jnp.array): group operators, shape (group_size, D, D)
+        library (jnp.array): basis functions, shape (N**D, num_coeffs)
+    returns: jnp.array shape (group_size, num_coeffs*D, num_coeffs*D)
+    """
+    num_coeffs = library.shape[1]
+    library_N = int(jnp.power(library.shape[0], 1./D)) # N is the 1/D th root.
+    library_pinv = jnp.linalg.pinv(library) # library is (N**D, num_coeffs), pinv is (num_coeffs, N**D)
+
+    def action(basis_element, gg):
+        vec_img = library @ basis_element.reshape((num_coeffs, D)) # (N**D, D)
+        vec_img = vec_img.reshape((library_N,)*D + (D,)) 
+
+        rotated_img = times_group_element(D, vec_img, 0, gg, jax.lax.Precision.HIGHEST).reshape((library_N**D,D))
+        rotated_coeffs = library_pinv @ rotated_img # (num_coeffs, D)
+        # this numerical method is a little messy, but in actuality the rotation matrix on the 
+        # coefficients will all be either 1s or -1s. Thus we aggressively round them off.
+        return (jnp.round(rotated_coeffs, decimals=2) + 0.).reshape(-1)
+
+    vmap_action = vmap(vmap(action, in_axes=(0,None)), in_axes=(None,0))
+    # the output vector of the innermost vmap is the column of the operator, so we take the transpose
+    return vmap_action(jnp.eye(num_coeffs * D), operators).transpose((0,2,1))
+
+def get_operators_on_layer(operators, layer):
+    """
+    Given the operators of a group and a Layer, find the action of the group on the vectorized version
+    of the layer. That is, the output `gg_out` is such that: 
+    gg_out @ layer.to_vector() == layer.times_group_element(gg)
+    args:
+        operators (jnp.array): group operators, shape (group_size, D, D)
+        layer (Layer): can be a layer of any shape, just cannot be a BatchLayer
+    returns: jnp.array shape (group_size, num_coeffs*D, num_coeffs*D)
+    """
+    basis_len = layer.size()
+    layer_basis = vmap(lambda e: layer.__class__.from_vector(e, layer))(jnp.eye(basis_len))
+
+    operators_on_layer = vmap(
+        vmap(
+            lambda gg, e: e.times_group_element(gg, jax.lax.Precision.HIGHEST).to_vector(), 
+            in_axes=(None,0),
+        ), 
+        in_axes=(0,None),
+    )(operators, layer_basis)
+    
+    # the output vector of the innermost vmap is the column of the operator, so we take the transpose
+    return operators_on_layer.transpose((0,2,1)) 
+
+def get_equivariant_map_to_coeffs(layer, operators, library):
+    """
+    Find the linear maps from a layer of the specified shape to the coefficients of a basis of 
+    vector images given by library that is equivariant to the operators of some group.
+    args:
+        layer (Layer): a layer of any shape, but must be a Layer and not a BatchLayer
+        operators (list): list of operators given by make_all_operators, each is (D,D)
+        library (jnp.array): library of vector image basis, shape (N**D, num_coeffs)
+    """
+    operators = jnp.stack(operators) # convert operators from a list to a jnp.array for easy vmapping
+    # First, we construct basis of layer elements
+    num_coeffs = library.shape[1]
+    basis_len = layer.size()
+
+    # Get the representation of the group operators on the specified layer
+    operators_on_layer = get_operators_on_layer(operators, layer)
+
+    # Get the representation of the group on the coefficients of the library
+    operators_on_coeffs = get_operators_on_coeffs(layer.D, operators, library)
+
+    # Now get a basis of the linear maps, and do the group averaging
+    lin_map_basis = get_basis('equivariant_linear_map', (num_coeffs * layer.D, basis_len))
+    conjugate = vmap(
+        vmap(lambda gg_coeffs, gg_layer, basis_elem: gg_coeffs.T @ basis_elem @ gg_layer, in_axes=(0,0,None)), 
+        in_axes=(None,None,0),
+    )
+
+    # before sum, (N**D * num_coeffs * D, group_size, num_coeffs*D, basis_len)
+    maps_matrix = jnp.sum(conjugate(operators_on_coeffs, operators_on_layer, lin_map_basis), axis=1) 
+    maps_matrix = maps_matrix.reshape((len(maps_matrix),-1))
+
+    # do the SVD
+    _, s, v = jnp.linalg.svd(maps_matrix)
+    sbig = s > TINY
+    if not jnp.any(sbig):
+        return []
+
+    return v[sbig].reshape((len(v[sbig]), num_coeffs * layer.D, basis_len))
+
+    
 def get_invariant_gen_filter_dict(N, M, D, ks, parity, operators):
     """
     get_invariant_gen_filters, but accepts a list of tensor order ks, and returns a dictionary by k of the
@@ -1688,6 +1781,22 @@ class Layer:
             out_layer.append(image.k, image.parity, image.data.reshape((1,) + image.data.shape))
 
         return out_layer
+    
+    @classmethod
+    def from_vector(cls, vector, layer):
+        """
+        Convert a vector to a layer, using the shape and parity of the provided layer.
+        args:
+            vector (jnp.array): a 1-D array of values
+            layer (Layer): a layer providing the parity and shape for the resulting new layer
+        """
+        idx = 0
+        out_layer = layer.empty()
+        for (k,parity), img in layer.items():
+            out_layer.append(k, parity, vector[idx:(idx+img.size)].reshape(img.shape))
+            idx += img.size
+
+        return out_layer
 
     def __str__(self):
         layer_repr = f'{self.__class__} D: {self.D}, is_torus: {self.is_torus}\n'
@@ -1695,6 +1804,9 @@ class Layer:
             layer_repr += f'\t{k}: {image_block.shape}\n'
 
         return layer_repr
+    
+    def size(self):
+        return reduce(lambda size,img: size + img.size, self.values(), 0)
 
     # Functions that map directly to calling the function on data
 
@@ -1777,10 +1889,16 @@ class Layer:
                 images.append(GeometricImage(image, 0, self.D, self.is_torus)) # for now, assume 0 parity
 
         return images
+
+    def to_vector(self):
+        """
+        Vectorize a layer in the natural way
+        """
+        return reduce(lambda x,y: jnp.concatenate([x, y.reshape(-1)]), self.values(), jnp.zeros(0))
     
     def times_group_element(self, gg, precision=None):
         """
-        Apply a group element of SO(2) or SO(3) to the layer. First apply the action to the location of the
+        Apply a group element of O(2) or O(3) to the layer. First apply the action to the location of the
         pixels, then apply the action to the pixels themselves.
         args:
             gg (group operation matrix): a DxD matrix that rotates the tensor
@@ -1868,15 +1986,27 @@ class BatchLayer(Layer):
         args:
             idxs (jnp.array): array of indices to select the subset
         """
-        assert isinstance(idxs, jnp.ndarray)
+        assert isinstance(idxs, jnp.ndarray), 'BatchLayer::get_subset arg idxs must be a jax array'
+        assert len(idxs.shape), 'BatchLayer::get_subset arg idxs must be a jax array, e.g. jnp.array([0])'
         return self.__class__(
             { k: image_block[idxs] for k, image_block in self.items() },
             self.D,
             self.is_torus,
         )
     
+    def get_one(self, idx=0):
+        return self.get_subset(jnp.array([idx]))
+    
     def times_group_element(self, gg, precision=None):
-        return vmap(super.times_group_element, in_axes=(0, None, None))(gg, precision=precision)
+        return self._times_group_element(gg, precision)
+
+    @partial(jax.vmap, in_axes=(0, None, None))
+    def _times_group_element(self, gg, precision):
+        return super(BatchLayer, self).times_group_element(gg, precision)
+
+    @jax.vmap
+    def to_vector(self):
+        return super(BatchLayer, self).to_vector()
     
     def device_put(self, sharding, num_devices):
         """

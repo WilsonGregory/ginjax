@@ -189,6 +189,19 @@ X_eval_train, X_eval_test, Y_eval_train, Y_eval_test, _, _ = p2v_models.load_dat
 # generate function library
 ode_basis = p2v_models.get_ode_basis(D, N, [-1.,-1.], [1.,1.], 3)
 
+embedding_N = 5
+embedding_layer = geom.Layer(
+    {
+        (0,0): jnp.zeros((1,) + (embedding_N,)*D),
+        (1,0): jnp.zeros((1,) + (embedding_N,)*D + (D,)),
+        (2,0): jnp.zeros((1,) + (embedding_N,)*D + (D,D)),
+    },
+    D, 
+    X_train.is_torus,
+)
+small_ode_basis = p2v_models.get_ode_basis(D, 5, [-1.,-1.], [1.,1.], 3) # (N**D, 10)
+Bd_equivariant_maps = geom.get_equivariant_map_to_coeffs(embedding_layer, operators, small_ode_basis)
+
 # Define the models that we are benchmarking
 models = [
     (
@@ -196,6 +209,22 @@ models = [
         partial(
             train_and_eval, 
             net=partial(p2v_models.gi_net, conv_filters=conv_filters, ode_basis=ode_basis), 
+            batch_size=batch_size, 
+            lr=lr,
+            epochs=epochs,
+            verbose=verbose,
+        ),
+    ),
+    (
+        'gi_net_full', # last layer is also rotation/reflection equivariant
+        partial(
+            train_and_eval, 
+            net=partial(
+                p2v_models.gi_net, 
+                conv_filters=conv_filters, 
+                ode_basis=ode_basis, 
+                maps_to_coeffs=Bd_equivariant_maps,
+            ), 
             batch_size=batch_size, 
             lr=lr,
             epochs=epochs,

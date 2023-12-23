@@ -182,6 +182,57 @@ class TestLayer:
         with pytest.raises(AssertionError):
             layer6 + layer7
 
+    def testSize(self):
+        D = 2
+        N = 5
+
+        # empty layer
+        layer1 = geom.Layer({}, D)
+        assert layer1.size() == 0
+
+        # basic scalar layer
+        layer2 = geom.Layer({ (0,0): jnp.ones((1,) + (N,)*D) }, D)
+        assert layer2.size() == N**D
+
+        # layer with channels
+        layer3 = geom.Layer({ (0,0): jnp.ones((4,) + (N,)*D) }, D)
+        assert layer3.size() == (4 * N**D)
+
+        # more complex layer
+        layer4 = geom.Layer(
+            {
+                (0,0): jnp.ones((1,) + (N,)*D),
+                (1,0): jnp.ones((4,) + (N,)*D + (D,)),
+                (1,1): jnp.ones((2,) + (N,)*D + (D,)),
+                (2,0): jnp.ones((3,) + (N,)*D + (D,D)),
+            },
+            D,
+        )
+        assert layer4.size() == (N**D + 4*N**D*D + 2*N**D*D + 3*N**D*D*D)
+
+    def testVector(self):
+        # Test the from_vector and to_vector functions
+        key = random.PRNGKey(time.time_ns())
+        D = 2
+        N = 5
+
+        layer_example = geom.Layer(
+            {
+                (0,0): jnp.ones((1,) + (N,)*D),
+                (1,0): jnp.ones((1,) + (N,)*D + (D,)),
+                (2,0): jnp.ones((1,) + (N,)*D + (D,D)),
+            },
+            D,
+        )
+
+        key, subkey = random.split(key)
+        rand_data = random.normal(subkey, shape=(layer_example.size(),))
+
+        rand_layer = geom.Layer.from_vector(rand_data, layer_example)
+
+        assert rand_layer.size() == layer_example.size()
+        assert jnp.allclose(rand_layer.to_vector(), rand_data)
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Test BatchLayer
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -246,6 +297,9 @@ class TestBatchLayer:
 
         with pytest.raises(AssertionError):
             layer1.get_subset((0,2,3))
+
+        with pytest.raises(AssertionError):
+            layer1.get_subset(jnp.array(0))
 
     def testAppend(self):
         # For BatchLayer, append should probably only be used while it is vmapped to a Layer
@@ -318,3 +372,31 @@ class TestBatchLayer:
         assert layer6.D == D
         assert list(layer6.keys()) == [(1,0)]
         assert layer6[(1,0)].shape == (5,12,N,N,D)
+
+    def testSize(self):
+        D = 2
+        N = 5
+
+        # empty layer
+        layer1 = geom.BatchLayer({}, D)
+        assert layer1.size() == 0
+
+        # basic scalar layer
+        layer2 = geom.BatchLayer({ (0,0): jnp.ones((1,) + (N,)*D) }, D)
+        assert layer2.size() == N**D
+
+        # layer with channels
+        layer3 = geom.BatchLayer({ (0,0): jnp.ones((2,4) + (N,)*D) }, D)
+        assert layer3.size() == (2*4 * N**D)
+
+        # more complex layer
+        layer4 = geom.BatchLayer(
+            {
+                (0,0): jnp.ones((3,1) + (N,)*D),
+                (1,0): jnp.ones((3,4) + (N,)*D + (D,)),
+                (1,1): jnp.ones((3,2) + (N,)*D + (D,)),
+                (2,0): jnp.ones((3,3) + (N,)*D + (D,D)),
+            },
+            D,
+        )
+        assert layer4.size() == (3*(N**D + 4*N**D*D + 2*N**D*D + 3*N**D*D*D))

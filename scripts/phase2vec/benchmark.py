@@ -199,7 +199,7 @@ key = random.PRNGKey(time.time_ns() if (seed is None) else seed)
 
 # start with basic 3x3 scalar, vector, and 2nd order tensor images
 operators = geom.make_all_operators(D)
-conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2,3], parities=[0], D=D, operators=operators)
+conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2,3], parities=[0,1], D=D, operators=operators)
 
 # Get data
 train_data_path = '../phase2vec/output/data/polynomial'
@@ -211,7 +211,20 @@ X_train, X_val, X_test, y_train, y_val, y_test, p_train, p_val, p_test = p2v_mod
 )
 
 # generate function library
-ode_basis = p2v_models.get_ode_basis(D, N, [-1.,-1.], [1.,1.], 3)
+ode_basis = p2v_models.get_ode_basis(D, N, [-1.,-1.], [1.,1.], 3) # (N**D, 10)
+
+embedding_N = 5
+embedding_layer = geom.Layer(
+    {
+        (0,0): jnp.zeros((1,) + (embedding_N,)*D),
+        (1,0): jnp.zeros((1,) + (embedding_N,)*D + (D,)),
+        (2,0): jnp.zeros((1,) + (embedding_N,)*D + (D,D)),
+    },
+    D, 
+    X_train.is_torus,
+)
+small_ode_basis = p2v_models.get_ode_basis(D, 5, [-1.,-1.], [1.,1.], 3) # (N**D, 10)
+Bd_equivariant_maps = geom.get_equivariant_map_to_coeffs(embedding_layer, operators, small_ode_basis)
 
 # apply noise to the test data inputs
 if benchmark == 'masking_noise':
@@ -263,6 +276,23 @@ models = [
         partial(
             train_and_eval, 
             net=partial(p2v_models.gi_net, conv_filters=conv_filters, ode_basis=ode_basis), 
+            batch_size=batch_size, 
+            lr=lr,
+            epochs=epochs,
+            verbose=verbose,
+            print_errs=print_result,
+        ),
+    ),
+    (
+        'gi_net_full', # last layer is also rotation/reflection equivariant
+        partial(
+            train_and_eval, 
+            net=partial(
+                p2v_models.gi_net, 
+                conv_filters=conv_filters, 
+                ode_basis=ode_basis, 
+                maps_to_coeffs=Bd_equivariant_maps,
+            ), 
             batch_size=batch_size, 
             lr=lr,
             epochs=epochs,

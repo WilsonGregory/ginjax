@@ -631,6 +631,14 @@ def sigmoid_layer(layer):
     return activation_layer(layer, jax.nn.sigmoid)
 
 def kink(x, outer_slope=0.5, inner_slope=2):
+    """
+    An attempt to make a ReLU that is an odd function (i.e., kink(-x) = -kink(x)). Between -1 and 1, 
+    kink scales the function by inner_slope, and outside that scales it by outer_slope.
+    args:
+        x (jnp.array): the values to perform the pointwise nonlinearity on
+        outer_slope (float): slope for outer regions, defaults to 0.5
+        inner_slope (float): slope for inner regions, defaults to 2
+    """
     return jnp.where((x<=-1) | (x>=1), outer_slope*x, inner_slope*x)
 
 def scalar_activation(layer, activation_function):

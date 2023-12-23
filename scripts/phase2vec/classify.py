@@ -208,12 +208,7 @@ models = [
         'gi_net', 
         partial(
             train_and_eval, 
-            net=partial(
-                p2v_models.gi_net, 
-                conv_filters=conv_filters, 
-                ode_basis=ode_basis, 
-                maps_to_coeffs=Bd_equivariant_maps,
-            ), 
+            net=partial(p2v_models.gi_net, conv_filters=conv_filters, ode_basis=ode_basis), 
             batch_size=batch_size, 
             lr=lr,
             epochs=epochs,

@@ -158,6 +158,15 @@ def get_basis(key, shape):
     return basis_cache[actual_key]
 
 def get_operators_on_coeffs(D, operators, library):
+    """
+    Given the operators of a group and a library of vector image basis functions, find the action of 
+    the group on the coefficients of the library of basis functions.
+    args:
+        D (int): dimension of the space
+        operators (jnp.array): group operators, shape (group_size, D, D)
+        library (jnp.array): basis functions, shape (N**D, num_coeffs)
+    returns: jnp.array shape (group_size, num_coeffs*D, num_coeffs*D)
+    """
     num_coeffs = library.shape[1]
     library_N = int(jnp.power(library.shape[0], 1./D)) # N is the 1/D th root.
     library_pinv = jnp.linalg.pinv(library) # library is (N**D, num_coeffs), pinv is (num_coeffs, N**D)
@@ -168,7 +177,7 @@ def get_operators_on_coeffs(D, operators, library):
 
         rotated_img = times_group_element(D, vec_img, 0, gg, jax.lax.Precision.HIGHEST).reshape((library_N**D,D))
         rotated_coeffs = library_pinv @ rotated_img # (num_coeffs, D)
-        # this numerical method is a little messy, but in actually the rotation matrix on the 
+        # this numerical method is a little messy, but in actuality the rotation matrix on the 
         # coefficients will all be either 1s or -1s. Thus we aggressively round them off.
         return (jnp.round(rotated_coeffs, decimals=2) + 0.).reshape(-1)
 
@@ -177,6 +186,15 @@ def get_operators_on_coeffs(D, operators, library):
     return vmap_action(jnp.eye(num_coeffs * D), operators).transpose((0,2,1))
 
 def get_operators_on_layer(operators, layer):
+    """
+    Given the operators of a group and a Layer, find the action of the group on the vectorized version
+    of the layer. That is, the output `gg_out` is such that: 
+    gg_out @ layer.to_vector() == layer.times_group_element(gg)
+    args:
+        operators (jnp.array): group operators, shape (group_size, D, D)
+        layer (Layer): can be a layer of any shape, just cannot be a BatchLayer
+    returns: jnp.array shape (group_size, num_coeffs*D, num_coeffs*D)
+    """
     basis_len = layer.size()
     layer_basis = vmap(lambda e: layer.__class__.from_vector(e, layer))(jnp.eye(basis_len))
 
@@ -192,6 +210,14 @@ def get_operators_on_layer(operators, layer):
     return operators_on_layer.transpose((0,2,1)) 
 
 def get_equivariant_map_to_coeffs(layer, operators, library):
+    """
+    Find the linear maps from a layer of the specified shape to the coefficients of a basis of 
+    vector images given by library that is equivariant to the operators of some group.
+    args:
+        layer (Layer): a layer of any shape, but must be a Layer and not a BatchLayer
+        operators (list): list of operators given by make_all_operators, each is (D,D)
+        library (jnp.array): library of vector image basis, shape (N**D, num_coeffs)
+    """
     operators = jnp.stack(operators) # convert operators from a list to a jnp.array for easy vmapping
     # First, we construct basis of layer elements
     num_coeffs = library.shape[1]
@@ -1960,8 +1986,8 @@ class BatchLayer(Layer):
         args:
             idxs (jnp.array): array of indices to select the subset
         """
-        assert isinstance(idxs, jnp.ndarray)
-        assert len(idxs)
+        assert isinstance(idxs, jnp.ndarray), 'BatchLayer::get_subset arg idxs must be a jax array'
+        assert len(idxs.shape), 'BatchLayer::get_subset arg idxs must be a jax array, e.g. jnp.array([0])'
         return self.__class__(
             { k: image_block[idxs] for k, image_block in self.items() },
             self.D,

@@ -58,8 +58,8 @@ def make_all_operators(D):
     possible_entries = [np.diag(prod) for prod in it.product([1,-1], repeat=D)]
 
     #combine all the permutation matrices with the possible entries, then flatten to a single array of operators
-    return list(it.chain(*list(map(lambda matrix: [matrix @ prod for prod in possible_entries], permutation_matrices))))
-
+    operator_list = list(it.chain(*list(map(lambda matrix: [matrix @ prod for prod in possible_entries], permutation_matrices))))
+    return jnp.stack(operator_list)
 
 # ------------------------------------------------------------------------------
 # PART 2: Define the Kronecker Delta and Levi Civita symbols to be used in Levi Civita contractions

@@ -628,7 +628,7 @@ def batch_leaky_relu_layer(layer, negative_slope=0.01):
 def sigmoid_layer(layer):
     return activation_layer(layer, jax.nn.sigmoid)
 
-def kink(x, outer_slope=0.5, inner_slope=2):
+def kink(x, outer_slope=1, inner_slope=0):
     """
     An attempt to make a ReLU that is an odd function (i.e., kink(-x) = -kink(x)). Between -1 and 1, 
     kink scales the function by inner_slope, and outside that scales it by outer_slope.
@@ -637,7 +637,7 @@ def kink(x, outer_slope=0.5, inner_slope=2):
         outer_slope (float): slope for outer regions, defaults to 0.5
         inner_slope (float): slope for inner regions, defaults to 2
     """
-    return jnp.where((x<=-1) | (x>=1), outer_slope*x, inner_slope*x)
+    return jnp.where((x<=-0.5) | (x>=0.5), outer_slope*x, inner_slope*x)
 
 def scalar_activation(layer, activation_function):
     """
@@ -1341,7 +1341,7 @@ def get_batch_layer(X, Y, batch_size, rand_key):
 
     return X_batches, Y_batches
 
-def add_noise(X, stdev, rand_key):
+def add_noise(layer, stdev, rand_key):
     """
     Add mean 0, stdev standard deviation Gaussian noise to the data X.
     args:
@@ -1349,10 +1349,10 @@ def add_noise(X, stdev, rand_key):
         stdev (float): the standard deviation of the desired Gaussian noise
         rand_key (jnp.random key): the key for randomness
     """
-    noisy_layer = {}
-    for key, image_block in X.values():
+    noisy_layer = layer.empty()
+    for (k, parity), image_block in layer.items():
         rand_key, subkey = random.split(rand_key)
-        noisy_layer[key] = image_block + stdev*random.normal(subkey, shape=image_block.shape)
+        noisy_layer.append(k, parity, image_block + stdev*random.normal(subkey, shape=image_block.shape))
 
     return noisy_layer
 

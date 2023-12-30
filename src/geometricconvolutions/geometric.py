@@ -1693,7 +1693,25 @@ class Layer:
             new_layer.append(k, parity, image_block)
 
         return new_layer
-    
+
+    def concat(self, other):
+        """
+        Currently identical to __add__, but I want to move towards using this instead and make add
+        and actual sum.
+        """
+        assert type(self) == type(other), \
+            f'{self.__class__}::__add__: Types of layers being added must match, had {type(self)} and {type(other)}'
+        assert self.D == other.D, \
+            f'{self.__class__}::__add__: Dimension of layers must match, had {self.D} and {other.D}'
+        assert self.is_torus == other.is_torus, \
+            f'{self.__class__}::__add__: is_torus of layers must match, had {self.is_torus} and {other.is_torus}'
+
+        new_layer = self.copy()
+        for (k,parity), image_block in other.items():
+            new_layer.append(k, parity, image_block)
+
+        return new_layer
+
     def to_images(self):
         # Should only be used in Layer of vmapped BatchLayer
         images = []
@@ -1820,6 +1838,11 @@ class BatchLayer(Layer):
     @jax.vmap
     def to_vector(self):
         return super(BatchLayer, self).to_vector()
+    
+    @classmethod
+    @partial(jax.vmap, in_axes=(None, 0, 0))
+    def from_vector(cls, vector, layer):
+        return super().from_vector(vector, layer)
     
     def device_put(self, sharding, num_devices):
         """

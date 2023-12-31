@@ -97,7 +97,7 @@ class TestPropositions:
         B2 = img1.convolve_with(c2).convolve_with(c1)
 
         assert B1.D == B2.D
-        assert B1.N == B2.N
+        assert B1.spatial_dims == B2.spatial_dims
         assert B1.parity == B2.parity
         assert B1.transpose([0,2,3,1]) == B2
 
@@ -117,7 +117,7 @@ class TestPropositions:
         B2 = img1.convolve_with(c2) * img1.convolve_with(c1)
 
         assert B1.D == B2.D
-        assert B1.N == B2.N
+        assert B1.spatial_dims == B2.spatial_dims
         assert B1.parity == B2.parity
         assert B1.transpose([2,3,4,0,1]) == B2
 

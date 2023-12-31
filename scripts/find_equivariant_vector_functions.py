@@ -21,7 +21,7 @@ def get_images_random(key, num_images, N, D, k):
     key, subkey = random.split(key)
     img_shape = ((num_images,) + (N,)*D + (D,)*k)
 
-    return geom.BatchGeometricImage(random.uniform(subkey, shape=img_shape, minval=-100, maxval=100), 0, D)
+    return random.uniform(subkey, shape=img_shape, minval=-100, maxval=100)
 
 def poly_filter(D, images):
     prod_image = images[0]
@@ -149,9 +149,9 @@ for degree in polynomial_degrees:
     print('~~~~~~~~~~~~~~~~')
     print(f'Degree {degree}, expected maps: {num_maps}')
 
-    geom_img = get_images_random(key, num_images, N, D, img_k)
+    geom_img_data = get_images_random(key, num_images, N, D, img_k)
 
-    datablock = get_vector_images(D, geom_img.data, conv_filters, degree)
+    datablock = get_vector_images(D, geom_img_data, conv_filters, degree)
     print('Datablock', datablock.shape)
     unique_rows = np.unique(datablock, axis=0)
     np.save(f'../data/all_functions_unique_rows_deg{degree}_n{N}.npy', unique_rows)

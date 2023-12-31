@@ -599,9 +599,7 @@ def get_bias_image(params, param_idx, x):
     assert x.k == 0, "Currently only works for k=0 tensors in order to maintain equivariance"
     fill = params[param_idx:(param_idx + (x.D ** x.k))].reshape((x.D,)*x.k)
     param_idx += x.D ** x.k
-    if (x.__class__ == geom.BatchGeometricImage):
-        return x.__class__.fill(x.N, x.parity, x.D, fill, x.L, x.is_torus), param_idx
-    elif (x.__class__ == geom.GeometricImage):
+    if (x.__class__ == geom.GeometricImage):
         return x.__class__.fill(x.N, x.parity, x.D, fill, x.is_torus), param_idx
 
 @functools.partial(jit, static_argnums=1)
@@ -833,7 +831,8 @@ def paramed_contractions(params, input_layer, target_k, depth, mold_params=False
             out_layer.append(target_k, parity, image_block)
             continue
 
-        N, _ = geom.parse_shape(image_block.shape[1:], D)
+        spatial_dims, _ = geom.parse_shape(image_block.shape[1:], D)
+        spatial_size = np.multiply.reduce(spatial_dims)
         if contraction_maps is None:
             maps = jnp.stack(
                 [geom.get_contraction_map(input_layer.D, k, idxs) for idxs in geom.get_contraction_indices(k, target_k)]
@@ -851,7 +850,7 @@ def paramed_contractions(params, input_layer, target_k, depth, mold_params=False
             # image_block.shape: (channels, (N,)*D, (D,)*k)
 
             map_sum = vmap(geom.linear_combination, in_axes=(None, 0))(maps, p) #(channels, out_size, in_size)
-            image_block.reshape((len(image_block), (N**D), (D**k)))
+            image_block.reshape((len(image_block), spatial_size, (D**k)))
             vmap_contract = vmap(geom.apply_contraction_map, in_axes=(None, 0, 0, None))
             return jnp.sum(vmap_contract(D, image_block, map_sum, target_k), axis=0)
 

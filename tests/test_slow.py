@@ -28,7 +28,7 @@ def convolve_with_slow(image, filter_image):
     args:
         filter_image (GeometricFilter-like): convolution that we are applying, can be an image or a filter
     """
-    newimage = image.__class__.zeros(image.N, image.k + filter_image.k,
+    newimage = image.__class__.zeros(image.spatial_dims, image.k + filter_image.k,
                                      image.parity + filter_image.parity, image.D)
 
     if (isinstance(filter_image, geom.GeometricImage)):
@@ -104,7 +104,7 @@ class TestSlowTests:
         subimage1 = conv_subimage(image1, (0,0), filter1)
         assert subimage1.shape() == (5,5)
         assert subimage1.D == image1.D
-        assert subimage1.N == filter1.N
+        assert subimage1.spatial_dims == filter1.spatial_dims
         assert subimage1.k == image1.k
         assert subimage1.parity == image1.parity
         assert (subimage1.data == jnp.array(
@@ -120,7 +120,7 @@ class TestSlowTests:
         subimage2 = conv_subimage(image1, (4,4), filter1)
         assert subimage2.shape() == (5,5)
         assert subimage2.D == image1.D
-        assert subimage2.N == filter1.N
+        assert subimage2.spatial_dims == filter1.spatial_dims
         assert subimage2.k == image1.k
         assert subimage2.parity == image1.parity
         assert (subimage2.data == jnp.array(
@@ -137,7 +137,7 @@ class TestSlowTests:
         subimage3 = conv_subimage(image2, (0,0), filter1)
         assert subimage3.shape() == (5,5,2)
         assert subimage3.D == image2.D
-        assert subimage3.N == filter1.N
+        assert subimage3.spatial_dims == filter1.spatial_dims
         assert subimage3.k == image2.k
         assert subimage3.parity == image2.parity
         assert (subimage3.data == jnp.array(
@@ -168,7 +168,7 @@ class TestSlowTests:
                     convolved_image_slow = convolve_with_slow(image, geom_filter)
 
                     assert convolved_image.D == convolved_image_slow.D == image.D
-                    assert convolved_image.N == convolved_image_slow.N == image.N
+                    assert convolved_image.spatial_dims == convolved_image_slow.spatial_dims == image.spatial_dims
                     assert convolved_image.k == convolved_image_slow.k == image.k + geom_filter.k
                     assert convolved_image.parity == convolved_image_slow.parity == (image.parity + geom_filter.parity) %2
                     assert jnp.allclose(convolved_image.data, convolved_image_slow.data)

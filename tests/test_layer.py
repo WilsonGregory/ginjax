@@ -137,10 +137,10 @@ class TestLayer:
 
         # N is set by append if it is empty
         layer2 = layer1.empty()
-        assert layer2.N is None
+        assert layer2.spatial_dims is None
 
         layer2.append(0, 0, random.normal(key, shape=((10,) + (N,)*D + (D,)*0)))
-        assert layer2.N == N
+        assert layer2.spatial_dims == (N,)*D
 
     def testAdd(self):
         key = random.PRNGKey(time.time_ns())
@@ -172,7 +172,7 @@ class TestLayer:
 
         # mismatched D
         layer4 = geom.Layer({ (0,0): random.normal(key, shape=((10,) + (N,)*D + (D,)*0)) }, D, True)
-        layer5 = geom.Layer({ (0,0): random.normal(key, shape=((10,) + (N,)*D + (D,)*0)) }, 3, True)
+        layer5 = geom.Layer({ (0,0): random.normal(key, shape=((10,) + (N,)*3 + (D,)*0)) }, 3, True)
         with pytest.raises(AssertionError):
             layer4 + layer5
 
@@ -382,7 +382,7 @@ class TestBatchLayer:
         assert layer1.size() == 0
 
         # basic scalar layer
-        layer2 = geom.BatchLayer({ (0,0): jnp.ones((1,) + (N,)*D) }, D)
+        layer2 = geom.BatchLayer({ (0,0): jnp.ones((1,1) + (N,)*D) }, D)
         assert layer2.size() == N**D
 
         # layer with channels

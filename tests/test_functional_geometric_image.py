@@ -42,6 +42,14 @@ class TestFunctionalGeometricImage:
         assert spatial_dims == (4,5,6)
         assert k == 1
 
+        # passing data instead of shape
+        with pytest.raises(AssertionError): 
+            geom.parse_shape(jnp.ones((5,5,2)), 2)
+
+        # passing a bungus shape, shape is less than D
+        with pytest.raises(AssertionError):
+            geom.parse_shape((5,5), 3)
+
     def testHash(self):
         D = 2
         indices = jnp.arange(10*D).reshape((10,D))

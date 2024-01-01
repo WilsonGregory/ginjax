@@ -600,7 +600,7 @@ def get_bias_image(params, param_idx, x):
     fill = params[param_idx:(param_idx + (x.D ** x.k))].reshape((x.D,)*x.k)
     param_idx += x.D ** x.k
     if (x.__class__ == geom.GeometricImage):
-        return x.__class__.fill(x.N, x.parity, x.D, fill, x.is_torus), param_idx
+        return x.__class__.fill(x.spatial_dims, x.parity, x.D, fill, x.is_torus), param_idx
 
 @functools.partial(jit, static_argnums=1)
 def activation_layer(layer, activation_function):

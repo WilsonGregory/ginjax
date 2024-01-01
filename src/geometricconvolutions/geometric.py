@@ -182,7 +182,7 @@ def get_operators_on_coeffs(D, operators, library):
         return (jnp.round(rotated_coeffs, decimals=2) + 0.).reshape(-1)
 
     vmap_action = vmap(action, in_axes=(0,None))
-    # # the output vector of the innermost vmap is the column of the operator, so we take the transpose
+    # the output vector of action is a column of the operator, so we take the transpose
     return [vmap_action(jnp.eye(num_coeffs * D), gg).transpose() for gg in operators]
 
 def get_operators_on_layer(operators, layer):
@@ -203,7 +203,7 @@ def get_operators_on_layer(operators, layer):
         in_axes=(None,0),
     )
 
-    # the output vector of the innermost vmap is the column of the operator, so we take the transpose
+    # the output of the vmap is a column of the operator, so we take the transpose
     return [vmap_times_gg(gg, layer_basis).transpose() for gg in operators]
 
 def get_equivariant_map_to_coeffs(layer, operators, library):
@@ -291,7 +291,7 @@ def get_invariant_gen_filters(N, M, D, k, parity, operators):
         vmap_times_gg = vmap(times_group_element, in_axes=(None, 0, None, None, None))
         return vmap_times_gg(D, rotated_filters, parity, gg, precision).reshape(gen_filter.shape)
 
-    # vmap over the group actions
+    # not a true vmap because we can't vmap over the operators, but equivalent (if slower)
     vmap_times_group = lambda D, ff, parity, ggs: jnp.stack([gen_filter_times_gg(D, ff, parity, gg) for gg in ggs])
 
     # vmap over the elements of the basis
@@ -339,7 +339,7 @@ def get_unique_invariant_filters(M, k, parity, D, operators, scale='normalize'):
     operators = jnp.stack(operators)
 
     basis = get_basis('image', shape) # (N**D * D**k, (N,)*D, (D,)*k)
-    # vmap (over the group actions) the times_group_element function
+    # not a true vmap because we can't vmap over the operators, but equivalent (if slower)
     vmap_times_group = lambda ff, precision: jnp.stack([times_group_element(D, ff, parity, gg, precision) for gg in operators])
     # vmap over the elements of the basis
     group_average = vmap(lambda ff: jnp.sum(vmap_times_group(ff, jax.lax.Precision.HIGH), axis=0))

@@ -51,6 +51,19 @@ class TestGeometricImage:
         assert image3.data.shape == (20,20,2,2,2)
         assert image3.k == 3
 
+        # square but spatial_dims in constructor, odd parity, D=3, not torus
+        image4 = geom.GeometricImage.zeros((5,)*3, 1, 1, 3, False)
+        assert image4.data.shape == (5,5,5,3)
+        assert image4.k == 1
+        assert image4.D == 3
+        assert image4.parity == 1
+        assert image4.is_torus == False
+
+        # non-square, D=3
+        image5 = geom.GeometricImage.zeros((4,5,6), 0, 0, 3)
+        assert image5.data.shape == (4,5,6)
+        assert image5.D == 3
+
     def testConstructor(self):
         #note we are not actually relying on randomness in this function, just filling values
         key = random.PRNGKey(0)
@@ -74,13 +87,18 @@ class TestGeometricImage:
         image4 = geom.GeometricImage(random.uniform(key, shape=(10,10,10)), 0, 3, False)
         assert not image4.is_torus
 
+        image5 = geom.GeometricImage(random.uniform(key, shape=(4,5)), 0, 2)
+        assert image5.spatial_dims == (4,5)
+        assert image5.k == 0
+
+        image6 = geom.GeometricImage(random.uniform(key, shape=(2,5,2)), 0, 2)
+        assert image6.spatial_dims == (2,5)
+        assert image6.data.shape == (2,5,2)
+        assert image6.k == 1
+
         #D does not match dimensions
         with pytest.raises(AssertionError):
             geom.GeometricImage(random.uniform(key, shape=(10,10)), 0, 3)
-
-        #non square
-        with pytest.raises(AssertionError):
-            geom.GeometricImage(random.uniform(key, shape=(10,20)), 0, 3)
 
         #side length of pixel tensors does not match D
         with pytest.raises(AssertionError):
@@ -95,7 +113,7 @@ class TestGeometricImage:
         assert image1.parity == image2.parity
         assert image1.D == image2.D
         assert image1.k == image2.k
-        assert image1.N == image2.N
+        assert image1.spatial_dims == image2.spatial_dims
         assert image1.is_torus == image2.is_torus
         assert image1 == image2
 
@@ -136,6 +154,10 @@ class TestGeometricImage:
         assert img1 != 1.0001*img1 #outside the error tolerance
         assert img1 == 1.0000001*img1  #within the error tolerance
 
+        # different N, nonsquare
+        img10 = geom.GeometricImage(jnp.ones((9,10,2)), 0, 2)
+        assert img1 != img10
+
     def testAdd(self):
         image1 = geom.GeometricImage(jnp.ones((10,10,2), dtype=int), 0, 2)
         image2 = geom.GeometricImage(5*jnp.ones((10,10,2), dtype=int), 0, 2)
@@ -146,7 +168,7 @@ class TestGeometricImage:
         assert result.parity == 0
         assert result.D == 2
         assert result.k == 1
-        assert result.N == 10
+        assert result.spatial_dims == (10,10)
 
         assert (image1.data == 1).all()
         assert (image2.data == 5).all()
@@ -183,7 +205,7 @@ class TestGeometricImage:
         assert result.parity == 0
         assert result.D == 2
         assert result.k == 1
-        assert result.N == 10
+        assert result.spatial_dims == (10,10)
 
         assert (image1.data == 1).all()
         assert (image2.data == 5).all()
@@ -214,7 +236,7 @@ class TestGeometricImage:
         assert mult1_2.k == 0
         assert mult1_2.parity == 0
         assert mult1_2.D == image1.D == image2.D
-        assert mult1_2.N == image1.N == image1.N
+        assert mult1_2.spatial_dims == image1.spatial_dims == image1.spatial_dims
         assert (mult1_2.data == 10*jnp.ones((3,3))).all()
         assert (mult1_2.data == (image2 * image1).data).all()
 
@@ -223,7 +245,7 @@ class TestGeometricImage:
         assert mult1_3.k == image1.k + image3.k == 1
         assert mult1_3.parity == (image1.parity + image3.parity) % 2 == 0
         assert mult1_3.D == image1.D == image3.D
-        assert mult1_3.N == image1.N == image3.N
+        assert mult1_3.spatial_dims == image1.spatial_dims == image3.spatial_dims
         assert (mult1_3.data == jnp.array(
             [
                 [[0,2],[4,6],[8,10]],
@@ -237,7 +259,7 @@ class TestGeometricImage:
         assert mult3_4.k == image3.k + image3.k == 2
         assert mult3_4.parity == (image3.parity + image4.parity) % 2 == 1
         assert mult3_4.D == image3.D == image4.D
-        assert mult3_4.N == image3.N == image4.N
+        assert mult3_4.spatial_dims == image3.spatial_dims == image4.spatial_dims
         assert (mult3_4.data == jnp.array(
             [
                 [
@@ -272,7 +294,7 @@ class TestGeometricImage:
         assert result.parity == image1.parity
         assert result.D == image1.D
         assert result.k == image1.k
-        assert result.N == image1.N
+        assert result.spatial_dims == image1.spatial_dims
         assert (image1.data == 2).all() #original is unchanged
 
         result2 = image1 * 3.4
@@ -285,7 +307,7 @@ class TestGeometricImage:
         assert result.parity == image1.parity
         assert result.D == image1.D
         assert result.k == image1.k
-        assert result.N == image1.N
+        assert result.spatial_dims == image1.spatial_dims
         assert (image1.data == 2).all() #original is unchanged
 
         result2 = 3.4 * image1
@@ -307,7 +329,7 @@ class TestGeometricImage:
         assert result.parity == image1.parity
         assert result.D == image1.D
         assert result.k == image1.k
-        assert result.N == image1.N
+        assert result.spatial_dims == image1.spatial_dims
         assert (image1.data == 1).all() #original is unchanged
 
         result2 = image1.times_scalar(3.4)
@@ -418,7 +440,7 @@ class TestGeometricImage:
         img1 = geom.GeometricImage(random.uniform(subkey, shape=(3,3,2)), 0, 2)
         img1_contracted = img1.levi_civita_contract(0)
         assert img1_contracted.parity == (img1.parity + 1) % 2
-        assert img1_contracted.N == img1.N
+        assert img1_contracted.spatial_dims == img1.spatial_dims
         assert img1_contracted.D == img1.D
         assert img1_contracted.k == img1.k - img1.D + 2
 
@@ -433,7 +455,7 @@ class TestGeometricImage:
         img2 = geom.GeometricImage(random.uniform(subkey, shape=(3,3,2)), 1, 2)
         img2_contracted = img2.levi_civita_contract(0)
         assert img2_contracted.parity == (img2.parity + 1) % 2
-        assert img2_contracted.N == img2.N
+        assert img2_contracted.spatial_dims == img2.spatial_dims
         assert img2_contracted.D == img2.D
         assert img2_contracted.k == img2.k - img2.D + 2
 
@@ -449,7 +471,7 @@ class TestGeometricImage:
         for idx in range(img3.k):
             img3_contracted = img3.levi_civita_contract(idx)
             assert img3_contracted.parity == (img3.parity + 1) % 2
-            assert img3_contracted.N == img3.N
+            assert img3_contracted.spatial_dims == img3.spatial_dims
             assert img3_contracted.D == img3.D
             assert img3_contracted.k == img3.k - img3.D + 2 #k+D - 2(D-1) = k-D +2
 
@@ -464,7 +486,7 @@ class TestGeometricImage:
         img4 = geom.GeometricImage(random.uniform(subkey, shape=(3,3,3,3,3)), 0, 3)
         img4_contracted = img4.levi_civita_contract((0,1))
         assert img4_contracted.parity == (img4.parity + 1) % 2
-        assert img4_contracted.N == img4.N
+        assert img4_contracted.spatial_dims == img4.spatial_dims
         assert img4_contracted.D == img4.D
         assert img4_contracted.k == img4.k - img4.D + 2
 
@@ -481,7 +503,7 @@ class TestGeometricImage:
         for indices in [(0,1),(0,2),(1,2)]:
             img5_contracted = img5.levi_civita_contract(indices)
             assert img5_contracted.parity == (img5.parity + 1) % 2
-            assert img5_contracted.N == img5.N
+            assert img5_contracted.spatial_dims == img5.spatial_dims
             assert img5_contracted.D == img5.D
             assert img5_contracted.k == img5.k - img5.D + 2
 
@@ -557,7 +579,7 @@ class TestGeometricImage:
 
         convolved_image = image1.convolve_with(filter_image)
         assert convolved_image.D == image1.D
-        assert convolved_image.N == image1.N
+        assert convolved_image.spatial_dims == image1.spatial_dims
         assert convolved_image.k == image1.k + filter_image.k
         assert convolved_image.parity == (image1.parity + filter_image.parity) % 2
         assert (convolved_image.data == jnp.array([[-2,0,2], [2,5,5], [-2,-1,3]], dtype=float)).all()
@@ -566,7 +588,7 @@ class TestGeometricImage:
         image2 = geom.GeometricImage(jnp.floor(10*random.uniform(key, shape=(5,5))), 0, 2)
         convolved_image2 = image2.convolve_with(filter_image)
         assert convolved_image2.D == image2.D
-        assert convolved_image2.N == image2.N
+        assert convolved_image2.spatial_dims == image2.spatial_dims
         assert convolved_image2.k == image2.k + filter_image.k
         assert convolved_image2.parity == (image2.parity + filter_image.parity) % 2
         assert (convolved_image2.data == jnp.array(
@@ -592,7 +614,7 @@ class TestGeometricImage:
 
         convolved_image = image1.convolve_with(filter_image)
         assert convolved_image.D == image1.D
-        assert convolved_image.N == image1.N
+        assert convolved_image.spatial_dims == image1.spatial_dims
         assert convolved_image.k == image1.k + filter_image.k
         assert convolved_image.parity == (image1.parity + filter_image.parity) % 2
         assert (convolved_image.data == jnp.array([
@@ -803,6 +825,23 @@ class TestGeometricImage:
             ],
         ])).all()
 
+        img5 = geom.GeometricImage(jnp.arange(12).reshape((3,4)), 0, 2)
+
+        # non-square rotate
+        img5_left90 = img5.times_group_element(left90)
+        assert img5_left90.D == img5.D
+        assert img5_left90.parity == img5.parity
+        assert img5_left90.k == img5.k
+        assert img5_left90.spatial_dims == (4,3)
+        assert (img5_left90.data == jnp.array([[3,7,11], [2,6,10], [1,5,9], [0,4,8]])).all()
+
+        # non-square flip
+        img5_flipX = img5.times_group_element(flipX)
+        assert img5_flipX.parity == img5.parity
+        assert img5_flipX.k == img5.k
+        assert img5_flipX.spatial_dims == (3,4)
+        assert (img5_flipX.data == jnp.array([[8,9,10,11], [4,5,6,7], [0,1,2,3]])).all()
+
     def testTimesGroupElementEven(self):
         left90 = jnp.array([[0,-1],[1,0]])
         flipX = jnp.array([[-1, 0], [0,1]])
@@ -829,20 +868,123 @@ class TestGeometricImage:
             ]),
         )
 
-    def testAnticontract(self):
-        D = 2
-        N = 10
-        key = random.PRNGKey(time.time_ns())
+        img3 = geom.GeometricImage(jnp.arange(8).reshape((2,4)), 0, 2)
 
-        for k in [0,1]:
-            key, subkey = random.split(key)
-            image = geom.GeometricImage(random.uniform(subkey, shape=((N,)*D + (D,)*k)), 0, D)
+        # non-square rotate
+        img3_left90 = img3.times_group_element(left90)
+        assert img3_left90.spatial_dims == (4,2)
+        assert jnp.allclose(img3_left90.data, jnp.array([[3,7],[2,6],[1,5],[0,4]]))
 
-            for additional_k in [2,4]:
-                expanded_image = image.anticontract(additional_k)
+        # non-square flip
+        img3_flipX = img3.times_group_element(flipX)
+        assert img3_flipX.spatial_dims == (2,4)
+        assert jnp.allclose(img3_flipX.data, jnp.array([[4,5,6,7],[0,1,2,3]]))
 
-                for idxs in geom.get_contraction_indices(expanded_image.k, image.k):
-                    assert expanded_image.multicontract(idxs) == image
+    def testTimesGroupElement3D(self):
+        D = 3
+        flipDepth = jnp.array([[-1,0,0],[0,1,0],[0,0,1]])
+        left90 = jnp.array([[1,0,0],[0,0,-1],[0,1,0]])
+
+        img1 = geom.GeometricImage(jnp.arange(27).reshape((3,3,3)), 0, D)
+
+        #basic flip
+        img1_flipDepth = img1.times_group_element(flipDepth)
+        assert img1_flipDepth.D == img1.D
+        assert img1_flipDepth.parity == img1.parity
+        assert img1_flipDepth.k == img1.k
+        assert img1_flipDepth.spatial_dims == img1.spatial_dims
+        assert jnp.allclose(
+            img1_flipDepth.data,
+            jnp.array([
+                [
+                    [18,19,20],
+                    [21,22,23],
+                    [24,25,26],
+                ],
+                [
+                    [9,10,11],
+                    [12,13,14],
+                    [15,16,17],
+                ],
+                [
+                    [0,1,2],
+                    [3,4,5],
+                    [6,7,8],
+                ],
+            ])
+        )
+
+        #basic rotate
+        img1_left90 = img1.times_group_element(left90)
+        assert img1_left90.parity == img1.parity
+        assert img1_left90.k == img1.k
+        assert img1_left90.spatial_dims == img1.spatial_dims
+        assert jnp.allclose(
+            img1_left90.data,
+            jnp.array([
+                [
+                    [2,5,8],
+                    [1,4,7],
+                    [0,3,6],
+                ],
+                [
+                    [11,14,17],
+                    [10,13,16],
+                    [9,12,15],
+                ],
+                [
+                    [20,23,26],
+                    [19,22,25],
+                    [18,21,24],
+                ],
+            ]),
+        )
+
+        img2 = geom.GeometricImage(jnp.arange(24).reshape((2,3,4)), 0, D)
+
+        # non-square flip
+        img2_flipDepth = img2.times_group_element(flipDepth)
+        assert img2_flipDepth.parity == img2.parity
+        assert img2_flipDepth.k == img2.k
+        assert img2_flipDepth.spatial_dims == (2,3,4)
+        assert jnp.allclose(
+            img2_flipDepth.data,
+            jnp.array([
+                [
+                    [12,13,14,15],
+                    [16,17,18,19],
+                    [20,21,22,23],
+                ],
+                [
+                    [0,1,2,3],
+                    [4,5,6,7],
+                    [8,9,10,11],
+                ],
+            ]),
+        )
+
+        # non-square rotate
+        img2_left90 = img2.times_group_element(left90)
+        assert img2_left90.parity == img2.parity
+        assert img2_left90.k == img2.k
+        assert img2_left90.spatial_dims == (2,4,3)
+        assert jnp.allclose(
+            img2_left90.data,
+            jnp.array([
+                [
+                    [3,7,11],
+                    [2,6,10],
+                    [1,5,9],
+                    [0,4,8],
+                ],
+                [
+                    [15,19,23],
+                    [14,18,22],
+                    [13,17,21],
+                    [12,16,20],
+                ],
+            ]),
+        )
 
     def testPixelSize(self):
         img1 = geom.GeometricImage.zeros(10,0,0,2)
@@ -876,7 +1018,7 @@ class TestGeometricImage:
         )
 
         img1_pool2 = image1.max_pool(2)
-        assert img1_pool2.N == 2
+        assert img1_pool2.spatial_dims == (2,2)
         assert img1_pool2.parity == 0
         assert img1_pool2.D == 2
         assert img1_pool2.k == 0
@@ -884,7 +1026,7 @@ class TestGeometricImage:
         assert img1_pool2 == geom.GeometricImage(jnp.array([[4,-3],[1,2]]), 0, 2)
 
         img1_pool4 = image1.max_pool(4)
-        assert img1_pool4.N == 1
+        assert img1_pool4.spatial_dims == (1,1)
         assert img1_pool4 == geom.GeometricImage(jnp.array([[4]]), 0, 2)
 
         image2 = geom.GeometricImage(
@@ -899,7 +1041,7 @@ class TestGeometricImage:
         )
 
         img2_pool2 = image2.max_pool(2)
-        assert img2_pool2.N == 2
+        assert img2_pool2.spatial_dims == (2,2)
         assert img2_pool2 == geom.GeometricImage(
             jnp.array([
                 [[1,0], [3,4]],
@@ -933,7 +1075,7 @@ class TestGeometricImage:
         )
 
         img1_pool2 = image1.average_pool(2)
-        assert img1_pool2.N == 2
+        assert img1_pool2.spatial_dims == (2,2)
         assert img1_pool2.parity == 0
         assert img1_pool2.D == 2
         assert img1_pool2.k == 0
@@ -941,7 +1083,7 @@ class TestGeometricImage:
         assert img1_pool2 == geom.GeometricImage(jnp.array([[1.25,0],[0.5,1]]), 0, 2)
 
         img1_pool4 = image1.average_pool(4)
-        assert img1_pool4.N == 1
+        assert img1_pool4.spatial_dims == (1,1)
         assert img1_pool4 == geom.GeometricImage(jnp.array([[11/16]]), 0, 2)
 
         image2 = geom.GeometricImage(
@@ -956,7 +1098,7 @@ class TestGeometricImage:
         )
 
         img2_pool2 = image2.average_pool(2)
-        assert img2_pool2.N == 2
+        assert img2_pool2.spatial_dims == (2,2)
         assert img2_pool2 == geom.GeometricImage(
             jnp.array([
                 [[0.25,0], [1.75,1.25]],
@@ -988,7 +1130,7 @@ class TestGeometricImage:
         )
 
         unpooled_image1 = image1.unpool(2)
-        assert unpooled_image1.N == image1.N*2
+        assert unpooled_image1.spatial_dims == tuple(2*N for N in image1.spatial_dims)
         assert unpooled_image1.parity == image1.parity
         assert unpooled_image1.D == image1.D
         assert unpooled_image1.is_torus == image1.is_torus
@@ -1005,7 +1147,7 @@ class TestGeometricImage:
         )
 
         unpooled_image2 = image1.unpool(3)
-        assert unpooled_image2.N == image1.N*3
+        assert unpooled_image2.spatial_dims == tuple(3*N for N in image1.spatial_dims)
         assert unpooled_image2 == geom.GeometricImage(
             jnp.array([
                 [4,4,4,-3,-3,-3], 
@@ -1030,7 +1172,7 @@ class TestGeometricImage:
         )
 
         unpooled_image3 = image2.unpool(2)
-        assert unpooled_image3.N == image2.N * 2
+        assert unpooled_image3.spatial_dims == tuple(2*N for N in image2.spatial_dims)
         assert unpooled_image3.D == image2.D
         assert unpooled_image3 == geom.GeometricImage(
             jnp.array([
@@ -1054,7 +1196,7 @@ class TestGeometricImage:
         )
 
         unpooled_image4 = image3.unpool(2)
-        assert unpooled_image4.N == image3.N * 2
+        assert unpooled_image4.spatial_dims == tuple(2*N for N in image3.spatial_dims)
         assert unpooled_image4.k == image3.k
         assert unpooled_image4 == geom.GeometricImage(
             jnp.array([

@@ -1571,12 +1571,6 @@ class Layer:
         #copy dict, but image_block is immutable jnp array
         self.data = { key: image_block for key, image_block in data.items() } 
 
-        self.spatial_dims = None
-        for image_block in data.values(): #if empty, this won't get set
-            if isinstance(image_block, jnp.ndarray):
-                self.spatial_dims = parse_shape(image_block.shape[1:], D)[0] #shape (channels, (N,)*D, (D,)*k)
-            break
-
     def copy(self):
         return self.__class__(self.data, self.D, self.is_torus)
 
@@ -1672,8 +1666,7 @@ class Layer:
         else:
             self[(k,parity)] = image_block
 
-        if self.spatial_dims is None:
-            self.spatial_dims = parse_shape(image_block.shape[1:], self.D)[0]
+        self.spatial_dims = parse_shape(image_block.shape[1:], self.D)[0]
 
         return self
 
@@ -1792,7 +1785,6 @@ class BatchLayer(Layer):
         for image_block in data.values(): #if empty, this won't get set
             if isinstance(image_block, jnp.ndarray):
                 self.L = len(image_block) #shape (batch, channels, (N,)*D, (D,)*k)
-                self.spatial_dims = parse_shape(image_block.shape[2:], D)[0]
             break
 
     @classmethod

@@ -1557,7 +1557,7 @@ def train(
             else:
                 loss_val, grads = batch_loss_grad(params, X_batch, Y_batch, subkey, True)
 
-            updates, opt_state = optimizer.update(grads, opt_state)
+            updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
             epoch_loss += loss_val
 

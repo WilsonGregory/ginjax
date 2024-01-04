@@ -4,7 +4,6 @@ import matplotlib.cm as cm
 import cmastro
 from geometricconvolutions.geometric import TINY
 
-import jax.numpy as jnp
 # Visualize the filters.
 
 FIGSIZE = (4, 3)
@@ -265,7 +264,3 @@ def plot_images(images):
     for i in range(nim, n * m):
         plot_nothing(axes[i])
     return fig
-
-# from: https://github.com/google/jax/issues/3171
-def rolling_window_idx(idx_len: int, window: int) -> jnp.ndarray:
-  return jnp.arange(idx_len - window + 1)[:, None] + jnp.arange(window)[None, :]

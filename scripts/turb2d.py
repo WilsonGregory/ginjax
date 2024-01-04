@@ -16,6 +16,7 @@ import optax
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 import geometricconvolutions.utils as utils
+import geometricconvolutions.data as gc_data
 
 def read_one_h5(filename: str, data_class: str) -> tuple:
     """
@@ -71,7 +72,7 @@ def merge_h5s_into_layer(data_dir: str, num_trajectories: int, data_class: str, 
         num_trajectories = len(all_u)
 
     # all_u.shape[1] -1 because the last one is the output
-    window_idx = utils.rolling_window_idx(all_u.shape[1]-1, window)
+    window_idx = gc_data.rolling_window_idx(all_u.shape[1]-1, window)
     input_u = all_u[:num_trajectories, window_idx].reshape((-1, window, N, N))
     input_vxy = all_vxy[:num_trajectories, window_idx].reshape((-1, window, N, N, D))
 
@@ -160,9 +161,9 @@ def gi_net(params, layer, key, train, conv_filters, depth, use_odd_parity=False,
                 rhs_dilation=(dilation,)*D,
             )
             if use_odd_parity:
-                layer = ml.scalar_activation(layer, jax.nn.tanh)
+                layer = ml.batch_scalar_activation(layer, jax.nn.tanh)
             else:
-                layer = ml.batch_relu_layer(layer)
+                layer = ml.batch_scalar_activation(layer, jax.nn.relu)
 
         layer = geom.BatchLayer.from_vector(layer.to_vector() + residual_layer.to_vector(), layer)
 
@@ -254,7 +255,7 @@ def map_and_loss(params, layer_x, layer_y, key, train, net):
     batch_smse = jax.vmap(lambda x,y: ml.l2_squared_loss(x.to_vector(), y.to_vector())/spatial_size)
     return jnp.mean(batch_smse(learned_x, layer_y))
 
-def train_and_eval(data, key, net, model_name, lr, batch_size, epochs, max_rollout, save_params, images_dir, noise_stdev=None):
+def train_and_eval(data, key, net, model_name, lr, batch_size, epochs, save_params, images_dir, noise_stdev=None):
     train_X, train_Y, val_X, val_Y, test_X, test_Y = data
 
     key, subkey = random.split(key)
@@ -291,12 +292,10 @@ def train_and_eval(data, key, net, model_name, lr, batch_size, epochs, max_rollo
         jnp.save(save_params + model_name + '_params.npy', params)
 
     test_img = test_X.get_one()
-    if (max_rollout is None) or (max_rollout > test_X.L - 1):
-        max_rollout = test_X.L - 1
 
     i = 0
     err = 0
-    while ((i < max_rollout) and (i == 0 or err < 100)):
+    while (err < 100):
         key, subkey = random.split(key)
         delta_img = net(params, test_img, subkey, False)
 
@@ -333,13 +332,13 @@ def handleArgs(argv):
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-s', '--save', help='file name to save the params', type=str, default=None)
     parser.add_argument('-l', '--load', help='file name to load params from', type=str, default=None)
-    parser.add_argument('-max_rollout', help='the max number of rollout steps', type=int, default=None)
     parser.add_argument(
         '-images_dir', 
         help='directory to save images, or None to not save',
         type=str, 
         default=None,
     )
+
 
     args = parser.parse_args()
 
@@ -354,20 +353,18 @@ def handleArgs(argv):
         args.seed,
         args.save,
         args.load,
-        args.max_rollout,
         args.images_dir,
     )
 
 #Main
 args = handleArgs(sys.argv)
-data_dir, epochs, lr, batch_size, train_traj, val_traj, test_traj, seed, save_file, load_file, max_rollout, images_dir = args
+data_dir, epochs, lr, batch_size, train_traj, val_traj, test_traj, seed, save_file, load_file, images_dir = args
 
 D = 2
 N = 128
 window = 4 # how many steps to look back to predict the next step
 key = random.PRNGKey(time.time_ns()) if (seed is None) else random.PRNGKey(seed)
 
-data_dir = '../NavierStokes-2D/'
 train_X, train_Y, val_X, val_Y, test_X, test_Y = get_data(data_dir, train_traj, val_traj, test_traj, window)
 
 group_actions = geom.make_all_operators(D)
@@ -383,7 +380,7 @@ models = [
             lr=lr, 
             batch_size=batch_size, 
             epochs=epochs, 
-            max_rollout=max_rollout, 
+            save_params=save_file,
             images_dir=images_dir,
         ),
     ),
@@ -393,10 +390,9 @@ models = [
             train_and_eval, 
             net=partial(gi_net, conv_filters=conv_filters, depth=10, use_odd_parity=True),
             model_name='gi_net_odd',
-            lr=3e-4, 
+            lr=lr, 
             batch_size=batch_size, 
             epochs=epochs, 
-            max_rollout=max_rollout, 
             save_params=save_file,
             images_dir=images_dir,
         ),
@@ -407,10 +403,9 @@ models = [
             train_and_eval, 
             net=dil_resnet, 
             model_name='dil_resnet',
-            lr=1e-4, 
+            lr=lr, 
             batch_size=batch_size, 
             epochs=epochs, 
-            max_rollout=max_rollout, 
             save_params=save_file,
             images_dir=images_dir,
         ),

@@ -60,7 +60,6 @@ def make_all_operators(D):
     #combine all the permutation matrices with the possible entries, then flatten to a single array of operators
     return list(it.chain(*list(map(lambda matrix: [matrix @ prod for prod in possible_entries], permutation_matrices))))
 
-
 # ------------------------------------------------------------------------------
 # PART 2: Define the Kronecker Delta and Levi Civita symbols to be used in Levi Civita contractions
 

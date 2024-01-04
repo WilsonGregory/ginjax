@@ -1,4 +1,5 @@
 import sys
+import os
 import time
 import argparse
 import numpy as np
@@ -16,96 +17,7 @@ import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 import geometricconvolutions.utils as utils
 
-train_seeds = [
-    '126288',
-    '142103',
-    '144307',
-    '153264',
-    '198010',
-    '234461',
-    '238834',
-    '296423',
-    '337393',
-    '350040',
-    '391455',
-    '392020',
-    '403221',
-    '415374',
-    '429773',
-    '431752',
-    '433143',
-    '445636',
-    '452245',
-    '453445',
-    '471651',
-    '496019',
-    '509578',
-    '516076',
-    '540888',
-    '585598',
-    '588419',
-    '597635',
-    '597861',
-    '600790',
-    '61749',
-    '61991',
-    '646044',
-    '666597',
-    '766153',
-    '772245',
-    '788727',
-    '792179',
-    '795128',
-    '795933',
-    '806439',
-    '857042',
-    '857466',
-    '874947',
-    '891593',
-    '901448',
-    '946191',
-    '950647',
-    '954413',
-    '97473',
-    '975533',
-    '991670',
-]
-
-def get_old_data(D, data_dir, train_steps, val_steps, skip_initial):
-    rho = jnp.load(data_dir + 'rho.npy')[skip_initial:] # (807-skip_initial, 64, 64)
-    vel = jnp.load(data_dir + 'vel.npy')[skip_initial:] # (807-skip_initial, 64, 64, 2)
-
-    layer = geom.BatchLayer(
-        {
-            (0,0): jnp.expand_dims(rho, 1),
-            (1,0): jnp.expand_dims(vel, 1),
-        },
-        D,
-        True,
-    )
-
-    train_X = layer.get_subset(jnp.arange(train_steps-1))
-    # train_Y is the delta from train_X to the next step
-    train_Y = geom.BatchLayer.from_vector(
-        layer.get_subset(jnp.arange(1,train_steps)).to_vector() - train_X.to_vector(),
-        train_X,
-    )
-
-    val_X = layer.get_subset(jnp.arange(train_steps, train_steps+val_steps-1))
-    val_Y = geom.BatchLayer.from_vector(
-        layer.get_subset(jnp.arange(train_steps+1,train_steps+val_steps)).to_vector() - val_X.to_vector(),
-        val_X,
-    )
-
-    test_X = layer.get_subset(jnp.arange(train_steps+val_steps,len(rho)-1))
-    test_Y = geom.BatchLayer.from_vector(
-        layer.get_subset(jnp.arange(train_steps+val_steps+1,len(rho))).to_vector() - test_X.to_vector(),
-        test_X,
-    )
-
-    return train_X, train_Y, val_X, val_Y, test_X, test_Y
-
-def read_one_h5(filename, data_class):
+def read_one_h5(filename: str, data_class: str) -> tuple:
     """
     Given a filename and a type of data (train, test, or validation), read the data and return as jax arrays.
     args:
@@ -126,42 +38,64 @@ def read_one_h5(filename, data_class):
 
     return u, vxy
 
-def merge_h5s_into_layer(D: int, data_dir: str, seeds: list, data_class: str, window: int) -> geom.BatchLayer:
+def merge_h5s_into_layer(data_dir: str, num_trajectories: int, data_class: str, window: int) -> tuple:
     """
+    Given a specified dataset, load the data into layers where the layer_X has a channel per image in the
+    lookback window, and the layer_Y has just the single next image.
     args:
+        data_dir (str): directory of the data
+        seeds (list of str): seeds for the data
+        data_class (str): type of data, either train, valid, or test
         window (int): the lookback window, how many steps we look back to predict the next one
     """
-    N = 128
-    all_u = jnp.zeros((0,14,N,N))
-    all_vxy = jnp.zeros((0,14,N,N,2))
-    for seed in seeds:
-        if data_class == 'train':
-            filename = f'{data_dir}NavierStokes2D_{data_class}_{seed}_0.50000_100.h5'
-        else:
-            filename = f'{data_dir}NavierStokes2D_{data_class}_{seed}_0.50000.h5'
+    all_files = sorted(filter(lambda file: f'NavierStokes2D_{data_class}' in file, os.listdir(data_dir)))
 
-        u, vxy = read_one_h5(filename, data_class)
+    N = 128
+    D = 2
+    all_u = jnp.zeros((0,14,N,N))
+    all_vxy = jnp.zeros((0,14,N,N,D))
+    for filename in all_files:
+        u, vxy = read_one_h5(f'{data_dir}/{filename}', data_class)
 
         all_u = jnp.concatenate([all_u, u])
         all_vxy = jnp.concatenate([all_vxy, vxy])
 
+        if len(all_u) >= num_trajectories:
+            break
+
+    if len(all_u) < num_trajectories:
+        print(
+            f'WARNING merge_h5s_into_layer: wanted {num_trajectories} {data_class} trajectories, ' \
+            f'but only found {len(all_u)}',
+        )
+        num_trajectories = len(all_u)
+
     # all_u.shape[1] -1 because the last one is the output
     window_idx = utils.rolling_window_idx(all_u.shape[1]-1, window)
-    input_u = all_u[:,window_idx].reshape((-1, window, N, N))
-    input_vxy = all_vxy[:,window_idx].reshape((-1, window, N, N, 2))
+    input_u = all_u[:num_trajectories, window_idx].reshape((-1, window, N, N))
+    input_vxy = all_vxy[:num_trajectories, window_idx].reshape((-1, window, N, N, D))
 
-    output_u = all_u[:,window:].reshape(-1, 1, N, N)
-    output_vxy = all_vxy[:,window:].reshape(-1, 1, N, N, 2)
+    output_u = all_u[:num_trajectories, window:].reshape(-1, 1, N, N)
+    output_vxy = all_vxy[:num_trajectories, window:].reshape(-1, 1, N, N, D)
 
     layer_X = geom.BatchLayer({ (0,0): input_u, (1,0): input_vxy }, D, False)
     layer_Y = geom.BatchLayer({ (0,0): output_u, (1,0): output_vxy }, D, False)
 
     return layer_X, layer_Y
 
-def get_data(D: int, data_dir: str, window: int) -> tuple:
-    train_X, train_Y = merge_h5s_into_layer(D, data_dir, train_seeds[:1], 'train', window)
-    val_X, val_Y = merge_h5s_into_layer(D, data_dir, ['126388'], 'valid', window)
-    test_X, test_Y = merge_h5s_into_layer(D, data_dir, ['126488'], 'test', window)
+def get_data(data_dir: str, num_train_traj: int, num_val_traj: int, num_test_traj: int, window: int) -> tuple:
+    """
+    Get train, val, and test data sets.
+    args:
+        data_dir (str): directory of data
+        num_train_traj (int): number of training trajectories
+        num_val_traj (int): number of validation trajectories
+        num_test_traj (int): number of testing trajectories
+        window (int): length of the lookback to predict the next step
+    """
+    train_X, train_Y = merge_h5s_into_layer(data_dir, num_train_traj, 'train', window)
+    val_X, val_Y = merge_h5s_into_layer(data_dir, num_val_traj, 'valid', window)
+    test_X, test_Y = merge_h5s_into_layer(data_dir, num_test_traj, 'test', window)
 
     return train_X, train_Y, val_X, val_Y, test_X, test_Y
 
@@ -389,16 +323,16 @@ def train_and_eval(data, key, net, model_name, lr, batch_size, epochs, max_rollo
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
+    parser.add_argument('data_dir', help='the directory where the .h5 files are located', type=str)
     parser.add_argument('-e', '--epochs', help='number of epochs to run', type=int, default=50)
     parser.add_argument('-lr', help='learning rate', type=float, default=3e-4)
     parser.add_argument('-batch', help='batch size', type=int, default=16)
-    parser.add_argument('-train_steps', help='number of images to train on', type=int, default=100)
-    parser.add_argument('-val_steps', help='number of steps in the validation set', type=int, default=50)
-    parser.add_argument('-skip_initial', help='number of steps in the beginning to skip', type=int, default=0)
+    parser.add_argument('-train_traj', help='number of training trajectories', type=int, default=100)
+    parser.add_argument('-val_traj', help='number of validation trajectories', type=int, default=25)
+    parser.add_argument('-test_traj', help='number of testing trajectories', type=int, default=25)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-s', '--save', help='file name to save the params', type=str, default=None)
     parser.add_argument('-l', '--load', help='file name to load params from', type=str, default=None)
-    parser.add_argument('-noise', help='whether to add gaussian noise', default=False, action='store_true')
     parser.add_argument('-max_rollout', help='the max number of rollout steps', type=int, default=None)
     parser.add_argument(
         '-images_dir', 
@@ -410,23 +344,23 @@ def handleArgs(argv):
     args = parser.parse_args()
 
     return (
+        args.data_dir,
         args.epochs,
         args.lr,
         args.batch,
-        args.train_steps,
-        args.val_steps,
-        args.skip_initial,
+        args.train_traj,
+        args.val_traj,
+        args.test_traj,
         args.seed,
         args.save,
         args.load,
-        args.noise,
         args.max_rollout,
         args.images_dir,
     )
 
 #Main
 args = handleArgs(sys.argv)
-epochs, lr, batch_size, train_steps, val_steps, skip_initial, seed, save_file, load_file, noise, max_rollout, images_dir = args
+data_dir, epochs, lr, batch_size, train_traj, val_traj, test_traj, seed, save_file, load_file, max_rollout, images_dir = args
 
 D = 2
 N = 128
@@ -434,50 +368,39 @@ window = 4 # how many steps to look back to predict the next step
 key = random.PRNGKey(time.time_ns()) if (seed is None) else random.PRNGKey(seed)
 
 data_dir = '../NavierStokes-2D/'
-train_X, train_Y, val_X, val_Y, test_X, test_Y = get_data(D, data_dir, window)
+train_X, train_Y, val_X, val_Y, test_X, test_Y = get_data(data_dir, train_traj, val_traj, test_traj, window)
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 
 models = [
-    # (
-    #     'GI-Net',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(gi_net, conv_filters=conv_filters, depth=28), 
-    #         lr=lr, 
-    #         batch_size=batch_size, 
-    #         epochs=epochs, 
-    #         max_rollout=max_rollout, 
-    #         images_dir=images_dir,
-    #     ),
-    # ),
-    # (
-    #     'GI-Net Odd noise',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(gi_net, conv_filters=conv_filters, depth=10, use_odd_parity=True),
-    #         lr=3e-4, 
-    #         batch_size=batch_size, 
-    #         epochs=epochs, 
-    #         max_rollout=max_rollout, 
-    #         save_params=None if save_file is None else save_file + 'gi_net_odd_noise_',
-    #         images_dir=None if images_dir is None else images_dir + 'gi_net_odd_noise_',
-    #         noise_stdev=0.01,
-    #     ),
-    # ),
-    # (
-    #     'GI-Net Odd no noise',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(gi_net, conv_filters=conv_filters, depth=10, use_odd_parity=True),
-    #         lr=1e-3, 
-    #         batch_size=batch_size, 
-    #         epochs=epochs, 
-    #         max_rollout=max_rollout, 
-    #         images_dir=images_dir,
-    #     ),
-    # ),
+    (
+        'GI-Net',
+        partial(
+            train_and_eval, 
+            net=partial(gi_net, conv_filters=conv_filters, depth=28), 
+            model_name='gi_net',
+            lr=lr, 
+            batch_size=batch_size, 
+            epochs=epochs, 
+            max_rollout=max_rollout, 
+            images_dir=images_dir,
+        ),
+    ),
+    (
+        'GI-Net Odd',
+        partial(
+            train_and_eval, 
+            net=partial(gi_net, conv_filters=conv_filters, depth=10, use_odd_parity=True),
+            model_name='gi_net_odd',
+            lr=3e-4, 
+            batch_size=batch_size, 
+            epochs=epochs, 
+            max_rollout=max_rollout, 
+            save_params=save_file,
+            images_dir=images_dir,
+        ),
+    ),
     (
         'Dil-ResNet',
         partial(
@@ -490,7 +413,6 @@ models = [
             max_rollout=max_rollout, 
             save_params=save_file,
             images_dir=images_dir,
-            # noise_stdev=0.01,
         ),
     ),
 ]
@@ -500,8 +422,8 @@ results = ml.benchmark(
     lambda _, _2: (train_X, train_Y, val_X, val_Y, test_X, test_Y),
     models,
     subkey,
-    'Train Steps',
-    [train_steps],
+    'Nothing',
+    [0],
     num_results=3,
 )
 

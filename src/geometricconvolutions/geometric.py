@@ -1615,6 +1615,13 @@ class Layer:
     def size(self):
         return reduce(lambda size,img: size + img.size, self.values(), 0)
 
+    def get_spatial_dims(self):
+        """
+        Get the spatial dimensions. Use this function with caution, if the layer is being vmapped, it will
+        return the incorrect spatial dims.
+        """
+        return next(iter(self.values())).shape[1:1+self.D]
+
     # Functions that map directly to calling the function on data
 
     def keys(self):
@@ -1665,8 +1672,6 @@ class Layer:
             self[(k,parity)] = jnp.concatenate((self[(k,parity)], image_block))
         else:
             self[(k,parity)] = image_block
-
-        self.spatial_dims = parse_shape(image_block.shape[1:], self.D)[0]
 
         return self
 
@@ -1799,9 +1804,15 @@ class BatchLayer(Layer):
 
         batch_image_block = list(out_layer.values())[0]
         out_layer.L = batch_image_block.shape[0]
-        out_layer.spatial_dims = parse_shape(batch_image_block.shape[2:], out_layer.D)[0]
 
         return out_layer
+    
+    def get_spatial_dims(self):
+        """
+        Get the spatial dims. Use this function with caution, if the BatchLayer is being vmapped, then
+        it will give you the incorrect spatial dims.
+        """
+        return next(iter(self.values())).shape[2:2+self.D]
 
     def get_subset(self, idxs):
         """

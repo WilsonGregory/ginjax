@@ -291,34 +291,45 @@ def train_and_eval(data, key, net, model_name, lr, batch_size, epochs, save_para
     if save_params is not None:
         jnp.save(save_params + model_name + '_params.npy', params)
 
-    test_img = test_X.get_one()
+    key, subkey = random.split(key)
+    test_loss = ml.map_in_batches(
+        partial(map_and_loss, net=net), 
+        params, 
+        test_X, 
+        test_Y, 
+        batch_size, 
+        subkey, 
+        False,
+    )
+    print(f'Test Loss: {test_loss}')
 
-    i = 0
-    err = 0
-    while (err < 100):
-        key, subkey = random.split(key)
-        delta_img = net(params, test_img, subkey, False)
+    # keeping this for now
+    # i = 0
+    # err = 0
+    # while (err < 100):
+    #     key, subkey = random.split(key)
+    #     delta_img = net(params, test_img, subkey, False)
 
-        # advance the rollout from the current image, plus the calculated delta.
-        # The actual image we compare it against is the true next step.
-        test_img = geom.BatchLayer.from_vector(test_img.to_vector() + delta_img.to_vector(), test_img)
-        actual_img = test_X.get_one(i+1)
+    #     # advance the rollout from the current image, plus the calculated delta.
+    #     # The actual image we compare it against is the true next step.
+    #     test_img = geom.BatchLayer.from_vector(test_img.to_vector() + delta_img.to_vector(), test_img)
+    #     actual_img = test_X.get_one(i+1)
 
-        err = ml.rmse_loss(test_img.to_vector(), actual_img.to_vector())
-        print(f'Rollout Loss step {i}: {err}')
-        if ((images_dir is not None) and err < 1):
-            plot_layer(test_img, actual_img, f'{images_dir}{model_name}_err_{i}.png')
-            imax = i
+    #     err = ml.rmse_loss(test_img.to_vector(), actual_img.to_vector())
+    #     print(f'Rollout Loss step {i}: {err}')
+    #     if ((images_dir is not None) and err < 1):
+    #         plot_layer(test_img, actual_img, f'{images_dir}{model_name}_err_{i}.png')
+    #         imax = i
 
-        i += 1
+    #     i += 1
 
-    if images_dir is not None:
-        with imageio.get_writer(f'{images_dir}{model_name}_error.gif', mode='I') as writer:
-            for j in range(imax+1):
-                image = imageio.imread(f'{images_dir}{model_name}_err_{j}.png')
-                writer.append_data(image)
+    # if images_dir is not None:
+    #     with imageio.get_writer(f'{images_dir}{model_name}_error.gif', mode='I') as writer:
+    #         for j in range(imax+1):
+    #             image = imageio.imread(f'{images_dir}{model_name}_err_{j}.png')
+    #             writer.append_data(image)
 
-    return train_loss[-1], val_loss[-1], i
+    return train_loss[-1], val_loss[-1], test_loss
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -338,7 +349,6 @@ def handleArgs(argv):
         type=str, 
         default=None,
     )
-
 
     args = parser.parse_args()
 
@@ -375,7 +385,7 @@ models = [
         'GI-Net',
         partial(
             train_and_eval, 
-            net=partial(gi_net, conv_filters=conv_filters, depth=28), 
+            net=partial(gi_net, conv_filters=conv_filters, depth=10), 
             model_name='gi_net',
             lr=lr, 
             batch_size=batch_size, 

@@ -1341,6 +1341,42 @@ def get_batch_layer(X, Y, batch_size, rand_key):
 
     return X_batches, Y_batches
 
+def map_in_batches(
+    map_and_loss, 
+    params, 
+    layer_X, 
+    layer_Y, 
+    batch_size, 
+    rand_key, 
+    train, 
+    has_aux=False, 
+    aux_data=None,
+):
+    """
+    Runs map_and_loss for the entire layer_X, layer_Y, splitting into batches if the layer is larger than
+    the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
+    to split those over batches for memory reasons.
+    """
+    rand_key, subkey = random.split(rand_key)
+    X_batches, Y_batches = get_batch_layer(layer_X, layer_Y, batch_size, subkey)
+    total_loss = 0
+    for X_batch, Y_batch in zip(X_batches, Y_batches):
+        rand_key, subkey = random.split(rand_key)
+        if (has_aux):
+            one_loss, aux_data = map_and_loss(
+                params, 
+                X_batch, 
+                Y_batch, 
+                subkey,
+                train,
+                aux_data=aux_data,
+            )
+            total_loss += one_loss
+        else:
+            total_loss += map_and_loss(params, X_batch, Y_batch, subkey, train=False)
+
+    return total_loss / len(X_batches)
+
 def add_noise(layer, stdev, rand_key):
     """
     Add mean 0, stdev standard deviation Gaussian noise to the data X.
@@ -1569,24 +1605,17 @@ def train(
         # We evaluate the validation loss in batches for memory reasons.
         if (validation_X and validation_Y):
             rand_key, subkey = random.split(rand_key)
-            X_val_batches, Y_val_batches = get_batch_layer(validation_X, validation_Y, batch_size, subkey)
-            epoch_val_loss = 0
-            for X_val_batch, Y_val_batch in zip(X_val_batches, Y_val_batches):
-                rand_key, subkey = random.split(rand_key)
-                if (has_aux):
-                    one_val_loss, aux_data = map_and_loss(
-                        params, 
-                        X_val_batch, 
-                        Y_val_batch, 
-                        subkey,
-                        train=False,
-                        aux_data=aux_data,
-                    )
-                    epoch_val_loss += one_val_loss
-                else:
-                    epoch_val_loss += map_and_loss(params, X_val_batch, Y_val_batch, subkey, train=False)
-
-            epoch_val_loss /= len(X_val_batches)
+            epoch_val_loss = map_in_batches(
+                map_and_loss, 
+                params, 
+                validation_X, 
+                validation_Y, 
+                batch_size, 
+                subkey, 
+                False, # train
+                has_aux,
+                aux_data,
+            )
             val_loss.append(epoch_val_loss)
 
         if (save_params and ((epoch % 10) == 0)):

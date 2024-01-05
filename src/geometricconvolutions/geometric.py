@@ -1570,12 +1570,6 @@ class Layer:
         #copy dict, but image_block is immutable jnp array
         self.data = { key: image_block for key, image_block in data.items() } 
 
-        self.spatial_dims = None
-        for image_block in data.values(): #if empty, this won't get set
-            if isinstance(image_block, jnp.ndarray):
-                self.spatial_dims = parse_shape(image_block.shape[1:], D)[0] #shape (channels, (N,)*D, (D,)*k)
-            break
-
     def copy(self):
         return self.__class__(self.data, self.D, self.is_torus)
 
@@ -1619,6 +1613,13 @@ class Layer:
     
     def size(self):
         return reduce(lambda size,img: size + img.size, self.values(), 0)
+
+    def get_spatial_dims(self):
+        """
+        Get the spatial dimensions. Use this function with caution, if the layer is being vmapped, it will
+        return the incorrect spatial dims.
+        """
+        return next(iter(self.values())).shape[1:1+self.D]
 
     # Functions that map directly to calling the function on data
 
@@ -1671,9 +1672,6 @@ class Layer:
         else:
             self[(k,parity)] = image_block
 
-        if self.spatial_dims is None:
-            self.spatial_dims = parse_shape(image_block.shape[1:], self.D)[0]
-
         return self
 
     def __add__(self, other):
@@ -1692,7 +1690,25 @@ class Layer:
             new_layer.append(k, parity, image_block)
 
         return new_layer
-    
+
+    def concat(self, other):
+        """
+        Currently identical to __add__, but I want to move towards using this instead and make add
+        and actual sum.
+        """
+        assert type(self) == type(other), \
+            f'{self.__class__}::__add__: Types of layers being added must match, had {type(self)} and {type(other)}'
+        assert self.D == other.D, \
+            f'{self.__class__}::__add__: Dimension of layers must match, had {self.D} and {other.D}'
+        assert self.is_torus == other.is_torus, \
+            f'{self.__class__}::__add__: is_torus of layers must match, had {self.is_torus} and {other.is_torus}'
+
+        new_layer = self.copy()
+        for (k,parity), image_block in other.items():
+            new_layer.append(k, parity, image_block)
+
+        return new_layer
+
     def to_images(self):
         # Should only be used in Layer of vmapped BatchLayer
         images = []
@@ -1773,7 +1789,6 @@ class BatchLayer(Layer):
         for image_block in data.values(): #if empty, this won't get set
             if isinstance(image_block, jnp.ndarray):
                 self.L = len(image_block) #shape (batch, channels, (N,)*D, (D,)*k)
-                self.spatial_dims = parse_shape(image_block.shape[2:], D)[0]
             break
 
     @classmethod
@@ -1788,9 +1803,15 @@ class BatchLayer(Layer):
 
         batch_image_block = list(out_layer.values())[0]
         out_layer.L = batch_image_block.shape[0]
-        out_layer.spatial_dims = parse_shape(batch_image_block.shape[2:], out_layer.D)[0]
 
         return out_layer
+    
+    def get_spatial_dims(self):
+        """
+        Get the spatial dims. Use this function with caution, if the BatchLayer is being vmapped, then
+        it will give you the incorrect spatial dims.
+        """
+        return next(iter(self.values())).shape[2:2+self.D]
 
     def get_subset(self, idxs):
         """
@@ -1819,6 +1840,11 @@ class BatchLayer(Layer):
     @jax.vmap
     def to_vector(self):
         return super(BatchLayer, self).to_vector()
+    
+    @classmethod
+    @partial(jax.vmap, in_axes=(None, 0, 0))
+    def from_vector(cls, vector, layer):
+        return super().from_vector(vector, layer)
     
     def device_put(self, sharding, num_devices):
         """

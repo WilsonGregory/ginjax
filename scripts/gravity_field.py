@@ -44,13 +44,14 @@ def channel_collapse_init(rand_key, tree):
 def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_k = 1
     target_parity = 0
+    spatial_dims = layer.get_spatial_dims()
 
     batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
     batch_add_layer = vmap(lambda layer_a, layer_b: layer_a + layer_b) #better way of doing this?
 
     layer, params = batch_conv_layer(params, conv_filters, layer, None, None, return_params, None, None, None, None)
     out_layer = layer.empty()
-    for dilation in range(1,layer.N): #dilations in parallel
+    for dilation in range(1,spatial_dims[0]): #dilations in parallel
         dilation_out_layer, params = batch_conv_layer(
             params, 
             conv_filters, 
@@ -68,7 +69,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
     layer = out_layer
 
     out_layer = layer.empty()
-    for dilation in range(1,int(layer.N / 2)): #dilations in parallel
+    for dilation in range(1,int(spatial_dims[0] / 2)): #dilations in parallel
         dilation_out_layer, params = batch_conv_layer(
             params, 
             conv_filters, 

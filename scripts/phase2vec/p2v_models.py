@@ -177,7 +177,7 @@ def get_ode_basis(D, N, min_xy, max_xy, poly_order, as_vector_images=False):
 
 # handles a batch input layer
 def pinv_baseline(layer, key, library):
-    N = layer.N
+    spatial_dims = layer.get_spatial_dims()
     D = layer.D
     # library is 4096 x 10
     batch_img = jnp.transpose(layer[(1,0)], [0,4,1,2,3]).reshape(layer.L, layer.D,-1)
@@ -189,7 +189,7 @@ def pinv_baseline(layer, key, library):
     batch_recon = batch_mul(batch_coeffs, library.T) # L, 2, 4096
 
     return (
-        jnp.moveaxis(batch_recon.reshape((layer.L,D) + (N,)*D), 1, -1),
+        jnp.moveaxis(batch_recon.reshape((layer.L,D) + spatial_dims), 1, -1),
         jnp.moveaxis(batch_coeffs, 1, -1), 
         None, # this is the "batch_stats" for convenience in this script
     )
@@ -282,7 +282,7 @@ def gi_net(
     num_coeffs = ode_basis.shape[1]
     depth = 30
     num_conv_layers = 3
-    img_N = layer.N
+    spatial_dims = layer.get_spatial_dims()
 
     batch_dense_layer = vmap(dense_layer, in_axes=(None, 0, None, None, None), out_axes=(0, None))
 
@@ -323,7 +323,7 @@ def gi_net(
 
     # multiply the functions by the coefficients
     vmap_mul = vmap(lambda coeffs_x: ode_basis @ coeffs_x)
-    recon_x = vmap_mul(coeffs).reshape((layer.L,) + (img_N,)*layer.D + (layer.D,))
+    recon_x = vmap_mul(coeffs).reshape((layer.L,) + spatial_dims + (layer.D,))
 
     output = (recon_x, coeffs, batch_stats)
     if return_embedding:
@@ -374,10 +374,10 @@ def baseline_net(
     embedding_d = 100
     num_coeffs = ode_basis.shape[1]
     num_conv_layers = 3
-    img_N = layer.N
+    spatial_dims = layer.get_spatial_dims()
     # for the baseline model, the vector just becomes 2 channels
     layer = geom.BatchLayer({ (0,0): jnp.moveaxis(layer[(1,0)][:,0,...], -1, 1) }, layer.D, layer.is_torus)
-    assert layer[(0,0)].shape[1:] == (2, img_N, img_N)
+    assert layer[(0,0)].shape[1:] == (2,) + spatial_dims
     if (batch_stats is None):
         batch_stats = { num: { 'mean': None, 'var': None } for num in range(5) }
 
@@ -439,7 +439,7 @@ def baseline_net(
 
     # multiply the functions by the coefficients
     vmap_mul = vmap(lambda coeffs_x: ode_basis @ coeffs_x)
-    recon_x = vmap_mul(coeffs).reshape((layer.L,) + (img_N,)*layer.D + (layer.D,))
+    recon_x = vmap_mul(coeffs).reshape((layer.L,) + spatial_dims + (layer.D,))
 
     output = (recon_x, coeffs, batch_stats)
     if return_embedding:

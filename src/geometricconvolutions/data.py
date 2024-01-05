@@ -136,3 +136,6 @@ def get_charge_data(N, D, num_charges, num_steps, delta_t, s, rand_key, num_imag
 
     return geom.BatchLayer.from_images(initial_fields), geom.BatchLayer.from_images(final_fields)
 
+# from: https://github.com/google/jax/issues/3171
+def rolling_window_idx(idx_len: int, window: int) -> jnp.ndarray:
+  return jnp.arange(idx_len - window + 1)[:, None] + jnp.arange(window)[None, :]

@@ -475,7 +475,10 @@ def conv_contract(
                 rhs_dilation,
             )
 
-            layer.append(target_k, target_parity, convolve_contracted_imgs)
+            if ((target_k, target_parity) in layer): # it already has that key
+                layer[(target_k, target_parity)] = convolve_contracted_imgs + layer[(target_k, target_parity)]
+            else:
+                layer.append(target_k, target_parity, convolve_contracted_imgs)
 
     if bias: #is this equivariant?
         out_layer = layer.empty()
@@ -990,7 +993,7 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
         # This is following: https://pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html
         mult_images = vmap(vmap(lambda x,p: x * p), in_axes=(0,None))(centered_scaled_image, this_params[key][SCALE])
         added_images = vmap(vmap(lambda x,p: x + p), in_axes=(0,None))(mult_images, this_params[key][BIAS])
-        out_layer[key] = added_images
+        out_layer.append(key[0], key[1], added_images)
     
     params = update_params(params, params_idx, this_params, mold_params)
 
@@ -1031,8 +1034,18 @@ def batch_layer_norm(params, input_layer, eps=1e-05, mold_params=False):
     vmap_layer_norm = vmap(layer_norm, in_axes=(None, 0, None, None), out_axes=(0, None))
     return vmap_layer_norm(params, input_layer, eps, mold_params)
 
+@functools.partial(jax.jit, static_argnums=1)
 def max_pool_layer(input_layer, patch_len):
-    return [image.max_pool(patch_len) for image in input_layer]
+    vmap_max_pool = jax.vmap(geom.max_pool, in_axes=(None, 0, None))
+
+    out_layer = input_layer.empty()
+    for (k,parity), image_block in input_layer.items():
+        out_layer.append(k, parity, vmap_max_pool(input_layer.D, image_block, patch_len))
+
+    return out_layer
+
+def batch_max_pool(input_layer, patch_len):
+    return jax.vmap(max_pool_layer, in_axes=(0,None))(input_layer, patch_len)
 
 @functools.partial(jit, static_argnums=1)
 def average_pool_layer(input_layer, patch_len):
@@ -1318,7 +1331,6 @@ def l2_squared_loss(x, y):
 ## Data and Batching operations
 
 def get_batch_layer(X, Y, batch_size, rand_key):
-    # X is a layer, Y is a layer
     """
     Given X, Y, construct a random batch of batch size. Each Y_batch is a list of length rollout to allow for
     calculating the loss with each step of the rollout.
@@ -1327,14 +1339,12 @@ def get_batch_layer(X, Y, batch_size, rand_key):
         Y (BatchLayer): the target output, will be same as X, unless noise was added to X
         batch_size (int): length of the batch
         rand_key (jnp random key): key for the randomness
-        rollout (int): number of steps of rollout to do for Y
     """
-    len_X = len(next(iter(X.values()))) # all must have the same length, so just check first
-    batch_indices = random.permutation(rand_key, len_X)
+    batch_indices = random.permutation(rand_key, X.L)
 
     X_batches = []
     Y_batches = []
-    for i in range(int(math.ceil(len_X / batch_size))): #iterate through the batches of an epoch
+    for i in range(int(math.ceil(X.L / batch_size))): #iterate through the batches of an epoch
         idxs = batch_indices[i*batch_size:(i+1)*batch_size]
         X_batches.append(X.get_subset(idxs))
         Y_batches.append(Y.get_subset(idxs))

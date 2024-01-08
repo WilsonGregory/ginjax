@@ -609,17 +609,22 @@ def convolve(
     if padding is None: #if unspecified, infer from is_torus
         padding = 'TORUS' if is_torus else 'SAME'
 
+    if (lhs_dilation is not None) and isinstance(padding, str):
+        print(
+            'WARNING convolve: lhs_dilation (transposed convolution) should specify padding exactly, ' \
+            'see https://arxiv.org/pdf/1603.07285.pdf for the appropriate cases.'
+        )
+
     if padding == 'TORUS':
         image = get_torus_expanded(D, image, filter_image, rhs_dilation[0])
         padding_literal = ((0,0),)*D
+    elif padding == 'VALID':
+        padding_literal = ((0,0),)*D
+    elif padding == 'SAME':
+        filter_ms = tuple((M - 1) // 2 for M in filter_spatial_dims)
+        padding_literal = tuple((m * dilation,) * 2 for m, dilation in zip(filter_ms,rhs_dilation))
     else:
-        if padding == 'VALID':
-            padding_literal = ((0,0),)*D
-        elif padding == 'SAME':
-            filter_ms = tuple((M - 1) // 2 for M in filter_spatial_dims)
-            padding_literal = tuple((m * dilation,) * 2 for m, dilation in zip(filter_ms,rhs_dilation))
-        else:
-            padding_literal = padding
+        padding_literal = padding
 
     img_expanded, filter_expanded = pre_tensor_product_expand(D, image, filter_image)
     img_expanded = img_expanded.astype(dtype)
@@ -1008,6 +1013,31 @@ def norm(D, data):
     """
     return jnp.linalg.norm(data.reshape(data.shape[:D] + (-1,)), axis=D)
 
+def max_pool(D, image_data, patch_len):
+    """
+    Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined by
+    the norm of the pixel. Note that for scalars, this will be the absolute value of the pixel.
+    args:
+        patch_len (int): the side length of the patches, must evenly divide all spatial dims
+    """
+    spatial_dims, k = parse_shape(image_data.shape, D)
+    # ensure patch_len evenly divides all sides
+    assert reduce(lambda carry, N: carry and (N % patch_len == 0), spatial_dims, True)
+
+    plus_Ns = tuple(-1*(N - int(N / patch_len)) for N in spatial_dims)
+    norm_data = norm(D, image_data)
+
+    idxs = jnp.array(list(it.product(range(patch_len), repeat=D)))
+    max_idxs = []
+    for base in it.product(*list(range(0, N, patch_len) for N in spatial_dims)):
+        block_idxs = jnp.array(base) + idxs
+        max_hash_idx = jnp.argmax(norm_data[hash(D, norm_data, block_idxs)])
+        max_idxs.append(block_idxs[max_hash_idx])
+
+    new_spatial_dims = tuple(N + plus_N for N,plus_N in zip(spatial_dims, plus_Ns))
+
+    return image_data[hash(D, image_data, jnp.array(max_idxs))].reshape(new_spatial_dims + (D,)*k)
+
 @partial(jit, static_argnums=[0,2])
 def average_pool(D, image_data, patch_len):
         """
@@ -1302,19 +1332,7 @@ class GeometricImage:
         args:
             patch_len (int): the side length of the patches, must evenly divide all spatial dims
         """
-        assert reduce(lambda carry, N: carry and (N % patch_len == 0), self.spatial_dims, True)
-        plus_N = tuple(-1*(N - int(N / patch_len)) for N in self.spatial_dims)
-        norm_data = self.norm()
-
-        idxs = jnp.array(list(it.product(range(patch_len), repeat=self.D)))
-        max_idxs = []
-        for base in it.product(*list(range(0, N, patch_len) for N in self.spatial_dims)):
-            block_idxs = jnp.array(base) + idxs
-            max_hash_idx = jnp.argmax(norm_data[self.hash(block_idxs)])
-            max_idxs.append(block_idxs[max_hash_idx])
-
-        max_data = self[self.hash(jnp.array(max_idxs))].reshape(self.image_shape(plus_N) + self.pixel_shape())
-        return self.__class__(max_data, self.parity, self.D, self.is_torus)
+        return self.__class__(max_pool(self.D, self.data, patch_len), self.parity, self.D, self.is_torus)
 
     @partial(jit, static_argnums=1)
     def average_pool(self, patch_len):
@@ -1723,6 +1741,18 @@ class Layer:
         Vectorize a layer in the natural way
         """
         return reduce(lambda x,y: jnp.concatenate([x, y.reshape(-1)]), self.values(), jnp.zeros(0))
+
+    def to_scalar_layer(self):
+        """
+        Convert layer to a layer where all the channels and components are in the scalar
+        """
+        # convert to channels of a scalar layer
+        out_layer = self.empty()
+        for (k, _), image in self.items():
+            transpose_idxs = (0,) + tuple(range(1+self.D,1+self.D+k)) + tuple(range(1,1+self.D))
+            out_layer.append(0, 0, image.transpose(transpose_idxs).reshape((-1,) + image.shape[1:1+self.D]))
+
+        return out_layer
     
     def times_group_element(self, gg, precision=None):
         """
@@ -1840,6 +1870,10 @@ class BatchLayer(Layer):
     @jax.vmap
     def to_vector(self):
         return super(BatchLayer, self).to_vector()
+    
+    @jax.vmap
+    def to_scalar_layer(self):
+        return super(BatchLayer, self).to_scalar_layer()
     
     @classmethod
     @partial(jax.vmap, in_axes=(None, 0, 0))

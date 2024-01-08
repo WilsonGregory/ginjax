@@ -160,12 +160,13 @@ else:
         decay_rate=0.995,
     ))
 
+    key, subkey = random.split(key)
     params, _, _ = ml.train(
         train_X,
         train_Y,
         partial(map_and_loss, conv_filters=conv_filters),
         params,
-        key,
+        subkey,
         ml.ValLoss(patience=20, verbose=verbose),
         batch_size=batch_size,
         optimizer=optimizer,

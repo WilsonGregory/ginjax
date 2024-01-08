@@ -17,6 +17,7 @@ import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 import geometricconvolutions.utils as utils
 import geometricconvolutions.data as gc_data
+import geometricconvolutions.models as models
 
 def read_one_h5(filename: str, data_class: str) -> tuple:
     """
@@ -136,16 +137,6 @@ def gi_net(params, layer, key, train, conv_filters, depth, use_odd_parity=False,
         mold_params=return_params,
     )
 
-    if use_odd_parity: # get the residual to line up...
-        layer, params = ml.batch_conv_contract(
-            params, 
-            layer, 
-            conv_filters, 
-            depth, 
-            target_keys, 
-            mold_params=return_params,
-        )
-
     for _ in range(num_blocks):
 
         residual_layer = layer.copy()
@@ -249,19 +240,39 @@ def dil_resnet(params, layer, key, train, return_params=False):
 
     return (layer, params) if return_params else layer
 
-def map_and_loss(params, layer_x, layer_y, key, train, net):
-    learned_x = net(params, layer_x, key, train)
+def map_and_loss(params, layer_x, layer_y, key, train, net, has_aux=False, aux_data=None):
+    if has_aux:
+        learned_x, batch_stats = net(params, layer_x, key, train, batch_stats=aux_data)
+    else:
+        learned_x = net(params, layer_x, key, train)
+
     spatial_size = np.multiply.reduce(geom.parse_shape(layer_x[(1,0)].shape[2:], layer_x.D)[0])
     batch_smse = jax.vmap(lambda x,y: ml.l2_squared_loss(x.to_vector(), y.to_vector())/spatial_size)
-    return jnp.mean(batch_smse(learned_x, layer_y))
 
-def train_and_eval(data, key, net, model_name, lr, batch_size, epochs, save_params, images_dir, noise_stdev=None):
+    if has_aux:
+        return jnp.mean(batch_smse(learned_x, layer_y)), batch_stats
+    else:
+        return jnp.mean(batch_smse(learned_x, layer_y))
+
+def train_and_eval(
+    data, 
+    key, 
+    net, 
+    model_name, 
+    lr, 
+    batch_size, 
+    epochs, 
+    save_params, 
+    images_dir, 
+    noise_stdev=None,
+    has_aux=False,
+):
     train_X, train_Y, val_X, val_Y, test_X, test_Y = data
 
     key, subkey = random.split(key)
     params = ml.init_params(
         net,
-        train_X.get_subset(jnp.arange(batch_size)), # so we don't have to recompile
+        train_X.get_one(),
         subkey,
     )
     print(f'Model params: {ml.count_params(params)}')
@@ -269,27 +280,35 @@ def train_and_eval(data, key, net, model_name, lr, batch_size, epochs, save_para
     steps_per_epoch = int(np.ceil(train_X.L / batch_size))
 
     key, subkey = random.split(key)
-    params, train_loss, val_loss = ml.train(
+    results = ml.train(
         train_X,
         train_Y,
-        partial(map_and_loss, net=net),
+        partial(map_and_loss, net=net, has_aux=has_aux),
         params,
         subkey,
         stop_condition=ml.EpochStop(epochs, verbose=2),
         batch_size=batch_size,
-        # optimizer=optax.adam(lr),
-        # optimizer=optax.adamw(lr, weight_decay=1e-5),
         optimizer=optax.adamw(
-            optax.warmup_cosine_decay_schedule(1e-8, lr, 5*steps_per_epoch, 30*steps_per_epoch, 1e-8),
+            optax.warmup_cosine_decay_schedule(1e-8, lr, 5*steps_per_epoch, epochs*steps_per_epoch, 1e-7),
             weight_decay=1e-5,
         ),
         validation_X=val_X,
         validation_Y=val_Y,
         noise_stdev=noise_stdev,
+        has_aux=has_aux,
     )
 
+    if has_aux:
+        params, batch_stats, train_loss, val_loss = results
+    else:
+        params, train_loss, val_loss = results
+        batch_stats = None
+
     if save_params is not None:
-        jnp.save(save_params + model_name + '_params.npy', params)
+        jnp.save(
+            save_params + model_name + '_params.npy', 
+            { 'params': params, 'batch_stats': None if (batch_stats is None) else dict(batch_stats) },
+        )
 
     key, subkey = random.split(key)
     test_loss = ml.map_in_batches(
@@ -300,6 +319,8 @@ def train_and_eval(data, key, net, model_name, lr, batch_size, epochs, save_para
         batch_size, 
         subkey, 
         False,
+        has_aux=has_aux,
+        aux_data=batch_stats,
     )
     print(f'Test Loss: {test_loss}')
 
@@ -335,7 +356,7 @@ def handleArgs(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('data_dir', help='the directory where the .h5 files are located', type=str)
     parser.add_argument('-e', '--epochs', help='number of epochs to run', type=int, default=50)
-    parser.add_argument('-lr', help='learning rate', type=float, default=3e-4)
+    parser.add_argument('-lr', help='learning rate', type=float, default=2e-4)
     parser.add_argument('-batch', help='batch size', type=int, default=16)
     parser.add_argument('-train_traj', help='number of training trajectories', type=int, default=100)
     parser.add_argument('-val_traj', help='number of validation trajectories', type=int, default=25)
@@ -380,6 +401,15 @@ train_X, train_Y, val_X, val_Y, test_X, test_Y = get_data(data_dir, train_traj, 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 
+train_and_eval = partial(
+    train_and_eval, 
+    lr=lr,
+    batch_size=batch_size, 
+    epochs=epochs, 
+    save_params=save_file, 
+    images_dir=images_dir,
+)
+
 models = [
     (
         'GI-Net',
@@ -387,11 +417,6 @@ models = [
             train_and_eval, 
             net=partial(gi_net, conv_filters=conv_filters, depth=10), 
             model_name='gi_net',
-            lr=lr, 
-            batch_size=batch_size, 
-            epochs=epochs, 
-            save_params=save_file,
-            images_dir=images_dir,
         ),
     ),
     (
@@ -400,11 +425,6 @@ models = [
             train_and_eval, 
             net=partial(gi_net, conv_filters=conv_filters, depth=10, use_odd_parity=True),
             model_name='gi_net_odd',
-            lr=lr, 
-            batch_size=batch_size, 
-            epochs=epochs, 
-            save_params=save_file,
-            images_dir=images_dir,
         ),
     ),
     (
@@ -413,13 +433,17 @@ models = [
             train_and_eval, 
             net=dil_resnet, 
             model_name='dil_resnet',
-            lr=lr, 
-            batch_size=batch_size, 
-            epochs=epochs, 
-            save_params=save_file,
-            images_dir=images_dir,
         ),
     ),
+    (
+        'U-Net 2015',
+        partial(
+            train_and_eval,
+            net=models.unet2015,
+            model_name='unet2015',
+            has_aux=True,
+        ),
+    )
 ]
 
 key, subkey = random.split(key)

@@ -43,7 +43,7 @@ def unet_conv_block(
 
     return layer, params, batch_stats, batch_stats_idx
 
-@functools.partial(jax.jit, static_argnums=[3,5,6])
+@functools.partial(jax.jit, static_argnums=[3,5,6,7])
 def unet2015(params, layer, key, train, batch_stats=None, depth=64, activation_f=jax.nn.gelu, return_params=False):
     num_downsamples = 4
     num_conv = 2

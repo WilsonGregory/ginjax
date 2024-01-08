@@ -137,10 +137,10 @@ class TestLayer:
 
         # N is set by append if it is empty
         layer2 = layer1.empty()
-        assert layer2.spatial_dims is None
+        assert layer2.get_spatial_dims() is None
 
         layer2.append(0, 0, random.normal(key, shape=((10,) + (N,)*D + (D,)*0)))
-        assert layer2.spatial_dims == (N,)*D
+        assert layer2.get_spatial_dims() == (N,)*D
 
     def testAdd(self):
         key = random.PRNGKey(time.time_ns())
@@ -232,6 +232,25 @@ class TestLayer:
 
         assert rand_layer.size() == layer_example.size()
         assert jnp.allclose(rand_layer.to_vector(), rand_data)
+
+    def testToScalarLayer(self):
+        D = 2
+        N = 5
+
+        layer_example = geom.Layer(
+            {
+                (0,0): jnp.ones((1,) + (N,)*D),
+                (1,0): jnp.ones((1,) + (N,)*D + (D,)),
+                (2,0): jnp.ones((1,) + (N,)*D + (D,D)),
+            },
+            D,
+        )
+
+        scalar_layer = layer_example.to_scalar_layer()
+
+        assert len(scalar_layer.keys()) == 1
+        assert next(iter(scalar_layer.keys())) == (0,0)
+        assert jnp.allclose(scalar_layer[(0,0)], jnp.ones((1+D+D*D,) + (N,)*D))
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Test BatchLayer

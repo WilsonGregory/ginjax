@@ -12,8 +12,6 @@ import jax.numpy as jnp
 import jax
 import jax.random as random
 import optax
-from jax.experimental import mesh_utils
-from jax.sharding import PositionalSharding
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
@@ -139,16 +137,6 @@ def gi_net(params, layer, key, train, conv_filters, depth, use_odd_parity=False,
         mold_params=return_params,
     )
 
-    if use_odd_parity: # get the residual to line up...
-        layer, params = ml.batch_conv_contract(
-            params, 
-            layer, 
-            conv_filters, 
-            depth, 
-            target_keys, 
-            mold_params=return_params,
-        )
-
     for _ in range(num_blocks):
 
         residual_layer = layer.copy()
@@ -252,19 +240,19 @@ def dil_resnet(params, layer, key, train, return_params=False):
 
     return (layer, params) if return_params else layer
 
-def map_and_loss(params, layer_x, layer_y, key, train, net, aux_data=None):
-    learned_x, batch_stats = net(params, layer_x, key, train, batch_stats=aux_data)
-    # return learned_x[(0,0)][0,0,0,0], None
-
-    # jax.debug.visualize_array_sharding(learned_x[(0,0)][:,:,0,0])
-    # jax.debug.visualize_array_sharding(layer_y[(0,0)][:,:,0,0])
-    # print(batch_stats)
-
-    # return jnp.mean(learned_x[(1,0)] - layer_y[(1,0)]), None
+def map_and_loss(params, layer_x, layer_y, key, train, net, has_aux=False, aux_data=None):
+    if has_aux:
+        learned_x, batch_stats = net(params, layer_x, key, train, batch_stats=aux_data)
+    else:
+        learned_x = net(params, layer_x, key, train)
 
     spatial_size = np.multiply.reduce(geom.parse_shape(layer_x[(1,0)].shape[2:], layer_x.D)[0])
     batch_smse = jax.vmap(lambda x,y: ml.l2_squared_loss(x.to_vector(), y.to_vector())/spatial_size)
-    return jnp.mean(batch_smse(learned_x, layer_y)), batch_stats
+
+    if has_aux:
+        return jnp.mean(batch_smse(learned_x, layer_y)), batch_stats
+    else:
+        return jnp.mean(batch_smse(learned_x, layer_y))
 
 def train_and_eval(
     data, 
@@ -278,7 +266,6 @@ def train_and_eval(
     images_dir, 
     noise_stdev=None,
     has_aux=False,
-    sharding=None,
 ):
     train_X, train_Y, val_X, val_Y, test_X, test_Y = data
 
@@ -292,37 +279,15 @@ def train_and_eval(
 
     steps_per_epoch = int(np.ceil(train_X.L / batch_size))
 
-    # # X_batches, Y_batches = ml.get_batch_layer(train_X, train_Y, batch_size, subkey, sharding)
-    # X_batch = train_X.get_subset(jnp.arange(batch_size)).device_put(sharding, num_gpus).get_subset(jnp.arange(batch_size))
-    # Y_batch = train_Y.get_subset(jnp.arange(batch_size)).device_put(sharding, num_gpus).get_subset(jnp.arange(batch_size))
-    # params = jax.device_put(params, sharding.replicate())
-    # # ml.print_params(params)
-    # # jax.debug.visualize_array_sharding(X_batches[0][(0,0)][:,:,0,0])
-    # # jax.debug.visualize_array_sharding(Y_batches[0][(0,0)][:,:,0,0])
-    # # jax.debug.visualize_array_sharding(params[(0, 'conv')]['free'][(0,0)][(0,0)][:,:,0,0])
-    # # jax.debug.visualize_array_sharding(params)
-    # (loss_val, _), _2 = jax.value_and_grad(map_and_loss, has_aux=has_aux)(
-    #     params, 
-    #     X_batch,
-    #     Y_batch,
-    #     subkey, 
-    #     True, 
-    #     net,
-    # )
-    # print(loss_val)
-    # exit()
-
     key, subkey = random.split(key)
     results = ml.train(
         train_X,
         train_Y,
-        partial(map_and_loss, net=net),
+        partial(map_and_loss, net=net, has_aux=has_aux),
         params,
         subkey,
         stop_condition=ml.EpochStop(epochs, verbose=2),
         batch_size=batch_size,
-        # optimizer=optax.adam(lr),
-        # optimizer=optax.adamw(lr, weight_decay=1e-5),
         optimizer=optax.adamw(
             optax.warmup_cosine_decay_schedule(1e-8, lr, 5*steps_per_epoch, epochs*steps_per_epoch, 1e-7),
             weight_decay=1e-5,
@@ -331,16 +296,13 @@ def train_and_eval(
         validation_Y=val_Y,
         noise_stdev=noise_stdev,
         has_aux=has_aux,
-        sharding=sharding,
     )
 
     if has_aux:
         params, batch_stats, train_loss, val_loss = results
-        trained_net = partial(net, batch_stats=batch_stats)
     else:
         params, train_loss, val_loss = results
         batch_stats = None
-        trained_net = net
 
     if save_params is not None:
         jnp.save(
@@ -350,16 +312,15 @@ def train_and_eval(
 
     key, subkey = random.split(key)
     test_loss = ml.map_in_batches(
-        partial(map_and_loss, net=trained_net), 
+        partial(map_and_loss, net=net), 
         params, 
         test_X, 
         test_Y, 
         batch_size, 
         subkey, 
         False,
-        has_aux,
-        batch_stats,
-        sharding,
+        has_aux=has_aux,
+        aux_data=batch_stats,
     )
     print(f'Test Loss: {test_loss}')
 
@@ -440,13 +401,6 @@ train_X, train_Y, val_X, val_Y, test_X, test_Y = get_data(data_dir, train_traj, 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 
-# This section below demonstrates how to shard across multiple GPUs. 
-# Create a Sharding object to distribute a value across devices:
-num_gpus = jax.device_count()
-print('Num gpus: ', num_gpus)
-sharding = PositionalSharding(mesh_utils.create_device_mesh((num_gpus,)))
-conv_filters = conv_filters.device_replicate(sharding)
-
 train_and_eval = partial(
     train_and_eval, 
     lr=lr,
@@ -454,34 +408,33 @@ train_and_eval = partial(
     epochs=epochs, 
     save_params=save_file, 
     images_dir=images_dir,
-    sharding=sharding,
 )
 
 models = [
-    # (
-    #     'GI-Net',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(gi_net, conv_filters=conv_filters, depth=10), 
-    #         model_name='gi_net',
-    #     ),
-    # ),
-    # (
-    #     'GI-Net Odd',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(gi_net, conv_filters=conv_filters, depth=10, use_odd_parity=True),
-    #         model_name='gi_net_odd',
-    #     ),
-    # ),
-    # (
-    #     'Dil-ResNet',
-    #     partial(
-    #         train_and_eval, 
-    #         net=dil_resnet, 
-    #         model_name='dil_resnet',
-    #     ),
-    # ),
+    (
+        'GI-Net',
+        partial(
+            train_and_eval, 
+            net=partial(gi_net, conv_filters=conv_filters, depth=10), 
+            model_name='gi_net',
+        ),
+    ),
+    (
+        'GI-Net Odd',
+        partial(
+            train_and_eval, 
+            net=partial(gi_net, conv_filters=conv_filters, depth=10, use_odd_parity=True),
+            model_name='gi_net_odd',
+        ),
+    ),
+    (
+        'Dil-ResNet',
+        partial(
+            train_and_eval, 
+            net=dil_resnet, 
+            model_name='dil_resnet',
+        ),
+    ),
     (
         'U-Net 2015',
         partial(

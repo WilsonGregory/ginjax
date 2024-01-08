@@ -1637,6 +1637,9 @@ class Layer:
         Get the spatial dimensions. Use this function with caution, if the layer is being vmapped, it will
         return the incorrect spatial dims.
         """
+        if len(self.values()) == 0:
+            return None
+        
         return next(iter(self.values())).shape[1:1+self.D]
 
     # Functions that map directly to calling the function on data
@@ -1841,6 +1844,9 @@ class BatchLayer(Layer):
         Get the spatial dims. Use this function with caution, if the BatchLayer is being vmapped, then
         it will give you the incorrect spatial dims.
         """
+        if len(self.values()) == 0:
+            return None
+        
         return next(iter(self.values())).shape[2:2+self.D]
 
     def get_subset(self, idxs):

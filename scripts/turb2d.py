@@ -240,7 +240,8 @@ def dil_resnet(params, layer, key, train, return_params=False):
 
     return (layer, params) if return_params else layer
 
-def map_and_loss(params, layer_x, layer_y, key, train, net, has_aux=False, aux_data=None):
+def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, has_aux=False):
+    assert net is not None
     if has_aux:
         learned_x, batch_stats = net(params, layer_x, key, train, batch_stats=aux_data)
     else:
@@ -306,13 +307,13 @@ def train_and_eval(
 
     if save_params is not None:
         jnp.save(
-            save_params + model_name + '_params.npy', 
+            f'{save_params}{model_name}_e{epochs}_params.npy', 
             { 'params': params, 'batch_stats': None if (batch_stats is None) else dict(batch_stats) },
         )
 
     key, subkey = random.split(key)
     test_loss = ml.map_in_batches(
-        partial(map_and_loss, net=net), 
+        partial(map_and_loss, net=net, has_aux=has_aux), 
         params, 
         test_X, 
         test_Y, 
@@ -400,6 +401,7 @@ train_X, train_Y, val_X, val_Y, test_X, test_Y = get_data(data_dir, train_traj, 
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
+upsample_filters = geom.get_invariant_filters(Ms=[2], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 
 train_and_eval = partial(
     train_and_eval, 
@@ -443,7 +445,20 @@ models = [
             model_name='unet2015',
             has_aux=True,
         ),
-    )
+    ),
+    (
+        'U-Net 2015 equiv',
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unet2015_equiv, 
+                conv_filters=conv_filters, 
+                upsample_filters=upsample_filters,
+                depth=32, # 64=41M, 48=23M, 32=10M
+            ),
+            model_name='unet2015_equiv',
+        ),
+    ),
 ]
 
 key, subkey = random.split(key)

@@ -1139,9 +1139,6 @@ class GeometricImage:
         """
         return self.D ** self.k
 
-    def spatial_size(self):
-        return np.multiply.reduce(self.spatial_dims)
-
     def __str__(self):
         return "<{} object in D={} with spatial_dims={}, k={}, parity={}, is_torus={}>".format(
             self.__class__, self.D, self.spatial_dims, self.k, self.parity, self.is_torus)
@@ -1444,9 +1441,6 @@ class GeometricFilter(GeometricImage):
         super(GeometricFilter, self).__init__(data, parity, D, is_torus)
         assert self.spatial_dims == (self.spatial_dims[0],)*self.D, \
         "GeometricFilter: Filters must be square." # I could remove  this requirement in the future
-        # self.m = (self.spatial_dims[0] - 1) // 2
-        # assert self.spatial_dims[0] == 2 * self.m + 1, \
-        # "GeometricFilter: N needs to be odd."
 
     @classmethod
     def from_image(cls, geometric_image):

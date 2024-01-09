@@ -1,8 +1,12 @@
+import os
+
 import jax.numpy as jnp
 from jax import random
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 class TestMachineLearning:
     # Class to test the functions in the ml.py file, which include layers, data pre-processing, batching, etc.
@@ -48,31 +52,33 @@ class TestMachineLearning:
         assert Y[-2][1] == X[0]
 
     def testGetBatchLayer(self):
+        num_devices = 1 # since we set CUDA_VISIBLE_DEVICES=-1, it only can see the cpu
+
         key = random.PRNGKey(0)
         N = 5
         D = 2
         k = 0
 
-        X = geom.BatchLayer({ k: random.normal(key, shape=((10,1) + (N,)*D + (D,)*k)) }, D)
-        Y = geom.BatchLayer({ k: random.normal(key, shape=((10,1) + (N,)*D + (D,)*k)) }, D)
+        X = geom.BatchLayer({ (k,0): random.normal(key, shape=((10,1) + (N,)*D + (D,)*k)) }, D)
+        Y = geom.BatchLayer({ (k,0): random.normal(key, shape=((10,1) + (N,)*D + (D,)*k)) }, D)
 
         batch_size = 2
         X_batches, Y_batches = ml.get_batch_layer(X, Y, batch_size=batch_size, rand_key=key)
         assert len(X_batches) == len(Y_batches) == 5
         for X_batch, Y_batch in zip(X_batches, Y_batches):
-            assert X_batch[k].shape == Y_batch[k].shape == (batch_size, 1) + (N,)*D + (D,)*k
+            assert X_batch[(k,0)].shape == Y_batch[(k,0)].shape == (num_devices, batch_size, 1) + (N,)*D + (D,)*k
 
         X = geom.BatchLayer(
             { 
-                0: random.normal(key, shape=((20,1) + (N,)*D + (D,)*0)),
-                1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
+                (0,0): random.normal(key, shape=((20,1) + (N,)*D + (D,)*0)),
+                (1,0): random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
             },
             D,
         )
         Y = geom.BatchLayer(
             { 
-                0: random.normal(key, shape=((20,1) + (N,)*D + (D,)*0)),
-                1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
+                (0,0): random.normal(key, shape=((20,1) + (N,)*D + (D,)*0)),
+                (1,0): random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
             },
             D,
         )
@@ -82,20 +88,20 @@ class TestMachineLearning:
         X_batches, Y_batches = ml.get_batch_layer(X, Y, batch_size=batch_size, rand_key=key)
         assert len(X_batches) == len(Y_batches) == 4
         for X_batch, Y_batch in zip(X_batches, Y_batches):
-            assert X_batch[0].shape == Y_batch[0].shape == (batch_size, 1) + (N,)*D + (D,)*0
-            assert X_batch[1].shape == Y_batch[1].shape == (batch_size, 1) + (N,)*D + (D,)*1
+            assert X_batch[(0,0)].shape == Y_batch[(0,0)].shape == (num_devices, batch_size, 1) + (N,)*D + (D,)*0
+            assert X_batch[(1,0)].shape == Y_batch[(1,0)].shape == (num_devices, batch_size, 1) + (N,)*D + (D,)*1
 
         X = geom.BatchLayer(
             { 
-                0: random.normal(key, shape=((20,2) + (N,)*D + (D,)*0)),
-                1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
+                (0,0): random.normal(key, shape=((20,2) + (N,)*D + (D,)*0)),
+                (1,0): random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
             },
             D,
         )
         Y = geom.BatchLayer(
             { 
-                0: random.normal(key, shape=((20,2) + (N,)*D + (D,)*0)),
-                1: random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
+                (0,0): random.normal(key, shape=((20,2) + (N,)*D + (D,)*0)),
+                (1,0): random.normal(key, shape=((20,1) + (N,)*D + (D,)*1)),
             },
             D,
         )
@@ -105,6 +111,6 @@ class TestMachineLearning:
         X_batches, Y_batches = ml.get_batch_layer(X, Y, batch_size=batch_size, rand_key=key)
         assert len(X_batches) == len(Y_batches) == 4
         for X_batch, Y_batch in zip(X_batches, Y_batches):
-            assert X_batch[0].shape == Y_batch[0].shape == (batch_size, 2) + (N,)*D + (D,)*0
-            assert X_batch[1].shape == Y_batch[1].shape == (batch_size, 1) + (N,)*D + (D,)*1
+            assert X_batch[(0,0)].shape == Y_batch[(0,0)].shape == (num_devices, batch_size, 2) + (N,)*D + (D,)*0
+            assert X_batch[(1,0)].shape == Y_batch[(1,0)].shape == (num_devices, batch_size, 1) + (N,)*D + (D,)*1
             

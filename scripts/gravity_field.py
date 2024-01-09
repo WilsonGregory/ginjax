@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 import jax.numpy as jnp
 import jax.random as random
-from jax import vmap
+import jax
 import optax
 
 import geometricconvolutions.geometric as geom
@@ -46,8 +46,8 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
     target_parity = 0
     spatial_dims = layer.get_spatial_dims()
 
-    batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
-    batch_add_layer = vmap(lambda layer_a, layer_b: layer_a + layer_b) #better way of doing this?
+    batch_conv_layer = jax.vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
+    batch_add_layer = jax.vmap(lambda layer_a, layer_b: layer_a + layer_b) #better way of doing this?
 
     layer, params = batch_conv_layer(params, conv_filters, layer, None, None, return_params, None, None, None, None)
     out_layer = layer.empty()
@@ -91,11 +91,11 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
 
 def map_and_loss(params, x, y, key, train, conv_filters):
     # Run x through the net, then return its loss with y
-    return jnp.mean(vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[(1,0)], y[(1,0)]))
+    return jnp.mean(jax.vmap(ml.l2_loss)(batch_net(params, x, key, train, conv_filters)[(1,0)], y[(1,0)]))
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument('outfile', help='where to save the image', type=str)
+    parser.add_argument('-outfile', help='where to save the image', type=str, default=None)
     parser.add_argument('-lr', help='learning rate', type=float, default=0.1)
     parser.add_argument('-batch', help='batch size', type=int, default=1)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
@@ -159,7 +159,6 @@ else:
         transition_steps=int(train_X.L / batch_size), 
         decay_rate=0.995,
     ))
-
     key, subkey = random.split(key)
     params, _, _ = ml.train(
         train_X,
@@ -178,16 +177,6 @@ else:
     if (save_file):
         jnp.save(save_file, params)
 
-plt.rcParams['font.family'] = 'serif'
-plt.rcParams['font.serif'] = 'STIXGeneral'
-plt.tight_layout()
-
-titles = ['Input', 'Ground Truth', 'Prediction', 'Difference']
-fig, axs = plt.subplots(nrows=2, ncols=4, figsize=(24,12))
-plot_results(train_X.get_subset(jnp.array([0])), train_Y.get_subset(jnp.array([0])), axs[0], titles, conv_filters)
-plot_results(test_X.get_subset(jnp.array([0])), test_Y.get_subset(jnp.array([0])), axs[1], titles, conv_filters)
-plt.savefig(outfile)
-
 print('Full Test loss:', map_and_loss(params, test_X, test_Y, None, None, conv_filters=conv_filters))
 one_test_loss = map_and_loss(
     params, 
@@ -198,3 +187,14 @@ one_test_loss = map_and_loss(
     conv_filters=conv_filters,
 )
 print(f'One Test loss: {one_test_loss}')
+
+if outfile is not None:
+    plt.rcParams['font.family'] = 'serif'
+    plt.rcParams['font.serif'] = 'STIXGeneral'
+    plt.tight_layout()
+
+    titles = ['Input', 'Ground Truth', 'Prediction', 'Difference']
+    fig, axs = plt.subplots(nrows=2, ncols=4, figsize=(24,12))
+    plot_results(train_X.get_subset(jnp.array([0])), train_Y.get_subset(jnp.array([0])), axs[0], titles, conv_filters)
+    plot_results(test_X.get_subset(jnp.array([0])), test_Y.get_subset(jnp.array([0])), axs[1], titles, conv_filters)
+    plt.savefig(outfile)

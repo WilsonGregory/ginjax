@@ -973,9 +973,17 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
             num_channels = image_block.shape[1]
             this_params[key] = { SCALE: jnp.ones(num_channels), BIAS: jnp.ones(num_channels) }
 
-        if (train):
-            mean = jnp.mean(image_block, axis=0) # shape (channels, (N,)*D, (D,)*k)
-            var = jnp.var(image_block, axis=0) # shape (channels, (N,)*D, (D,)*k)
+            # some placeholder values for mean and variance. While mold_params=True, we are not 
+            # inside pmap, so we want to avoid calling pmean
+            mean = jnp.ones((image_block.shape[1:]))
+            var = 1
+        elif (train):
+            # both are shape (channels, (N,)*D, (D,)*k)
+            mean = jax.lax.pmean(jnp.mean(image_block, axis=0), axis_name='batch')
+            var = jax.lax.pmean(
+                jnp.mean((jnp.expand_dims(mean, axis=0) - image_block)**2, axis=0),
+                axis_name='batch',
+            )
 
             if ((key in running_mean) and (key in running_var)):
                 running_mean[key] = (1 - momentum)*running_mean[key] + momentum*mean
@@ -1330,24 +1338,29 @@ def l2_squared_loss(x, y):
 
 ## Data and Batching operations
 
-def get_batch_layer(X, Y, batch_size, rand_key):
+def get_batch_layer(X, Y, batch_size, rand_key, devices=None):
     """
     Given X, Y, construct a random batch of batch size. Each Y_batch is a list of length rollout to allow for
-    calculating the loss with each step of the rollout.
+    calculating the loss with each step of the rollout. Automatically reshapes the batches to use with pmap
+    based on the number of gpus found.
     args:
         X (BatchLayer): the input data
         Y (BatchLayer): the target output, will be same as X, unless noise was added to X
         batch_size (int): length of the batch
         rand_key (jnp random key): key for the randomness
+        devices (list): gpu/cpu devices to use, if None (default) then sets this to jax.devices()
     """
     batch_indices = random.permutation(rand_key, X.L)
+
+    if devices is None:
+        devices = jax.devices()
 
     X_batches = []
     Y_batches = []
     for i in range(int(math.ceil(X.L / batch_size))): #iterate through the batches of an epoch
         idxs = batch_indices[i*batch_size:(i+1)*batch_size]
-        X_batches.append(X.get_subset(idxs))
-        Y_batches.append(Y.get_subset(idxs))
+        X_batches.append(X.get_subset(idxs).reshape_pmap(devices))
+        Y_batches.append(Y.get_subset(idxs).reshape_pmap(devices))
 
     return X_batches, Y_batches
 
@@ -1361,29 +1374,63 @@ def map_in_batches(
     train, 
     has_aux=False, 
     aux_data=None,
+    devices=None,
 ):
     """
     Runs map_and_loss for the entire layer_X, layer_Y, splitting into batches if the layer is larger than
     the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
-    to split those over batches for memory reasons.
+    to split those over batches for memory reasons. Automatically pmaps over multiple gpus, so the number 
+    of gpus must evenly divide batch_size as well as as any remainder of the layer.
+    args:
+        map_and_loss (function): function that takes in params, X_batch, Y_batch, rand_key, train, and 
+            aux_data if has_aux is true, and returns the loss, and aux_data if has_aux is true.
+        params (params tree): the params to run through map_and_loss
+        layer_X (BatchLayer): input data
+        layer_Y (BatchLayer): target output data
+        batch_size (int): effective batch_size, must be divisible by number of gpus
+        rand_key (jax.random.PRNGKey): rand key
+        train (bool): whether this is training or not, likely not
+        has_aux (bool): has auxilliary data, such as batch_stats, defaults to False
+        aux_data (any): auxilliary data, such as batch stats. Passed to the function is has_aux is True.
+    returns: average loss over the entire layer
+        devices (list): gpu/cpu devices to use
     """
+    if has_aux:
+        pmap_loss_grad = jax.pmap(
+            map_and_loss, 
+            axis_name='batch', 
+            in_axes=(None, 0, 0, None, None, None),
+            out_axes=(0, None),
+            static_broadcasted_argnums=4,
+            devices=devices,
+        )
+    else:
+        pmap_loss_grad = jax.pmap(
+            map_and_loss, 
+            axis_name='batch', 
+            in_axes=(None, 0, 0, None, None),
+            static_broadcasted_argnums=4,
+            devices=devices,
+        )
+
     rand_key, subkey = random.split(rand_key)
-    X_batches, Y_batches = get_batch_layer(layer_X, layer_Y, batch_size, subkey)
+    X_batches, Y_batches = get_batch_layer(layer_X, layer_Y, batch_size, subkey, devices)
     total_loss = 0
     for X_batch, Y_batch in zip(X_batches, Y_batches):
         rand_key, subkey = random.split(rand_key)
         if (has_aux):
-            one_loss, aux_data = map_and_loss(
+            one_loss, aux_data = pmap_loss_grad(
                 params, 
                 X_batch, 
                 Y_batch, 
                 subkey,
                 train,
-                aux_data=aux_data,
+                aux_data,
             )
-            total_loss += one_loss
         else:
-            total_loss += map_and_loss(params, X_batch, Y_batch, subkey, train=False)
+            one_loss = pmap_loss_grad(params, X_batch, Y_batch, subkey, False)
+
+        total_loss += jnp.mean(one_loss)
 
     return total_loss / len(X_batches)
 
@@ -1517,6 +1564,23 @@ class ValLoss(StopCondition):
 
         return self.epochs_since_best > self.patience
 
+@jit
+def grads_mean(grads):
+    """
+    Recursively take the mean over the first axis of every jnp.array in the tree of gradients.
+    args:
+        grads (tree of jnp.arrays): the grads
+    """
+    # mean over a grads dictionary
+    if not isinstance(grads, dict): # is a jnp.ndarray
+        return jnp.mean(grads, axis=0)
+    
+    out_grads = {}
+    for k,v in grads.items():
+        out_grads[k] = grads_mean(v)
+
+    return out_grads
+
 def train(
     X, 
     Y, 
@@ -1533,15 +1597,20 @@ def train(
     has_aux=False,
     aux_data=None,
     checkpoint_kwargs=None,
+    devices=None,
 ):
     """
-    Method to train the model. It uses stochastic gradient descent (SGD) with the Adam optimizer to learn the
-    parameters the minimize the map_and_loss function. The params are returned.
+    Method to train the model. It uses stochastic gradient descent (SGD) with the optimizer to learn the
+    parameters the minimize the map_and_loss function. The params are returned. This function automatically
+    pmaps over the available gpus, so batch_size should be divisible by the number of gpus. If you only want
+    to train on a single GPU, the script should be run with CUDA_VISIBLE_DEVICES=# for whatever gpu number.
+    In order to do collectives across the pmap batches, use axis_name='batch', such as 
+    jnp.pmean(x, axis_name='batch').
     args:
         X (BatchLayer): The X input data as a layer by k of (images, channels, (N,)*D, (D,)*k)
         Y (BatchLayer): The Y target data as a layer by k of (images, channels, (N,)*D, (D,)*k)
-        map_and_loss (function): function that takes in batch layers of X, Y, and maps X to Y_hat
-            using params, then calculates the loss with Y.
+        map_and_loss (function): function that takes in params, X_batch, Y_batch, rand_key, and train and
+            returns the loss. If has_aux is True, then it also takes in aux_data and returns aux_data.
         params (jnp.array): 
         rand_key (jnp.random key): key for randomness
         stop_condition (StopCondition): when to stop the training process, currently only 1 condition
@@ -1560,6 +1629,7 @@ def train(
         aux_data (any): initial aux data passed in to map_and_loss when has_aux is true.
         checkpoint_kwargs (dict): dictionary of kwargs to pass to jax.checkpoint. If None, checkpoint will
             not be called, defaults to None.
+        devices (list): gpu/cpu devices to use, if None (default) then it will use jax.devices()
     """
     if (isinstance(stop_condition, ValLoss)):
         assert validation_X and validation_Y
@@ -1568,6 +1638,24 @@ def train(
         batch_loss_grad = value_and_grad(map_and_loss, has_aux=has_aux)
     else:
         batch_loss_grad = checkpoint(value_and_grad(map_and_loss, has_aux=has_aux), **checkpoint_kwargs)
+
+    if has_aux:
+        pmap_loss_grad = jax.pmap(
+            batch_loss_grad, 
+            axis_name='batch', 
+            in_axes=(None, 0, 0, None, None, None),
+            out_axes=((0, None), 0),
+            static_broadcasted_argnums=4,
+            devices=devices,
+        )
+    else:
+        pmap_loss_grad = jax.pmap(
+            batch_loss_grad, 
+            axis_name='batch', 
+            in_axes=(None, 0, 0, None, None),
+            static_broadcasted_argnums=4,
+            devices=devices,
+        )
 
     if (optimizer is None):
         optimizer = optax.adam(0.1)
@@ -1587,25 +1675,25 @@ def train(
             train_X = X
 
         rand_key, subkey = random.split(rand_key)
-        X_batches, Y_batches = get_batch_layer(train_X, Y, batch_size, subkey)
+        X_batches, Y_batches = get_batch_layer(train_X, Y, batch_size, subkey, devices)
         epoch_loss = 0
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             rand_key, subkey = random.split(rand_key)
             if (has_aux):
-                (loss_val, aux_data), grads = batch_loss_grad(
+                (pmap_loss_val, aux_data), pmap_grads = pmap_loss_grad(
                     params, 
                     X_batch, 
                     Y_batch, 
                     subkey, 
                     True,
-                    aux_data=aux_data,
+                    aux_data,
                 )
             else:
-                loss_val, grads = batch_loss_grad(params, X_batch, Y_batch, subkey, True)
+                pmap_loss_val, pmap_grads = pmap_loss_grad(params, X_batch, Y_batch, subkey, True)
 
-            updates, opt_state = optimizer.update(grads, opt_state, params)
+            updates, opt_state = optimizer.update(grads_mean(pmap_grads), opt_state, params)
             params = optax.apply_updates(params, updates)
-            epoch_loss += loss_val
+            epoch_loss += jnp.mean(pmap_loss_val)
 
         epoch_loss = epoch_loss / len(X_batches)
         train_loss.append(epoch_loss)
@@ -1625,6 +1713,7 @@ def train(
                 False, # train
                 has_aux,
                 aux_data,
+                devices,
             )
             val_loss.append(epoch_val_loss)
 

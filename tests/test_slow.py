@@ -14,8 +14,11 @@ def conv_subimage(image, center_key, filter_image, filter_image_keys=None):
         filter_image (GeometricFilter): the GeometricFilter we are convolving with
         filter_image_keys (list): For efficiency, the key offsets of the filter_image. Defaults to None.
     """
+    m = (filter_image.spatial_dims[0] - 1) // 2
+    assert (m*2)+1 == filter_image.spatial_dims[0] # for this old function, needs to be odd
+
     if filter_image_keys is None:
-        filter_image_keys = filter_image.key_array(centered=True) #centered key array
+        filter_image_keys = filter_image.key_array() - m #centered key array
 
     key_list = image.hash(filter_image_keys + jnp.array(center_key)) #key list on the torus
     #values, reshaped to the correct shape, which is the filter_image shape, while still having the tensor shape
@@ -28,13 +31,16 @@ def convolve_with_slow(image, filter_image):
     args:
         filter_image (GeometricFilter-like): convolution that we are applying, can be an image or a filter
     """
+    m = (filter_image.spatial_dims[0] - 1) // 2
+    assert (m*2)+1 == filter_image.spatial_dims[0] # for this old function, needs to be odd
+
     newimage = image.__class__.zeros(image.spatial_dims, image.k + filter_image.k,
                                      image.parity + filter_image.parity, image.D)
 
     if (isinstance(filter_image, geom.GeometricImage)):
         filter_image = geom.GeometricFilter.from_image(filter_image) #will break if N is not odd
 
-    filter_image_keys = filter_image.key_array(centered=True)
+    filter_image_keys = filter_image.key_array() - m
     for key in image.keys():
         subimage = conv_subimage(image, key, filter_image, filter_image_keys)
         newimage[key] = jnp.sum((subimage * filter_image).data, axis=tuple(range(image.D)))
@@ -179,9 +185,9 @@ class TestSlowTests:
 
         for D in [2]: #image dimension
             operators = geom.make_all_operators(D)
-            for N in [3]: #filter size
+            for N in [2,3]: #filter size
                 key, subkey = random.split(key)
-                image = geom.GeometricImage(random.uniform(key, shape=(2*N,2*N)), 0, D)
+                image = geom.GeometricImage(random.uniform(subkey, shape=(2*N,2*N)), 0, D)
                 for k in [0,1,2]: #tensor order of filter
                     for parity in [0,1]:
                         filters = geom.get_unique_invariant_filters(N, k, parity, D, operators)
@@ -198,14 +204,14 @@ class TestSlowTests:
                                 # test that the convolution with the invariant filters is equivariant to gg
                                 # convolutions are currently too slow to test this every time, but should be tested
                                 assert jnp.allclose(
-                                    image.convolve_with(geom_filter).times_group_element(
+                                    image.convolve_with(geom_filter, padding=((1,1),)*D).times_group_element(
                                         gg, 
                                         precision=jax.lax.Precision.HIGH,
                                     ).data,
                                     image.times_group_element(
                                         gg, 
                                         precision=jax.lax.Precision.HIGH,
-                                    ).convolve_with(geom_filter).data,
+                                    ).convolve_with(geom_filter, padding=((1,1),)*D).data,
                                 )
                                 
     def testGroup(self):

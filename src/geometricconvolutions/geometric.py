@@ -497,7 +497,7 @@ def get_torus_expanded(D, image, filter_image, dilation):
         new_spatial_dims = tuple(img_N + 2*padding for img_N, padding in zip(spatial_dims, paddings))
         return image[hash(D, image, indices)].reshape(new_spatial_dims + (D,)*img_k)
 
-def pre_tensor_product_expand(D, image_a, image_b):
+def pre_tensor_product_expand(D, image_a, image_b, dtype=None):
     """
     Rather than take a tensor product of two tensors, we can first take a tensor product of each with a tensor of
     ones with the shape of the other. Then we have two matching shapes, and we can then do whatever operations.
@@ -505,6 +505,7 @@ def pre_tensor_product_expand(D, image_a, image_b):
         D (int): dimension of the image
         image_a (GeometricImage like): one geometric image whose tensors we will later be doing tensor products on
         image_b (GeometricImage like): other geometric image
+        dtype (dtype): if present, cast both outputs to dtype, defaults to None
     """
     _, img_a_k = parse_shape(image_a.shape, D)
     _, img_b_k = parse_shape(image_b.shape, D)
@@ -531,6 +532,10 @@ def pre_tensor_product_expand(D, image_a, image_b):
     else:
         image_b_expanded = image_b
 
+    if dtype is not None:
+        image_a_expanded = image_a_expanded.astype(dtype)
+        image_b_expanded = image_b_expanded.astype(dtype)
+
     return image_a_expanded, image_b_expanded
 
 def conv_contract_image_expand(D, image, conv_filter):
@@ -556,7 +561,7 @@ def mul(D, image_a, image_b):
     image_a_data, image_b_data = pre_tensor_product_expand(D, image_a, image_b)
     return image_a_data * image_b_data #now that shapes match, do elementwise multiplication
 
-@partial(jit, static_argnums=[0,3,4,5,6,7])
+@partial(jit, static_argnums=[0,3,4,5,6,7,8])
 def convolve(
     D,
     image,
@@ -565,7 +570,8 @@ def convolve(
     stride=None, 
     padding=None,
     lhs_dilation=None, 
-    rhs_dilation=None, 
+    rhs_dilation=None,
+    tensor_expand=True,
 ):
     """
     Here is how this function works:
@@ -591,14 +597,18 @@ def convolve(
             defaults to 'TORUS' if image.is_torus, else 'SAME'
         lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
         rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
+        tensor_expand (bool): expand the tensor of image and filter to do tensor convolution, defaults to True.
+            If there is something more complicated going on (e.g. conv_contract), you can skip this step.
     """
     assert (D == 2) or (D == 3)
     dtype= 'float32'
 
-    _, img_k = parse_shape(image.shape, D)
-    filter_spatial_dims, filter_k = parse_shape(filter_image.shape, D)
+    filter_spatial_dims, _ = parse_shape(filter_image.shape, D)
 
-    output_k = img_k + filter_k
+    assert not (
+        reduce(lambda carry, N: carry or (N % 2 == 0), filter_spatial_dims, False) and 
+        (padding == 'TORUS' or padding == 'SAME' or padding is None)
+    ), f'convolve: Filters with even sidelengths {filter_spatial_dims} require literal padding, not {padding}'
 
     if rhs_dilation is None:
         rhs_dilation = (1,)*D
@@ -626,11 +636,13 @@ def convolve(
     else:
         padding_literal = padding
 
-    img_expanded, filter_expanded = pre_tensor_product_expand(D, image, filter_image)
-    img_expanded = img_expanded.astype(dtype)
-    filter_expanded = filter_expanded.astype(dtype)
+    if tensor_expand:
+        img_expanded, filter_expanded = pre_tensor_product_expand(D, image, filter_image, dtype)
+    else:
+        img_expanded, filter_expanded = image, filter_image
 
-    channel_length = D**output_k
+    _, output_k = parse_shape(filter_expanded.shape, D)
+    channel_length = D**output_k # when output_k = 0, this becomes 1. Is that correct?
 
     # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
     # batching is handled by using vmap on this function
@@ -689,84 +701,25 @@ def convolve_contract(
     """
     Given an input k image and a k+k' filter, take the tensor convolution that contract k times with one index
     each from the image and filter. This implementation is slightly more efficient then doing the convolution
-    and contraction separately by avoiding constructing the k+k+k' intermediate tensor.
-    Here is how this function works:
-    1. Expand the geom_image to its torus shape, i.e. add filter.m cells all around the perimeter of the image
-    2. Do the tensor product (with 1s) to each k image so that it is now k+k' tensor, just like the filter.
-    That is if image.k=1, filter.k=2, do (D,) => (D,D) with tensors of 1s
-    3. Now we shape the inputs to work with jax.lax.conv_general_dilated
-    4. Put image in NHWC (batch, height, width, channel). Thus we vectorize the tensor
-    5. Put filter in HWIO (height, width, input, output). Input is 1, output is the vectorized tensor
-    6. Plug all that stuff in to conv_general_dilated, and feature_group_count is the length of the vectorized
-    tensor, and it is basically saying that each part of the vectorized tensor is treated separately in the filter.
-    It must be the case that channel = input * feature_group_count
-    See: https://jax.readthedocs.io/en/latest/notebooks/convolutions.html#id1 and
-    https://www.tensorflow.org/xla/operation_semantics#conv_convolution
-    7. Sum over the first k axes of the result, this completes the contraction so the result is now a k' tensor.
-
-    args:
-        D (int): dimension of the images
-        image (jnp.array): image data
-        filter_image (jnp.array): the convolution filter
-        is_torus (bool): whether the images data is on the torus or not
-        stride (tuple of ints): convolution stride, defaults to (1,)*self.D
-        padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
-            defaults to 'TORUS' if image.is_torus, else 'SAME'
-        lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
-        rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
+    and contraction separately by avoiding constructing the k+k+k' intermediate tensor. See convolve for a
+    full description of the convolution including the args.
     """
-    assert (D == 2) or (D == 3)
-    dtype= 'float32'
-
+    dtype='float32'
     _, img_k = parse_shape(image.shape, D)
-    filter_spatial_dims, filter_k = parse_shape(filter_image.shape, D)
-    assert img_k <= filter_k
-
-    if rhs_dilation is None:
-        rhs_dilation = (1,)*D
-
-    if stride is None:
-        stride = (1,)*D
-
-    if padding is None: #if unspecified, infer from is_torus
-        padding = 'TORUS' if is_torus else 'SAME'
-
-    if padding == 'TORUS':
-        image = get_torus_expanded(D, image, filter_image, rhs_dilation[0])
-        padding_literal = ((0,0),)*D
-    else:
-        if padding == 'VALID':
-            padding_literal = ((0,0),)*D
-        elif padding == 'SAME':
-            filter_ms = tuple((M - 1) // 2 for M in filter_spatial_dims)
-            padding_literal = tuple((m * dilation,) * 2 for m, dilation in zip(filter_ms,rhs_dilation))
-        else:
-            padding_literal = padding
-
     img_expanded = conv_contract_image_expand(D, image, filter_image).astype(dtype)
-
-    channel_length = D**filter_k
-
-    # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
-    # batching is handled by using vmap on this function
-    img_formatted = img_expanded.reshape((1,) + tuple(img_expanded.shape[:D]) + (channel_length,))
-
-    # convert filter to HWIO (or HWDIO)
-    filter_formatted = filter_image.astype(dtype).reshape(filter_spatial_dims + (1,channel_length))
-
-    convolved_array = jax.lax.conv_general_dilated(
-        img_formatted, #lhs
-        filter_formatted, #rhs
-        stride,
-        padding_literal,
-        lhs_dilation=lhs_dilation,
-        rhs_dilation=rhs_dilation,
-        dimension_numbers=(('NHWC','HWIO','NHWC') if D == 2 else ('NHWDC','HWDIO','NHWDC')),
-        feature_group_count=channel_length, #each tensor component is treated separately
+    convolved_img = convolve(
+        D, 
+        img_expanded, 
+        filter_image, 
+        is_torus, 
+        stride, 
+        padding, 
+        lhs_dilation,
+        rhs_dilation,
+        tensor_expand=False,
     )
-    shaped_convolved_img = convolved_array.reshape(convolved_array.shape[1:-1] + (D,)*filter_k)
-    # then sum along first img_k axes, this is the contraction
-    return jnp.sum(shaped_convolved_img, axis=range(D, D + img_k))
+    # then sum along first img_k non-spatial axes, this is the contraction
+    return jnp.sum(convolved_img, axis=range(D, D + img_k))
 
 @partial(jit, static_argnums=[0,3,4,5,6,7])
 def depth_convolve_contract(
@@ -1186,6 +1139,9 @@ class GeometricImage:
         """
         return self.D ** self.k
 
+    def spatial_size(self):
+        return np.multiply.reduce(self.spatial_dims)
+
     def __str__(self):
         return "<{} object in D={} with spatial_dims={}, k={}, parity={}, is_torus={}>".format(
             self.__class__, self.D, self.spatial_dims, self.k, self.parity, self.is_torus)
@@ -1488,9 +1444,9 @@ class GeometricFilter(GeometricImage):
         super(GeometricFilter, self).__init__(data, parity, D, is_torus)
         assert self.spatial_dims == (self.spatial_dims[0],)*self.D, \
         "GeometricFilter: Filters must be square." # I could remove  this requirement in the future
-        self.m = (self.spatial_dims[0] - 1) // 2
-        assert self.spatial_dims[0] == 2 * self.m + 1, \
-        "GeometricFilter: N needs to be odd."
+        # self.m = (self.spatial_dims[0] - 1) // 2
+        # assert self.spatial_dims[0] == 2 * self.m + 1, \
+        # "GeometricFilter: N needs to be odd."
 
     @classmethod
     def from_image(cls, geometric_image):
@@ -1500,8 +1456,8 @@ class GeometricFilter(GeometricImage):
         return cls(geometric_image.data, geometric_image.parity, geometric_image.D, geometric_image.is_torus)
 
     def __str__(self):
-        return "<geometric filter object in D={} with spatial_dims={} (m={}), k={}, parity={}, and is_torus={}>".format(
-            self.D, self.spatial_dims, self.m, self.k, self.parity, self.is_torus)
+        return "<geometric filter object in D={} with spatial_dims={}, k={}, parity={}, and is_torus={}>".format(
+            self.D, self.spatial_dims, self.k, self.parity, self.is_torus)
 
     def bigness(self):
         """
@@ -1514,45 +1470,6 @@ class GeometricFilter(GeometricImage):
 
         denominator = jnp.sum(norms)
         return numerator / denominator
-
-    def key_array(self, centered=False):
-        # equivalent to the old pixels function
-        if centered:
-            return jnp.array([key for key in self.keys()], dtype=int) - self.m
-        else:
-            return jnp.array([key for key in self.keys()], dtype=int)
-
-    def keys(self, centered=False):
-        """
-        Enumerate over all the keys in the geometric filter. Use centered=True when using the keys as adjustments
-        args:
-            centered (bool): if true, the keys range from -m to m rather than 0 to N. Defaults to false.
-        """
-        for key in super().keys():
-            if (centered):
-                #subtract m from all the elements of key
-                yield tuple([a+b for a,b in zip(key, len(key) * (-self.m,))])
-            else:
-                yield key
-
-    def items(self, centered=False):
-        """
-        Enumerate over all the key, pixel pairs in the geometric filter. Use centered=True when using the keys as
-        adjustments
-        args:
-            centered (bool): if true, the keys range from -m to m rather than 0 to N. Defaults to false.
-        """
-        for key in self.keys(): #dont pass centered along because we need the un-centered keys to access the vals
-            value = self[key]
-            if (centered):
-                #subtract m from all the elements of key
-                yield (tuple([a+b for a,b in zip(key, len(key) * (-self.m,))]), value)
-            else:
-                yield (key, value)
-
-    def get_rotated_keys(self, gg):
-        key_array = self.key_array(centered=True)
-        return (key_array @ gg) + self.m
 
     def rectify(self):
         """
@@ -1901,3 +1818,21 @@ class BatchLayer(Layer):
             new_data[key] = jax.device_put(image_block, sharding.reshape(sharding_shape))
 
         return self.__class__(new_data, self.D, self.is_torus)
+
+    def reshape_pmap(self, devices):
+        """
+        Reshape the batch to allow pmap to work. E.g., if shape is (batch,1,N,N) and num_devices=2, then
+        reshape to (2,batch/2,1,N,N)
+        args:
+            devices (list): list of gpus or cpu that we are using
+        """
+        assert self.L % len(devices) == 0, f'BatchLayer::reshape_pmap: length of devices must evenly '\
+        f'divide the total batch size, but got batch_size: {self.L}, devices: {devices}'
+
+        num_devices = len(devices)
+
+        out_layer = self.empty()
+        for (k,parity), image in self.items():
+            out_layer.append(k, parity, image.reshape((num_devices, self.L // num_devices) + image.shape[1:]))
+
+        return out_layer

@@ -222,3 +222,80 @@ def unet2015_equiv(
     )
 
     return (layer, params) if return_params else layer
+
+@functools.partial(jax.jit, static_argnums=[3,4,5,6,8])
+def dil_resnet(
+    params, 
+    layer, 
+    key, 
+    train, 
+    depth=48, 
+    activation_f=jax.nn.relu, 
+    equivariant=False, 
+    conv_filters=None, 
+    return_params=False,
+):
+    assert layer.D == 2
+    num_blocks = 4
+
+    if equivariant:
+        assert conv_filters is not None
+        conv_f = ml.batch_conv_contract
+        conv_args = [conv_filters, depth, ((0,0),(1,0))]
+    else:
+        layer = layer.to_scalar_layer()
+        conv_f = ml.batch_conv_layer
+        conv_args = [{ 'type': 'free', 'M': 3, 'filter_key_set': { (0,0) } }, depth]
+
+    # encoder
+    layer, params = conv_f(
+        params, 
+        layer,
+        *conv_args,
+        bias=False if equivariant else True,
+        mold_params=return_params,
+    )
+
+    for _ in range(num_blocks):
+
+        residual_layer = layer.copy()
+        # dCNN block
+
+        for dilation in [1,2,4,8,4,2,1]:
+            layer, params = conv_f(
+                params, 
+                layer,
+                *conv_args,
+                bias=False if equivariant else True,
+                mold_params=return_params,
+                rhs_dilation=(dilation,)*layer.D,
+            )
+            if activation_f is not None:
+                layer = ml.batch_scalar_activation(layer, activation_f)
+
+        layer = geom.BatchLayer.from_vector(layer.to_vector() + residual_layer.to_vector(), layer)
+
+    # decoder
+    if equivariant:
+        layer, params = conv_f(
+            params,
+            layer,
+            conv_filters,
+            1,
+            ((0,0),(1,0)),
+            mold_params=return_params,
+        )
+    else:
+        layer, params = conv_f(
+            params, 
+            layer,
+            { 'type': 'free', 'M': 3, 'filter_key_set': { (0,0) } },
+            depth=3, 
+            bias=True,
+            mold_params=return_params,
+        )
+
+        # swap the vector back to the vector img
+        layer = layer.from_scalar_layer({ (0,0): 1, (1,0): 1 })
+
+    return (layer, params) if return_params else layer

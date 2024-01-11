@@ -233,7 +233,7 @@ class TestLayer:
         assert rand_layer.size() == layer_example.size()
         assert jnp.allclose(rand_layer.to_vector(), rand_data)
 
-    def testToScalarLayer(self):
+    def testToFromScalarLayer(self):
         D = 2
         N = 5
 
@@ -251,6 +251,24 @@ class TestLayer:
         assert len(scalar_layer.keys()) == 1
         assert next(iter(scalar_layer.keys())) == (0,0)
         assert jnp.allclose(scalar_layer[(0,0)], jnp.ones((1+D+D*D,) + (N,)*D))
+
+        key = random.PRNGKey(0)
+        key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
+        rand_layer = geom.Layer(
+            {
+                (0,0): random.normal(subkey1, shape=((3,) + (N,)*D)),
+                (1,0): random.normal(subkey2, shape=((1,) + (N,)*D + (D,))),
+                (1,1): random.normal(subkey3, shape=((2,) + (N,)*D + (D,))),
+                (2,0): random.normal(subkey4, shape=((1,) + (N,)*D + (D,D))),
+            },
+            D,
+        )
+
+        layout = { (0,0): 3, (1,0): 1, (1,1): 2, (2,0): 1 }
+
+        scalar_layer2 = rand_layer.to_scalar_layer()
+        assert list(scalar_layer2.keys()) == [(0,0)]
+        assert rand_layer == rand_layer.to_scalar_layer().from_scalar_layer(layout)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Test BatchLayer
@@ -419,3 +437,42 @@ class TestBatchLayer:
             D,
         )
         assert layer4.size() == (3*(N**D + 4*N**D*D + 2*N**D*D + 3*N**D*D*D))
+
+    def testToFromScalarLayer(self):
+        D = 2
+        N = 5
+
+        L = 1
+        layer_example = geom.BatchLayer(
+            {
+                (0,0): jnp.ones((L,1) + (N,)*D),
+                (1,0): jnp.ones((L,1) + (N,)*D + (D,)),
+                (2,0): jnp.ones((L,1) + (N,)*D + (D,D)),
+            },
+            D,
+        )
+
+        scalar_layer = layer_example.to_scalar_layer()
+
+        assert len(scalar_layer.keys()) == 1
+        assert next(iter(scalar_layer.keys())) == (0,0)
+        assert jnp.allclose(scalar_layer[(0,0)], jnp.ones((1,1+D+D*D) + (N,)*D))
+
+        key = random.PRNGKey(0)
+        key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
+        L = 5
+        rand_layer = geom.BatchLayer(
+            {
+                (0,0): random.normal(subkey1, shape=((L,3) + (N,)*D)),
+                (1,0): random.normal(subkey2, shape=((L,1) + (N,)*D + (D,))),
+                (1,1): random.normal(subkey3, shape=((L,2) + (N,)*D + (D,))),
+                (2,0): random.normal(subkey4, shape=((L,1) + (N,)*D + (D,D))),
+            },
+            D,
+        )
+
+        layout = { (0,0): 3, (1,0): 1, (1,1): 2, (2,0): 1 }
+
+        scalar_layer2 = rand_layer.to_scalar_layer()
+        assert list(scalar_layer2.keys()) == [(0,0)]
+        assert rand_layer == rand_layer.to_scalar_layer().from_scalar_layer(layout)

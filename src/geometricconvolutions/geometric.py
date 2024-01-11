@@ -1668,6 +1668,28 @@ class Layer:
 
         return out_layer
     
+    def from_scalar_layer(self, layout):
+        """
+        Convert a scalar layer back to a layer with the specified layout
+        args:
+            layout (dict): dictionary of keys (k,parity) and values num_channels for the output layer
+        """
+        assert list(self.keys()) == [(0,0)]
+        spatial_dims = self[(0,0)].shape[1:]
+
+        out_layer = self.empty()
+        idx = 0
+        for (k,parity), num_channels in layout.items():
+            length = num_channels*(self.D**k)
+            # reshape, it is (num_channels*(D**k), spatial_dims) -> (num_channels, (D,)*k, spatial_dims)
+            reshaped_data = self[(0,0)][idx:idx+length].reshape((num_channels,)+(self.D,)*k + spatial_dims)
+            # tranpose (num_channels, (D,)*k, spatial_dims) -> (num_channels, spatial_dims, (D,)*k)
+            transposed_data = reshaped_data.transpose((0,) + tuple(range(1+k,1+k+self.D)) + tuple(range(1,1+k)))
+            out_layer.append(k, parity, transposed_data)
+            idx += length
+
+        return out_layer
+    
     def times_group_element(self, gg, precision=None):
         """
         Apply a group element of O(2) or O(3) to the layer. First apply the action to the location of the
@@ -1791,6 +1813,10 @@ class BatchLayer(Layer):
     @jax.vmap
     def to_scalar_layer(self):
         return super(BatchLayer, self).to_scalar_layer()
+    
+    @partial(jax.vmap, in_axes=(0, None))
+    def from_scalar_layer(self, layout):
+        return super(BatchLayer, self).from_scalar_layer(layout)
     
     @classmethod
     @partial(jax.vmap, in_axes=(None, 0, 0))

@@ -4,9 +4,7 @@ import time
 import argparse
 import numpy as np
 from functools import partial
-import matplotlib.pyplot as plt
-import imageio.v2 as imageio
-import h5py
+import xarray as xr
 
 import jax.numpy as jnp
 import jax
@@ -15,32 +13,39 @@ import optax
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
-import geometricconvolutions.utils as utils
 import geometricconvolutions.data as gc_data
 import geometricconvolutions.models as models
 
-def read_one_h5(filename: str, data_class: str) -> tuple:
-    """
-    Given a filename and a type of data (train, test, or validation), read the data and return as jax arrays.
-    args:
-        filename (str): the full file path
-        data_class (str): either 'train', 'test', or 'valid'
-    returns: u, vxy as jax arrays
-    """
-    file = h5py.File(filename)
-    data_dict = file[data_class]
+def read_one_seed(data_dir: str, data_class: str, seed: str) -> tuple:
+    target_file = f'{data_dir}/{data_class}/{seed}/all_data.npy'
 
-    # all of these are shape (num_trajectories, t, x, y) = (100, 14, 128, 128)
-    u = jax.device_put(jnp.array(data_dict['u'][()]), jax.devices('cpu')[0])
-    vx = jax.device_put(jnp.array(data_dict['vx'][()]), jax.devices('cpu')[0])
-    vy = jax.device_put(jnp.array(data_dict['vy'][()]), jax.devices('cpu')[0])
-    vxy = jnp.stack([vx, vy], axis=-1)
+    # net-cdf load keeps on breaking, so we try to save it as a .npy
+    if len(list(filter(lambda f: f == 'all_data.npy', os.listdir(f'{data_dir}/{data_class}/{seed}/')))) > 0:
+        dataset = jnp.load(target_file, allow_pickle=True).item()
+        u = jax.device_put(dataset['u'], jax.devices('cpu')[0]) # velocity in x direction
+        v = jax.device_put(dataset['v'], jax.devices('cpu')[0]) # velocity in y direction
+        pres = jax.device_put(dataset['pres'], jax.devices('cpu')[0]) # pressure scalar
+        vor = jax.device_put(dataset['vor'], jax.devices('cpu')[0]) #vorticity pseudoscalar
+    else:
+        datals = os.path.join(data_dir, data_class, seed, 'run*', 'output.nc')
+        dataset = xr.open_mfdataset(datals, concat_dim="b", combine="nested", parallel=True) # dict
+        u = jax.device_put(jnp.array(dataset['u'].to_numpy()), jax.devices('cpu')[0]) # velocity in x direction
+        v = jax.device_put(jnp.array(dataset['v'].to_numpy()), jax.devices('cpu')[0]) # velocity in y direction
+        pres = jax.device_put(jnp.array(dataset['pres'].to_numpy()), jax.devices('cpu')[0]) # pressure scalar
+        vor = jax.device_put(jnp.array( dataset['vor'].to_numpy()), jax.devices('cpu')[0]) #vorticity pseudoscalar
 
-    file.close()
+        jnp.save(target_file, { 'u': u, 'v': v, 'pres': pres, 'vor': vor })
 
-    return u, vxy
+    uv = jnp.stack([u[:,:,0,...],v[:,:,0,...]], axis=-1)
+    return uv, pres, vor[:,:,0,...]
 
-def merge_h5s_into_layer(data_dir: str, num_trajectories: int, data_class: str, window: int) -> tuple:
+def get_data_layers(
+    data_dir: str, 
+    num_trajectories: int, 
+    data_class: str, 
+    window: int, 
+    velocity_form: bool = True,
+) -> tuple:
     """
     Given a specified dataset, load the data into layers where the layer_X has a channel per image in the
     lookback window, and the layer_Y has just the single next image.
@@ -49,39 +54,47 @@ def merge_h5s_into_layer(data_dir: str, num_trajectories: int, data_class: str, 
         seeds (list of str): seeds for the data
         data_class (str): type of data, either train, valid, or test
         window (int): the lookback window, how many steps we look back to predict the next one
+        velocity_form (bool): whether to use the velocity/pressure of the output, or the pressure/vorticity form
     """
-    all_files = sorted(filter(lambda file: f'NavierStokes2D_{data_class}' in file, os.listdir(data_dir)))
+    all_seeds = sorted(os.listdir(f'{data_dir}/{data_class}/'))
 
-    N = 128
+    spatial_dims = (96,192)
     D = 2
-    all_u = jnp.zeros((0,14,N,N))
-    all_vxy = jnp.zeros((0,14,N,N,D))
-    for filename in all_files:
-        u, vxy = read_one_h5(f'{data_dir}/{filename}', data_class)
+    all_uv = jnp.zeros((0,88) + spatial_dims + (D,))
+    all_pres = jnp.zeros((0,88) + spatial_dims)
+    all_vor = jnp.zeros((0,88) + spatial_dims)
+    for seed in all_seeds:
+        uv, pres, vor = read_one_seed(data_dir, data_class, seed)
 
-        all_u = jnp.concatenate([all_u, u])
-        all_vxy = jnp.concatenate([all_vxy, vxy])
+        all_uv = jnp.concatenate([all_uv, uv])
+        all_pres = jnp.concatenate([all_pres, pres])
+        all_vor = jnp.concatenate([all_vor, vor])
 
-        if len(all_u) >= num_trajectories:
+        if len(all_uv) >= num_trajectories:
             break
 
-    if len(all_u) < num_trajectories:
+    if len(all_uv) < num_trajectories:
         print(
-            f'WARNING merge_h5s_into_layer: wanted {num_trajectories} {data_class} trajectories, ' \
-            f'but only found {len(all_u)}',
+            f'WARNING get_data_layers: wanted {num_trajectories} {data_class} trajectories, ' \
+            f'but only found {len(all_uv)}',
         )
-        num_trajectories = len(all_u)
+        num_trajectories = len(all_uv)
 
-    # all_u.shape[1] -1 because the last one is the output
-    window_idx = gc_data.rolling_window_idx(all_u.shape[1]-1, window)
-    input_u = all_u[:num_trajectories, window_idx].reshape((-1, window, N, N))
-    input_vxy = all_vxy[:num_trajectories, window_idx].reshape((-1, window, N, N, D))
+    # all_uv.shape[1] -1 because the last one is the output
+    window_idx = gc_data.rolling_window_idx(all_uv.shape[1]-1, window)
+    input_uv = all_uv[:num_trajectories, window_idx].reshape((-1, window) + spatial_dims + (D,))
+    input_pres = all_pres[:num_trajectories, window_idx].reshape((-1, window) + spatial_dims)
+    # input_vor = all_vor[:num_trajectories, window_idx].reshape((-1, window) + spatial_dims)
 
-    output_u = all_u[:num_trajectories, window:].reshape(-1, 1, N, N)
-    output_vxy = all_vxy[:num_trajectories, window:].reshape(-1, 1, N, N, D)
+    output_uv = all_uv[:num_trajectories, window:].reshape((-1, 1) + spatial_dims + (D,))
+    output_pres = all_pres[:num_trajectories, window:].reshape((-1, 1) + spatial_dims)
+    output_vor = all_vor[:num_trajectories, window:].reshape((-1, 1) + spatial_dims)
 
-    layer_X = geom.BatchLayer({ (0,0): input_u, (1,0): input_vxy }, D, False)
-    layer_Y = geom.BatchLayer({ (0,0): output_u, (1,0): output_vxy }, D, False)
+    layer_X = geom.BatchLayer({ (0,0): input_pres, (1,0): input_uv }, D, True)
+    if velocity_form:
+        layer_Y = geom.BatchLayer({ (0,0): output_pres, (1,0): output_uv }, D, True)
+    else:
+        layer_Y = geom.BatchLayer({ (0,0): output_pres, (0,1): output_vor }, D, True)
 
     return layer_X, layer_Y
 
@@ -95,30 +108,11 @@ def get_data(data_dir: str, num_train_traj: int, num_val_traj: int, num_test_tra
         num_test_traj (int): number of testing trajectories
         window (int): length of the lookback to predict the next step
     """
-    train_X, train_Y = merge_h5s_into_layer(data_dir, num_train_traj, 'train', window)
-    val_X, val_Y = merge_h5s_into_layer(data_dir, num_val_traj, 'valid', window)
-    test_X, test_Y = merge_h5s_into_layer(data_dir, num_test_traj, 'test', window)
+    train_X, train_Y = get_data_layers(data_dir, num_train_traj, 'train', window)
+    val_X, val_Y = get_data_layers(data_dir, num_val_traj, 'valid', window)
+    test_X, test_Y = get_data_layers(data_dir, num_test_traj, 'test', window)
 
     return train_X, train_Y, val_X, val_Y, test_X, test_Y
-
-def plot_layer(test_layer, actual_layer, save_loc):
-    test_rho_img = geom.GeometricImage(test_layer[(0,0)][0,0], 0, test_layer.D, test_layer.is_torus)
-    test_vel_img = geom.GeometricImage(test_layer[(1,0)][0,0], 0, test_layer.D, test_layer.is_torus)
-
-    actual_rho_img = geom.GeometricImage(actual_layer[(0,0)][0,0], 0, actual_layer.D, actual_layer.is_torus)
-    actual_vel_img = geom.GeometricImage(actual_layer[(1,0)][0,0], 0, actual_layer.D, actual_layer.is_torus)
-
-    fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(24,12)) # 8 per col, 6 per row, (cols,rows)
-    utils.plot_image(test_rho_img, ax=axes[0,0], title='Predicted Rho', colorbar=True)
-    utils.plot_image(actual_rho_img, ax=axes[0,1], title='Actual Rho', colorbar=True)
-    utils.plot_image(actual_rho_img - test_rho_img, ax=axes[0,2], title='Difference', colorbar=True)
-
-    utils.plot_image(test_vel_img, ax=axes[1,0], title='Predicted Velocity')
-    utils.plot_image(actual_vel_img, ax=axes[1,1], title='Actual Velocity')
-    utils.plot_image(actual_vel_img - test_vel_img, ax=axes[1,2], title='Difference')
-
-    plt.savefig(save_loc)
-    plt.close(fig)
 
 def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, has_aux=False):
     assert net is not None
@@ -205,32 +199,6 @@ def train_and_eval(
     )
     print(f'Test Loss: {test_loss}')
 
-    # keeping this for now
-    # i = 0
-    # err = 0
-    # while (err < 100):
-    #     key, subkey = random.split(key)
-    #     delta_img = net(params, test_img, subkey, False)
-
-    #     # advance the rollout from the current image, plus the calculated delta.
-    #     # The actual image we compare it against is the true next step.
-    #     test_img = geom.BatchLayer.from_vector(test_img.to_vector() + delta_img.to_vector(), test_img)
-    #     actual_img = test_X.get_one(i+1)
-
-    #     err = ml.rmse_loss(test_img.to_vector(), actual_img.to_vector())
-    #     print(f'Rollout Loss step {i}: {err}')
-    #     if ((images_dir is not None) and err < 1):
-    #         plot_layer(test_img, actual_img, f'{images_dir}{model_name}_err_{i}.png')
-    #         imax = i
-
-    #     i += 1
-
-    # if images_dir is not None:
-    #     with imageio.get_writer(f'{images_dir}{model_name}_error.gif', mode='I') as writer:
-    #         for j in range(imax+1):
-    #             image = imageio.imread(f'{images_dir}{model_name}_err_{j}.png')
-    #             writer.append_data(image)
-
     return train_loss[-1], val_loss[-1], test_loss
 
 def handleArgs(argv):
@@ -274,7 +242,7 @@ data_dir, epochs, lr, batch_size, train_traj, val_traj, test_traj, seed, save_fi
 
 D = 2
 N = 128
-window = 4 # how many steps to look back to predict the next step
+window = 2 # how many steps to look back to predict the next step
 key = random.PRNGKey(time.time_ns()) if (seed is None) else random.PRNGKey(seed)
 
 # an attempt to reduce recompilation, but I don't think it actually is working
@@ -350,4 +318,3 @@ results = ml.benchmark(
 )
 
 print(results)
-

@@ -1175,7 +1175,8 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
             and the value is a function that takes (rand_key, tree) and returns the tree of initialized params.
     """
     rand_key, subkey = random.split(rand_key)
-    params = net_func(defaultdict(lambda: None), input_layer, subkey, True, return_params=True)[-1]
+    with jax.disable_jit(): # this could be slow, lets see?
+        params = net_func(defaultdict(lambda: None), input_layer, subkey, True, return_params=True)[-1]
 
     initializers = {
         BATCH_NORM: batch_norm_init,

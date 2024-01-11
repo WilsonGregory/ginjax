@@ -75,7 +75,7 @@ def get_data_layers(
 
     if len(all_uv) < num_trajectories:
         print(
-            f'WARNING merge_h5s_into_layer: wanted {num_trajectories} {data_class} trajectories, ' \
+            f'WARNING get_data_layers: wanted {num_trajectories} {data_class} trajectories, ' \
             f'but only found {len(all_uv)}',
         )
         num_trajectories = len(all_uv)
@@ -302,7 +302,6 @@ models = [
                 upsample_filters=upsample_filters,
                 depth=32, # 64=41M, 48=23M, 32=10M
             ),
-            # lr=4e-4,
             model_name='unet2015_equiv',
         ),
     ),

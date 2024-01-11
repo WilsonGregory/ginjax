@@ -319,13 +319,13 @@ models = [
         'U-Net 2015',
         partial(
             train_and_eval,
-            net=partial(models.unet2015, depth=32),
-            model_name='unet2015_depth32',
+            net=models.unet2015,
+            model_name='unet2015',
             has_aux=True,
         ),
     ),
     (
-        'U-Net 2015 equiv lr=4e-4',
+        'U-Net 2015 equiv',
         partial(
             train_and_eval,
             net=partial(
@@ -334,8 +334,7 @@ models = [
                 upsample_filters=upsample_filters,
                 depth=32, # 64=41M, 48=23M, 32=10M
             ),
-            lr=4e-4,
-            model_name='unet2015_equiv_4e-4',
+            model_name='unet2015_equiv',
         ),
     ),
 ]

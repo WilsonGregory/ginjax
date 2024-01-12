@@ -966,30 +966,24 @@ def norm(D, data):
     """
     return jnp.linalg.norm(data.reshape(data.shape[:D] + (-1,)), axis=D)
 
+@partial(jax.jit, static_argnums=[0,2])
 def max_pool(D, image_data, patch_len):
-    """
-    Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined by
-    the norm of the pixel. Note that for scalars, this will be the absolute value of the pixel.
-    args:
-        patch_len (int): the side length of the patches, must evenly divide all spatial dims
-    """
     spatial_dims, k = parse_shape(image_data.shape, D)
-    # ensure patch_len evenly divides all sides
-    assert reduce(lambda carry, N: carry and (N % patch_len == 0), spatial_dims, True)
 
-    plus_Ns = tuple(-1*(N - int(N / patch_len)) for N in spatial_dims)
-    norm_data = norm(D, image_data)
+    patches = jax.lax.conv_general_dilated_patches(
+        image_data.reshape((1,) + spatial_dims + (-1,)).astype('float32'), # NHWDC
+        filter_shape=(patch_len,)*D, # filter_shape
+        window_strides=(patch_len,)*D,
+        padding=((0,0),)*D, # padding
+        dimension_numbers=('NHWDC', 'OIHWD', 'NCHWD') if D==3 else ('NHWC', 'OIHW', 'NCHW')
+    )[0] # no batch
 
-    idxs = jnp.array(list(it.product(range(patch_len), repeat=D)))
-    max_idxs = []
-    for base in it.product(*list(range(0, N, patch_len) for N in spatial_dims)):
-        block_idxs = jnp.array(base) + idxs
-        max_hash_idx = jnp.argmax(norm_data[hash(D, norm_data, block_idxs)])
-        max_idxs.append(block_idxs[max_hash_idx])
+    new_spatial_dims = patches.shape[1:]
+    patches = patches.reshape((D**k,patch_len**D,-1))
 
-    new_spatial_dims = tuple(N + plus_N for N,plus_N in zip(spatial_dims, plus_Ns))
-
-    return image_data[hash(D, image_data, jnp.array(max_idxs))].reshape(new_spatial_dims + (D,)*k)
+    # out_axes = 0 so the spatial dims are transposed to the front
+    vmap_max_norm_tensor = vmap(lambda patch: patch[:,jnp.argmax(jnp.linalg.norm(patch, axis=0))], in_axes=2)
+    return vmap_max_norm_tensor(patches).reshape(new_spatial_dims + (D,)*k)
 
 @partial(jit, static_argnums=[0,2])
 def average_pool(D, image_data, patch_len):

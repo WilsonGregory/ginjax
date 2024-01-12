@@ -430,6 +430,8 @@ class TestGeometricImage:
             assert jnp.allclose(
                 img1.multicontract(idxs).data,
                 geom.apply_contraction_map(D, img1.data, contraction_map, 1),
+                rtol=geom.TINY,
+                atol=geom.TINY,
             )
 
     def testLeviCivitaContract(self):

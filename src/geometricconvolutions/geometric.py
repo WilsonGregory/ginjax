@@ -968,6 +968,14 @@ def norm(D, data):
 
 @partial(jax.jit, static_argnums=[0,2])
 def max_pool(D, image_data, patch_len):
+    """
+    Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined by
+    the norm of the pixel. Note that for scalars, this will be the absolute value of the pixel.
+    args:
+        D (int): the dimension of the space
+        image_data (jnp.array): the image data
+        patch_len (int): the side length of the patches, must evenly divide all spatial dims
+    """
     spatial_dims, k = parse_shape(image_data.shape, D)
 
     patches = jax.lax.conv_general_dilated_patches(

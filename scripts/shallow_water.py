@@ -45,6 +45,7 @@ def get_data_layers(
     data_class: str, 
     window: int, 
     velocity_form: bool = True,
+    is_torus: bool = True,
 ) -> tuple:
     """
     Given a specified dataset, load the data into layers where the layer_X has a channel per image in the
@@ -55,6 +56,7 @@ def get_data_layers(
         data_class (str): type of data, either train, valid, or test
         window (int): the lookback window, how many steps we look back to predict the next one
         velocity_form (bool): whether to use the velocity/pressure of the output, or the pressure/vorticity form
+        is_torus (bool): whether to create the layers on the torus
     """
     all_seeds = sorted(os.listdir(f'{data_dir}/{data_class}/'))
 
@@ -90,11 +92,11 @@ def get_data_layers(
     output_pres = all_pres[:num_trajectories, window:].reshape((-1, 1) + spatial_dims)
     output_vor = all_vor[:num_trajectories, window:].reshape((-1, 1) + spatial_dims)
 
-    layer_X = geom.BatchLayer({ (0,0): input_pres, (1,0): input_uv }, D, True)
+    layer_X = geom.BatchLayer({ (0,0): input_pres, (1,0): input_uv }, D, is_torus)
     if velocity_form:
-        layer_Y = geom.BatchLayer({ (0,0): output_pres, (1,0): output_uv }, D, True)
+        layer_Y = geom.BatchLayer({ (0,0): output_pres, (1,0): output_uv }, D, is_torus)
     else:
-        layer_Y = geom.BatchLayer({ (0,0): output_pres, (0,1): output_vor }, D, True)
+        layer_Y = geom.BatchLayer({ (0,0): output_pres, (0,1): output_vor }, D, is_torus)
 
     return layer_X, layer_Y
 
@@ -181,7 +183,7 @@ def train_and_eval(
 
     if save_params is not None:
         jnp.save(
-            f'{save_params}{model_name}_trajectories{train_X.L // 10}_e{epochs}_params.npy', 
+            f'{save_params}{model_name}_L{train_X.L}_e{epochs}_params.npy', 
             { 'params': params, 'batch_stats': None if (batch_stats is None) else dict(batch_stats) },
         )
 
@@ -267,22 +269,22 @@ train_and_eval = partial(
 )
 
 models = [
-    (
-        'Dil-ResNet',
-        partial(
-            train_and_eval, 
-            net=models.dil_resnet, 
-            model_name='dil_resnet',
-        ),
-    ),
-    (
-        'Dil-ResNet Equiv',
-        partial(
-            train_and_eval, 
-            net=partial(models.dil_resnet, equivariant=True, conv_filters=conv_filters),
-            model_name='dil_resnet_equiv',
-        ),
-    ),
+    # (
+    #     'Dil-ResNet',
+    #     partial(
+    #         train_and_eval, 
+    #         net=models.dil_resnet, 
+    #         model_name='dil_resnet',
+    #     ),
+    # ),
+    # (
+    #     'Dil-ResNet Equiv',
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(models.dil_resnet, equivariant=True, conv_filters=conv_filters),
+    #         model_name='dil_resnet_equiv',
+    #     ),
+    # ),
     (
         'U-Net 2015',
         partial(

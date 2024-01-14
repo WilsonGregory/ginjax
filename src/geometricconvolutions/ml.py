@@ -3,6 +3,7 @@ import functools
 from collections import defaultdict
 import numpy as np
 import math
+import time
 
 from jax import jit, random, value_and_grad, vmap, checkpoint
 import jax
@@ -16,7 +17,6 @@ import geometricconvolutions.geometric as geom
 
 CONV_OLD = 'conv_old'
 CONV = 'conv'
-NOT_CONV = 'not_conv'
 CHANNEL_COLLAPSE = 'collapse'
 CASCADING_CONTRACTIONS = 'cascading_contractions'
 PARAMED_CONTRACTIONS = 'paramed_contractions'
@@ -80,7 +80,7 @@ def conv_layer(
 
     # map over dilations, then filters
     vmap_sums = vmap(geom.linear_combination, in_axes=(None, 0))
-    vmap_convolve = vmap(geom.convolve, in_axes=(None, 0, 0, None, None, None, None, None))
+    vmap_convolve = vmap(geom.convolve_old, in_axes=(None, 0, 0, None, None, None, None, None))
 
     out_layer = input_layer.empty()
     for (k,parity), prods_group in input_layer.items():
@@ -128,7 +128,7 @@ def get_filter_block_from_invariants(params, input_layer, invariant_filters, out
     the input_layer.
     args:
         params (params tree): the learned params tree
-        input_layer (Layer): input layer so that we know the input depth at each (k,parity) that we need
+        input_layer (BatchLayer): input layer so that we know the input depth at each (k,parity) that we need
         invariant_filters (Layer): layer of invariant filters at each (k,parity) that are linearly combined
             to form the filter blocks that we apply.
         out_depth (int): the output depth of this conv layer
@@ -142,7 +142,7 @@ def get_filter_block_from_invariants(params, input_layer, invariant_filters, out
     filter_layer = {}
     for key, image_block in input_layer.items():
         filter_layer[key] = {}
-        in_depth = image_block.shape[0]
+        in_depth = image_block.shape[1]
 
         if (mold_params):
             params[key] = {}
@@ -162,7 +162,7 @@ def get_filter_block_invariants2(params, input_layer, invariant_filters, target_
     between those two layers.
     args:
         params (params tree): the learned params tree
-        input_layer (Layer): input layer so that we know the input depth at each (k,parity) that we need
+        input_layer (BatchLayer): input layer so that we know the input depth at each (k,parity) that we need
         invariant_filters (Layer): available invariant filters of each (k,parity) that will be used 
         target_keys (tuple of (k,parity) tuples): targeted keys for the output layer
         out_depth (int): the output depth of this conv layer
@@ -176,7 +176,7 @@ def get_filter_block_invariants2(params, input_layer, invariant_filters, target_
     filter_layer = {}
     for key, image_block in input_layer.items():
         filter_layer[key] = {}
-        in_depth = image_block.shape[0]
+        in_depth = image_block.shape[1] # this is an un-vmapped BatchLayer, so (batch,in_c,spatial,tensors)
 
         if (mold_params):
             params[key] = {}
@@ -203,7 +203,7 @@ def get_filter_block(params, input_layer, M, out_depth, filter_key_set=None, mol
     size of the input_layer.
     args:
         params (params tree): the learned params tree
-        input_layer (Layer): input layer so that we know the input depth at each (k,parity) that we need
+        input_layer (BatchLayer): input layer so that we know the input depth at each (k,parity) that we need
         M (int): the edge length of the filters
         out_depth (int): the output depth of this conv layer
         filter_key_set (frozenset of 2-tuples of (k,parity)): a set of the type of filters to build
@@ -218,7 +218,7 @@ def get_filter_block(params, input_layer, M, out_depth, filter_key_set=None, mol
     filter_layer = {}
     for key, image_block in input_layer.items():
         filter_layer[key] = {}
-        in_depth = image_block.shape[0]
+        in_depth = image_block.shape[1]
 
         if mold_params:
             params[key] = {}
@@ -232,7 +232,7 @@ def get_filter_block(params, input_layer, M, out_depth, filter_key_set=None, mol
     
     return filter_layer, params
 
-def conv_layer_build_filters(
+def batch_conv_layer(
     params, 
     input_layer,
     filter_info, 
@@ -302,49 +302,15 @@ def conv_layer_build_filters(
             this_params[BIAS] = {}
         for (k,parity), image_block in layer.items():
             if (mold_params):
-                this_params[BIAS][(k,parity)] = jnp.ones(depth)
+                this_params[BIAS][(k,parity)] = jnp.ones((1,depth) + image_block.shape[2:])
 
-            biased_image = vmap(lambda image,p: image + p)(image_block, this_params[BIAS][(k,parity)]) #add a single scalar
-            out_layer.append(k, parity, biased_image)
+            out_layer.append(k, parity, image_block + this_params[BIAS][(k,parity)])
     else:
         out_layer = layer
 
     params = update_params(params, params_idx, this_params, mold_params)
 
     return out_layer, params
-
-def batch_conv_layer(
-    params, 
-    input_layer, 
-    filter_info, 
-    depth,
-    target_key=None, 
-    max_k=None,
-    bias=None,
-    mold_params=False,
-    # Convolve kwargs that are passed directly along
-    stride=None, 
-    padding=None,
-    lhs_dilation=None, 
-    rhs_dilation=None,
-):
-    """
-    Vmap wrapper for conv_layer_build_filters that maps over the batch in the input layer.
-    """
-    return vmap(conv_layer_build_filters, in_axes=((None,) + (0,) + (None,)*10), out_axes=(0, None))(
-        params,
-        input_layer, #vmapped over this arg
-        filter_info, 
-        depth,
-        target_key, 
-        max_k,
-        bias,
-        mold_params,
-        stride, 
-        padding,
-        lhs_dilation, 
-        rhs_dilation,
-    )
 
 @functools.partial(jit, static_argnums=[2,3,4,5,6,7])
 def conv_layer_alt(
@@ -377,9 +343,6 @@ def conv_layer_alt(
         lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D
         rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D
     """
-    # map over filters
-    vmap_convolve = vmap(geom.depth_convolve, in_axes=(None, None, 0, None, None, None, None, None))
-
     out_layer = input_layer.empty()
     for (k,parity), images_block in input_layer.items():
         for (filter_k,filter_parity), filter_group in conv_filters[(k,parity)].items():
@@ -390,7 +353,7 @@ def conv_layer_alt(
                 ):
                     continue
             
-            convolved_images_block = vmap_convolve(
+            convolved_images_block = geom.convolve(
                 input_layer.D, 
                 images_block, 
                 filter_group, 
@@ -408,7 +371,7 @@ def conv_layer_alt(
     return out_layer
 
 @functools.partial(jit, static_argnums=[3,4,5,6,7,8,9,10])
-def conv_contract(
+def _batch_conv_contract(
     params, 
     input_layer,
     invariant_filters, 
@@ -453,9 +416,6 @@ def conv_contract(
     )
     this_params[CONV_FIXED] = filter_block_params
 
-    # map over filters
-    vmap_convolve = vmap(geom.depth_convolve_contract, in_axes=(None, None, 0, None, None, None, None, None))
-
     layer = input_layer.empty()
     for (k,parity), images_block in input_layer.items():
         for target_k, target_parity in target_keys:
@@ -464,7 +424,7 @@ def conv_contract(
             
             filter_block = filter_dict[(k,parity)][(target_k, target_parity)]
 
-            convolve_contracted_imgs = vmap_convolve(
+            convolve_contracted_imgs = geom.convolve_contract(
                 input_layer.D, 
                 images_block, 
                 filter_block, 
@@ -486,10 +446,9 @@ def conv_contract(
             this_params[BIAS] = {}
         for (k,parity), image_block in layer.items():
             if (mold_params):
-                this_params[BIAS][(k,parity)] = jnp.ones(depth)
+                this_params[BIAS][(k,parity)] = jnp.ones((1,depth) + image_block.shape[2:])
 
-            biased_image = vmap(lambda image,p: image + p)(image_block, this_params[BIAS][(k,parity)]) #add a single scalar
-            out_layer.append(k, parity, biased_image)
+            out_layer.append(k, parity, image_block + this_params[BIAS][(k,parity)])
     else:
         out_layer = layer
 
@@ -511,7 +470,7 @@ def batch_conv_contract(
     lhs_dilation=None, 
     rhs_dilation=None,
 ):
-    return vmap(conv_contract, in_axes=((None, 0) + (None,)*9), out_axes=(0, None))(
+    return _batch_conv_contract(
         params, 
         input_layer, 
         invariant_filters, 
@@ -524,72 +483,6 @@ def batch_conv_contract(
         lhs_dilation,
         rhs_dilation,
     )
-
-@functools.partial(jit, static_argnums=[3,4,5,6])
-def not_conv_layer(
-    params,
-    input_layer, 
-    invariant_filters,
-    depth,
-    target_key=None, 
-    max_k=None,
-    mold_params=False,
-):
-    """
-    This is a convolution layer where for each input pixel, the filter can be different. This means that
-    it is not an identical function at each pixel, so it is not translation equivariant. However, by 
-    constructing the filters from B_d-invariant filters, we can make a B_d-equivariant layer.
-    """
-    params_idx, this_params = get_layer_params(params, mold_params, NOT_CONV)
-
-    filter_block, filter_block_params = get_filter_block_from_invariants(
-        this_params[CONV_FIXED],
-        input_layer,
-        invariant_filters,
-        depth,
-        mold_params,
-    )
-    this_params[CONV_FIXED] = filter_block_params
-
-    # map over filters, out depth
-    vmap_not_convolve = vmap(geom.depth_not_convolve, in_axes=(None, None, 0, None))
-
-    out_layer = input_layer.empty()
-    for (k,parity), images_block in input_layer.items():
-        for (filter_k,filter_parity), filter_group in filter_block[(k,parity)].items():
-            if (target_key is not None):
-                if(
-                    ((k + target_key[0] - filter_k) % 2 != 0) or #if resulting k cannot be contracted to desired
-                    ((parity + filter_parity) % 2 != target_key[1]) #if resulting parity does not match desired
-                ):
-                    continue
-
-            convolved_images_block = vmap_not_convolve(
-                input_layer.D, 
-                images_block, 
-                filter_group, 
-                input_layer.is_torus,
-            )
-            out_layer.append(k + filter_k, (parity + filter_parity) % 2, convolved_images_block)
-
-    if (max_k is not None):
-        out_layer = order_cap_layer(out_layer, max_k)
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    return out_layer, params
-
-def batch_not_conv_layer(
-    params,
-    input_layer, 
-    invariant_filters,
-    depth,
-    target_key=None, 
-    max_k=None,
-    mold_params=False,
-):
-    vmap_not_conv = vmap(not_conv_layer, in_axes=(None, 0, None, None, None, None, None), out_axes=(0,None))
-    return vmap_not_conv(params, input_layer, invariant_filters, depth, target_key, max_k, mold_params)
 
 def get_bias_image(params, param_idx, x):
     """
@@ -1042,13 +935,13 @@ def batch_layer_norm(params, input_layer, eps=1e-05, mold_params=False):
     vmap_layer_norm = vmap(layer_norm, in_axes=(None, 0, None, None), out_axes=(0, None))
     return vmap_layer_norm(params, input_layer, eps, mold_params)
 
-@functools.partial(jax.jit, static_argnums=1)
-def max_pool_layer(input_layer, patch_len):
-    vmap_max_pool = jax.vmap(geom.max_pool, in_axes=(None, 0, None))
+@functools.partial(jax.jit, static_argnums=[1,2])
+def max_pool_layer(input_layer, patch_len, use_norm=True):
+    vmap_max_pool = jax.vmap(geom.max_pool, in_axes=(None, 0, None, None))
 
     out_layer = input_layer.empty()
     for (k,parity), image_block in input_layer.items():
-        out_layer.append(k, parity, vmap_max_pool(input_layer.D, image_block, patch_len))
+        out_layer.append(k, parity, vmap_max_pool(input_layer.D, image_block, patch_len, use_norm))
 
     return out_layer
 
@@ -1184,7 +1077,6 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
         CHANNEL_COLLAPSE: channel_collapse_init,
         CONV: functools.partial(conv_init, D=input_layer.D),
         CONV_OLD: conv_old_init,
-        NOT_CONV: functools.partial(not_conv_init, D=input_layer.D),
         CASCADING_CONTRACTIONS: cascading_contractions_init,
         PARAMED_CONTRACTIONS: paramed_contractions_init,
         EQUIV_DENSE: equiv_dense_init,
@@ -1271,20 +1163,6 @@ def conv_old_init(rand_key, tree):
         for filter_key, params_block in d.items():
             rand_key, subkey = random.split(rand_key)
             out_params[key][filter_key] = 0.1*random.normal(subkey, shape=params_block.shape)
-
-    return out_params
-
-def not_conv_init(rand_key, tree, D):
-    out_params = {}
-    params = {}
-    for key, d in tree[CONV_FIXED].items():
-        params[key] = {}
-        for filter_key, filter_block in d.items():
-            rand_key, subkey = random.split(rand_key)
-            bound = 1/jnp.sqrt(filter_block.shape[1]*(filter_block.shape[2]))
-            params[key][filter_key] = random.uniform(subkey, shape=filter_block.shape, minval=-bound, maxval=bound)
-
-    out_params[CONV_FIXED] = params
 
     return out_params
 
@@ -1485,15 +1363,17 @@ class StopCondition:
         self.best_params = None
         self.verbose = verbose
 
-    def stop(self, params, current_epoch, train_loss, val_loss):
+    def stop(self, params, current_epoch, train_loss, val_loss, batch_time):
         pass
 
-    def log_status(self, epoch, train_loss, val_loss):
+    def log_status(self, epoch, train_loss, val_loss, batch_time):
         if (train_loss is not None):
             if (val_loss is not None):
-                print(f'Epoch {epoch} Train: {train_loss:.7f} Val: {val_loss:.7f}')
+                print(
+                    f'Epoch {epoch} Train: {train_loss:.7f} Val: {val_loss:.7f} Batch time: {batch_time:.5f}',
+                )
             else:
-                print(f'Epoch {epoch} Train: {train_loss:.7f}')
+                print(f'Epoch {epoch} Train: {train_loss:.7f} Batch time: {batch_time:.5f}')
 
 class EpochStop(StopCondition):
     # Stop when enough epochs have passed.
@@ -1502,14 +1382,14 @@ class EpochStop(StopCondition):
         super(EpochStop, self).__init__(verbose=verbose)
         self.epochs = epochs
 
-    def stop(self, params, current_epoch, train_loss, val_loss) -> bool:
+    def stop(self, params, current_epoch, train_loss, val_loss, batch_time) -> bool:
         self.best_params = params
 
         if (
             self.verbose == 2 or
             (self.verbose == 1 and (current_epoch % (self.epochs // np.min([10,self.epochs])) == 0))
         ):
-            self.log_status(current_epoch, train_loss, val_loss)
+            self.log_status(current_epoch, train_loss, val_loss, batch_time)
 
         return current_epoch >= self.epochs
     
@@ -1523,7 +1403,7 @@ class TrainLoss(StopCondition):
         self.best_train_loss = jnp.inf
         self.epochs_since_best = 0
 
-    def stop(self, params, current_epoch, train_loss, val_loss) -> bool:
+    def stop(self, params, current_epoch, train_loss, val_loss, batch_time) -> bool:
         if (train_loss is None):
             return False
         
@@ -1533,7 +1413,7 @@ class TrainLoss(StopCondition):
             self.epochs_since_best = 0
 
             if (self.verbose >= 1):
-                self.log_status(current_epoch, train_loss, val_loss)
+                self.log_status(current_epoch, train_loss, val_loss, batch_time)
         else:
             self.epochs_since_best += 1
 
@@ -1549,7 +1429,7 @@ class ValLoss(StopCondition):
         self.best_val_loss = jnp.inf
         self.epochs_since_best = 0
 
-    def stop(self, params, current_epoch, train_loss, val_loss) -> bool:
+    def stop(self, params, current_epoch, train_loss, val_loss, batch_time) -> bool:
         if (val_loss is None):
             return False
         
@@ -1559,7 +1439,7 @@ class ValLoss(StopCondition):
             self.epochs_since_best = 0
 
             if (self.verbose >= 1):
-                self.log_status(current_epoch, train_loss, val_loss)
+                self.log_status(current_epoch, train_loss, val_loss, batch_time)
         else:
             self.epochs_since_best += 1
 
@@ -1668,7 +1548,10 @@ def train(
     epoch_loss = None
     train_loss = []
     val_loss = []
-    while (not stop_condition.stop(params, epoch, epoch_loss, epoch_val_loss)):
+    batch_times = []
+    while (
+        not stop_condition.stop(params, epoch, epoch_loss, epoch_val_loss, jnp.mean(jnp.array(batch_times)))
+    ):
         if noise_stdev:
             rand_key, subkey = random.split(rand_key)
             train_X = add_noise(X, noise_stdev, subkey)
@@ -1678,8 +1561,10 @@ def train(
         rand_key, subkey = random.split(rand_key)
         X_batches, Y_batches = get_batch_layer(train_X, Y, batch_size, subkey, devices)
         epoch_loss = 0
+        batch_times = []
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             rand_key, subkey = random.split(rand_key)
+            start_time = time.time()
             if (has_aux):
                 (pmap_loss_val, aux_data), pmap_grads = pmap_loss_grad(
                     params, 
@@ -1691,7 +1576,8 @@ def train(
                 )
             else:
                 pmap_loss_val, pmap_grads = pmap_loss_grad(params, X_batch, Y_batch, subkey, True)
-
+            
+            batch_times.append(time.time() - start_time)
             updates, opt_state = optimizer.update(grads_mean(pmap_grads), opt_state, params)
             params = optax.apply_updates(params, updates)
             epoch_loss += jnp.mean(pmap_loss_val)

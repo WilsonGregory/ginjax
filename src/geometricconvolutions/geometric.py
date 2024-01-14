@@ -475,26 +475,26 @@ def hash(D, image, indices):
     spatial_dims = jnp.array(parse_shape(image.shape, D)[0]).reshape((1,D))
     return tuple(jnp.remainder(indices, spatial_dims).transpose().astype(int))
 
-def get_torus_expanded(D, image, filter_image, dilation):
+def get_torus_expanded(D, image, filter_spatial_dims, dilation):
         """
         For a particular filter, expand the image so that we no longer have to do convolutions on the torus, we are
         just doing convolutions on the expanded image and will get the same result. Return a new GeometricImage
         args:
             D (int): dimension of the image
             image (jnp.array): image data
-            filter_image (jnp.array): filter data, how much is expanded depends on filter_image.m
+            filter_spatial_dims (tuple of ints): the spatial dimensions of the filter
             dilation (int): dilation to apply to each filter dimension D
         """
         spatial_dims, img_k = parse_shape(image.shape, D)
-        filter_spatial_dims, _ = parse_shape(filter_image.shape, D)
         # assert all the filter side lengths are odd
         assert reduce(lambda carry, M: carry and (M % 2 == 1), filter_spatial_dims, True)
 
-        paddings = tuple(((M - 1) // 2) * dilation for M in filter_spatial_dims)
-        ranges = list(range(-padding, N+padding) for N, padding in zip(spatial_dims, paddings))
-        indices = jnp.array(list(it.product(*ranges)), dtype=int)
+        padding = lambda M: ((M - 1) // 2) * dilation
+        ranges = list(jnp.arange(-padding(M), N+padding(M)) for N, M in zip(spatial_dims, filter_spatial_dims))
+        mesh = jnp.stack(jnp.meshgrid(*ranges, indexing='ij'), axis=-1)
+        new_spatial_dims = mesh.shape[:D]
+        indices = mesh.reshape((np.multiply.reduce(new_spatial_dims),D))
 
-        new_spatial_dims = tuple(img_N + 2*padding for img_N, padding in zip(spatial_dims, paddings))
         return image[hash(D, image, indices)].reshape(new_spatial_dims + (D,)*img_k)
 
 def pre_tensor_product_expand(D, image_a, image_b, dtype=None):
@@ -538,13 +538,16 @@ def pre_tensor_product_expand(D, image_a, image_b, dtype=None):
 
     return image_a_expanded, image_b_expanded
 
-def conv_contract_image_expand(D, image, conv_filter):
+def conv_contract_image_expand(D, image, filter_k):
     """
     For conv_contract, we will be immediately performing a contraction, so we don't need to fully expand
     each tensor, just the k image to the k+k' conv filter.
+    args:
+        D (int): dimension of the space
+        image (jnp.array): image data, shape (in_c,spatial,tensor)
+        filter_k (int): the filter tensor order
     """
-    _, img_k = parse_shape(image.shape, D)
-    _, filter_k = parse_shape(conv_filter.shape, D)
+    _, img_k = parse_shape(image.shape[2:], D)
     k_prime = filter_k - img_k # not to be confused with Coach Prime
     assert k_prime >= 0
 
@@ -562,7 +565,7 @@ def mul(D, image_a, image_b):
     return image_a_data * image_b_data #now that shapes match, do elementwise multiplication
 
 @partial(jit, static_argnums=[0,3,4,5,6,7,8])
-def convolve(
+def convolve_old(
     D,
     image,
     filter_image, 
@@ -626,13 +629,13 @@ def convolve(
         )
 
     if padding == 'TORUS':
-        image = get_torus_expanded(D, image, filter_image, rhs_dilation[0])
+        image = get_torus_expanded(D, image, filter_spatial_dims, rhs_dilation[0])
         padding_literal = ((0,0),)*D
     elif padding == 'VALID':
         padding_literal = ((0,0),)*D
     elif padding == 'SAME':
-        filter_ms = tuple((M - 1) // 2 for M in filter_spatial_dims)
-        padding_literal = tuple((m * dilation,) * 2 for m, dilation in zip(filter_ms,rhs_dilation))
+        padding_f = lambda M, dilation: (((M - 1) // 2) * dilation,) * 2
+        padding_literal = tuple(padding_f(M,dilation) for M,dilation in zip(filter_spatial_dims,rhs_dilation))
     else:
         padding_literal = padding
 
@@ -663,8 +666,8 @@ def convolve(
     )
     return convolved_array.reshape(convolved_array.shape[1:-1] + (D,)*output_k)
 
-@partial(jit, static_argnums=[0,3,4,5,6,7])
-def depth_convolve(
+@partial(jit, static_argnums=[0,3,4,5,6,7,8])
+def convolve(
     D,
     image,
     filter_image, 
@@ -672,20 +675,122 @@ def depth_convolve(
     stride=None, 
     padding=None,
     lhs_dilation=None, 
-    rhs_dilation=None, 
+    rhs_dilation=None,
+    tensor_expand=True,
 ):
     """
-    See convolve for a full description. This function performs depth convolutions by applying a vmap
-    over regular convolutions to the image and filter_image arguments, then taking the sum of the result.
-    Possibly would be faster to do this inside convolve.
+    Here is how this function works:
+    1. Expand the geom_image to its torus shape, i.e. add filter.m cells all around the perimeter of the image
+    2. Do the tensor product (with 1s) to each image.k, filter.k so that they are both image.k + filter.k tensors.
+    That is if image.k=2, filter.k=1, do (D,D) => (D,D) x (D,) and (D,) => (D,D) x (D,) with tensors of 1s
+    3. Now we shape the inputs to work with jax.lax.conv_general_dilated
+    4. Put image in NHWC (batch, height, width, channel). Thus we vectorize the tensor
+    5. Put filter in HWIO (height, width, input, output). Input is 1, output is the vectorized tensor
+    6. Plug all that stuff in to conv_general_dilated, and feature_group_count is the length of the vectorized
+    tensor, and it is basically saying that each part of the vectorized tensor is treated separately in the filter.
+    It must be the case that channel = input * feature_group_count
+    See: https://jax.readthedocs.io/en/latest/notebooks/convolutions.html#id1 and
+    https://www.tensorflow.org/xla/operation_semantics#conv_convolution
+
     args:
-        image (jnp.array): array of shape (depth, (N,)*D, (D,)*img_k)
-        filter_image (jnp.array): array of shape (depth, (N,)*D, (D,)*filter_k)
+        D (int): dimension of the images
+        image (jnp.array): image data, shape (batch,in_c,spatial,tensor)
+        filter_image (jnp.array): the convolution filter, shape (out_c,in_c,spatial,tensor)
+        is_torus (bool): whether the images data is on the torus or not
+        stride (tuple of ints): convolution stride, defaults to (1,)*self.D
+        padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
+            defaults to 'TORUS' if image.is_torus, else 'SAME'
+        lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
+        rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
+        tensor_expand (bool): expand the tensor of image and filter to do tensor convolution, defaults to True.
+            If there is something more complicated going on (e.g. conv_contract), you can skip this step.
+    returns: (jnp.array) convolved_image, shape (batch,out_c,spatial,tensor)
     """
-    assert image.shape[0] == filter_image.shape[0]
-    vmap_convolve = vmap(convolve, in_axes=(None, 0, 0, None, None, None, None, None))
-    res = vmap_convolve(D, image, filter_image, is_torus, stride, padding, lhs_dilation, rhs_dilation)
-    return jnp.sum(res, axis=0)
+    assert (D == 2) or (D == 3)
+    assert image.shape[1] == filter_image.shape[1], f'Second axis (in_channels) for image and filter_image ' \
+        f'must equal, but got image {image.shape} and filter {filter_image.shape}'
+    dtype = 'float32'
+
+    filter_spatial_dims, _ = parse_shape(filter_image.shape[2:], D)
+    out_c, in_c = filter_image.shape[:2] #in_c and out_c are in_channels and out_channels respectively
+    batch = len(image)
+
+    assert not (
+        reduce(lambda carry, N: carry or (N % 2 == 0), filter_spatial_dims, False) and 
+        (padding == 'TORUS' or padding == 'SAME' or padding is None)
+    ), f'convolve: Filters with even sidelengths {filter_spatial_dims} require literal padding, not {padding}'
+
+    if rhs_dilation is None:
+        rhs_dilation = (1,)*D
+
+    if stride is None:
+        stride = (1,)*D
+
+    if padding is None: #if unspecified, infer from is_torus
+        padding = 'TORUS' if is_torus else 'SAME'
+
+    if (lhs_dilation is not None) and isinstance(padding, str):
+        print(
+            'WARNING convolve: lhs_dilation (transposed convolution) should specify padding exactly, ' \
+            'see https://arxiv.org/pdf/1603.07285.pdf for the appropriate cases.'
+        )
+
+    if padding == 'TORUS':
+        vmap_torus_expand = vmap(vmap(get_torus_expanded, in_axes=(None,0,None,None)), in_axes=(None,0,None,None))
+        image = vmap_torus_expand(D, image, filter_spatial_dims, rhs_dilation[0])
+        padding_literal = ((0,0),)*D
+    elif padding == 'VALID':
+        padding_literal = ((0,0),)*D
+    elif padding == 'SAME':
+        padding_f = lambda M, dilation: (((M - 1) // 2) * dilation,) * 2
+        padding_literal = tuple(padding_f(M,dilation) for M,dilation in zip(filter_spatial_dims,rhs_dilation))
+    else:
+        padding_literal = padding
+
+    if tensor_expand:
+        # TODO sort this shit out
+        vmap_tensor_expand = jax.vmap(
+            jax.vmap(
+                jax.vmap(pre_tensor_product_expand, in_axes=(None, 0, 0, None)),
+                in_axes=(None, None, 0, None),
+                out_axes=(None, 0),
+            ),
+            in_axes=(None, 0, None, None),
+            out_axes=(0, None),
+        )
+        img_expanded, filter_expanded = vmap_tensor_expand(D, image, filter_image, dtype)
+    else:
+        img_expanded, filter_expanded = image, filter_image
+
+    _, output_k = parse_shape(filter_expanded.shape[2:], D)
+    channel_length = D**output_k 
+    image_spatial_dims, _ = parse_shape(img_expanded.shape[2:], D)
+
+    # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
+    # (batch,in_c,spatial,tensor) -> (batch,spatial,tensor,in_c)
+    img_formatted = jnp.moveaxis(img_expanded, 1, -1) 
+    # (batch,spatial,tensor,in_c) -> (batch,spatial,tensor*in_c)
+    img_formatted = img_formatted.reshape((batch,) + image_spatial_dims + (channel_length*in_c,))
+
+    # convert filter to HWIO (or HWDIO)
+    # (out_c,in_c,spatial,tensor) -> (spatial,in_c,tensor,out_c)
+    transpose_idxs = tuple(range(2,2+D)) + (1,) + tuple(range(2+D,filter_expanded.ndim)) + (0,)
+    filter_formatted = filter_expanded.transpose(transpose_idxs)
+    # (spatial,in_c,out_c,tensor) -> (spatial,in_c,tensor*out_c)
+    filter_formatted = filter_formatted.reshape(filter_spatial_dims + (in_c,out_c*channel_length))
+
+    convolved_array = jax.lax.conv_general_dilated(
+        img_formatted, #lhs
+        filter_formatted, #rhs
+        stride,
+        padding_literal,
+        lhs_dilation=lhs_dilation,
+        rhs_dilation=rhs_dilation,
+        dimension_numbers=(('NHWC','HWIO','NHWC') if D == 2 else ('NHWDC','HWDIO','NHWDC')),
+        feature_group_count=channel_length, #each tensor component is treated separately
+    )
+    out_shape = convolved_array.shape[:-1] + (D,)*output_k + (out_c,)
+    return jnp.moveaxis(convolved_array.reshape(out_shape), -1, 1) # move out_c to 2nd axis
 
 @partial(jit, static_argnums=[0,3,4,5,6,7])
 def convolve_contract(
@@ -703,10 +808,15 @@ def convolve_contract(
     each from the image and filter. This implementation is slightly more efficient then doing the convolution
     and contraction separately by avoiding constructing the k+k+k' intermediate tensor. See convolve for a
     full description of the convolution including the args.
+    args:
+        image (jnp.array): image data, shape (batch,in_c,spatial,tensor)
+        filter_image (jnp.array): filter data, shape (out_c,in_c,spatial,tensor)
+    returns: (jnp.array) output of shape (batch,out_c,spatial,tensor)
     """
     dtype='float32'
-    _, img_k = parse_shape(image.shape, D)
-    img_expanded = conv_contract_image_expand(D, image, filter_image).astype(dtype)
+    _, img_k = parse_shape(image.shape[2:], D)
+    _, filter_k = parse_shape(filter_image.shape[2:], D)
+    img_expanded = conv_contract_image_expand(D, image, filter_k).astype(dtype)
     convolved_img = convolve(
         D, 
         img_expanded, 
@@ -718,105 +828,8 @@ def convolve_contract(
         rhs_dilation,
         tensor_expand=False,
     )
-    # then sum along first img_k non-spatial axes, this is the contraction
-    return jnp.sum(convolved_img, axis=range(D, D + img_k))
-
-@partial(jit, static_argnums=[0,3,4,5,6,7])
-def depth_convolve_contract(
-    D,
-    image,
-    filter_image, 
-    is_torus,
-    stride=None, 
-    padding=None,
-    lhs_dilation=None, 
-    rhs_dilation=None, 
-):
-    """
-    See convolve_contract for a full description. This function performs depth convolutions by applying a vmap
-    over regular convolutions to the image and filter_image arguments, then taking the sum of the result.
-    Possibly would be faster to do this inside convolve.
-    args:
-        image (jnp.array): array of shape (depth, (N,)*D, (D,)*img_k)
-        filter_image (jnp.array): array of shape (depth, (N,)*D, (D,)*filter_k)
-    """
-    assert image.shape[0] == filter_image.shape[0]
-    vmap_convolve_contract = vmap(convolve_contract, in_axes=(None, 0, 0, None, None, None, None, None))
-    res = vmap_convolve_contract(D, image, filter_image, is_torus, stride, padding, lhs_dilation, rhs_dilation)
-    return jnp.sum(res, axis=0)
-
-@partial(jit, static_argnums=[0,3])
-def not_convolve(
-    D,
-    image,
-    filter_image, 
-    is_torus,
-):
-    """
-    This function is like convolution, but the filter applied to each pixel region of the input image
-    can be different. This means the function is not translation equivariant, but if the filter_image
-    is rotational/reflection invariant, the function is rotationally/reflectionally equivariant.
-    args:
-        D (int): dimension of the images
-        image (jnp.array): image data
-        filter_image (jnp.array): the convolution filter
-        is_torus (bool): whether the images data is on the torus or not
-    """
-    print('WARNING not_convolve: This function is currently experimental and likely does not work!')
-    assert (D == 2) or (D == 3)
-
-    img_N, img_k = parse_shape(image.shape, D)
-    filter_N, filter_k = parse_shape(filter_image.shape[D:], D) # two spatial layers at the front
-    filter_m = (filter_N - (filter_N % 2)) // 2 #odds subtract 1, evens don't
-
-    output_k = img_k + filter_k
-
-    rhs_dilation = (1,)*D #start with simplest case
-
-    padding = 'TORUS' if is_torus else 'SAME'
-
-    if padding == 'TORUS':
-        padded_image = get_torus_expanded(D, image, filter_image[0], rhs_dilation[0])
-    elif padding == 'SAME': #pad with enough zeros so that the size doesn't change
-        padded_image = jnp.zeros((img_N+(2*filter_m),)*D + (D,)*img_k)
-        padded_image = padded_image.at[(slice(filter_m, img_N+filter_m, None),)*D].set(image)
-
-    filter_img_shaped = filter_image.reshape((img_N**D,) + (filter_N,)*D + (D,)*filter_k)
-
-    def scan_f(elem):
-        return jnp.sum(
-            mul(
-                D, 
-                jax.lax.dynamic_slice(padded_image, tuple(elem['idxs']) + (0,)*img_k, (filter_N,)*D + (D,)*img_k), 
-                elem['filter_img'],
-            ),
-            axis=range(D),
-        )
-
-    idxs = jnp.array(list(it.product(range(img_N), repeat=D)))
-    out_img = jax.lax.map(scan_f, { 'idxs': idxs, 'filter_img': filter_img_shaped })
-
-    return out_img.reshape((img_N,)*D + (D,)*output_k)
-
-@partial(jit, static_argnums=[0,3])
-def depth_not_convolve(
-    D,
-    image,
-    filter_image, 
-    is_torus,
-):
-    """
-    See convolve for a full description. This function performs depth convolutions by applying a vmap
-    over regular convolutions to the image and filter_image arguments, then taking the sum of the result.
-    Possibly would be faster to do this inside convolve.
-    args:
-        image (jnp.array): array of shape (depth, (N,)*D, (D,)*img_k)
-        filter_image (jnp.array): array of shape (depth, (N,)*D, (D,)*filter_k)
-    """
-    assert image.shape[0] == filter_image.shape[0]
-    vmap_not_convolve = vmap(not_convolve, in_axes=(None, 0, 0, None)) #vmap over image, filter_image
-    res = vmap_not_convolve(D, image, filter_image, is_torus)
-    return jnp.sum(res, axis=0)
+    # then sum along first img_k tensor axes, this is the contraction
+    return jnp.sum(convolved_img, axis=range(2 + D, 2 + D + img_k))
 
 def get_contraction_indices(initial_k, final_k, swappable_idxs=()):
     """
@@ -966,17 +979,19 @@ def norm(D, data):
     """
     return jnp.linalg.norm(data.reshape(data.shape[:D] + (-1,)), axis=D)
 
-@partial(jax.jit, static_argnums=[0,2])
-def max_pool(D, image_data, patch_len):
+@partial(jax.jit, static_argnums=[0,2,3])
+def max_pool(D, image_data, patch_len, use_norm=True):
     """
-    Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined by
-    the norm of the pixel. Note that for scalars, this will be the absolute value of the pixel.
+    Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined
+    by the norm of the pixel when use_norm is True. Note that for scalars, this will be the absolute value of 
+    the pixel. If you want to use the max instead, set use_norm to False (requires scalar images).
     args:
         D (int): the dimension of the space
         image_data (jnp.array): the image data
         patch_len (int): the side length of the patches, must evenly divide all spatial dims
     """
     spatial_dims, k = parse_shape(image_data.shape, D)
+    assert use_norm or (k == 0)
 
     patches = jax.lax.conv_general_dilated_patches(
         image_data.reshape((1,) + spatial_dims + (-1,)).astype('float32'), # NHWDC
@@ -990,8 +1005,12 @@ def max_pool(D, image_data, patch_len):
     patches = patches.reshape((D**k,patch_len**D,-1))
 
     # out_axes = 0 so the spatial dims are transposed to the front
-    vmap_max_norm_tensor = vmap(lambda patch: patch[:,jnp.argmax(jnp.linalg.norm(patch, axis=0))], in_axes=2)
-    return vmap_max_norm_tensor(patches).reshape(new_spatial_dims + (D,)*k)
+    if use_norm:
+        vmap_max = vmap(lambda patch: patch[:,jnp.argmax(jnp.linalg.norm(patch, axis=0))], in_axes=2)
+    else:
+        vmap_max = vmap(lambda patch: jnp.max(patch), in_axes=2)
+
+    return vmap_max(patches).reshape(new_spatial_dims + (D,)*k)
 
 @partial(jit, static_argnums=[0,2])
 def average_pool(D, image_data, patch_len):
@@ -1001,15 +1020,16 @@ def average_pool(D, image_data, patch_len):
         filter, the stride length is patch_len, and the padding is 'VALID'.
         args:
             D (int): dimension of data
-            image_data (jnp.array): image data
+            image_data (jnp.array): image data, shape (h,w,tensor) or (h,w,d,tensor)
             patch_len (int): the side length of the patches, must evenly divide the sidelength
         """
         spatial_dims,_ = parse_shape(image_data.shape, D)
         assert reduce(lambda carry, N: carry and (N % patch_len == 0), spatial_dims, True)
+        # convolve expects (out_c,in_c,h,w)
+        filter_data = (1/(patch_len ** D)) * jnp.ones((1,1) + (patch_len,)*D)
 
-        filter_data = (1/(patch_len ** D)) * jnp.ones((patch_len,)*D)
-
-        return convolve(D, image_data, filter_data, False, stride=(patch_len,)*D, padding='VALID')
+        # reshape to (1,h,w,tensor) because convolve expects (c,h,w,tensor)
+        return convolve(D, image_data[None,None], filter_data, False, stride=(patch_len,)*D, padding='VALID')[0,0]
 
 # ------------------------------------------------------------------------------
 # PART 5: Define geometric (k-tensor, torus) images.
@@ -1264,8 +1284,8 @@ class GeometricImage:
         """
         convolved_array = convolve(
             self.D, 
-            self.data, 
-            filter_image.data, 
+            self.data[None,None],  # add batch, in_channels axes
+            filter_image.data[None,None], # add out_channels, in_channels axes
             self.is_torus,
             stride,
             padding,
@@ -1273,21 +1293,27 @@ class GeometricImage:
             rhs_dilation,
         )
         return self.__class__(
-            convolved_array, 
+            convolved_array[0,0], # ignore batch, out_channels axes
             self.parity + filter_image.parity, 
             self.D, 
             self.is_torus,
         )
 
-    @partial(jit, static_argnums=1)
-    def max_pool(self, patch_len):
+    @partial(jit, static_argnums=[1,2])
+    def max_pool(self, patch_len, use_norm=True):
         """
-        Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined by
-        the norm of the pixel. Note that for scalars, this will be the absolute value of the pixel.
+         Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined
+        by the norm of the pixel when use_norm is True. Note that for scalars, this will be the absolute value of 
+        the pixel. If you want to use the max instead, set use_norm to False (requires scalar images).
         args:
             patch_len (int): the side length of the patches, must evenly divide all spatial dims
         """
-        return self.__class__(max_pool(self.D, self.data, patch_len), self.parity, self.D, self.is_torus)
+        return self.__class__(
+            max_pool(self.D, self.data, patch_len, use_norm), 
+            self.parity, 
+            self.D,
+            self.is_torus,
+        )
 
     @partial(jit, static_argnums=1)
     def average_pool(self, patch_len):

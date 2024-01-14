@@ -66,7 +66,7 @@ def unet2015(params, layer, key, train, batch_stats=None, depth=64, activation_f
             train, 
             num_conv, 
             [{ 'type': 'free', 'M': 3, 'filter_key_set': { (0,0) } }], # conv_args
-            { 'depth': depth*(2**downsample) }, # conv_kwargs
+            { 'depth': depth*(2**downsample), 'padding': 'SAME' }, # conv_kwargs
             batch_stats,
             batch_stats_idx,
             activation_f,
@@ -82,7 +82,7 @@ def unet2015(params, layer, key, train, batch_stats=None, depth=64, activation_f
         train, 
         num_conv, 
         [{ 'type': 'free', 'M': 3, 'filter_key_set': { (0,0) } }], # conv_args
-        { 'depth': depth*(2**num_downsamples) }, # conv_kwargs
+        { 'depth': depth*(2**num_downsamples), 'padding': 'SAME' }, # conv_kwargs
         batch_stats,
         batch_stats_idx,
         activation_f,
@@ -111,7 +111,7 @@ def unet2015(params, layer, key, train, batch_stats=None, depth=64, activation_f
             train, 
             num_conv, 
             [{ 'type': 'free', 'M': 3, 'filter_key_set': { (0,0) } }], # conv_args
-            { 'depth': depth*(2**upsample) }, # conv_kwargs
+            { 'depth': depth*(2**upsample), 'padding': 'SAME' }, # conv_kwargs
             batch_stats,
             batch_stats_idx,
             activation_f,
@@ -123,6 +123,7 @@ def unet2015(params, layer, key, train, batch_stats=None, depth=64, activation_f
         layer,
         { 'type': 'free', 'M': 3, 'filter_key_set': { (0,0) } },
         3, # number of output channels, one scalar and 2 vector
+        padding='SAME',
         mold_params=return_params,
     )
 

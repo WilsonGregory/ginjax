@@ -497,7 +497,7 @@ def get_torus_expanded(D, image, filter_spatial_dims, dilation):
 
         return image[hash(D, image, indices)].reshape(new_spatial_dims + (D,)*img_k)
 
-def pre_tensor_product_expand(D, image_a, image_b, dtype=None):
+def pre_tensor_product_expand(D, image_a, image_b, a_offset = 0, b_offset = 0, dtype=None):
     """
     Rather than take a tensor product of two tensors, we can first take a tensor product of each with a tensor of
     ones with the shape of the other. Then we have two matching shapes, and we can then do whatever operations.
@@ -507,8 +507,8 @@ def pre_tensor_product_expand(D, image_a, image_b, dtype=None):
         image_b (GeometricImage like): other geometric image
         dtype (dtype): if present, cast both outputs to dtype, defaults to None
     """
-    _, img_a_k = parse_shape(image_a.shape, D)
-    _, img_b_k = parse_shape(image_b.shape, D)
+    _, img_a_k = parse_shape(image_a.shape[a_offset:], D)
+    _, img_b_k = parse_shape(image_b.shape[b_offset:], D)
 
     if (img_b_k > 0):
         image_a_expanded = jnp.tensordot(
@@ -520,15 +520,15 @@ def pre_tensor_product_expand(D, image_a, image_b, dtype=None):
         image_a_expanded = image_a
 
     if (img_a_k > 0):
-        break1 = img_a_k + D #after outer product, end of image_b N^D axes
-        #after outer product: [D^ki, N^D, D^kf], convert to [N^D, D^ki, D^kf]
-        # we are trying to expand the ones in the middle (D^ki), so we add them on the front, then move to middle
-        image_b_expanded = jnp.transpose(
-            jnp.tensordot(jnp.ones((D,)*img_a_k), image_b, axes=0),
-            list(
-                tuple(range(img_a_k, break1)) + tuple(range(img_a_k)) + tuple(range(break1, break1 + img_b_k))
-            ),
-        )
+        break1 = img_a_k + b_offset + D #after outer product, end of image_b N^D axes
+        # we want to expand the ones in the middle (D^ki), so add them on the front, then move to middle
+
+        # (b_offset,b_spatial,b_tensor) -> (a_tensor,b_offset,b_spatial,b_tensor)
+        image_b_expanded = jnp.tensordot(jnp.ones((D,)*img_a_k), image_b, axes=0)
+
+        # (a_tensor,b_offset,b_spatial,b_tensor) -> (b_offset,b_spatial,a_tensor,b_tensor)
+        idxs = tuple(range(img_a_k, break1)) + tuple(range(img_a_k)) + tuple(range(break1, break1 + img_b_k))
+        image_b_expanded = image_b_expanded.transpose(idxs)
     else:
         image_b_expanded = image_b
 
@@ -646,17 +646,14 @@ def convolve(
         padding_literal = padding
 
     if tensor_expand:
-        # TODO sort this shit out
-        vmap_tensor_expand = jax.vmap(
-            jax.vmap(
-                jax.vmap(pre_tensor_product_expand, in_axes=(None, 0, 0, None)),
-                in_axes=(None, None, 0, None),
-                out_axes=(None, 0),
-            ),
-            in_axes=(None, 0, None, None),
-            out_axes=(0, None),
+        img_expanded, filter_expanded = pre_tensor_product_expand(
+            D, 
+            image,
+            filter_image, 
+            a_offset=2, 
+            b_offset=2, 
+            dtype=dtype,
         )
-        img_expanded, filter_expanded = vmap_tensor_expand(D, image, filter_image, dtype)
     else:
         img_expanded, filter_expanded = image, filter_image
 

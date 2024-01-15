@@ -73,7 +73,7 @@ def unet2015(params, layer, key, train, batch_stats=None, depth=64, activation_f
             mold_params=return_params,
         )
         residual_layers.append(layer)
-        layer = ml.batch_max_pool(layer, 2)
+        layer = ml.batch_max_pool(layer, 2, use_norm=False)
 
     # bottleneck layer
     layer, params, batch_stats, batch_stats_idx = unet_conv_block(

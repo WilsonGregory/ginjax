@@ -58,7 +58,9 @@ def conv_layer(
 ):
     """
     conv_layer takes a layer of conv filters and a layer of images and convolves them all together, taking
-    parameterized sums of the images prior to convolution to control memory explosion.
+    parameterized sums of the images prior to convolution to control memory explosion. This is an old
+    implementation, you should now use batch_conv_layer for a new method of parameterization, or 
+    batch_conv_contract for the modern GI-Net technique of specifying the target out types.
 
     args:
         params (jnp.array): array of parameters, how learning will happen
@@ -80,7 +82,10 @@ def conv_layer(
 
     # map over dilations, then filters
     vmap_sums = vmap(geom.linear_combination, in_axes=(None, 0))
-    vmap_convolve = vmap(geom.convolve_old, in_axes=(None, 0, 0, None, None, None, None, None))
+
+    # this is old convolve, no batch, in_c, or out_c
+    convolve_old = lambda img, ff: geom.convolve(input_layer.D, img[None,None], ff[None,None], input_layer.is_torus, stride, padding, lhs_dilation, rhs_dilation)[0,0]
+    vmap_convolve = vmap(convolve_old)
 
     out_layer = input_layer.empty()
     for (k,parity), prods_group in input_layer.items():
@@ -101,16 +106,7 @@ def conv_layer(
             res_k = k + filter_k
 
             group_sums = vmap_sums(prods_group, this_params[(k,parity)][(filter_k,filter_parity)])
-            res = vmap_convolve(
-                input_layer.D, 
-                group_sums, 
-                filter_group, 
-                input_layer.is_torus,
-                stride, 
-                padding,
-                lhs_dilation, 
-                rhs_dilation,
-            )
+            res = vmap_convolve(group_sums, filter_group)
             out_layer.append(res_k, (parity + filter_parity) % 2, res)
 
     if (max_k is not None):
@@ -937,6 +933,14 @@ def batch_layer_norm(params, input_layer, eps=1e-05, mold_params=False):
 
 @functools.partial(jax.jit, static_argnums=[1,2])
 def max_pool_layer(input_layer, patch_len, use_norm=True):
+    """
+    Max pool layer on a BatchLayer. Patch len must divide evenly every spatial_dim, and use_norm can
+    only be used with (pseudo-)scalars, and it breaks equivariance for pseudoscalars.
+    args:
+        input_layer (Layer): input data
+        patch_len (int): side of the max pool sides
+        use_norm (bool): whether to use the Frobenius norm on the tensor, defaults to True
+    """
     vmap_max_pool = jax.vmap(geom.max_pool, in_axes=(None, 0, None, None))
 
     out_layer = input_layer.empty()
@@ -945,8 +949,16 @@ def max_pool_layer(input_layer, patch_len, use_norm=True):
 
     return out_layer
 
-def batch_max_pool(input_layer, patch_len):
-    return jax.vmap(max_pool_layer, in_axes=(0,None))(input_layer, patch_len)
+def batch_max_pool(input_layer, patch_len, use_norm=True):
+    """
+    Max pool layer on a BatchLayer. Patch len must divide evenly every spatial_dim, and use_norm can
+    only be used with (pseudo-)scalars, and it breaks equivariance for pseudoscalars.
+    args:
+        input_layer (BatchLayer): input data
+        patch_len (int): side of the max pool sides
+        use_norm (bool): whether to use the Frobenius norm on the tensor, defaults to True
+    """
+    return jax.vmap(max_pool_layer, in_axes=(0,None))(input_layer, patch_len, use_norm)
 
 @functools.partial(jit, static_argnums=1)
 def average_pool_layer(input_layer, patch_len):

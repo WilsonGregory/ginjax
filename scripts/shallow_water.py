@@ -269,22 +269,22 @@ train_and_eval = partial(
 )
 
 models = [
-    # (
-    #     'Dil-ResNet',
-    #     partial(
-    #         train_and_eval, 
-    #         net=models.dil_resnet, 
-    #         model_name='dil_resnet',
-    #     ),
-    # ),
-    # (
-    #     'Dil-ResNet Equiv',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.dil_resnet, equivariant=True, conv_filters=conv_filters),
-    #         model_name='dil_resnet_equiv',
-    #     ),
-    # ),
+    (
+        'Dil-ResNet',
+        partial(
+            train_and_eval, 
+            net=models.dil_resnet, 
+            model_name='dil_resnet',
+        ),
+    ),
+    (
+        'Dil-ResNet Equiv',
+        partial(
+            train_and_eval, 
+            net=partial(models.dil_resnet, equivariant=True, conv_filters=conv_filters),
+            model_name='dil_resnet_equiv',
+        ),
+    ),
     (
         'U-Net 2015',
         partial(

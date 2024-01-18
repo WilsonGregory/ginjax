@@ -44,8 +44,11 @@ def get_data_layers(
     num_trajectories: int, 
     data_class: str, 
     window: int, 
-    velocity_form: bool = True,
-    is_torus: bool = True,
+    pres_vor_form: bool,
+    skip_initial: int = 4,
+    subsample: int = 1,
+    is_torus: bool = (False,True),
+    normstats: dict = None
 ) -> tuple:
     """
     Given a specified dataset, load the data into layers where the layer_X has a channel per image in the
@@ -55,8 +58,12 @@ def get_data_layers(
         seeds (list of str): seeds for the data
         data_class (str): type of data, either train, valid, or test
         window (int): the lookback window, how many steps we look back to predict the next one
-        velocity_form (bool): whether to use the velocity/pressure of the output, or the pressure/vorticity form
-        is_torus (bool): whether to create the layers on the torus
+        pres_vor_form (bool): use pressure/vorticity form instead, defaults to False
+        center_data (bool): whether normalize the pressure/vorticity, 0 No, 1 single_value, 2 pixelwise
+        skip_initial (int): how many initial timesteps to skip, defaults to 4
+        subsample (int): timesteps are 6 simulation hours, can subsample for longer timesteps
+        is_torus (tuple of bools): whether to create the layers on the torus, defaults to (False,True)
+        normstats (dict): means and std to normalize the pressure and vorticity
     """
     all_seeds = sorted(os.listdir(f'{data_dir}/{data_class}/'))
 
@@ -82,25 +89,42 @@ def get_data_layers(
         )
         num_trajectories = len(all_uv)
 
+    if (normstats is not None):
+        all_pres = (all_pres - normstats['pres']['mean']) / normstats['pres']['std'] 
+        # all_vor = (all_vor - normstats['vor']['mean']) / normstats['vor']['std']
+        all_vor = all_vor / normstats['vor']['std'] # can only scale to maintain equivariance
+
+    all_uv = all_uv[:num_trajectories,skip_initial::subsample]
+    all_pres = all_pres[:num_trajectories,skip_initial::subsample]
+    all_vor = all_vor[:num_trajectories,skip_initial::subsample]
+
     # all_uv.shape[1] -1 because the last one is the output
     window_idx = gc_data.rolling_window_idx(all_uv.shape[1]-1, window)
-    input_uv = all_uv[:num_trajectories, window_idx].reshape((-1, window) + spatial_dims + (D,))
-    input_pres = all_pres[:num_trajectories, window_idx].reshape((-1, window) + spatial_dims)
-    # input_vor = all_vor[:num_trajectories, window_idx].reshape((-1, window) + spatial_dims)
+    input_uv = all_uv[:, window_idx].reshape((-1, window) + spatial_dims + (D,))
+    input_pres = all_pres[:, window_idx].reshape((-1, window) + spatial_dims)
 
-    output_uv = all_uv[:num_trajectories, window:].reshape((-1, 1) + spatial_dims + (D,))
-    output_pres = all_pres[:num_trajectories, window:].reshape((-1, 1) + spatial_dims)
-    output_vor = all_vor[:num_trajectories, window:].reshape((-1, 1) + spatial_dims)
+    output_uv = all_uv[:, window:].reshape((-1, 1) + spatial_dims + (D,))
+    output_pres = all_pres[:, window:].reshape((-1, 1) + spatial_dims)
+    output_vor = all_vor[:, window:].reshape((-1, 1) + spatial_dims)
 
     layer_X = geom.BatchLayer({ (0,0): input_pres, (1,0): input_uv }, D, is_torus)
-    if velocity_form:
-        layer_Y = geom.BatchLayer({ (0,0): output_pres, (1,0): output_uv }, D, is_torus)
-    else:
+    if pres_vor_form:
         layer_Y = geom.BatchLayer({ (0,0): output_pres, (0,1): output_vor }, D, is_torus)
+    else:
+        layer_Y = geom.BatchLayer({ (0,0): output_pres, (1,0): output_uv }, D, is_torus)
 
     return layer_X, layer_Y
 
-def get_data(data_dir: str, num_train_traj: int, num_val_traj: int, num_test_traj: int, window: int) -> tuple:
+def get_data(
+    data_dir: str, 
+    num_train_traj: int, 
+    num_val_traj: int, 
+    num_test_traj: int, 
+    window: int, 
+    center_data: int = 0,
+    pres_vor_form: bool = False,
+    subsample: int = 1,
+) -> tuple:
     """
     Get train, val, and test data sets.
     args:
@@ -109,11 +133,45 @@ def get_data(data_dir: str, num_train_traj: int, num_val_traj: int, num_test_tra
         num_val_traj (int): number of validation trajectories
         num_test_traj (int): number of testing trajectories
         window (int): length of the lookback to predict the next step
+        center_data (bool): whether normalize the pressure/vorticity, 0 No, 1 single_value, 2 pixelwise
+        pres_vor_form (bool): use pressure/vorticity form instead, defaults to False
+        subsample (int): timesteps are 6 simulation hours, can subsample for longer timesteps
     """
-    train_X, train_Y = get_data_layers(data_dir, num_train_traj, 'train', window)
-    val_X, val_Y = get_data_layers(data_dir, num_val_traj, 'valid', window)
-    test_X, test_Y = get_data_layers(data_dir, num_test_traj, 'test', window)
+    if center_data==1:
+        normstats = jnp.load(os.path.join(data_dir, 'normstats_single.npy'), allow_pickle=True).item()
+    elif center_data==2:
+        # dictionary, each is shape (1,1,96,192) because its a per pixel adjustment
+        normstats = jnp.load(os.path.join(data_dir, 'normstats_per_pixel.npy'), allow_pickle=True).item()
+    else:
+        normstats = None
 
+    train_X, train_Y = get_data_layers(
+        data_dir, 
+        num_train_traj, 
+        'train', 
+        window, 
+        pres_vor_form, 
+        subsample=subsample, 
+        normstats=normstats,
+    )
+    val_X, val_Y = get_data_layers(
+        data_dir, 
+        num_val_traj, 
+        'valid', 
+        window, 
+        pres_vor_form, 
+        subsample=subsample,
+        normstats=normstats,
+    )
+    test_X, test_Y = get_data_layers(
+        data_dir, 
+        num_test_traj, 
+        'test', 
+        window, 
+        pres_vor_form, 
+        subsample=subsample,
+        normstats=normstats,
+    )
     return train_X, train_Y, val_X, val_Y, test_X, test_Y
 
 def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, has_aux=False):
@@ -123,7 +181,7 @@ def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, 
     else:
         learned_x = net(params, layer_x, key, train)
 
-    spatial_size = np.multiply.reduce(geom.parse_shape(layer_x[(1,0)].shape[2:], layer_x.D)[0])
+    spatial_size = np.multiply.reduce(layer_x.get_spatial_dims())
     batch_smse = jax.vmap(lambda x,y: ml.l2_squared_loss(x.to_vector(), y.to_vector())/spatial_size)
 
     if has_aux:
@@ -152,7 +210,7 @@ def train_and_eval(
         train_X.get_one(),
         subkey,
     )
-    print(f'Model params: {ml.count_params(params)}')
+    print(f'Model params: {ml.count_params(params):,}')
 
     steps_per_epoch = int(np.ceil(train_X.L / batch_size))
 
@@ -166,7 +224,7 @@ def train_and_eval(
         stop_condition=ml.EpochStop(epochs, verbose=2),
         batch_size=batch_size,
         optimizer=optax.adamw(
-            optax.warmup_cosine_decay_schedule(1e-8, lr, 5*steps_per_epoch, epochs*steps_per_epoch, 1e-7),
+            optax.warmup_cosine_decay_schedule(1e-8, lr, 5*steps_per_epoch, 50*steps_per_epoch, 1e-7),
             weight_decay=1e-5,
         ),
         validation_X=val_X,
@@ -221,6 +279,18 @@ def handleArgs(argv):
         type=str, 
         default=None,
     )
+    parser.add_argument(
+        '-center_data', 
+        help='normalize the pressure/vorticity fields, 0 for none, 1 for entire data, 2 for pixel-wise', 
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        '-pres_vor_form', 
+        help='toggle to use pressure/vorticity form, rather than pressure/velocity form', 
+        action='store_true',
+    )
+    parser.add_argument('-subsample', help='how many timesteps per model step, default 1', type=int, default=1)
 
     args = parser.parse_args()
 
@@ -236,11 +306,28 @@ def handleArgs(argv):
         args.save,
         args.load,
         args.images_dir,
+        args.center_data,
+        args.pres_vor_form,
+        args.subsample,
     )
 
 #Main
-args = handleArgs(sys.argv)
-data_dir, epochs, lr, batch_size, train_traj, val_traj, test_traj, seed, save_file, load_file, images_dir = args
+(
+    data_dir, 
+    epochs, 
+    lr, 
+    batch_size, 
+    train_traj, 
+    val_traj, 
+    test_traj, 
+    seed, 
+    save_file, 
+    load_file, 
+    images_dir, 
+    center_data,
+    pres_vor_form,
+    subsample,
+) = handleArgs(sys.argv)
 
 D = 2
 N = 128
@@ -253,12 +340,22 @@ if test_traj is None:
 if val_traj is None:
     val_traj = batch_size
 
-train_X, train_Y, val_X, val_Y, test_X, test_Y = get_data(data_dir, train_traj, val_traj, test_traj, window)
+train_X, train_Y, val_X, val_Y, test_X, test_Y = get_data(
+    data_dir, 
+    train_traj, 
+    val_traj, 
+    test_traj, 
+    window, 
+    center_data,
+    pres_vor_form,
+    subsample,
+)
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 upsample_filters = geom.get_invariant_filters(Ms=[2], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 
+target_keys = tuple(train_Y.keys())
 train_and_eval = partial(
     train_and_eval, 
     lr=lr,
@@ -289,19 +386,21 @@ models = [
         'U-Net 2015',
         partial(
             train_and_eval,
-            net=models.unet2015,
+            net=partial(models.unet2015, target_keys=target_keys),
             model_name='unet2015',
             has_aux=True,
         ),
     ),
     (
-        'U-Net 2015 equiv',
+        'U-Net 2015 Equiv',
         partial(
             train_and_eval,
             net=partial(
-                models.unet2015_equiv, 
+                models.unet2015, 
+                equivariant=True,
                 conv_filters=conv_filters, 
                 upsample_filters=upsample_filters,
+                target_keys=target_keys,
                 depth=32, # 64=41M, 48=23M, 32=10M
             ),
             model_name='unet2015_equiv',
@@ -317,6 +416,7 @@ results = ml.benchmark(
     'Nothing',
     [0],
     num_results=3,
+    num_trials=3,
 )
 
 print(results)

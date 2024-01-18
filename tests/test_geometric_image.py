@@ -57,7 +57,7 @@ class TestGeometricImage:
         assert image4.k == 1
         assert image4.D == 3
         assert image4.parity == 1
-        assert image4.is_torus == False
+        assert image4.is_torus == (False,)*3
 
         # non-square, D=3
         image5 = geom.GeometricImage.zeros((4,5,6), 0, 0, 3)
@@ -72,7 +72,7 @@ class TestGeometricImage:
         assert image1.data.shape == (10,10)
         assert image1.D == 2
         assert image1.k == 0
-        assert image1.is_torus
+        assert image1.is_torus == (True,)*2
 
         image2 = geom.GeometricImage(random.uniform(key, shape=(10,10,2)), 0, 2)
         assert image2.data.shape == (10,10,2)
@@ -85,7 +85,7 @@ class TestGeometricImage:
         assert image3.parity == 1
 
         image4 = geom.GeometricImage(random.uniform(key, shape=(10,10,10)), 0, 3, False)
-        assert not image4.is_torus
+        assert image4.is_torus == (False,)*3
 
         image5 = geom.GeometricImage(random.uniform(key, shape=(4,5)), 0, 2)
         assert image5.spatial_dims == (4,5)
@@ -633,7 +633,7 @@ class TestGeometricImage:
         filter_image = geom.GeometricFilter(jnp.array([[1,0,1],[0,0,0],[1,0,1]], dtype=float), 0, 2)
 
         convolved_image = image1.convolve_with(filter_image)
-        assert not convolved_image.is_torus 
+        assert convolved_image.is_torus  == (False,)*2
         assert jnp.allclose(convolved_image.data, jnp.array([[0,-3,0], [1,5,1], [0,-3,0]]))
 
     def testConvolveDilation(self):
@@ -672,6 +672,46 @@ class TestGeometricImage:
             [-7,4,-4,-2,-4],
             [3,1,3,-1,1],
         ]))
+
+    def testConvolvePartialTorus(self):
+        #did these out by hand, hopefully, my arithmetic is correct...
+        image1 = geom.GeometricImage(
+            jnp.array([
+                [2,1,0], 
+                [0,0,-3], 
+                [2,0,1],
+            ], dtype=float), 
+            0, 
+            2,
+            (False,True),
+        )
+        filter_image = geom.GeometricFilter(jnp.array([[1,0,1], [0,0,0], [1,0,1]], dtype=float), 0, 2)
+
+        convolved_image = image1.convolve_with(filter_image)
+        assert convolved_image.D == 2
+        assert convolved_image.spatial_dims == (3,3)
+        assert convolved_image.k == 0
+        assert convolved_image.parity == 0
+        assert convolved_image.is_torus == (False,True)
+        assert jnp.allclose(convolved_image.data, jnp.array([[-3,-3,0], [2,5,5], [-3,-3,0]], dtype=float))
+
+        image2 = geom.GeometricImage(
+            jnp.array([
+                [2,1,0], 
+                [0,0,-3], 
+                [2,0,1],
+            ], dtype=float), 
+            0, 
+            2,
+            (True,False),
+        )
+        convolved_image2 = image2.convolve_with(filter_image)
+        assert convolved_image2.D == 2
+        assert convolved_image2.spatial_dims == (3,3)
+        assert convolved_image2.k == 0
+        assert convolved_image2.parity == 0
+        assert convolved_image2.is_torus == (True,False)
+        assert jnp.allclose(convolved_image2.data, jnp.array([[0,0,0], [1,5,1], [1,-1,1]], dtype=float))
 
     def testTimesGroupElement(self):
         left90 = jnp.array([[0,-1],[1,0]])
@@ -939,7 +979,7 @@ class TestGeometricImage:
         assert img1_pool2.parity == 0
         assert img1_pool2.D == 2
         assert img1_pool2.k == 0
-        assert img1_pool2.is_torus == True
+        assert img1_pool2.is_torus == (True,)*2
         assert img1_pool2 == geom.GeometricImage(jnp.array([[4,-3],[1,2]]), 0, 2)
 
         img1_pool4 = image1.max_pool(4)
@@ -996,7 +1036,7 @@ class TestGeometricImage:
         assert img1_pool2.parity == 0
         assert img1_pool2.D == 2
         assert img1_pool2.k == 0
-        assert img1_pool2.is_torus == True
+        assert img1_pool2.is_torus == (True,)*2
         assert img1_pool2 == geom.GeometricImage(jnp.array([[4,2],[1,2]]), 0, 2)
 
         img1_pool4 = image1.max_pool(4)
@@ -1045,7 +1085,7 @@ class TestGeometricImage:
         assert img1_pool2.parity == 0
         assert img1_pool2.D == 2
         assert img1_pool2.k == 0
-        assert img1_pool2.is_torus == True
+        assert img1_pool2.is_torus == (True,)*2
         assert img1_pool2 == geom.GeometricImage(jnp.array([[1.25,0],[0.5,1]]), 0, 2)
 
         img1_pool4 = image1.average_pool(4)

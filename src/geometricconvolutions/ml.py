@@ -298,7 +298,7 @@ def batch_conv_layer(
             this_params[BIAS] = {}
         for (k,parity), image_block in layer.items():
             if (mold_params):
-                this_params[BIAS][(k,parity)] = jnp.ones((1,depth) + image_block.shape[2:])
+                this_params[BIAS][(k,parity)] = jnp.ones((1,depth) + (1,)*(image_block.ndim-2))
 
             out_layer.append(k, parity, image_block + this_params[BIAS][(k,parity)])
     else:
@@ -442,7 +442,7 @@ def _batch_conv_contract(
             this_params[BIAS] = {}
         for (k,parity), image_block in layer.items():
             if (mold_params):
-                this_params[BIAS][(k,parity)] = jnp.ones((1,depth) + image_block.shape[2:])
+                this_params[BIAS][(k,parity)] = jnp.ones((1,depth) + (1,)*(image_block.ndim-2))
 
             out_layer.append(k, parity, image_block + this_params[BIAS][(k,parity)])
     else:
@@ -479,20 +479,6 @@ def batch_conv_contract(
         lhs_dilation,
         rhs_dilation,
     )
-
-def get_bias_image(params, param_idx, x):
-    """
-    Get a constant image that acts as a bias in the network.
-    args:
-        params (jnp.array): the parameters
-        param_idx (int): the current index of the parameters
-        x (GeometricImage): the image the gives us the shape/parity/batchness of the bias image we are making
-    """
-    assert x.k == 0, "Currently only works for k=0 tensors in order to maintain equivariance"
-    fill = params[param_idx:(param_idx + (x.D ** x.k))].reshape((x.D,)*x.k)
-    param_idx += x.D ** x.k
-    if (x.__class__ == geom.GeometricImage):
-        return x.__class__.fill(x.spatial_dims, x.parity, x.D, fill, x.is_torus), param_idx
 
 @functools.partial(jit, static_argnums=1)
 def activation_layer(layer, activation_function):
@@ -531,7 +517,7 @@ def kink(x, outer_slope=1, inner_slope=0):
     """
     return jnp.where((x<=-0.5) | (x>=0.5), outer_slope*x, inner_slope*x)
 
-def scalar_activation(layer, activation_function):
+def batch_scalar_activation(layer, activation_function):
     """
     Given a layer, apply the nonlinear activation function to each scalar image_block. If the layer has
     odd parity, then the activation should be an odd function.
@@ -542,9 +528,6 @@ def scalar_activation(layer, activation_function):
         out_layer.append(k, parity, out_image_block)
 
     return out_layer
-
-def batch_scalar_activation(layer, activation_function):
-    return vmap(scalar_activation, in_axes=(0, None))(layer, activation_function)
 
 @functools.partial(jit, static_argnums=[1,3,4])
 def polynomial_layer(params, param_idx, layer, D, poly_degree):
@@ -932,23 +915,6 @@ def batch_layer_norm(params, input_layer, eps=1e-05, mold_params=False):
     return vmap_layer_norm(params, input_layer, eps, mold_params)
 
 @functools.partial(jax.jit, static_argnums=[1,2])
-def max_pool_layer(input_layer, patch_len, use_norm=True):
-    """
-    Max pool layer on a BatchLayer. Patch len must divide evenly every spatial_dim, and use_norm can
-    only be used with (pseudo-)scalars, and it breaks equivariance for pseudoscalars.
-    args:
-        input_layer (Layer): input data
-        patch_len (int): side of the max pool sides
-        use_norm (bool): whether to use the Frobenius norm on the tensor, defaults to True
-    """
-    vmap_max_pool = jax.vmap(geom.max_pool, in_axes=(None, 0, None, None))
-
-    out_layer = input_layer.empty()
-    for (k,parity), image_block in input_layer.items():
-        out_layer.append(k, parity, vmap_max_pool(input_layer.D, image_block, patch_len, use_norm))
-
-    return out_layer
-
 def batch_max_pool(input_layer, patch_len, use_norm=True):
     """
     Max pool layer on a BatchLayer. Patch len must divide evenly every spatial_dim, and use_norm can
@@ -958,7 +924,16 @@ def batch_max_pool(input_layer, patch_len, use_norm=True):
         patch_len (int): side of the max pool sides
         use_norm (bool): whether to use the Frobenius norm on the tensor, defaults to True
     """
-    return jax.vmap(max_pool_layer, in_axes=(0,None))(input_layer, patch_len, use_norm)
+    vmap_max_pool = jax.vmap(
+        jax.vmap(geom.max_pool, in_axes=(None, 0, None, None)), 
+        in_axes=(None, 0, None, None),
+    )
+
+    out_layer = input_layer.empty()
+    for (k,parity), image_block in input_layer.items():
+        out_layer.append(k, parity, vmap_max_pool(input_layer.D, image_block, patch_len, use_norm))
+
+    return out_layer
 
 @functools.partial(jit, static_argnums=1)
 def average_pool_layer(input_layer, patch_len):

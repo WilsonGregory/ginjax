@@ -131,7 +131,7 @@ class TestFunctionalGeometricImage:
         in_c = 1
         out_c = 1
         batch = 1
-        is_torus = True
+        is_torus = (True,)*D
         key = random.PRNGKey(time.time_ns())
         
         for img_k in range(4):
@@ -163,7 +163,7 @@ class TestFunctionalGeometricImage:
         in_c = 1
         out_c = 1
         batch = 1
-        is_torus = True
+        is_torus = (True,)*D
         key = random.PRNGKey(time.time_ns())
         
         for img_k in range(3):
@@ -216,7 +216,7 @@ class TestFunctionalGeometricImage:
         ]])
         assert filter_data.shape == (1,2,3,3)
 
-        convolved_image = geom.convolve(2, image_data, filter_data, is_torus=True)
+        convolved_image = geom.convolve(2, image_data, filter_data, is_torus=(True,)*2)
         assert convolved_image.shape == (1,1,3,3)
         assert jnp.allclose(
             convolved_image,
@@ -256,7 +256,7 @@ class TestFunctionalGeometricImage:
             ], 
         ]])
 
-        convolved_image = geom.convolve(2, image_data, filter_image, is_torus=True)
+        convolved_image = geom.convolve(2, image_data, filter_image, is_torus=(True,)*2)
         assert convolved_image.shape == (1,1,3,3,2)
         assert jnp.allclose(
             convolved_image,

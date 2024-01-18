@@ -219,6 +219,20 @@ def dil_resnet(
     return_params=False,
 ):
     """
+    The DilatedResNet from https://arxiv.org/pdf/2112.15275.pdf. There are 4 dilated resnet blocks. There 
+    7 dilated convoltions that are [1,2,4,8,4,2,1] with biases, each followed by an activation function.
+    The residual layers are then added (not concatenated) back at the end of the block. There is a single 
+    convolution (with bias) at the beginning and end to encode and decode. The 
+    args:
+        params (params tree): the params of the model
+        layer (BatchLayer): input batch layer
+        key (jnp.random key): key for any layers requiring randomization
+        train (bool): whether train mode or test mode, relevant for batch_norm
+        depth (int): the depth of the layers, defaults to 48
+        activaton_f (function): the function that we pass to batch_scalar_activation, defaults to relu
+        equivariant (bool): whether to use the equivariant version of the model, defaults to False
+        conv_filters (Layer): the conv filters used for the equivariant version
+        return_params (bool): whether we are mapping the params, or applying them
     """
     assert layer.D == 2
     num_blocks = 4

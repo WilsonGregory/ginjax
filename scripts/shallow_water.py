@@ -370,7 +370,7 @@ models = [
         'Dil-ResNet',
         partial(
             train_and_eval, 
-            net=models.dil_resnet, 
+            net=partial(models.dil_resnet, depth=128, activation_f=jax.nn.gelu),
             model_name='dil_resnet',
         ),
     ),
@@ -378,7 +378,13 @@ models = [
         'Dil-ResNet Equiv',
         partial(
             train_and_eval, 
-            net=partial(models.dil_resnet, equivariant=True, conv_filters=conv_filters),
+            net=partial(
+                models.dil_resnet, 
+                depth=128, 
+                activation_f=jax.nn.gelu, 
+                equivariant=True, 
+                conv_filters=conv_filters,
+            ),
             model_name='dil_resnet_equiv',
         ),
     ),

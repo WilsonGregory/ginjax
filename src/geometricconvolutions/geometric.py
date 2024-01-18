@@ -475,27 +475,54 @@ def hash(D, image, indices):
     spatial_dims = jnp.array(parse_shape(image.shape, D)[0]).reshape((1,D))
     return tuple(jnp.remainder(indices, spatial_dims).transpose().astype(int))
 
-def get_torus_expanded(D, image, filter_spatial_dims, dilation):
+def get_torus_expanded(D, image, is_torus, filter_spatial_dims, rhs_dilation):
         """
         For a particular filter, expand the image so that we no longer have to do convolutions on the torus, we are
         just doing convolutions on the expanded image and will get the same result. Return a new GeometricImage
         args:
             D (int): dimension of the image
             image (jnp.array): image data
+            is_torus (tuple of bool): d-length tuple of bools specifying which spatial dimensions are toroidal
             filter_spatial_dims (tuple of ints): the spatial dimensions of the filter
-            dilation (int): dilation to apply to each filter dimension D
+            rhs_dilation (tuple of int): dilation to apply to each filter dimension D
         """
         spatial_dims, img_k = parse_shape(image.shape, D)
         # assert all the filter side lengths are odd
         assert reduce(lambda carry, M: carry and (M % 2 == 1), filter_spatial_dims, True)
 
-        padding = lambda M: ((M - 1) // 2) * dilation
-        ranges = list(jnp.arange(-padding(M), N+padding(M)) for N, M in zip(spatial_dims, filter_spatial_dims))
+        # for each torus dimension, calculate the torus padding
+        padding_f = lambda M, dilation, torus: (((M - 1) // 2) * dilation) if torus else 0
+        zipped_dims = zip(filter_spatial_dims, rhs_dilation, is_torus)
+        torus_padding = tuple(padding_f(M, dilation, torus) for M, dilation, torus in zipped_dims)
+
+        # calculate indices for torus padding, then use hash to select the appropriate pixels
+        ranges = list(jnp.arange(-pad, N+pad) for N, pad in zip(spatial_dims, torus_padding))
         mesh = jnp.stack(jnp.meshgrid(*ranges, indexing='ij'), axis=-1)
         new_spatial_dims = mesh.shape[:D]
         indices = mesh.reshape((np.multiply.reduce(new_spatial_dims),D))
+        expanded_image = image[hash(D, image, indices)].reshape(new_spatial_dims + (D,)*img_k)
 
-        return image[hash(D, image, indices)].reshape(new_spatial_dims + (D,)*img_k)
+        # zero_pad where we don't torus pad
+        zero_padding = get_same_padding(
+            filter_spatial_dims, 
+            rhs_dilation, 
+            tuple(not torus for torus in is_torus), 
+        )
+
+        return expanded_image, zero_padding
+
+def get_same_padding(filter_spatial_dims, rhs_dilation, pad_dims=None):
+    """
+    Calculate the padding for each dimension D necessary for 'SAME' padding, including rhs_dilation.
+    args:
+        filter_spatial_dims (tuple of ints): filter spatial dimensions, length D tuple
+        rhs_dilation (tuple of ints): rhs (filter) dilation, length D tuple
+        pad_dims (tuple of bool): which dimensions to pad, defaults to None which is all dimensions
+    """
+    pad_dims = (True,)*len(filter_spatial_dims) if pad_dims is None else pad_dims
+    padding_f = lambda M, dilation, pad: (((M - 1) // 2) * dilation,) * 2 if pad else (0,0)
+    zipped_dims = zip(filter_spatial_dims,rhs_dilation, pad_dims)
+    return tuple(padding_f(M,dilation,pad) for M,dilation,pad in zipped_dims)
 
 def pre_tensor_product_expand(D, image_a, image_b, a_offset = 0, b_offset = 0, dtype=None):
     """
@@ -594,7 +621,7 @@ def convolve(
         D (int): dimension of the images
         image (jnp.array): image data, shape (batch,in_c,spatial,tensor)
         filter_image (jnp.array): the convolution filter, shape (out_c,in_c,spatial,tensor)
-        is_torus (bool): whether the images data is on the torus or not
+        is_torus (bool or tuple of bool): what dimensions of the image are toroidal
         stride (tuple of ints): convolution stride, defaults to (1,)*self.D
         padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
             defaults to 'TORUS' if image.is_torus, else 'SAME'
@@ -605,9 +632,14 @@ def convolve(
     returns: (jnp.array) convolved_image, shape (batch,out_c,spatial,tensor)
     """
     assert (D == 2) or (D == 3)
+    assert (isinstance(is_torus, tuple) and len(is_torus) == D) or isinstance(is_torus, bool), 'geom::convolve' \
+        f' is_torus must be bool or tuple of bools, but got {is_torus}'
     assert image.shape[1] == filter_image.shape[1], f'Second axis (in_channels) for image and filter_image ' \
         f'must equal, but got image {image.shape} and filter {filter_image.shape}'
     dtype = 'float32'
+
+    if isinstance(is_torus, bool):
+        is_torus = (is_torus,)*D
 
     filter_spatial_dims, _ = parse_shape(filter_image.shape[2:], D)
     out_c, in_c = filter_image.shape[:2] #in_c and out_c are in_channels and out_channels respectively
@@ -625,7 +657,7 @@ def convolve(
         stride = (1,)*D
 
     if padding is None: #if unspecified, infer from is_torus
-        padding = 'TORUS' if is_torus else 'SAME'
+        padding = 'TORUS' if len(list(filter(lambda x: x, is_torus))) else 'SAME'
 
     if (lhs_dilation is not None) and isinstance(padding, str):
         print(
@@ -634,14 +666,13 @@ def convolve(
         )
 
     if padding == 'TORUS':
-        vmap_torus_expand = vmap(vmap(get_torus_expanded, in_axes=(None,0,None,None)), in_axes=(None,0,None,None))
-        image = vmap_torus_expand(D, image, filter_spatial_dims, rhs_dilation[0])
-        padding_literal = ((0,0),)*D
+        in_axes, out_axes = (None,0,None,None,None), (0,None)
+        vmap_torus_expand = vmap(vmap(get_torus_expanded, in_axes, out_axes), in_axes, out_axes)
+        image, padding_literal = vmap_torus_expand(D, image, is_torus, filter_spatial_dims, rhs_dilation)
     elif padding == 'VALID':
         padding_literal = ((0,0),)*D
     elif padding == 'SAME':
-        padding_f = lambda M, dilation: (((M - 1) // 2) * dilation,) * 2
-        padding_literal = tuple(padding_f(M,dilation) for M,dilation in zip(filter_spatial_dims,rhs_dilation))
+        padding_literal = get_same_padding(filter_spatial_dims, rhs_dilation)
     else:
         padding_literal = padding
 
@@ -990,14 +1021,22 @@ class GeometricImage:
             data (array-like):
             parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
             D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
-            is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
+            is_torus (bool or tuple of bools): whether the datablock is a torus, used for convolutions. 
+                Takes either a tuple of bools of length D specifying whether each dimension is toroidal,
+                or simply True or False which sets all dimensions to that value. Defaults to True.
         """
         self.D = D
         self.spatial_dims, self.k = parse_shape(data.shape, D)
         assert data.shape[D:] == self.k * (self.D, ), \
         "GeometricImage: each pixel must be D cross D, k times"
         self.parity = parity % 2
+
+        assert (isinstance(is_torus, tuple) and (len(is_torus) == D)) or isinstance(is_torus, bool)
+        if isinstance(is_torus, bool):
+            is_torus = (is_torus,)*D
+
         self.is_torus = is_torus
+
         self.data = jnp.copy(data) #TODO: don't need to copy if data is already an immutable jnp array
 
     def copy(self):
@@ -1418,6 +1457,10 @@ class Layer:
             is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
         """
         self.D = D
+        assert (isinstance(is_torus, tuple) and (len(is_torus) == D)) or isinstance(is_torus, bool)
+        if isinstance(is_torus, bool):
+            is_torus = (is_torus,)*D
+
         self.is_torus = is_torus
         #copy dict, but image_block is immutable jnp array
         self.data = { key: image_block for key, image_block in data.items() } 

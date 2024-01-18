@@ -263,3 +263,45 @@ class TestPropositions:
             vmap(lambda vec: geom.multicontract(jnp.tensordot(vec, kd_3, axes=0), ((0,1),)))(flattened_data)
         )
 
+    def testFrobeniusNormEquivariance(self):
+        key = random.PRNGKey(0)
+        for D in [2,3]:
+            operators = geom.make_all_operators(D)
+            for parity in [0,1]:
+                for k in [0,1,2,3]:
+                    key, subkey = random.split(key)
+                    tensor = random.normal(subkey, shape=((1,)*D + (D,)*k))
+
+                    # assert that norm is equivariant
+                    for gg in operators:
+                        assert jnp.allclose(
+                            jnp.linalg.norm(tensor),
+                            jnp.linalg.norm(
+                                geom.times_group_element(D, tensor, parity, gg, jax.lax.Precision.HIGHEST),
+                            ),
+                        )
+
+                    # assert that norm is equivalent to prod, followed by the specific contraction
+                    idxs = tuple((i,j) for i,j in zip(range(k), range(k,2*k)))
+                    assert jnp.allclose(
+                        jnp.linalg.norm(tensor),
+                        jnp.sqrt(geom.multicontract(geom.mul(D, tensor, tensor), idxs, idx_shift=D)[0,0]),
+                    )
+
+    def testMaxPoolEquivariance(self):
+        N = 6
+        key = random.PRNGKey(0)
+        for D in [2,3]:
+            operators = geom.make_all_operators(D)
+            for parity in [0,1]:
+                for k in [0,1,2,3]:
+                    key, subkey = random.split(key)
+                    image = random.normal(subkey, shape=((N,)*D + (D,)*k))
+
+                    # assert that norm is equivariant
+                    for gg in operators:
+                        assert jnp.allclose(
+                            geom.times_group_element(D, geom.max_pool(D, image, 2), parity, gg),
+                            geom.max_pool(D, geom.times_group_element(D, image, parity, gg), 2),
+                        )
+

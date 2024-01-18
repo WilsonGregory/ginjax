@@ -16,14 +16,14 @@ class TestLayer:
 
         layer1 = geom.Layer({}, D, False)
         assert layer1.D == D
-        assert layer1.is_torus == False 
+        assert layer1.is_torus == (False,)*D
         for _, _ in layer1.items():
             assert False # its empty, so this won't ever be called
 
         k = 0
         layer2 = geom.Layer({ k: random.normal(key, shape=((1,) + (N,)*D + (D,)*k)) }, D, False)
         assert layer2.D == D
-        assert layer2.is_torus == False
+        assert layer2.is_torus == (False,)*D
         assert layer2[0].shape == (1,N,N)
 
         #layers can have multiple k values, and can have different size channels at each k
@@ -38,7 +38,7 @@ class TestLayer:
         assert list(layer3.keys()) == [0,1]
         assert layer3[0].shape == (10, N, N)
         assert layer3[1].shape == (3, N, N, D)
-        assert layer3.is_torus == True
+        assert layer3.is_torus == (True,)*D
 
     def testCopy(self):
         key = random.PRNGKey(time.time_ns())
@@ -70,7 +70,7 @@ class TestLayer:
         images = [geom.GeometricImage(data, 0, D) for data in random_data]
         layer1 = geom.Layer.from_images(images)
         assert layer1.D == D 
-        assert layer1.is_torus == True
+        assert layer1.is_torus == (True,)*D
         assert list(layer1.keys()) == [(1,0)]
         assert layer1[(1,0)].shape == (10, N, N, D)
 
@@ -283,14 +283,14 @@ class TestBatchLayer:
 
         layer1 = geom.BatchLayer({}, D, False)
         assert layer1.D == D
-        assert layer1.is_torus == False 
+        assert layer1.is_torus == (False,)*D
         for _, _ in layer1.items():
             assert False # its empty, so this won't ever be called
 
         k = 0
         layer2 = geom.BatchLayer({ (k,0): random.normal(key, shape=((10,1) + (N,)*D + (D,)*k)) }, D, False)
         assert layer2.D == D
-        assert layer2.is_torus == False
+        assert layer2.is_torus == (False,)*D
         assert layer2[(0,0)].shape == (10,1,N,N)
 
         # layers can have multiple k values with different channels, 
@@ -306,7 +306,7 @@ class TestBatchLayer:
         assert list(layer3.keys()) == [(0,0),(1,0)]
         assert layer3[(0,0)].shape == (5,10, N, N)
         assert layer3[(1,0)].shape == (5,3, N, N, D)
-        assert layer3.is_torus == True
+        assert layer3.is_torus == (True,)*D
 
     def testGetSubset(self):
         key = random.PRNGKey(time.time_ns())
@@ -394,7 +394,7 @@ class TestBatchLayer:
 
         layer3 = layer1 + layer2 
         assert layer3.D == D
-        assert layer3.is_torus == True 
+        assert layer3.is_torus == (True,)*D
         assert layer3[(1,0)].shape == (12,10,N,N,D)
         assert layer3[(2,0)].shape == (12,3,N,N,D,D)
 

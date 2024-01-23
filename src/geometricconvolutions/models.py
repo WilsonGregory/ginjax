@@ -166,7 +166,7 @@ def unetBase(
             mold_params=return_params,
         )
         # concat the upsampled layer and the residual
-        layer = jax.vmap(lambda layer1, layer2: layer1.concat(layer2))(layer, residual_layers[upsample])
+        layer = layer.concat(residual_layers[upsample], axis=1)
 
         for _ in range(num_conv):
             layer, params = ml.batch_conv_layer(
@@ -298,7 +298,7 @@ def unet2015(
             mold_params=return_params,
         )
         # concat the upsampled layer and the residual
-        layer = jax.vmap(lambda layer1, layer2: layer1.concat(layer2))(layer, residual_layers[upsample])
+        layer = layer.concat(residual_layers[upsample], axis=1)
 
         layer, params, batch_stats, batch_stats_idx = unet_conv_block(
             params, 
@@ -338,6 +338,7 @@ def dil_resnet(
     layer, 
     key, 
     train, 
+    output_keys,
     depth=48, 
     activation_f=jax.nn.relu, 
     equivariant=False, 
@@ -365,35 +366,41 @@ def dil_resnet(
 
     if equivariant:
         assert conv_filters is not None
-        conv_f = ml.batch_conv_contract
-        conv_args = [conv_filters, depth, ((0,0),(1,0))]
-        bias = False
+        filter_info_M3 = { 'type': ml.CONV_FIXED, 'filters': conv_filters }
+        filter_info_M1 = filter_info_M3
+        target_keys = output_keys
     else:
         layer = layer.to_scalar_layer()
-        conv_f = ml.batch_conv_layer
-        conv_args = [{ 'type': 'free', 'M': 3, 'filter_key_set': { (0,0) } }, depth]
-        bias = True
+        filter_info_M3 = { 'type': ml.CONV_FREE, 'M': 3 }
+        filter_info_M1 = { 'type': ml.CONV_FREE, 'M': 1 }
+        target_keys = ((0,0),)
 
     # encoder
-    layer, params = conv_f(
-        params, 
-        layer,
-        *conv_args,
-        bias=bias,
-        mold_params=return_params,
-    )
+    for _ in range(2):
+        layer, params = ml.batch_conv_layer(
+            params, 
+            layer,
+            filter_info_M1,
+            depth,
+            target_keys,
+            bias=True,
+            mold_params=return_params,
+        )
+        if activation_f is not None:
+            layer = ml.batch_scalar_activation(layer, activation_f)
 
     for _ in range(num_blocks):
 
         residual_layer = layer.copy()
         # dCNN block
-
         for dilation in [1,2,4,8,4,2,1]:
-            layer, params = conv_f(
+            layer, params = ml.batch_conv_layer(
                 params, 
                 layer,
-                *conv_args,
-                bias=bias,
+                filter_info_M3,
+                depth,
+                target_keys,
+                bias=True,
                 mold_params=return_params,
                 rhs_dilation=(dilation,)*layer.D,
             )
@@ -403,27 +410,26 @@ def dil_resnet(
         layer = geom.BatchLayer.from_vector(layer.to_vector() + residual_layer.to_vector(), layer)
 
     # decoder
-    if equivariant:
-        layer, params = conv_f(
-            params,
-            layer,
-            conv_filters,
-            1,
-            ((0,0),(1,0)),
-            mold_params=return_params,
-        )
-    else:
-        layer, params = conv_f(
-            params, 
-            layer,
-            { 'type': 'free', 'M': 3, 'filter_key_set': { (0,0) } },
-            depth=3, 
-            bias=True,
-            mold_params=return_params,
-        )
-
-        # swap the vector back to the vector img
-        layer = layer.from_scalar_layer({ (0,0): 1, (1,0): 1 })
+    layer, params = ml.batch_conv_layer(
+        params, 
+        layer,
+        filter_info_M1,
+        depth,
+        target_keys,
+        bias=True,
+        mold_params=return_params,
+    )
+    if activation_f is not None:
+        layer = ml.batch_scalar_activation(layer, activation_f)
+    layer, params = ml.batch_conv_layer(
+        params, 
+        layer,
+        filter_info_M1,
+        1,
+        output_keys,
+        bias=True,
+        mold_params=return_params,
+    )
 
     return (layer, params) if return_params else layer
 

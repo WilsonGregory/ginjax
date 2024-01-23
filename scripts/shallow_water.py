@@ -413,74 +413,69 @@ train_and_eval = partial(
 )
 
 models = [
-    # (
-    #     'Dil-ResNet',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.dil_resnet, depth=128, activation_f=jax.nn.gelu),
-    #         model_name='dil_resnet',
-    #     ),
-    # ),
-    # (
-    #     'Dil-ResNet Equiv',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(
-    #             models.dil_resnet, 
-    #             depth=64, 
-    #             activation_f=jax.nn.gelu, 
-    #             equivariant=True, 
-    #             conv_filters=conv_filters,
-    #         ),
-    #         model_name='dil_resnet_equiv',
-    #     ),
-    # ),
-    # (
-    #     'ResNet',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.resnet, output_keys=output_keys),
-    #         model_name='resnet',
-    #     ),   
-    # ),
-    # (
-    #     'ResNet Equiv',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(
-    #             models.resnet, 
-    #             output_keys=output_keys, 
-    #             equivariant=True, 
-    #             conv_filters=conv_filters,
-    #             # depth=64,
-    #         ),
-    #         model_name='resnet_equiv',
-    #     ),  
-    # ),
-    # (
-    #     'U-Net 2015',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(models.unet2015, output_keys=output_keys),
-    #         model_name='unet2015',
-    #         has_aux=True,
-    #     ),
-    # ),
-    # (
-    #     'U-Net 2015 Equiv',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             models.unet2015, 
-    #             equivariant=True,
-    #             conv_filters=conv_filters, 
-    #             upsample_filters=upsample_filters,
-    #             output_keys=output_keys,
-    #             depth=32, # 64=41M, 48=23M, 32=10M
-    #         ),
-    #         model_name='unet2015_equiv',
-    #     ),
-    # ),
+    (
+        'dil_resnet',
+        partial(
+            train_and_eval, 
+            net=partial(models.dil_resnet, depth=128, activation_f=jax.nn.gelu, output_keys=output_keys),
+        ),
+    ),
+    (
+        'dil_resnet_equiv',
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.dil_resnet, 
+                depth=64, 
+                activation_f=jax.nn.gelu, 
+                equivariant=True, 
+                conv_filters=conv_filters,
+                output_keys=output_keys,
+            ),
+        ),
+    ),
+    (
+        'resnet',
+        partial(
+            train_and_eval, 
+            net=partial(models.resnet, output_keys=output_keys),
+        ),   
+    ),
+    (
+        'resnet_equiv',
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.resnet, 
+                output_keys=output_keys, 
+                equivariant=True, 
+                conv_filters=conv_filters,
+                # depth=64,
+            ),
+        ),  
+    ),
+    (
+        'unet2015',
+        partial(
+            train_and_eval,
+            net=partial(models.unet2015, output_keys=output_keys),
+            has_aux=True,
+        ),
+    ),
+    (
+        'unet2015_equiv',
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unet2015, 
+                equivariant=True,
+                conv_filters=conv_filters, 
+                upsample_filters=upsample_filters,
+                output_keys=output_keys,
+                depth=32, # 64=41M, 48=23M, 32=10M
+            ),
+        ),
+    ),
     (
         'unetBase',
         partial(

@@ -117,11 +117,11 @@ def conv_layer(
 
     return out_layer, params
 
-def get_filter_block_invariants(params, input_layer, invariant_filters, target_keys, out_depth, mold_params):
+@functools.partial(jax.jit, static_argnums=[3,4,5])
+def get_filter_block_from_invariants(params, input_layer, invariant_filters, target_keys, out_depth, mold_params):
     """
-    Alternative get_filter_block function for conv_contract layers. In this case there is an input keys and
-    specific targetted output keys, and we use the available invariant_filters to build the connections 
-    between those two layers.
+    For each (k,parity) of the input_layer and each (k,parity) of the target_keys, construct filters from
+    the available invariant_filters to build all possible connections between those two layers.
     args:
         params (params tree): the learned params tree
         input_layer (BatchLayer): input layer so that we know the input depth at each (k,parity) that we need
@@ -166,14 +166,15 @@ def get_filter_block_invariants(params, input_layer, invariant_filters, target_k
 @functools.partial(jit, static_argnums=[2,3,4,5])
 def get_filter_block(params, input_layer, M, target_keys, out_depth, mold_params=False):
     """
-    For each (k,parity) in the input_layer and each (k,parity) of the invariant filters, form a filter 
-    block from params of shape (out_depth,in_depth, (M,)*D, (D,)*filter_k). Note that in_depth is the 
-    size of the input_layer.
+    For each (k,parity) of the input_layer and each (k,parity) of the target_keys, construct filters 
+    to build all possible connections between those two layers. The filters are shape 
+    (out_depth,in_depth, (M,)*D, (D,)*filter_k). Note that in_depth is the size of the input_layer.
     args:
         input_layer (BatchLayer): input layer so that we know the input depth at each (k,parity) that we need
         M (int): the edge length of the filters
         target_keys (tuple of tuple of ints): the target (k,parity) for this layer
         out_depth (int): the output depth of this conv layer
+        mold_params (bool): True if we are building the params shape, defaults to False
     """
     D = input_layer.D
     if mold_params:
@@ -223,7 +224,7 @@ def batch_conv_layer(
     params_idx, this_params = get_layer_params(params, mold_params, CONV)
 
     if (isinstance(filter_info, geom.Layer)): #if just a layer is passed, defaults to fixed filters
-        filter_block, filter_block_params = get_filter_block_invariants(
+        filter_block, filter_block_params = get_filter_block_from_invariants(
             this_params[CONV_FIXED], 
             input_layer, 
             filter_info, 
@@ -235,7 +236,7 @@ def batch_conv_layer(
     elif (filter_info['type'] == 'raw'):
         filter_block = filter_info['filters']
     elif (filter_info['type'] == CONV_FIXED):
-        filter_block, filter_block_params = get_filter_block_invariants(
+        filter_block, filter_block_params = get_filter_block_from_invariants(
             this_params[CONV_FIXED], 
             input_layer, 
             filter_info['filters'], 

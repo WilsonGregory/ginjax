@@ -1,4 +1,5 @@
 import geometricconvolutions.geometric as geom
+import geometricconvolutions.data as gc_data
 import pytest
 import jax.numpy as jnp
 import jax.random as random
@@ -215,3 +216,35 @@ class TestMisc:
                 rtol=geom.TINY,
                 atol=geom.TINY,
             )
+
+    def testRollingWindowIdx(self):
+        D = 2
+        N = 3
+        spatial_dims = (N,)*D
+        batch = 10
+        channels = 11
+        key = random.PRNGKey(0)
+
+        for past_steps in [1,2,4]:
+            for future_steps in [1,5]:
+                for k in [0,1,2]:
+                    key, subkey = random.split(key)
+                    img_data = random.normal(subkey, shape=((batch,channels) + spatial_dims + (D,)*k))
+                    num_windows = channels-future_steps-past_steps+1
+
+                    input_idxs = gc_data.rolling_window_idx(0, channels-future_steps, past_steps)
+                    input_data = img_data[:, input_idxs]
+                    assert input_data.shape == (batch,num_windows,past_steps) + spatial_dims + (D,)*k
+
+                    output_idxs = gc_data.rolling_window_idx(past_steps, channels, future_steps)
+                    output_data = img_data[:, output_idxs]
+                    assert output_data.shape == (batch,num_windows,future_steps) + spatial_dims + (D,)*k
+
+                    for b in range(batch):
+                        for i in range(num_windows):
+                            assert jnp.allclose(input_data[b,i], img_data[b,i:i + past_steps])
+                            assert jnp.allclose(
+                                output_data[b,i], 
+                                img_data[b,i+past_steps:i+past_steps+future_steps],
+                            )
+                    

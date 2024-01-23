@@ -158,7 +158,7 @@ def get_all_data(num_train_images, rand_key):
     
     return train_X, train_Y, validation_X, validation_Y, test_X, test_Y
 
-def train_and_eval(data, rand_key, net, lr, override_initializers={}):
+def train_and_eval(data, rand_key, model_name, net, lr, override_initializers={}):
     X_train, Y_train, X_val, Y_val, X_test, Y_test = data 
     batch_size = math.ceil(X_train.L / 5)
 

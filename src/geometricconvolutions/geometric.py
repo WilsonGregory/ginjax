@@ -1556,17 +1556,18 @@ class Layer:
     
     # Other functions
 
-    def append(self, k, parity, image_block):
+    def append(self, k, parity, image_block, axis=0):
         """
         Append an image block at (k,parity). It will be concatenated along axis=0, so channel for Layer
         and vmapped BatchLayer, and batch for normal BatchLayer
         """
+        parity = parity % 2
         # will this work for BatchLayer?
         if k > 0: #very light shape checking, other problematic cases should be caught in concatenate
             assert image_block.shape[-k:] == (self.D,)*k
 
         if ((k,parity) in self):
-            self[(k,parity)] = jnp.concatenate((self[(k,parity)], image_block))
+            self[(k,parity)] = jnp.concatenate((self[(k,parity)], image_block), axis=axis)
         else:
             self[(k,parity)] = image_block
 
@@ -1589,7 +1590,7 @@ class Layer:
 
         return new_layer
 
-    def concat(self, other):
+    def concat(self, other, axis=0):
         """
         Currently identical to __add__, but I want to move towards using this instead and make add
         and actual sum.
@@ -1603,7 +1604,7 @@ class Layer:
 
         new_layer = self.copy()
         for (k,parity), image_block in other.items():
-            new_layer.append(k, parity, image_block)
+            new_layer.append(k, parity, image_block, axis)
 
         return new_layer
 

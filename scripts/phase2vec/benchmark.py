@@ -91,7 +91,7 @@ def get_par_recon_loss(X_test, Y_test_tuple, rand_key, eval_net, batch_size, pri
 
     return mean_par_loss, mean_recon_loss
 
-def train_and_eval(data, rand_key, net, batch_size, lr, epochs, verbose, print_errs=0, get_param_count=False):
+def train_and_eval(data, rand_key, model_name, net, batch_size, lr, epochs, verbose, print_errs=0, get_param_count=False):
     X_train, Y_train, X_val, Y_val, X_test, Y_test = data 
 
     rand_key, subkey = random.split(rand_key)

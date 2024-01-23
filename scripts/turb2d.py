@@ -138,8 +138,8 @@ def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, 
 def train_and_eval(
     data, 
     key, 
-    net, 
     model_name, 
+    net, 
     lr, 
     batch_size, 
     epochs, 
@@ -300,32 +300,29 @@ train_and_eval = partial(
 
 models = [
     (
-        'Dil-ResNet',
+        'dil_resnet',
         partial(
             train_and_eval, 
             net=models.dil_resnet, 
-            model_name='dil_resnet',
         ),
     ),
     (
-        'Dil-ResNet Equiv',
+        'dil_resnet_equiv',
         partial(
             train_and_eval, 
             net=partial(models.dil_resnet, equivariant=True, conv_filters=conv_filters),
-            model_name='dil_resnet_equiv',
         ),
     ),
     (
-        'U-Net 2015',
+        'unet2015',
         partial(
             train_and_eval,
             net=models.unet2015,
-            model_name='unet2015',
             has_aux=True,
         ),
     ),
     (
-        'U-Net 2015 equiv',
+        'unet2015_equiv',
         partial(
             train_and_eval,
             net=partial(
@@ -334,7 +331,6 @@ models = [
                 upsample_filters=upsample_filters,
                 depth=32, # 64=41M, 48=23M, 32=10M
             ),
-            model_name='unet2015_equiv',
         ),
     ),
 ]

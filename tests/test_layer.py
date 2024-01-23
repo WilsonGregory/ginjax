@@ -410,6 +410,47 @@ class TestBatchLayer:
         assert list(layer6.keys()) == [(1,0)]
         assert layer6[(1,0)].shape == (5,12,N,N,D)
 
+    def testConcat(self):
+        key = random.PRNGKey(time.time_ns())
+        D = 2
+        N = 5
+
+        key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
+
+        layer1 = geom.BatchLayer(
+            {
+                (1,0): random.normal(subkey1, shape=((5,10) + (N,)*D + (D,)*1)),
+                (2,0): random.normal(subkey2, shape=((5,3) + (N,)*D + (D,)*2)), 
+            },
+            D,
+            True,
+        )
+        layer2 = geom.BatchLayer(
+            {
+                (1,0): random.normal(subkey3, shape=((7,10) + (N,)*D + (D,)*1)), 
+                (2,0): random.normal(subkey4, shape=((7,3) + (N,)*D + (D,)*2)),
+            },
+            D,
+            True,
+        )
+
+        layer3 = layer1.concat(layer2)
+        assert layer3.D == D
+        assert layer3.is_torus == (True,)*D
+        assert layer3[(1,0)].shape == (12,10,N,N,D)
+        assert layer3[(2,0)].shape == (12,3,N,N,D,D)
+        assert jnp.allclose(layer3[(1,0)], jnp.concatenate([layer1[(1,0)], layer2[(1,0)]]))
+
+        key, subkey5, subkey6 = random.split(key, 3)
+        layer4 = geom.BatchLayer({ (1,0): random.normal(subkey5, shape=((5,10) + (N,)*D + (D,)*1)) }, D, True)
+        layer5 = geom.BatchLayer({ (1,0): random.normal(subkey6, shape=((5,2) + (N,)*D + (D,)*1)) }, D, True)
+        
+        layer6 = layer4.concat(layer5, axis=1)
+        assert layer6.D == D
+        assert list(layer6.keys()) == [(1,0)]
+        assert layer6[(1,0)].shape == (5,12,N,N,D)
+        assert jnp.allclose(layer6[(1,0)], jnp.concatenate([layer4[(1,0)], layer5[(1,0)]], axis=1))
+
     def testSize(self):
         D = 2
         N = 5

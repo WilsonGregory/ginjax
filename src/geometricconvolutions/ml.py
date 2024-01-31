@@ -1012,7 +1012,7 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
 
     initializers = {
         BATCH_NORM: batch_norm_init,
-        GROUP_NORM: group_norm_init, # params are the same, so just use this
+        GROUP_NORM: group_norm_init,
         CHANNEL_COLLAPSE: channel_collapse_init,
         CONV: functools.partial(conv_init, D=input_layer.D),
         CONV_OLD: conv_old_init,

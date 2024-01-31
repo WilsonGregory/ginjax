@@ -487,11 +487,10 @@ models = [
                 models.unetBase, 
                 output_keys=output_keys, 
             ),
-            lr=2e-4,
         ),
     ),
     (
-        'unetBase_equiv_1e-4',
+        'unetBase_equiv', # might want to try lr=1e-4 for this one
         partial(
             train_and_eval,
             net=partial(
@@ -501,7 +500,6 @@ models = [
                 conv_filters=conv_filters,
                 upsample_filters=upsample_filters,
             ),
-            lr=1e-4,
         ),
     ),
 ]

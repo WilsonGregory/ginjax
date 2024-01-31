@@ -270,6 +270,29 @@ class TestLayer:
         assert list(scalar_layer2.keys()) == [(0,0)]
         assert rand_layer == rand_layer.to_scalar_layer().from_scalar_layer(layout)
 
+    def testTimesGroupElement(self):
+        N = 5
+        channels = 3
+
+        vmap_times_gg = vmap(geom.times_group_element, in_axes=(None,0,None,None))
+        key = random.PRNGKey(0)
+        for D in [2,3]:
+            layer = geom.Layer({}, D)
+
+            for parity in [0,1]:
+                for k in [0,1,2,3]:
+                    key, subkey = random.split(key)
+                    layer.append(k, parity, random.normal(subkey, shape=((channels,) + (N,)*D + (D,)*k)))
+
+            operators = geom.make_all_operators(D)
+
+            for gg in operators:
+                rotated_layer = layer.times_group_element(gg)
+
+                for (k,parity), img_block in layer.items():
+                    rotated_block = vmap_times_gg(D, img_block, parity, gg)
+                    assert jnp.allclose(rotated_layer[(k,parity)], rotated_block)
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Test BatchLayer
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -517,3 +540,27 @@ class TestBatchLayer:
         scalar_layer2 = rand_layer.to_scalar_layer()
         assert list(scalar_layer2.keys()) == [(0,0)]
         assert rand_layer == rand_layer.to_scalar_layer().from_scalar_layer(layout)
+
+    def testTimesGroupElement(self):
+        N = 5
+        batch = 4
+        channels = 3
+
+        vmap_times_gg = vmap(vmap(geom.times_group_element, in_axes=(None,0,None,None)), in_axes=(None,0,None,None))
+        key = random.PRNGKey(0)
+        for D in [2,3]:
+            layer = geom.BatchLayer({}, D)
+
+            for parity in [0,1]:
+                for k in [0,1,2,3]:
+                    key, subkey = random.split(key)
+                    layer.append(k, parity, random.normal(subkey, shape=((batch,channels) + (N,)*D + (D,)*k)))
+
+            operators = geom.make_all_operators(D)
+
+            for gg in operators:
+                rotated_layer = layer.times_group_element(gg)
+
+                for (k,parity), img_block in layer.items():
+                    rotated_block = vmap_times_gg(D, img_block, parity, gg)
+                    assert jnp.allclose(rotated_layer[(k,parity)], rotated_block)

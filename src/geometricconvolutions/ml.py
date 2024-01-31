@@ -21,13 +21,13 @@ CHANNEL_COLLAPSE = 'collapse'
 CASCADING_CONTRACTIONS = 'cascading_contractions'
 PARAMED_CONTRACTIONS = 'paramed_contractions'
 BATCH_NORM = 'batch_norm'
-LAYER_NORM = 'layer_norm'
 GROUP_NORM = 'group_norm'
 EQUIV_DENSE = 'equiv_dense'
 
 SCALE = 'scale'
 BIAS = 'bias'
 SUM = 'sum'
+POWER = 'power'
 
 CONV_FREE = 'free'
 CONV_FIXED = 'fixed'
@@ -269,23 +269,35 @@ def batch_conv_layer(
     )
 
     if bias:
-        out_layer = layer.empty()
-        if (mold_params):
-            this_params[BIAS] = {}
-        for (k,parity), image_block in layer.items():
-            if (k,parity) == (0,0):
-                if (mold_params):
-                    this_params[BIAS][(k,parity)] = jnp.ones((1,depth) + (1,)*(image_block.ndim-2))
-
-                out_layer.append(k, parity, image_block + this_params[BIAS][(k,parity)])
-            else:
-                out_layer.append(k, parity, image_block)
-    else:
-        out_layer = layer
+        layer, this_params = add_bias(this_params, layer, mold_params=mold_params)
 
     params = update_params(params, params_idx, this_params, mold_params)
 
-    return out_layer, params
+    return layer, params
+
+def add_bias(this_params, layer, mold_params=False):
+    """
+    Per-channel bias. To maintain equivariance, we add a scale of the mean to each layer.
+    args:
+        this_params (dict): this part of a params tree, not an entire thing. Since you are just adding
+            this to the end of a layer.
+        layer (BatchLayer): 
+    """
+    out_layer = layer.empty()
+    if (mold_params):
+        this_params[BIAS] = {}
+
+    for (k,parity), image_block in layer.items():
+        channels = image_block.shape[1]
+
+        if (mold_params):
+            this_params[BIAS][(k,parity)] = jnp.ones((1,channels) + (1,)*(image_block.ndim-2))
+
+        mean = jnp.mean(image_block, axis=tuple(range(2,2+layer.D)), keepdims=True)
+        assert mean.shape == image_block.shape[:2] + (1,)*layer.D + (layer.D,)*k
+        out_layer.append(k, parity, image_block + this_params[BIAS][(k,parity)]*mean)
+
+    return out_layer, this_params
 
 @functools.partial(jit, static_argnums=[2,3,4,5,6])
 def batch_conv_contract(
@@ -685,7 +697,7 @@ def batch_equiv_dense_layer(params, input, basis, mold_params=False):
 @functools.partial(jit, static_argnums=[2,5,6,7])
 def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0.1, eps=1e-05, mold_params=False):
     """
-    Batch norm, this may or may not be equivariant.
+    Batch norm, this is not equivariant.
     args:
         params (jnp.array): array of learned params
         batch_layer (BatchLayer): layer to apply to batch norm on
@@ -704,21 +716,27 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
 
     out_layer = batch_layer.empty()
     for key, image_block in batch_layer.items():
+        num_channels = image_block.shape[1]
+        _, k = geom.parse_shape(image_block.shape[2:], batch_layer.D)
+        shape = (1,num_channels) + (1,)*batch_layer.D + (1,)*k
         if mold_params:
-            num_channels = image_block.shape[1]
-            this_params[key] = { SCALE: jnp.ones(num_channels), BIAS: jnp.ones(num_channels) }
+            this_params[key] = { SCALE: jnp.ones(shape), BIAS: jnp.ones(shape) }
 
             # some placeholder values for mean and variance. While mold_params=True, we are not 
             # inside pmap, so we want to avoid calling pmean
-            mean = jnp.ones((image_block.shape[1:]))
-            var = 1
+            mean = jnp.zeros(shape)
+            var = jnp.ones(shape)
         elif (train):
             # both are shape (channels, (N,)*D, (D,)*k)
-            mean = jax.lax.pmean(jnp.mean(image_block, axis=0), axis_name='batch')
-            var = jax.lax.pmean(
-                jnp.mean((jnp.expand_dims(mean, axis=0) - image_block)**2, axis=0),
+            mean = jax.lax.pmean(
+                jnp.mean(image_block, axis=(0,) + tuple(range(2,2+batch_layer.D+k)), keepdims=True), 
                 axis_name='batch',
             )
+            var = jax.lax.pmean(
+                jnp.mean((image_block - mean)**2, axis=(0,) + tuple(range(2,2+batch_layer.D+k)), keepdims=True),
+                axis_name='batch',
+            )
+            assert mean.shape == var.shape == shape
 
             if ((key in running_mean) and (key in running_var)):
                 running_mean[key] = (1 - momentum)*running_mean[key] + momentum*mean
@@ -734,61 +752,108 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
 
         # Now we multiply each channel by a scalar, then add a bias to each channel.
         # This is following: https://pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html
-        mult_images = vmap(vmap(lambda x,p: x * p), in_axes=(0,None))(centered_scaled_image, this_params[key][SCALE])
-        added_images = vmap(vmap(lambda x,p: x + p), in_axes=(0,None))(mult_images, this_params[key][BIAS])
+        added_images = centered_scaled_image * this_params[key][SCALE] + this_params[key][BIAS]
         out_layer.append(key[0], key[1], added_images)
     
     params = update_params(params, params_idx, this_params, mold_params)
 
     return out_layer, params, running_mean, running_var
 
-functools.partial(jax.jit, static_argnums=[2,3,4])
-def batch_group_norm(params, layer, groups, eps=1e-5, mold_params=False):
+def _group_norm_K1(D, image_block, groups, power, eps=1e-5):
     """
-    Implementation of group_norm. When num_groups=num_channels, this is equivalent to layer_norm.
-    The batch in the title just indicates this function takes in the entire BatchLayer, not a Layer.
-    Note that this is not equivariant unless it is a scalar, and then only if the batch is 1(?)
+    Perform the layer norm whitening on a vector image block. This is somewhat based on the Clifford
+    Layers Batch norm, link below. However, this differs in that we use svd rather than cholesky because
+    cholesky is not invariant to all the elements of our group.
+    https://github.com/microsoft/cliffordlayers/blob/main/cliffordlayers/nn/functional/batchnorm.py
+
+    args:
+        D (int): the dimension of the space
+        image_block (jnp.array): data block of shape (batch,channels,spatial,tensor)
+        groups (int): the number of channel groups, must evenly divide channels
+        power (jnp.array): shape (1,G,1)
+        eps (float): to avoid non-invertible matrices, added to the covariance matrix
+    """
+    batch,in_c = image_block.shape[:2]
+    spatial_dims, k = geom.parse_shape(image_block.shape[2:], D)
+    assert k == 1, f'ml::_group_norm_K1: Equivariant group_norm is not implemented for k>1, but k={k}'
+    assert (in_c % groups) == 0 # groups must evenly divide the number of channels
+    channels_per_group = in_c // groups
+
+    image_grouped = image_block.reshape((batch, groups, channels_per_group) + spatial_dims + (D,))
+
+    mean = jnp.mean(image_grouped, axis=tuple(range(2,3+D)), keepdims=True) #(B,G,1,(1,)*D,D)
+    centered_img = image_grouped - mean 
+
+    X = jnp.moveaxis(centered_img.reshape((batch,groups,-1,D)), 2, -1) # (B,G,D,spatial*in_c//G)
+    cov = jax.vmap(lambda a: a @ a.T)(X.reshape((batch*groups,) + X.shape[2:])) / X.shape[-1] #biased cov
+    cov = cov.reshape((batch,groups,D,D))
+
+    U,S,V = jnp.linalg.svd(cov, hermitian=True) # U:(B,G,D,D), S:(B,G,D), V:(B,G,D,D)
+
+    # U is (B,G,D,D), V is just U.T in this case b/c cov is symmetric
+    # S is (B,G,D)
+    S_invhalf = jnp.power(S + eps, power) # this is S^{power}, starts at S^{-1/2} 
+    vmap_sqrt_matrix = jax.vmap(jax.vmap(lambda U,S,V: U @ jnp.diag(S) @ V))
+    whiten_matrix = vmap_sqrt_matrix(U,S_invhalf,V) # (B,G,D,D)
+    assert whiten_matrix.shape == (batch,groups,D,D)
+
+    vmap_mult = jax.vmap(lambda W,vec: W @ vec, in_axes=(None,0)) # maps one W over a bunch of vecs
+    vmap_whiten = jax.vmap(lambda W,vec_image: vmap_mult(W, vec_image)) 
+    whitened_data = vmap_whiten(whiten_matrix.reshape(batch*groups,D,D), centered_img.reshape((batch*groups,-1) + (D,)))
+    whitened_data = whitened_data.reshape(image_block.shape)
+    return whitened_data
+
+functools.partial(jax.jit, static_argnums=[2,3,4])
+def group_norm(params, layer, groups, eps=1e-5, equivariant=True, mold_params=False):
+    """
+    Implementation of group_norm. When num_groups=num_channels, this is equivalent to instance_norm. When
+    num_groups=1, this is equivalent to layer_norm. This function takes in a BatchLayer, not a Layer.
     args:
         params (params tree): the params of the model
         layer (BatchLayer): input layer, each image is shape (batch,in_c,spatial)
         groups (int): the number of channel groups for group_norm
+        eps (float): number to add to variance so we aren't dividing by 0
+        equivariant (bool): defaults to True
+        mold_params (bool): parameter to control whether to shape the parameters.
     """
     params_idx, this_params = get_layer_params(params, mold_params, GROUP_NORM)
+    if mold_params:
+        this_params = { SCALE: {}, POWER: {} }
 
     out_layer = layer.empty()
     for (k,parity), image_block in layer.items():
-        if (k,parity) != (0,0):
-            out_layer.append(k, parity, image_block)
-            continue
-
         batch,in_c = image_block.shape[:2]
         spatial_dims, _ = geom.parse_shape(image_block.shape[2:], layer.D)
-        image_grouped = image_block.reshape((batch, groups, in_c // groups) + spatial_dims + (layer.D,)*k)
+        assert (in_c % groups) == 0 # groups must evenly divide the number of channels
+        channels_per_group = in_c // groups
+
+        image_grouped = image_block.reshape((batch, groups, channels_per_group) + spatial_dims + (layer.D,)*k)
+
+        if equivariant and k==1:
+            # in order to return to the unscaled version, we need to be able to set the whitening 
+            # multiplication matrix to the identity, which we achieve with this power parameter. 
+            # When power = -1/2, that is the scaled version, 0 is unscaled who knows otherwise.
+            if mold_params:
+                this_params[POWER][(k,parity)] = jnp.ones((1,groups,1))
+
+            whitened_data = _group_norm_K1(layer.D, image_block, groups, this_params[POWER][(k,parity)], eps)
+        elif equivariant and k>1:
+            raise NotImplementedError(
+                f'ml::group_norm: Currently equivariant group_norm is not implemented for k>1, but k={k}',
+            )
+        else:
+            mean = jnp.mean(image_grouped, axis=tuple(range(2,3+layer.D+k)), keepdims=True)
+            var = jnp.var(image_grouped, axis=tuple(range(2,3+layer.D+k)), keepdims=True)
+            assert mean.shape == var.shape == (batch,groups,1) + (1,)*layer.D + (1,)*k
+            whitened_data = ((image_grouped - mean)/jnp.sqrt(var + eps)).reshape(image_block.shape)
 
         if mold_params:
-            num_channels = image_block.shape[1]
-            this_params[(k,parity)] = { 
-                SCALE: jnp.ones((1,num_channels) + (1,)*layer.D + (1,)*k), 
-                BIAS: jnp.ones((1,num_channels) + (1,)*layer.D + (1,)*k),
-            }
+            this_params[SCALE][(k,parity)] = jnp.ones((1,in_c) + (1,)*layer.D + (1,)*k)
 
-            # some placeholder values for mean and variance. While mold_params=True, we are not 
-            # inside pmap, so we want to avoid calling pmean
-            mean = jnp.ones((1,1,in_c // groups) + spatial_dims + (layer.D,)*k)
-            var = jnp.ones((1,1,in_c // groups) + spatial_dims + (layer.D,)*k)
-        else:
-            mean = jax.lax.pmean(jnp.mean(image_grouped, axis=(0,1), keepdims=True), axis_name='batch')
-            assert mean.shape == (1,1,in_c // groups) + spatial_dims + (layer.D,)*k
-
-            var = jax.lax.pmean(
-                jnp.mean((mean - image_grouped)**2, axis=(0,1), keepdims=True),
-                axis_name='batch',
-            )
-            assert var.shape == (1,1,in_c // groups) + spatial_dims + (layer.D,)*k
-        
-        normed_image = ((image_grouped - mean)/jnp.sqrt(var + eps)).reshape(image_block.shape)
-        scaled_image = normed_image * this_params[(k,parity)][SCALE] + this_params[(k,parity)][BIAS]
+        scaled_image = whitened_data * this_params[SCALE][(k,parity)]
         out_layer.append(k, parity, scaled_image)
+
+    out_layer, this_params = add_bias(this_params, out_layer, mold_params)
     
     params = update_params(params, params_idx, this_params, mold_params)
 
@@ -797,37 +862,9 @@ def batch_group_norm(params, layer, groups, eps=1e-5, mold_params=False):
 @functools.partial(jit, static_argnums=[2,3])
 def layer_norm(params, input_layer, eps=1e-05, mold_params=False):
     """
-    Implementation of layer norm, just scaling by variance of the norm. There seems to be issues with this
-    layer however, it often results in values being NaN.
+    Implementation of layer norm based on group_norm.
     """
-    print('WARNING layer_norm: This layer is causing problems, for experimental use only.')
-    params_idx, this_params = get_layer_params(params, mold_params, LAYER_NORM)
-    vmap_norm = vmap(geom.norm, in_axes=(None, 0)) #expects channel, (N,)*D
-
-    out_layer = input_layer.empty()
-    for key, image_block in input_layer.items():
-        if mold_params:
-            this_params[key] = { SCALE: jnp.ones(1) }
-
-        num_image_idxs = 1 + input_layer.D # number of indices that are channel + spatial image indices
-        # get the variance of the frobenius norm of the pixels
-        norm = vmap_norm(input_layer.D, image_block) # (channel, (N,)*D)
-        var = jnp.var(norm, axis=range(num_image_idxs), keepdims=True) # (1, (1,)*D)
-        shaped_var = jnp.expand_dims(var, axis=range(len(var.shape), len(image_block.shape))) #(1, (1,)*D, (1,)*k)
-
-        centered_scaled_image = image_block/jnp.sqrt(shaped_var + eps)
-
-        centered_scaled_image *= this_params[key][SCALE]
-
-        out_layer[key] = centered_scaled_image
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    return out_layer, params
-
-def batch_layer_norm(params, input_layer, eps=1e-05, mold_params=False):
-    vmap_layer_norm = vmap(layer_norm, in_axes=(None, 0, None, None), out_axes=(0, None))
-    return vmap_layer_norm(params, input_layer, eps, mold_params)
+    return group_norm(params, input_layer, 1, eps, mold_params)
 
 @functools.partial(jax.jit, static_argnums=[1,2])
 def batch_max_pool(input_layer, patch_len, use_norm=True):
@@ -975,8 +1012,7 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
 
     initializers = {
         BATCH_NORM: batch_norm_init,
-        LAYER_NORM: layer_norm_init,
-        GROUP_NORM: batch_norm_init, # params are the same, so just use this
+        GROUP_NORM: group_norm_init,
         CHANNEL_COLLAPSE: channel_collapse_init,
         CONV: functools.partial(conv_init, D=input_layer.D),
         CONV_OLD: conv_old_init,
@@ -1010,14 +1046,29 @@ def recursive_init_params(params, rand_key, initializers):
 def batch_norm_init(rand_key, tree):
     out_params = {}
     for key, inner_tree in tree.items():
-        out_params[key] = { SCALE: jnp.ones(inner_tree[SCALE].shape), BIAS: jnp.zeros(inner_tree[BIAS].shape) }
+        out_params[key] = { SCALE: jnp.ones(inner_tree[SCALE].shape) }
+        # bias violates equivariance for certain tensor/parities, so it might be missing
+        if BIAS in inner_tree: 
+            out_params[key][BIAS] = jnp.zeros(inner_tree[BIAS].shape)
 
     return out_params
 
-def layer_norm_init(rand_key, tree):
+def group_norm_init(rand_key, tree):
     out_params = {}
-    for key, inner_tree in tree.items():
-        out_params[key] = { SCALE: jnp.ones(inner_tree[SCALE].shape) }
+    if BIAS in tree:
+        out_params[BIAS] = {}
+        for key, inner_tree in tree[BIAS].items():
+            out_params[BIAS][key] = jnp.zeros(inner_tree[key].shape)
+
+    if SCALE in tree:
+        out_params[SCALE] = {}
+        for key, inner_tree in tree[SCALE].items():
+            out_params[SCALE][key] = jnp.ones(inner_tree[key].shape)
+
+    if POWER in tree:
+        out_params[POWER] = {}
+        for key, inner_tree in tree[POWER].items():
+            out_params[POWER][key] = -0.5*jnp.ones(inner_tree[key].shape)
 
     return out_params
 
@@ -1129,14 +1180,14 @@ def get_batch_layer(X, Y, batch_size, rand_key, devices=None):
         rand_key (jnp random key): key for the randomness
         devices (list): gpu/cpu devices to use, if None (default) then sets this to jax.devices()
     """
-    batch_indices = random.permutation(rand_key, X.L)
+    batch_indices = random.permutation(rand_key, X.get_L())
 
     if devices is None:
         devices = jax.devices()
 
     X_batches = []
     Y_batches = []
-    for i in range(int(math.ceil(X.L / batch_size))): #iterate through the batches of an epoch
+    for i in range(int(math.ceil(X.get_L() / batch_size))): #iterate through the batches of an epoch
         idxs = batch_indices[i*batch_size:(i+1)*batch_size]
         X_batches.append(X.get_subset(idxs).reshape_pmap(devices))
         Y_batches.append(Y.get_subset(idxs).reshape_pmap(devices))

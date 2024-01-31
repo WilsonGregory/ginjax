@@ -160,7 +160,7 @@ def get_all_data(num_train_images, rand_key):
 
 def train_and_eval(data, rand_key, model_name, net, lr, override_initializers={}):
     X_train, Y_train, X_val, Y_val, X_test, Y_test = data 
-    batch_size = math.ceil(X_train.L / 5)
+    batch_size = math.ceil(X_train.get_L() / 5)
 
     rand_key, subkey = random.split(rand_key)
     init_params = ml.init_params(

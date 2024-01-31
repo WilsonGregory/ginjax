@@ -156,7 +156,7 @@ else:
 
     optimizer = optax.adam(optax.exponential_decay(
         lr, 
-        transition_steps=int(train_X.L / batch_size), 
+        transition_steps=int(train_X.get_L() / batch_size), 
         decay_rate=0.995,
     ))
     key, subkey = random.split(key)

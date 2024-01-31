@@ -101,7 +101,7 @@ def unetBase(
         filter_info = { 'type': ml.CONV_FIXED, 'filters': conv_filters }
         filter_info_upsample = { 'type': ml.CONV_FIXED, 'filters': upsample_filters }
         target_keys = output_keys
-        use_group_norm = False
+        use_group_norm = True
     else:
         filter_info = { 'type': ml.CONV_FREE, 'M': 3 }
         filter_info_upsample = { 'type': ml.CONV_FREE, 'M': 2 }
@@ -123,7 +123,7 @@ def unetBase(
             mold_params=return_params,
         )
         if use_group_norm:
-            layer, params = ml.batch_group_norm(params, layer, 1, mold_params=return_params)
+            layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
         if activation_f is not None:
             layer = ml.batch_scalar_activation(layer, activation_f)
 
@@ -146,7 +146,7 @@ def unetBase(
                 mold_params=return_params,
             )
             if use_group_norm:
-                layer, params = ml.batch_group_norm(params, layer, 1, mold_params=return_params)
+                layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
             if activation_f is not None:
                 layer = ml.batch_scalar_activation(layer, activation_f)
 
@@ -179,7 +179,7 @@ def unetBase(
                 mold_params=return_params,
             )
             if use_group_norm:
-                layer, params = ml.batch_group_norm(params, layer, 1, mold_params=return_params)
+                layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
             if activation_f is not None:
                 layer = ml.batch_scalar_activation(layer, activation_f)
 
@@ -494,8 +494,7 @@ def resnet(
 
         for _ in range(num_conv):
             # pre-activation order
-            if not equivariant:
-                layer, params = ml.batch_group_norm(params, layer, 1, mold_params=return_params)
+            layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
             if activation_f is not None:
                 layer = ml.batch_scalar_activation(layer, activation_f)
 

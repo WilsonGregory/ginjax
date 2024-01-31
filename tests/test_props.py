@@ -208,35 +208,6 @@ class TestPropositions:
             for i,j in it.combinations(range(k), 2):
                 assert img1.contract(i,j).convolve_with(c) == img1.convolve_with(c).contract(i,j)
 
-    def testLayerNormEquivariant(self):
-        N = 3
-        D = 2
-        
-        key = random.PRNGKey(time.time_ns())
-        layer = geom.Layer({}, D)
-        params = { ml.LAYER_NORM: {} }
-        for k in range(5):
-            key, subkey = random.split(key)
-            layer.append(k, 0, random.normal(subkey, shape=(2,) + (N,)*D + (D,)*k))
-
-            params[ml.LAYER_NORM][(k,0)] = {}
-            key, subkey = random.split(key)
-            params[ml.LAYER_NORM][(k,0)][ml.SCALE] = random.normal(subkey, shape=(1,))
-            key, subkey = random.split(key)
-            params[ml.LAYER_NORM][(k,0)][ml.BIAS] = random.normal(subkey, shape=(1,))
-
-        operators = geom.make_all_operators(D)
-        for gg in operators:
-            out_layer1 = ml.layer_norm(params, layer.times_group_element(
-                gg, 
-                precision=jax.lax.Precision.HIGH,
-            ))[0]
-            out_layer2 = ml.layer_norm(params, layer)[0].times_group_element(
-                gg, 
-                precision=jax.lax.Precision.HIGH,
-            )
-            assert out_layer1 == out_layer2
-
     def testDiagEquivalence(self):
         # test that the tensor product and contraction is indeed the diag operator
         N = 3
@@ -305,3 +276,55 @@ class TestPropositions:
                             geom.max_pool(D, geom.times_group_element(D, image, parity, gg), 2),
                         )
 
+    def testLayerNormEquivariance(self):
+        N = 3
+        batch = 3
+        channels = 2
+        prec = jax.lax.Precision.HIGHEST
+        key = random.PRNGKey(time.time_ns())
+        for D in [2,3]:
+            fixed_params = { ml.GROUP_NORM: { ml.BIAS: {}, ml.SCALE: {}, ml.POWER: {} } }
+            layer = geom.BatchLayer({}, D)
+            for parity in [0,1]:
+                for k in [0,1]:
+                    key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
+                    layer.append(k, parity, random.normal(subkey1, shape=((batch,channels) + (N,)*D + (D,)*k)))
+                    fixed_params[ml.GROUP_NORM][ml.SCALE][(k,parity)] = random.normal(subkey2, shape=(1,channels) + (1,)*layer.D + (1,)*k)
+                    fixed_params[ml.GROUP_NORM][ml.BIAS][(k,parity)] = random.normal(subkey3, shape=(1,channels) + (1,)*layer.D + (1,)*k)
+                    if k == 1:
+                        fixed_params[ml.GROUP_NORM][ml.POWER][(k,parity)] = random.normal(subkey4, shape=(1,1,1))
+
+            operators = geom.make_all_operators(D)
+
+            # assert that layer norm (group_norm with groups=1) is equivariant
+            for gg in operators:
+                params = { k:v for k,v in fixed_params.items() }
+                layer1 = ml.group_norm(params, layer, 1, equivariant=True, eps=0)[0].times_group_element(gg, precision=prec)
+                params = { k:v for k,v in fixed_params.items() }
+                layer2 = ml.group_norm(params, layer.times_group_element(gg, precision=prec), 1, eps=0, equivariant=True)[0]
+
+                for image_block1, image_block2 in zip(layer1.values(), layer2.values()):
+                    assert jnp.allclose(image_block1, image_block2, atol=1e-3, rtol=1e-3), f'{jnp.max(image_block1 - image_block2)}'
+
+    def testLayerNormWhitening(self):
+        """
+        Show that Layer Nom does center and scale the vectors.
+        """
+        N = 3
+        batch = 3
+        channels = 2
+        key = random.PRNGKey(time.time_ns())
+        for D in [2,3]:
+            key, subkey = random.split(key)
+            image_block = random.normal(subkey, shape=(batch,channels) + (N,)*D + (D,))
+
+            whitened_data = ml._group_norm_K1(D, image_block, 1, -0.5*jnp.ones((1,1,1)), eps=0)
+
+            # mean centered
+            mean = jnp.mean(whitened_data, axis=tuple(range(1,whitened_data.ndim)))
+            assert jnp.allclose(mean, jnp.zeros(mean.shape), atol=geom.TINY, rtol=geom.TINY) 
+
+            # identity covariance
+            cov = jax.vmap(lambda data: jnp.cov(data, rowvar=False, bias=True))(whitened_data.reshape((batch,-1,D)))
+            eye = jnp.tensordot(jnp.ones(batch), jnp.eye(D), axes=0) # (batch, D, D)
+            assert jnp.allclose(cov, eye, atol=1e-3, rtol=1e-3)

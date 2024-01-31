@@ -243,7 +243,7 @@ def train_and_eval(
     )
     print(f'Model params: {ml.count_params(params):,}')
 
-    steps_per_epoch = int(np.ceil(train_X.L / batch_size))
+    steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
 
     key, subkey = random.split(key)
     results = ml.train(
@@ -272,7 +272,7 @@ def train_and_eval(
 
     if save_params is not None:
         jnp.save(
-            f'{save_params}{model_name}_L{train_X.L}_e{epochs}_params.npy', 
+            f'{save_params}{model_name}_L{train_X.get_L()}_e{epochs}_params.npy', 
             { 'params': params, 'batch_stats': None if (batch_stats is None) else dict(batch_stats) },
         )
 
@@ -336,6 +336,7 @@ def handleArgs(argv):
         action='store_true',
     )
     parser.add_argument('-subsample', help='how many timesteps per model step, default 1', type=int, default=1)
+    parser.add_argument('-t', '--trials', help='number of trials to run', type=int, default=1)
 
     args = parser.parse_args()
 
@@ -354,6 +355,7 @@ def handleArgs(argv):
         args.center_data,
         args.pres_vor_form,
         args.subsample,
+        args.trials,
     )
 
 #Main
@@ -372,6 +374,7 @@ def handleArgs(argv):
     center_data,
     pres_vor_form,
     subsample,
+    trials,
 ) = handleArgs(sys.argv)
 
 D = 2
@@ -450,7 +453,7 @@ models = [
                 output_keys=output_keys, 
                 equivariant=True, 
                 conv_filters=conv_filters,
-                # depth=64,
+                depth=64,
             ),
         ),  
     ),
@@ -480,7 +483,23 @@ models = [
         'unetBase',
         partial(
             train_and_eval,
-            net=partial(models.unetBase, output_keys=output_keys),
+            net=partial(
+                models.unetBase, 
+                output_keys=output_keys, 
+            ),
+        ),
+    ),
+    (
+        'unetBase_equiv', # might want to try lr=1e-4 for this one
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unetBase, 
+                output_keys=output_keys,
+                equivariant=True,
+                conv_filters=conv_filters,
+                upsample_filters=upsample_filters,
+            ),
         ),
     ),
 ]
@@ -493,7 +512,7 @@ results = ml.benchmark(
     'Nothing',
     [0],
     num_results=4,
-    num_trials=3,
+    num_trials=trials,
 )
 
 print(results)

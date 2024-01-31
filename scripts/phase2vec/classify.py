@@ -29,11 +29,11 @@ def eval_baseline(data, key, library):
     library_pinv = jnp.linalg.pinv(library.T)
     batch_mul = jax.vmap(lambda batch_arr,single_arr: batch_arr @ single_arr, in_axes=(0,None))
 
-    batch_train_img = jnp.transpose(X_eval_train[(1,0)], [0,4,1,2,3]).reshape(X_eval_train.L, X_eval_train.D, -1)
-    z_train = batch_mul(batch_train_img, library_pinv).reshape(X_eval_train.L,-1) # L,20
+    batch_train_img = jnp.transpose(X_eval_train[(1,0)], [0,4,1,2,3]).reshape(X_eval_train.get_L(), X_eval_train.D, -1)
+    z_train = batch_mul(batch_train_img, library_pinv).reshape(X_eval_train.get_L(),-1) # L,20
 
-    batch_test_img = jnp.transpose(X_eval_test[(1,0)], [0,4,1,2,3]).reshape(X_eval_test.L, X_eval_test.D, -1)
-    z_test = batch_mul(batch_test_img, library_pinv).reshape(X_eval_test.L,-1) # L,20
+    batch_test_img = jnp.transpose(X_eval_test[(1,0)], [0,4,1,2,3]).reshape(X_eval_test.get_L(), X_eval_test.D, -1)
+    z_test = batch_mul(batch_test_img, library_pinv).reshape(X_eval_test.get_L(),-1) # L,20
 
     num_c = 11 # default value
     k = 10 # default value
@@ -95,10 +95,10 @@ def train_and_eval(data, rand_key, net, batch_size, lr, epochs, verbose):
 
     # get the embeddings of x_train and x_test, using batches if necessary
     z_train = None
-    for i in range(math.ceil(X_eval_train.L / batch_size)): #split into batches if its too big
+    for i in range(math.ceil(X_eval_train.get_L() / batch_size)): #split into batches if its too big
         batch_layer = X_eval_train.get_subset(jnp.arange(
             batch_size*i, 
-            min(batch_size*(i+1), X_eval_train.L),
+            min(batch_size*(i+1), X_eval_train.get_L()),
         ))
 
         rand_key, subkey = random.split(rand_key)
@@ -106,10 +106,10 @@ def train_and_eval(data, rand_key, net, batch_size, lr, epochs, verbose):
         z_train = batch_z_train if z_train is None else jnp.concatenate([z_train,batch_z_train], axis=0)
 
     z_test = None
-    for i in range(math.ceil(X_eval_test.L / batch_size)): #split into batches if its too big
+    for i in range(math.ceil(X_eval_test.get_L() / batch_size)): #split into batches if its too big
         batch_layer = X_eval_test.get_subset(jnp.arange(
             batch_size*i, 
-            min(batch_size*(i+1), X_eval_test.L),
+            min(batch_size*(i+1), X_eval_test.get_L()),
         ))
 
         rand_key, subkey = random.split(rand_key)
@@ -250,7 +250,7 @@ models = [
         ),
     ),
     (
-        'baseline_no_extras', # paper architecture, but no batchnorm or dropout, only relu in cnn
+        'baseline_simple', # paper architecture, but no batchnorm or dropout, only relu in cnn
         partial(
             train_and_eval,
             net=partial(

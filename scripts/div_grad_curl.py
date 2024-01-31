@@ -161,7 +161,7 @@ params, train_loss, val_loss = ml.train(
     batch_size=batch_size,
     optimizer=optax.adam(optax.exponential_decay(
         lr, 
-        transition_steps=int(train_scalar_layer.L / batch_size), 
+        transition_steps=int(train_scalar_layer.get_L() / batch_size), 
         decay_rate=0.995,
     )),
     validation_X=val_scalar_layer,

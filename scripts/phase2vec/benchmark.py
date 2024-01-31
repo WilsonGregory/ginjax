@@ -133,7 +133,7 @@ def train_and_eval(data, rand_key, model_name, net, batch_size, lr, epochs, verb
         print_errs=print_errs,
     )
 
-def pinv_baseline_map(data, rand_key, library, print_errs=False, get_param_count=False):
+def pinv_baseline_map(data, rand_key, model_name, library, print_errs=False, get_param_count=False):
     _, _, _, _, X_test, Y_test = data 
 
     if get_param_count:
@@ -320,7 +320,7 @@ models = [
         ),
     ),
     (
-        'baseline_no_extras', # paper architecture, but no batchnorm or dropout, only relu in cnn
+        'baseline_simple', # paper architecture, but no batchnorm or dropout, only relu in cnn
         partial(
             train_and_eval,
             net=partial(
@@ -343,7 +343,7 @@ models = [
 
 for model_name, model in models:
     key, subkey = random.split(key)
-    print(f'{model_name} params: {model(get_data(0, subkey), subkey, print_errs=False, get_param_count=True)}')
+    print(f'{model_name} params: {model(get_data(0, subkey), subkey, model_name, print_errs=False, get_param_count=True)}')
 
 benchmark_range = np.linspace(0,0.3,benchmark_steps) # should be 20
 key, subkey = random.split(key)

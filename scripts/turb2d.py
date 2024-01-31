@@ -158,7 +158,7 @@ def train_and_eval(
     )
     print(f'Model params: {ml.count_params(params)}')
 
-    steps_per_epoch = int(np.ceil(train_X.L / batch_size))
+    steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
 
     key, subkey = random.split(key)
     results = ml.train(

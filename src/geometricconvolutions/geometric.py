@@ -1668,7 +1668,7 @@ class Layer:
         vmap_rotate = vmap(times_group_element, in_axes=(None, 0, None, None, None))
         out_layer = self.empty()
         for (k,parity), image_block in self.items():
-            out_layer.append(k, parity, vmap_rotate(self.D, image_block, 0, gg, precision))
+            out_layer.append(k, parity, vmap_rotate(self.D, image_block, parity, gg, precision))
 
         return out_layer
     
@@ -1749,6 +1749,15 @@ class BatchLayer(Layer):
         
         return next(iter(self.values())).shape[2:2+self.D]
 
+    def get_L(self):
+        """
+        Get the batch size. This will return the wrong value if the batch is vmapped.
+        """
+        if len(self.values()) == 0:
+            return 0
+        
+        return len(next(iter(self.values())))
+
     def get_subset(self, idxs):
         """
         Select a subset of the batch, picking the indices idxs
@@ -1797,7 +1806,7 @@ class BatchLayer(Layer):
             sharding (jax sharding): jax positional sharding to be reshaped
             num_devices (int): number of gpus to split the batches over
         """
-        assert (self.L % num_devices) == 0 #number of batches must device evenly into number of devices
+        assert (self.get_L() % num_devices) == 0 #number of batches must device evenly into number of devices
 
         new_data = {}
         for key, image_block in self.items():
@@ -1813,13 +1822,13 @@ class BatchLayer(Layer):
         args:
             devices (list): list of gpus or cpu that we are using
         """
-        assert self.L % len(devices) == 0, f'BatchLayer::reshape_pmap: length of devices must evenly '\
-        f'divide the total batch size, but got batch_size: {self.L}, devices: {devices}'
+        assert self.get_L() % len(devices) == 0, f'BatchLayer::reshape_pmap: length of devices must evenly '\
+        f'divide the total batch size, but got batch_size: {self.get_L()}, devices: {devices}'
 
         num_devices = len(devices)
 
         out_layer = self.empty()
         for (k,parity), image in self.items():
-            out_layer.append(k, parity, image.reshape((num_devices, self.L // num_devices) + image.shape[1:]))
+            out_layer.append(k, parity, image.reshape((num_devices, self.get_L() // num_devices) + image.shape[1:]))
 
         return out_layer

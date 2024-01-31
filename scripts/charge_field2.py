@@ -135,7 +135,7 @@ else:
     print('Num params:', ml.count_params(params))
 
     optimizer = optax.adam(
-        optax.exponential_decay(lr, transition_steps=int(train_X.L / batch_size), decay_rate=decay)
+        optax.exponential_decay(lr, transition_steps=int(train_X.get_L() / batch_size), decay_rate=decay)
     )
 
     params, train_loss, val_loss = ml.train(

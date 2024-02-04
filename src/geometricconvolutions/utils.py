@@ -1,6 +1,8 @@
 import numpy as np
 import pylab as plt
 import matplotlib.cm as cm
+from matplotlib.collections import PatchCollection
+from matplotlib.patches import Wedge
 import cmastro
 from geometricconvolutions.geometric import TINY
 
@@ -73,17 +75,18 @@ def plot_scalar_filter(geom_filter, title, ax=None):
     if ax is None:
         fig = setup_plot()
         ax = fig.gca()
-    MtotheD = geom_filter.N ** geom_filter.D
-    xs, ys, zs = np.zeros(MtotheD), np.zeros(MtotheD), np.zeros(MtotheD)
-    ws = np.zeros(MtotheD)
-    for i, key in enumerate(geom_filter.keys()):
-        ws[i] = geom_filter[key]
-        if geom_filter.D == 2:
-            xs[i], ys[i] = np.array(key)
-        elif geom_filter.D == 3:
-            xs[i], ys[i] = key[0] + XOFF * key[2], key[1] + XOFF * key[2]
-    plot_scalars(ax, geom_filter.N, xs, ys, ws, vmin=-3., vmax=3.)
-    finish_plot(ax, title, geom_filter.key_array(), geom_filter.D)
+
+    keys = geom_filter.key_array()
+    xs = keys[:,0]
+    ys = keys[:,1]
+    if geom_filter.D == 3:
+        xs = xs + XOFF * keys[:,2]
+        ys = ys + YOFF * keys[:,2]
+
+    pixels = np.array(list(geom_filter.pixels()))
+
+    plot_scalars(ax, geom_filter.spatial_dims[0], xs, ys, pixels, vmin=-3., vmax=3.)
+    finish_plot(ax, title, keys, geom_filter.D)
     return ax
 
 def plot_vectors(ax, xs, ys, ws, boxes=True, fill=True,
@@ -111,38 +114,165 @@ def plot_vector_filter(geom_filter, title, ax=None):
     if ax is None:
         fig = setup_plot()
         ax = fig.gca()
-    MtotheD = geom_filter.N ** geom_filter.D
-    xs, ys, zs = np.zeros(MtotheD), np.zeros(MtotheD), np.zeros(MtotheD)
-    ws = np.zeros((MtotheD, geom_filter.D))
-    for i, key in enumerate(geom_filter.keys()):
-        ws[i] = geom_filter[key]
-        if geom_filter.D == 2:
-            xs[i], ys[i] = np.array(key)
-        elif geom_filter.D == 3:
-            xs[i], ys[i] = key[0] + XOFF * key[2], key[1] + YOFF * key[2]
-    plot_vectors(ax, xs, ys, ws, vmin=0., vmax=3.)
-    finish_plot(ax, title, geom_filter.key_array(), geom_filter.D)
+
+    keys = geom_filter.key_array()
+    xs = keys[:,0]
+    ys = keys[:,1]
+    if geom_filter.D == 3:
+        xs = xs + XOFF * keys[:,2]
+        ys = ys + YOFF * keys[:,2]
+
+    pixels = np.array(list(geom_filter.pixels()))
+
+    plot_vectors(ax, xs, ys, pixels, vmin=0., vmax=3.)
+    finish_plot(ax, title, keys, geom_filter.D)
     return ax
 
 Rx = np.array([[-1.0, -1.0, 1.0, 1.0, -1.0, 0.0,  1.0],
                [-1.5,  1.5, 1.5, 0.2, -0.2, 0.0, -1.5]])
 
-def plot_one_tensor(ax, x, y, T, color="k", zorder=0, scaling=0.2):
-    dx, dy = scaling * T @ Rx
-    ax.plot(x + dx, y + dy, ls="-", color=color)
-    return
+def plot_one_tensor(ax, x, y, T, zorder=0, scaling=0.33):
+    normw = np.linalg.norm(T)
+
+    if np.abs(T[0,0]) > TINY:
+        # plot a double-headed arrow
+        ax.arrow(
+            x - scaling,
+            y,
+            2 * scaling * np.abs(T[0,0]),
+            0,
+            length_includes_head=True,
+            head_width= 0.24 * scaling,
+            head_length=0.72 * scaling,
+            color='g' if T[0,0] > TINY else 'k',
+            zorder=zorder,
+        )
+        ax.arrow(
+            x + scaling,
+            y,
+            -2 * scaling * np.abs(T[0,0]),
+            0,
+            length_includes_head=True,
+            head_width= 0.24 * scaling,
+            head_length=0.72 * scaling,
+            color='g' if T[0,0] > TINY else 'k',
+            zorder=zorder,
+        )
+    if np.abs(T[1,1]) > TINY:
+        # plot a double-headed arrow
+        ax.arrow(
+            x,
+            y - scaling,
+            0,
+            2 * scaling * np.abs(T[1,1]),
+            length_includes_head=True,
+            head_width= 0.24 * scaling,
+            head_length=0.72 * scaling,
+            color='g' if T[1,1] > TINY else 'k',
+            zorder=zorder,
+        )
+        ax.arrow(
+            x,
+            y + scaling,
+            0,
+            -2 * scaling * np.abs(T[1,1]),
+            length_includes_head=True,
+            head_width= 0.24 * scaling,
+            head_length=0.72 * scaling,
+            color='g' if T[1,1] > TINY else 'k',
+            zorder=zorder,
+        )
+
+    patches = []
+    # plot the petals
+    if T[0,1] > TINY:
+        patches.append(Wedge(
+            (x-0.25,y-0.25),
+            0.25 * np.abs(T[0,1]),
+            45,
+            225,
+            color='b',
+            zorder=zorder,
+            alpha=0.25,
+        ))
+        patches.append(Wedge(
+            (x+0.25,y+0.25),
+            0.25 * np.abs(T[0,1]),
+            -135,
+            45,
+            color='b',
+            zorder=zorder,
+            alpha=0.25,
+        ))
+    if T[0,1] < -TINY:
+        patches.append(Wedge(
+            (x-0.25,y+0.25),
+            0.25 * np.abs(T[0,1]),
+            135,
+            315,
+            color='b',
+            zorder=zorder,
+            alpha=0.25,
+        ))
+        patches.append(Wedge(
+            (x+0.25,y-0.25),
+            0.25 * np.abs(T[0,1]),
+            -45,
+            135,
+            color='b',
+            zorder=zorder,
+            alpha=0.25,
+        ))
+    if T[1,0] > TINY:
+        patches.append(Wedge(
+            (x-0.25,y-0.25),
+            0.25 * np.abs(T[1,0]),
+            -135,
+            45,
+            color='b',
+            zorder=zorder,
+            alpha=0.25,
+        ))
+        patches.append(Wedge(
+            (x+0.25,y+0.25),
+            0.25 * np.abs(T[1,0]),
+            45,
+            225,
+            color='b',
+            zorder=zorder,
+            alpha=0.25,
+        ))
+    if T[1,0] < -TINY:
+        patches.append(Wedge(
+            (x-0.25,y+0.25),
+            0.25 * np.abs(T[1,0]),
+            -45,
+            135,
+            color='b',
+            zorder=zorder,
+            alpha=0.25,
+        ))
+        patches.append(Wedge(
+            (x+0.25,y-0.25),
+            0.25 * np.abs(T[1,0]),
+            135,
+            315,
+            color='b',
+            zorder=zorder,
+            alpha=0.25,
+        ))
+
+    p = PatchCollection(patches, alpha=0.4)
+    ax.add_collection(p)
 
 def plot_tensors(ax, xs, ys, ws, boxes=True, fill=True,
-                 vmin=0., vmax=2., cmap="cma:hesperia_r", scaling=0.33):
+                 vmin=0., vmax=2., cmap="cma:hesperia_r"):
     if boxes:
         plot_boxes(ax, xs, ys)
-    if fill:
-        fill_boxes(ax, xs, ys, np.linalg.norm(ws, axis=-1), vmin, vmax, cmap, alpha=0.25)
     for x, y, w in zip(xs, ys, ws):
         normw = np.linalg.norm(w)
         if normw > TINY:
-            plot_one_tensor(ax, x, y, w, color="k", zorder=100)
-    return
+            plot_one_tensor(ax, x, y, w, zorder=100)
 
 def plot_tensor_filter(geom_filter, title, ax=None):
     assert geom_filter.k == 2, "plot_tensor_filter(): Only 2-tensors (for now)."
@@ -152,17 +282,18 @@ def plot_tensor_filter(geom_filter, title, ax=None):
     if ax is None:
         fig = setup_plot()
         ax = fig.gca()
-    MtotheD = geom_filter.N ** geom_filter.D
-    xs, ys = np.zeros(MtotheD), np.zeros(MtotheD)
-    ws = np.zeros((MtotheD, geom_filter.D, geom_filter.D))
-    for i, key in enumerate(geom_filter.keys()):
-        ws[i] = geom_filter[key]
-        if geom_filter.D == 2:
-            xs[i], ys[i] = np.array(key)
-        elif geom_filter.D == 3:
-            xs[i], ys[i] = key[0] + XOFF * key[2], key[1] + YOFF * key[2]
-    plot_tensors(ax, xs, ys, ws, vmin=0., vmax=3.)
-    finish_plot(ax, title, geom_filter.key_array(), geom_filter.D)
+
+    keys = geom_filter.key_array()
+    xs = keys[:,0]
+    ys = keys[:,1]
+    if geom_filter.D == 3:
+        xs = xs + XOFF * keys[:,2]
+        ys = ys + YOFF * keys[:,2]
+
+    pixels = np.array(list(geom_filter.pixels()))
+
+    plot_tensors(ax, xs, ys, pixels, vmin=0., vmax=3.)
+    finish_plot(ax, title, keys, geom_filter.D)
     return ax
 
 def plot_nothing(ax):
@@ -200,6 +331,8 @@ def setup_image_plot():
 def plot_scalar_image(image, vmin=-1., vmax=1., ax=None, colorbar=False, title=''):
     assert image.D == 2
     assert image.k == 0
+    assert image.spatial_dims == (image.spatial_dims[0],)*image.D, 'Can only' \
+        ' plot square images currently.'
     if ax is None:
         ff = setup_image_plot()
         ax = ff.gca()
@@ -210,7 +343,7 @@ def plot_scalar_image(image, vmin=-1., vmax=1., ax=None, colorbar=False, title='
         vmin = np.percentile(plotdata[:, 2],  2.5)
     if vmax is None:
         vmax = np.percentile(plotdata[:, 2], 97.5)
-    plot_scalars(ax, image.N, plotdata[:, 0], plotdata[:, 1], plotdata[:, 2],
+    plot_scalars(ax, image.spatial_dims[0], plotdata[:, 0], plotdata[:, 1], plotdata[:, 2],
                  symbols=False, vmin=vmin, vmax=vmax, colorbar=colorbar)
     image_axis(ax, plotdata, title)
     return ax
@@ -236,12 +369,37 @@ def plot_vector_image(image, ax=None, title=''):
     image_axis(ax, plotdata, title)
     return ax
 
+def plot_tensor_image(image, ax=None, title=''):
+    assert image.D == 2
+    assert image.k == 2
+    if ax is None:
+        ff = setup_image_plot()
+        ax = ff.gca()
+
+    keys = image.key_array()
+    pixels = np.array(list(image.pixels()))
+
+    plot_tensors(
+        ax,
+        keys[:,0],
+        keys[:,1],
+        pixels,
+        boxes=True,
+        fill=True,
+        vmin=0.,
+        vmax=3.,
+    )
+    image_axis(ax, keys, title)
+    return ax
+
 def plot_image(image, **kwargs):
     assert image.D == 2
     if image.k == 0:
         plot_scalar_image(image, **kwargs)
     if image.k == 1:
         plot_vector_image(image, **kwargs)
+    if image.k == 2:
+        plot_tensor_image(image, **kwargs)
 
 def plot_images(images):
     """

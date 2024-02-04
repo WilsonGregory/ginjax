@@ -265,8 +265,7 @@ def plot_one_tensor(ax, x, y, T, zorder=0, scaling=0.33):
     p = PatchCollection(patches, alpha=0.4)
     ax.add_collection(p)
 
-def plot_tensors(ax, xs, ys, ws, boxes=True, fill=True,
-                 vmin=0., vmax=2., cmap="cma:hesperia_r"):
+def plot_tensors(ax, xs, ys, ws, boxes=True, vmin=0., vmax=2., cmap="cma:hesperia_r"):
     if boxes:
         plot_boxes(ax, xs, ys)
     for x, y, w in zip(xs, ys, ws):

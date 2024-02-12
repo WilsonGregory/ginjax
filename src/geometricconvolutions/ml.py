@@ -1168,33 +1168,38 @@ def l2_squared_loss(x, y):
 
 ## Data and Batching operations
 
-def get_batch_layer(X, Y, batch_size, rand_key, devices=None):
+def get_batch_layer(layers, batch_size, rand_key, devices=None):
     """
-    Given X, Y, construct a random batch of batch size. Each Y_batch is a list of length rollout to allow for
-    calculating the loss with each step of the rollout. Automatically reshapes the batches to use with pmap
-    based on the number of gpus found.
+    Given a set of layers, construct random batches of those layers. The most common use case is for
+    layers to be a tuple (X,Y) so that the batches have the inputs and outputs. In this case, it will return
+    a list of length 2 where the first element is a list of the batches of the input data and the second
+    element is the same batches of the output data. Automatically reshapes the batches to use with 
+    pmap based on the number of gpus found.
     args:
-        X (BatchLayer): the input data
-        Y (BatchLayer): the target output, will be same as X, unless noise was added to X
+        layers (BatchLayer or iterable of BatchLayer): batch layers which all get simultaneously batched
         batch_size (int): length of the batch
-        rand_key (jnp random key): key for the randomness
+        rand_key (jnp random key): key for the randomness. If None, the order won't be random
         devices (list): gpu/cpu devices to use, if None (default) then sets this to jax.devices()
+    returns: list of lists of batches (which are BatchLayers)
     """
-    batch_indices = random.permutation(rand_key, X.get_L())
+    if isinstance(layers, geom.BatchLayer):
+        layers = (layers,)
+
+    L = layers[0].get_L()
+    batch_indices = jnp.arange(L) if rand_key is None else random.permutation(rand_key, L)
 
     if devices is None:
         devices = jax.devices()
 
-    X_batches = []
-    Y_batches = []
-    for i in range(int(math.ceil(X.get_L() / batch_size))): #iterate through the batches of an epoch
+    batches = [[] for _ in range(len(layers))]
+    for i in range(int(math.ceil(L / batch_size))): #iterate through the batches of an epoch
         idxs = batch_indices[i*batch_size:(i+1)*batch_size]
-        X_batches.append(X.get_subset(idxs).reshape_pmap(devices))
-        Y_batches.append(Y.get_subset(idxs).reshape_pmap(devices))
+        for j, layer in enumerate(layers):
+            batches[j].append(layer.get_subset(idxs).reshape_pmap(devices))
 
-    return X_batches, Y_batches
+    return batches if (len(batches) > 1) else batches[0]
 
-def map_in_batches(
+def map_loss_in_batches(
     map_and_loss, 
     params, 
     layer_X, 
@@ -1222,8 +1227,8 @@ def map_in_batches(
         train (bool): whether this is training or not, likely not
         has_aux (bool): has auxilliary data, such as batch_stats, defaults to False
         aux_data (any): auxilliary data, such as batch stats. Passed to the function is has_aux is True.
-    returns: average loss over the entire layer
         devices (list): gpu/cpu devices to use
+    returns: average loss over the entire layer
     """
     if has_aux:
         pmap_loss_grad = jax.pmap(
@@ -1244,25 +1249,76 @@ def map_in_batches(
         )
 
     rand_key, subkey = random.split(rand_key)
-    X_batches, Y_batches = get_batch_layer(layer_X, layer_Y, batch_size, subkey, devices)
+    X_batches, Y_batches = get_batch_layer((layer_X, layer_Y), batch_size, subkey, devices)
     total_loss = 0
     for X_batch, Y_batch in zip(X_batches, Y_batches):
         rand_key, subkey = random.split(rand_key)
         if (has_aux):
-            one_loss, aux_data = pmap_loss_grad(
-                params, 
-                X_batch, 
-                Y_batch, 
-                subkey,
-                train,
-                aux_data,
-            )
+            one_loss, aux_data = pmap_loss_grad(params, X_batch, Y_batch, subkey, train, aux_data)
         else:
             one_loss = pmap_loss_grad(params, X_batch, Y_batch, subkey, False)
 
         total_loss += jnp.mean(one_loss)
 
     return total_loss / len(X_batches)
+
+def map_in_batches(
+    map_f, 
+    params, 
+    layer_X, 
+    batch_size, 
+    rand_key, 
+    train, 
+    has_aux=False, 
+    aux_data=None,
+    devices=None,
+):
+    """
+    Runs map_f for the entire layer_X, splitting into batches if the layer is larger than
+    the batch_size. This is helpful to run a whole validation/test set through map_f when you need
+    to split those over batches for memory reasons. Automatically pmaps over multiple gpus, so the number 
+    of gpus must evenly divide batch_size as well as as any remainder of the layer.
+    args:
+        map_f (function): function that takes in params, X_batch, rand_key, train, and 
+            aux_data if has_aux is true, and returns the mapped layer, and aux_data if has_aux is true.
+        params (params tree): the params to run through map_f
+        layer_X (BatchLayer): input data
+        batch_size (int): effective batch_size, must be divisible by number of gpus
+        rand_key (jax.random.PRNGKey): rand key
+        train (bool): whether this is training or not, likely not
+        has_aux (bool): has auxilliary data, such as batch_stats, defaults to False
+        aux_data (any): auxilliary data, such as batch stats. Passed to the function is has_aux is True.
+        devices (list): gpu/cpu devices to use
+    returns: average loss over the entire layer
+    """
+    if has_aux:
+        pmap_f = jax.pmap(
+            map_f, 
+            axis_name='batch', 
+            in_axes=(None, 0, None, None, None),
+            out_axes=(0, None),
+            static_broadcasted_argnums=3,
+            devices=devices,
+        )
+    else:
+        pmap_f = jax.pmap(map_f, 
+            axis_name='batch', 
+            in_axes=(None, 0, None, None),
+            static_broadcasted_argnums=3,
+            devices=devices,
+        )
+
+    results = []
+    for X_batch in get_batch_layer(layer_X, batch_size, None, devices):
+        rand_key, subkey = random.split(rand_key)
+        if (has_aux):
+            batch_out, aux_data = pmap_f(params, X_batch, subkey, train, aux_data)
+        else:
+            batch_out = pmap_f(params, X_batch, subkey, False)
+
+        results.append(batch_out)
+
+    return results
 
 def add_noise(layer, stdev, rand_key):
     """
@@ -1510,7 +1566,7 @@ def train(
             train_X = X
 
         rand_key, subkey = random.split(rand_key)
-        X_batches, Y_batches = get_batch_layer(train_X, Y, batch_size, subkey, devices)
+        X_batches, Y_batches = get_batch_layer((train_X, Y), batch_size, subkey, devices)
         epoch_loss = 0
         batch_times = []
         for X_batch, Y_batch in zip(X_batches, Y_batches):
@@ -1541,7 +1597,7 @@ def train(
         # We evaluate the validation loss in batches for memory reasons.
         if (validation_X and validation_Y):
             rand_key, subkey = random.split(rand_key)
-            epoch_val_loss = map_in_batches(
+            epoch_val_loss = map_loss_in_batches(
                 map_and_loss, 
                 params, 
                 validation_X, 

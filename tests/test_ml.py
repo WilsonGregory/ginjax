@@ -60,7 +60,7 @@ class TestMachineLearning:
         Y = geom.BatchLayer({ (k,0): random.normal(key, shape=((10,1) + (N,)*D + (D,)*k)) }, D)
 
         batch_size = 2
-        X_batches, Y_batches = ml.get_batch_layer(X, Y, batch_size=batch_size, rand_key=key, devices=cpu)
+        X_batches, Y_batches = ml.get_batch_layer((X, Y), batch_size=batch_size, rand_key=key, devices=cpu)
         assert len(X_batches) == len(Y_batches) == 5
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             assert X_batch[(k,0)].shape == Y_batch[(k,0)].shape == (num_devices, batch_size, 1) + (N,)*D + (D,)*k
@@ -82,7 +82,7 @@ class TestMachineLearning:
 
         # batching when the layer has multiple channels at different values of k
         batch_size = 5
-        X_batches, Y_batches = ml.get_batch_layer(X, Y, batch_size=batch_size, rand_key=key, devices=cpu)
+        X_batches, Y_batches = ml.get_batch_layer((X, Y), batch_size=batch_size, rand_key=key, devices=cpu)
         assert len(X_batches) == len(Y_batches) == 4
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             assert X_batch[(0,0)].shape == Y_batch[(0,0)].shape == (num_devices, batch_size, 1) + (N,)*D + (D,)*0
@@ -105,7 +105,7 @@ class TestMachineLearning:
 
         # batching when layer has multiple channels for one value of k
         batch_size = 5
-        X_batches, Y_batches = ml.get_batch_layer(X, Y, batch_size=batch_size, rand_key=key, devices=cpu)
+        X_batches, Y_batches = ml.get_batch_layer((X, Y), batch_size=batch_size, rand_key=key, devices=cpu)
         assert len(X_batches) == len(Y_batches) == 4
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             assert X_batch[(0,0)].shape == Y_batch[(0,0)].shape == (num_devices, batch_size, 2) + (N,)*D + (D,)*0

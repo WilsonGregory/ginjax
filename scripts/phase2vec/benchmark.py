@@ -18,79 +18,6 @@ import p2v_models
 DENSE = 'dense'
 BATCH_NORM_1D = 'batch_norm_1d'
 
-def get_par_recon_loss(X_test, Y_test_tuple, rand_key, eval_net, batch_size, print_errs=0):
-    labels = [
-        'saddle_node 0',
-        'saddle_node 1',
-        'pitchfork 0',
-        'pitchfork 1',
-        'transcritical 0',
-        'transcritical 1',
-        'selkov 0',
-        'selkov 1',
-        'homoclinic 0',
-        'homoclinic 1',
-        'vanderpol 0',
-        'simple_oscillator 0',
-        'simple_oscillator 1',
-        'fitzhugh_nagumo 0',
-        'fitzhugh_nagumo 1',
-        'lotka_volterra 0', #idx 15, skip this one cause its bugged
-        'polynomial',
-    ]
-
-    Y_test, true_labels, p_test = Y_test_tuple
-
-    par_losses = []
-    recon_losses = []
-    recon_dict = {}
-    coeffs_dict = {}
-    for label in jnp.unique(true_labels):
-        if (label == 15): # skip this one cause its bugged
-            continue
-
-        X_class = X_test.get_subset(true_labels == label)
-        Y_class = Y_test.get_subset(true_labels == label)
-        class_pars = p_test[true_labels == label]
-        Y_class_img = Y_class[(1,0)][:,0,...]
-        class_size = len(class_pars)
-
-        full_recon = None
-        full_coeffs = None
-        for i in range(math.ceil(class_size / batch_size)): #split into batches if its too big
-            batch_layer = X_class.get_subset(jnp.arange(
-                batch_size*i, 
-                min(batch_size*(i+1), class_size),
-            ))
-
-            rand_key, subkey = random.split(rand_key)
-            recon, coeffs, _ = eval_net(layer=batch_layer, key=subkey)
-
-            full_recon = recon if (full_recon is None) else jnp.concatenate([full_recon, recon])
-            full_coeffs = coeffs if (full_coeffs is None) else jnp.concatenate([full_coeffs, coeffs])
-
-        recon_dict[int(label)] = np.array(full_recon)
-        coeffs_dict[int(label)] = np.array(full_coeffs)
-
-        assert full_coeffs.shape == class_pars.shape
-        assert full_recon.shape == Y_class_img.shape
-        par_loss = ml.mse_loss(full_coeffs, class_pars)
-        recon_loss = p2v_models.phase2vec_loss(full_recon, Y_class_img, full_coeffs, beta=None, reduce=False)
-
-        if (print_errs >= 2):
-            print(f'{labels[label]}, par: {par_loss:0.5f} --- recon: {recon_loss:0.5f}')
-
-        par_losses.append(par_loss)
-        recon_losses.append(recon_loss)
-
-    mean_par_loss = jnp.mean(jnp.stack(par_losses))
-    mean_recon_loss = jnp.mean(jnp.stack(recon_losses))
-    if (print_errs >= 1):
-        print('Mean par loss: ', mean_par_loss)
-        print('Mean recon loss: ', mean_recon_loss)
-
-    return mean_par_loss, mean_recon_loss
-
 def train_and_eval(data, rand_key, model_name, net, batch_size, lr, epochs, verbose, print_errs=0, get_param_count=False):
     X_train, Y_train, X_val, Y_val, X_test, Y_test = data 
 
@@ -124,7 +51,7 @@ def train_and_eval(data, rand_key, model_name, net, batch_size, lr, epochs, verb
     )
 
     rand_key, subkey = random.split(rand_key)
-    return get_par_recon_loss(
+    return p2v_models.get_par_recon_loss(
         X_test,
         Y_test,
         subkey,
@@ -140,7 +67,7 @@ def pinv_baseline_map(data, rand_key, model_name, library, print_errs=False, get
         return 0
 
     rand_key, subkey = random.split(rand_key)
-    return get_par_recon_loss(
+    return p2v_models.get_par_recon_loss(
         X_test, 
         Y_test, 
         subkey, 

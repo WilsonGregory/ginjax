@@ -277,7 +277,7 @@ def train_and_eval(
         )
 
     key, subkey = random.split(key)
-    test_loss = ml.map_in_batches(
+    test_loss = ml.map_loss_in_batches(
         partial(map_and_loss, net=net, has_aux=has_aux), 
         params, 
         test_single_X, 
@@ -291,7 +291,7 @@ def train_and_eval(
     print(f'Test Loss: {test_loss}')
 
     key, subkey = random.split(key)
-    test_rollout_loss = ml.map_in_batches(
+    test_rollout_loss = ml.map_loss_in_batches(
         partial(map_and_loss, net=net, has_aux=has_aux), 
         params, 
         test_rollout_X, 

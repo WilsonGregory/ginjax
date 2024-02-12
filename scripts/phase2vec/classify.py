@@ -1,9 +1,8 @@
 import numpy as np
 import sys
-from functools import partial
+from functools import partial, reduce
 import argparse
 import time
-import math
 
 from sklearn.model_selection import KFold
 from sklearn.linear_model import LogisticRegressionCV
@@ -21,20 +20,7 @@ import p2v_models
 DENSE = 'dense'
 BATCH_NORM_1D = 'batch_norm_1d'
 
-# handles a batch input layer
-def eval_baseline(data, key, library):
-    _, _, _, _, (X_eval_train, X_eval_test), (Y_eval_train, Y_eval_test) = data 
-
-    # library is 4096 x 10
-    library_pinv = jnp.linalg.pinv(library.T)
-    batch_mul = jax.vmap(lambda batch_arr,single_arr: batch_arr @ single_arr, in_axes=(0,None))
-
-    batch_train_img = jnp.transpose(X_eval_train[(1,0)], [0,4,1,2,3]).reshape(X_eval_train.get_L(), X_eval_train.D, -1)
-    z_train = batch_mul(batch_train_img, library_pinv).reshape(X_eval_train.get_L(),-1) # L,20
-
-    batch_test_img = jnp.transpose(X_eval_test[(1,0)], [0,4,1,2,3]).reshape(X_eval_test.get_L(), X_eval_test.D, -1)
-    z_test = batch_mul(batch_test_img, library_pinv).reshape(X_eval_test.get_L(),-1) # L,20
-
+def classify_eval(z_train, Y_eval_train, z_test, Y_eval_test):
     num_c = 11 # default value
     k = 10 # default value
 
@@ -56,16 +42,42 @@ def eval_baseline(data, key, library):
 
     clf = LogisticRegressionCV(**clf_params).fit(z_train, Y_eval_train)
 
-    for nm, lb_true, lb_pred in zip(
-        ['train', 'test'], 
-        [Y_eval_train, Y_eval_test], 
-        [clf.predict(z_train), clf.predict(z_test)],
-    ):
-        report = classification_report(lb_true, lb_pred, output_dict=True)
-        print(f"{nm}: {report['accuracy']}")
+    train_accuracy = classification_report(Y_eval_train, clf.predict(z_train), output_dict=True)['accuracy']
+    test_accuracy = classification_report(Y_eval_test, clf.predict(z_test), output_dict=True)['accuracy']
+    return train_accuracy, test_accuracy
 
-def train_and_eval(data, rand_key, net, batch_size, lr, epochs, verbose):
-    X_train, Y_train, X_val, Y_val, (X_eval_train, X_eval_test), (Y_eval_train, Y_eval_test) = data 
+# handles a batch input layer
+def eval_baseline(data, key, model_name, func):
+    *_, X_test, Y_test, eval_data = data 
+
+    key, subkey = random.split(key)
+    par_loss, recon_loss = p2v_models.get_par_recon_loss(
+        X_test, 
+        Y_test, 
+        subkey, 
+        func, 
+        X_test.get_L(), # batch_size, can just do it in one batch
+    )
+
+    results = []
+    for X_eval_train, X_eval_test, Y_eval_train, Y_eval_test in eval_data:
+        key, subkey = random.split(key)
+        z_train = func(X_eval_train, subkey)[1] # L,10,2
+        z_train = z_train.reshape((len(z_train),-1)) # L,20
+
+        key, subkey = random.split(key)
+        z_test = func(X_eval_test, subkey)[1] # L,10,2
+        z_test = z_test.reshape((len(z_test),-1)) # L,20
+
+        train_accuracy, test_accuracy = classify_eval(z_train, Y_eval_train, z_test, Y_eval_test)
+
+        results.append(train_accuracy)
+        results.append(test_accuracy)
+
+    return (par_loss, recon_loss) + tuple(results) 
+
+def train_and_eval(data, rand_key, model_name, net, batch_size, lr, epochs, verbose):
+    X_train, Y_train, X_val, Y_val, X_test, Y_test, eval_data = data 
 
     rand_key, subkey = random.split(rand_key)
     init_params = ml.init_params(
@@ -93,68 +105,55 @@ def train_and_eval(data, rand_key, net, batch_size, lr, epochs, verbose):
         has_aux=True,
     )
 
-    # get the embeddings of x_train and x_test, using batches if necessary
-    z_train = None
-    for i in range(math.ceil(X_eval_train.get_L() / batch_size)): #split into batches if its too big
-        batch_layer = X_eval_train.get_subset(jnp.arange(
-            batch_size*i, 
-            min(batch_size*(i+1), X_eval_train.get_L()),
-        ))
+    rand_key, subkey = random.split(rand_key)
+    par_loss, recon_loss = p2v_models.get_par_recon_loss(
+        X_test,
+        Y_test,
+        subkey,
+        partial(net, params=params, train=False, batch_stats=batch_stats),
+        batch_size,
+    )
+
+    results = []
+    for X_eval_train, X_eval_test, Y_eval_train, Y_eval_test in eval_data:
+        # get the embeddings of x_train and x_test, using batches if necessary
+        def embedding_net(params, layer, key, train, batch_stats):
+            res = partial(net, return_embedding=True)(params, layer, key, train, batch_stats)
+            return res[3],res[2] # return embedding, batch_stats
 
         rand_key, subkey = random.split(rand_key)
-        batch_z_train = net(params, batch_layer, subkey, train=False, batch_stats=batch_stats, return_embedding=True)[3]
-        z_train = batch_z_train if z_train is None else jnp.concatenate([z_train,batch_z_train], axis=0)
-
-    z_test = None
-    for i in range(math.ceil(X_eval_test.get_L() / batch_size)): #split into batches if its too big
-        batch_layer = X_eval_test.get_subset(jnp.arange(
-            batch_size*i, 
-            min(batch_size*(i+1), X_eval_test.get_L()),
-        ))
+        z_train_list = ml.map_in_batches(embedding_net, params, X_eval_train, batch_size, subkey, False, True, batch_stats)
+        embedding_d = z_train_list[0].shape[-1]
+        z_train = reduce(
+            lambda carry, val: jnp.concatenate([carry, val.reshape((-1,embedding_d))]), # (gpus,batch/gpus,embedding_d)
+            z_train_list, 
+            jnp.ones((0,embedding_d)),
+        )
 
         rand_key, subkey = random.split(rand_key)
-        batch_z_test = net(params, batch_layer, subkey, train=False, batch_stats=batch_stats, return_embedding=True)[3]
-        z_test = batch_z_test if z_test is None else jnp.concatenate([z_test,batch_z_test], axis=0)
+        z_test_list = ml.map_in_batches(embedding_net, params, X_eval_test, batch_size, subkey, False, True, batch_stats)
+        z_test = reduce(
+            lambda carry, val: jnp.concatenate([carry, val.reshape((-1,embedding_d))]), # (gpus,batch/gpus,embedding_d)
+            z_test_list, 
+            jnp.ones((0,embedding_d)),
+        )
 
-    num_c = 11 # default value
-    k = 10 # default value
+        train_accuracy, test_accuracy = classify_eval(z_train, Y_eval_train, z_test, Y_eval_test)
 
-    clf_params = {
-        'cv': KFold(n_splits=int(len(Y_eval_train) / float(k))),
-        # 'random_state': 0,
-        'dual': False,
-        'solver': 'lbfgs',
-        'class_weight': 'balanced',
-        'multi_class': 'ovr',
-        'refit': True,
-        'scoring': 'accuracy',
-        'tol': 1e-2,
-        'max_iter': 5000,
-        'verbose': 0,
-        'Cs': np.logspace(-5, 5, num_c),
-        'penalty': 'l2',
-    }
-
-    clf = LogisticRegressionCV(**clf_params).fit(z_train, Y_eval_train)
-
-    for nm, lb_true, lb_pred in zip(
-        ['train', 'test'], 
-        [Y_eval_train, Y_eval_test], 
-        [clf.predict(z_train), clf.predict(z_test)],
-    ):
-        report = classification_report(lb_true, lb_pred, output_dict=True)
-        print(f"{nm}: {report['accuracy']}")
+        results.append(train_accuracy)
+        results.append(test_accuracy)
+    
+    return (par_loss, recon_loss) + tuple(results)
 
 def handleArgs(argv):
-    test_datasets = ['linear', 'conservative_vs_nonconservative', 'incompressible_vs_compressible']
     parser = argparse.ArgumentParser()
-    parser.add_argument('save_folder', help='where to save the image', type=str)
-    parser.add_argument('-e', '--epochs', help='number of epochs', type=float, default=200)
+    parser.add_argument('save_folder', help='where to save the results array', type=str)
+    parser.add_argument('-e', '--epochs', help='number of epochs', type=int, default=200)
     parser.add_argument('-lr', help='learning rate', type=float, default=1e-4)
     parser.add_argument('-batch', help='batch size', type=int, default=64)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-v', '--verbose', help='levels of print statements during training', type=int, default=1)
-    parser.add_argument('-test_dataset', help='test data set', type=str, choices=test_datasets, default='linear')
+    parser.add_argument('-t', '--trials', help='number of trials', type=int, default=1)
 
     args = parser.parse_args()
 
@@ -165,11 +164,11 @@ def handleArgs(argv):
         args.batch,
         args.seed,
         args.verbose,
-        args.test_dataset,
+        args.trials,
     )
 
 # Main
-save_folder, epochs, lr, batch_size, seed, verbose, test_dataset = handleArgs(sys.argv)
+save_folder, epochs, lr, batch_size, seed, verbose, trials = handleArgs(sys.argv)
 
 D = 2
 N = 64 
@@ -182,9 +181,18 @@ conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2,3], parities=[0], D=
 
 # Get data. Update these data paths to your own.
 train_data_path = '../phase2vec/output/data/polynomial'
-test_data_path = f'../phase2vec/output/data/{test_dataset}'
-X_train, X_val, _, _, _, _ = p2v_models.load_dataset(D, train_data_path)
-X_eval_train, X_eval_test, Y_eval_train, Y_eval_test, _, _ = p2v_models.load_dataset(D, test_data_path)
+test_data_path = '../phase2vec/output/data/classical'
+X_train, X_val, X_test, _, _, y_test, _, _, p_test = p2v_models.load_and_combine_data(
+    D, 
+    train_data_path, 
+    test_data_path,
+)
+
+eval_data = []
+for test_dataset in ['linear', 'conservative_vs_nonconservative', 'incompressible_vs_compressible']:
+    test_data_path = f'../phase2vec/output/data/{test_dataset}'
+    X_eval_train, X_eval_test, Y_eval_train, Y_eval_test, _, _ = p2v_models.load_dataset(D, test_data_path)
+    eval_data.append((X_eval_train, X_eval_test, Y_eval_train, Y_eval_test))
 
 # generate function library
 ode_basis = p2v_models.get_ode_basis(D, N, [-1.,-1.], [1.,1.], 3)
@@ -267,14 +275,22 @@ models = [
             verbose=verbose,
         ),
     ),
-    ('pinv', partial(eval_baseline, library=ode_basis)),
+    # ('pinv', partial(eval_baseline, func=partial(p2v_models.pinv_baseline, library=ode_basis))),
+    ('lasso', partial(eval_baseline, func=partial(p2v_models.lasso, library=ode_basis))),
 ]
 
-for k, (model_name, model) in enumerate(models):
-    print(f'{model_name}')
+key, subkey = random.split(key)
+results = ml.benchmark(
+    lambda _,_2: (X_train, X_train, X_val, X_val, X_test, (X_test, y_test, p_test), eval_data),
+    models,
+    subkey,
+    '',
+    [0], 
+    num_trials=trials,
+    num_results=8,
+)
 
-    key, subkey = random.split(key)
-    res = model(
-        (X_train, X_train, X_val, X_val, (X_eval_train, X_eval_test), (Y_eval_train, Y_eval_test)), 
-        subkey,
-    )
+jnp.save(f'{save_folder}/results_s{seed}_e{epochs}_t{trials}', results)
+
+print('results', results)
+print('mean_results', jnp.mean(results, axis=0)) # this is the mean over trials

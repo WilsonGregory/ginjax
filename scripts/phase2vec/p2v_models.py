@@ -2,6 +2,8 @@ import os
 import numpy as np
 from functools import partial
 from scipy.special import binom
+import math
+from sklearn import linear_model
 
 import jax.numpy as jnp
 import jax.random as random
@@ -175,6 +177,77 @@ def get_ode_basis(D, N, min_xy, max_xy, poly_order, as_vector_images=False):
 
     return ode_basis
 
+def get_par_recon_loss(X_test, Y_test_tuple, rand_key, eval_net, batch_size, print_errs=0):
+    labels = [
+        'saddle_node 0',
+        'saddle_node 1',
+        'pitchfork 0',
+        'pitchfork 1',
+        'transcritical 0',
+        'transcritical 1',
+        'selkov 0',
+        'selkov 1',
+        'homoclinic 0',
+        'homoclinic 1',
+        'vanderpol 0',
+        'simple_oscillator 0',
+        'simple_oscillator 1',
+        'fitzhugh_nagumo 0',
+        'fitzhugh_nagumo 1',
+        'lotka_volterra 0',
+        'polynomial',
+    ]
+
+    Y_test, true_labels, p_test = Y_test_tuple
+
+    par_losses = []
+    recon_losses = []
+    recon_dict = {}
+    coeffs_dict = {}
+    for label in jnp.unique(true_labels):
+        X_class = X_test.get_subset(true_labels == label)
+        Y_class = Y_test.get_subset(true_labels == label)
+        class_pars = p_test[true_labels == label]
+        Y_class_img = Y_class[(1,0)][:,0,...]
+        class_size = len(class_pars)
+
+        full_recon = None
+        full_coeffs = None
+        for i in range(math.ceil(class_size / batch_size)): #split into batches if its too big
+            batch_layer = X_class.get_subset(jnp.arange(
+                batch_size*i, 
+                min(batch_size*(i+1), class_size),
+            ))
+
+            rand_key, subkey = random.split(rand_key)
+            recon, coeffs, _ = eval_net(layer=batch_layer, key=subkey)
+
+            full_recon = recon if (full_recon is None) else jnp.concatenate([full_recon, recon])
+            full_coeffs = coeffs if (full_coeffs is None) else jnp.concatenate([full_coeffs, coeffs])
+
+        recon_dict[int(label)] = np.array(full_recon)
+        coeffs_dict[int(label)] = np.array(full_coeffs)
+
+        assert full_coeffs.shape == class_pars.shape
+        assert full_recon.shape == Y_class_img.shape
+        par_loss = ml.mse_loss(full_coeffs, class_pars)
+
+        recon_loss = phase2vec_loss(full_recon, Y_class_img, full_coeffs, beta=None, reduce=False)
+
+        if (print_errs >= 2):
+            print(f'{labels[label]}, par: {par_loss:0.5f} --- recon: {recon_loss:0.5f}')
+
+        par_losses.append(par_loss)
+        recon_losses.append(recon_loss)
+
+    mean_par_loss = jnp.mean(jnp.stack(par_losses))
+    mean_recon_loss = jnp.mean(jnp.stack(recon_losses))
+    if (print_errs >= 1):
+        print('Mean par loss: ', mean_par_loss)
+        print('Mean recon loss: ', mean_recon_loss)
+
+    return mean_par_loss, mean_recon_loss
+
 # handles a batch input layer
 def pinv_baseline(layer, key, library):
     spatial_dims = layer.get_spatial_dims()
@@ -187,9 +260,29 @@ def pinv_baseline(layer, key, library):
 
     batch_coeffs = batch_mul(batch_img, library_pinv) # L,2,10
     batch_recon = batch_mul(batch_coeffs, library.T) # L, 2, 4096
-
     return (
         jnp.moveaxis(batch_recon.reshape((layer.get_L(),D) + spatial_dims), 1, -1),
+        jnp.moveaxis(batch_coeffs, 1, -1), 
+        None, # this is the "batch_stats" for convenience in this script
+    )
+
+def lasso(layer, key, library, alpha=1e-3):
+    # library is 4096 x 10
+    spatial_dims = layer.get_spatial_dims()
+
+    clf = linear_model.Lasso(alpha=alpha, fit_intercept=False)
+    batch_coeffs = []
+    for img in layer[(1,0)]: # fit each image individually, same as phase2vec
+        clf.fit(library, img.reshape((-1,layer.D))) # (batch*spatial, D)
+        batch_coeffs.append(clf.coef_) # (D,10)
+
+    batch_coeffs = jnp.stack(batch_coeffs)
+
+    batch_mul = vmap(lambda batch_arr,single_arr: batch_arr @ single_arr, in_axes=(0,None))
+    batch_recon = batch_mul(batch_coeffs, library.T) # L, 2, 4096
+
+    return (
+        jnp.moveaxis(batch_recon.reshape((layer.get_L(),layer.D) + spatial_dims), 1, -1),
         jnp.moveaxis(batch_coeffs, 1, -1), 
         None, # this is the "batch_stats" for convenience in this script
     )

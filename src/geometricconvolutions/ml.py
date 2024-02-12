@@ -1191,7 +1191,7 @@ def get_batch_layer(layers, batch_size, rand_key, devices=None):
     if devices is None:
         devices = jax.devices()
 
-    batches = [[],]*len(layers)
+    batches = [[] for _ in range(len(layers))]
     for i in range(int(math.ceil(L / batch_size))): #iterate through the batches of an epoch
         idxs = batch_indices[i*batch_size:(i+1)*batch_size]
         for j, layer in enumerate(layers):

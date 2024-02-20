@@ -24,7 +24,6 @@ BATCH_NORM = 'batch_norm'
 GROUP_NORM = 'group_norm'
 EQUIV_DENSE = 'equiv_dense'
 VN_NONLINEAR = 'vector_neuron_nonlinear'
-NORM_NONLINEAR = 'norm_nonlinear'
 
 SCALE = 'scale'
 BIAS = 'bias'
@@ -1067,7 +1066,6 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
         PARAMED_CONTRACTIONS: paramed_contractions_init,
         EQUIV_DENSE: equiv_dense_init,
         VN_NONLINEAR: VN_nonlinear_init,
-        NORM_NONLINEAR: norm_nonlinear_init,
     }
 
     initializers = { **initializers, **override_initializers }
@@ -1201,16 +1199,6 @@ def VN_nonlinear_init(rand_key, tree):
         rand_key, subkey = random.split(rand_key)
         bound = 1./jnp.sqrt(param_block.shape[2])
         out_params[key] = random.uniform(subkey, shape=param_block.shape, minval=-bound, maxval=bound)
-
-    return out_params
-
-def norm_nonlinear_init(rand_key, tree):
-    out_params = {}
-    for key, param_block in tree.items():
-        out_params[key] = { 
-            BIAS: jnp.zeros(param_block[BIAS].shape), 
-            SCALE: jnp.ones(param_block[SCALE].shape),
-        }
 
     return out_params
 

@@ -134,37 +134,6 @@ class LeviCivitaSymbol:
 
         return cls.symbol_dict[D]
 
-def make_all_invariants(D, k, parity, operators):
-    operators = jnp.stack(operators)
-    shape = (1,)*D + (D,)*k
-
-    basis = get_basis(f'invariants_D{D}_k{k}_parity{parity}', shape)
-
-    vmap_times_gg = jax.vmap(times_group_element, in_axes=(None, 0, None, None)) # vmap over basis_e
-
-    all_invariants = jnp.zeros((D**k,D**k))
-    for gg in operators:
-        all_invariants = all_invariants + vmap_times_gg(D, basis, parity, gg).reshape((D**k,-1))
-
-    # all_invariants = []
-    # for basis_e in basis:
-    #     invariant = np.zeros(shape)
-    #     for gg in operators:
-    #         invariant = invariant + times_group_element(D, basis_e, parity, gg)
-
-    #     all_invariants.append(invariant.reshape(-1))
-
-    # all_invariants = jnp.stack(all_invariants)
-
-    # do the SVD
-    _, s, v = jnp.linalg.svd(all_invariants)
-    sbig = s > 10*TINY
-    if not jnp.any(sbig):
-        return []
-    
-    invariants = [invariant.reshape((D,)*k)/jnp.max(jnp.abs(invariant)) for invariant in v[sbig]]
-    return [jnp.around(invariant, decimals=4) for invariant in invariants]
-
 # ------------------------------------------------------------------------------
 # PART 3: Use group averaging to find unique invariant filters.
 

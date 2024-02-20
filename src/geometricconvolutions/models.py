@@ -522,6 +522,7 @@ def resnet(
     )
     if activation_f is not None:
         layer = ml.batch_scalar_activation(layer, activation_f)
+    
     layer, params = ml.batch_conv_layer(
         params, 
         layer,

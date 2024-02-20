@@ -110,4 +110,36 @@ class TestMachineLearning:
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             assert X_batch[(0,0)].shape == Y_batch[(0,0)].shape == (num_devices, batch_size, 2) + (N,)*D + (D,)*0
             assert X_batch[(1,0)].shape == Y_batch[(1,0)].shape == (num_devices, batch_size, 1) + (N,)*D + (D,)*1
+
+    def testVNNonlinear(self):
+        D = 2
+        layer = geom.BatchLayer({ (1,0): jnp.array([[1,1], [0,1]]).reshape((1,2,1,1,2)) }, D)
+
+        # same direction, unchanged
+        W = jnp.array([1,0]).reshape((1,1,2) + (1,)*D + (1,)) # for value
+        U = jnp.array([0,1]).reshape((1,1,2) + (1,)*D + (1,)) # for direction
+        params = { ml.VN_NONLINEAR: { 'W': W, 'U': U } }
+        out_layer, params = ml.VN_nonlinear(params, layer)
+        assert jnp.allclose(out_layer[(1,0)].reshape((2,)), jnp.array([1,1]))
+
+        # first vector as value, negative second vector as direction
+        W = jnp.array([1,0]).reshape((1,1,2) + (1,)*D + (1,)) # for value
+        U = jnp.array([0,-1]).reshape((1,1,2) + (1,)*D + (1,)) # for direction
+        params = { ml.VN_NONLINEAR: { 'W': W, 'U': U } }
+        out_layer, params = ml.VN_nonlinear(params, layer, eps=0)
+        assert jnp.allclose(out_layer[(1,0)].reshape((2,)), jnp.array([1,0]), rtol=geom.TINY, atol=geom.TINY)
+
+        # use first vector as direction, second vector as value
+        W = jnp.array([0,1]).reshape((1,1,2) + (1,)*D + (1,)) # for value
+        U = jnp.array([1,0]).reshape((1,1,2) + (1,)*D + (1,)) # for direction
+        params = { ml.VN_NONLINEAR: { 'W': W, 'U': U } }
+        out_layer, params = ml.VN_nonlinear(params, layer)
+        assert jnp.allclose(out_layer[(1,0)].reshape((2,)), jnp.array([0,1]), rtol=geom.TINY, atol=geom.TINY)
+
+        # use negative first vector as direction, second vector as value is projected
+        W = jnp.array([0,1]).reshape((1,1,2) + (1,)*D + (1,)) # for value
+        U = jnp.array([-1,0]).reshape((1,1,2) + (1,)*D + (1,)) # for direction
+        params = { ml.VN_NONLINEAR: { 'W': W, 'U': U } }
+        out_layer, params = ml.VN_nonlinear(params, layer)
+        assert jnp.allclose(out_layer[(1,0)].reshape((2,)), jnp.array([-0.5,0.5]), rtol=geom.TINY, atol=geom.TINY)
             

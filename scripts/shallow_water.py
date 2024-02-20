@@ -453,7 +453,7 @@ models = [
                 output_keys=output_keys, 
                 equivariant=True, 
                 conv_filters=conv_filters,
-                depth=64,
+                depth=32,
             ),
         ),  
     ),

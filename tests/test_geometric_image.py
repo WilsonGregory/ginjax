@@ -519,6 +519,12 @@ class TestGeometricImage:
         # 2d image of scalars
         image1 = geom.GeometricImage(jnp.array([[1,2],[-1,0]]), 0, 2)
         assert image1.norm() == geom.GeometricImage(jnp.array([[1,2],[1,0]]), 0, 2)
+        assert image1.norm().parity == 0
+
+        # 2d image of pseudoscalars
+        image2 = geom.GeometricImage(jnp.array([[1,2],[-1,0]]), 1, 2)
+        assert image2.norm() == geom.GeometricImage(jnp.array([[1,2],[1,0]]), 0, 2)
+        assert image2.norm().parity == 0 # parity of norm is 0
 
         # 2d image of vectors
         image2 = geom.GeometricImage(jnp.array([[[1,0], [-1,-1]],[[0,0],[-4,3]]]), 0, 2)

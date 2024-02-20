@@ -259,6 +259,53 @@ class TestPropositions:
                         jnp.sqrt(geom.multicontract(geom.mul(D, tensor, tensor), idxs, idx_shift=D)[0,0]),
                     )
 
+    def testNormEquivariance(self):
+        # This follows from the previous test, but just to be sure
+        key = random.PRNGKey(0)
+        N = 5
+        prec = jax.lax.Precision.HIGHEST
+        for D in [2,3]:
+            operators = geom.make_all_operators(D)
+            for parity in [0,1]:
+                for k in [0,1,2,3]:
+                    key, subkey = random.split(key)
+                    image = geom.GeometricImage(random.normal(subkey, shape=(N,)*D + (D,)*k), parity, D)
+
+                    # assert that norm is equivariant
+                    for gg in operators:
+                        first = image.norm().times_group_element(gg, prec)
+                        second = image.times_group_element(gg, prec).norm()
+                        assert first == second
+
+    def testNormEquivariance(self):
+        # Same test but for layers
+        key = random.PRNGKey(0)
+        N = 5
+        batch = 2
+        channels = 3
+
+        vmap_times_gg = jax.vmap(
+            jax.vmap(geom.times_group_element, in_axes=(None, 0, None, None, None)), 
+            in_axes=(None, 0, None, None, None),
+        )
+
+        prec = jax.lax.Precision.HIGHEST
+        for D in [2,3]:
+            operators = geom.make_all_operators(D)
+            for parity in [0,1]:
+                for k in [0,1,2,3]:
+                    key, subkey = random.split(key)
+                    layer = geom.BatchLayer(
+                        { (k,parity): random.normal(subkey, shape=(batch,channels) + (N,)*D + (D,)*k) }, 
+                        D,
+                    )
+
+                    # assert that norm is equivariant
+                    for gg in operators:
+                        first = vmap_times_gg(D, geom.norm(D+2, layer[(k,parity)]), 0, gg, prec)
+                        second = geom.norm(D+2, layer.times_group_element(gg, prec)[(k,parity)])
+                        assert jnp.allclose(first, second)
+
     def testMaxPoolEquivariance(self):
         N = 6
         key = random.PRNGKey(0)
@@ -328,3 +375,31 @@ class TestPropositions:
             cov = jax.vmap(lambda data: jnp.cov(data, rowvar=False, bias=True))(whitened_data.reshape((batch,-1,D)))
             eye = jnp.tensordot(jnp.ones(batch), jnp.eye(D), axes=0) # (batch, D, D)
             assert jnp.allclose(cov, eye, atol=1e-3, rtol=1e-3)
+
+    def testVNNonlinearEquivariance(self):
+        D = 2
+        N = 5
+        batch = 3
+        in_c = 10
+        out_c = 10
+        prec = jax.lax.Precision.HIGHEST
+        key = random.PRNGKey(0)
+        key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
+        layer = geom.BatchLayer(
+            { 
+                (0,0): random.normal(subkey1, shape=(batch,in_c) + (N,)*D),
+                (1,0): random.normal(subkey2, shape=(batch,in_c) + (N,)*D + (D,)),
+            },
+            D,
+        )
+
+        params = { ml.VN_NONLINEAR: { 
+            'W': random.normal(subkey3, shape=(out_c,1,in_c) + (1,)*D + (1,)),
+            'U': random.normal(subkey4, shape=(out_c,1,in_c) + (1,)*D + (1,)),
+        }}
+
+        # test that it is equivariant
+        for gg in geom.make_all_operators(D):
+            first = ml.VN_nonlinear(dict(params), layer, out_c, eps=0)[0].times_group_element(gg, prec)
+            second = ml.VN_nonlinear(dict(params), layer.times_group_element(gg, prec), out_c, eps=0)[0]
+            assert first == second

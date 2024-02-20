@@ -134,7 +134,36 @@ class LeviCivitaSymbol:
 
         return cls.symbol_dict[D]
 
+def make_all_invariants(D, k, parity, operators):
+    operators = jnp.stack(operators)
+    shape = (1,)*D + (D,)*k
 
+    basis = get_basis(f'invariants_D{D}_k{k}_parity{parity}', shape)
+
+    vmap_times_gg = jax.vmap(times_group_element, in_axes=(None, 0, None, None)) # vmap over basis_e
+
+    all_invariants = jnp.zeros((D**k,D**k))
+    for gg in operators:
+        all_invariants = all_invariants + vmap_times_gg(D, basis, parity, gg).reshape((D**k,-1))
+
+    # all_invariants = []
+    # for basis_e in basis:
+    #     invariant = np.zeros(shape)
+    #     for gg in operators:
+    #         invariant = invariant + times_group_element(D, basis_e, parity, gg)
+
+    #     all_invariants.append(invariant.reshape(-1))
+
+    # all_invariants = jnp.stack(all_invariants)
+
+    # do the SVD
+    _, s, v = jnp.linalg.svd(all_invariants)
+    sbig = s > 10*TINY
+    if not jnp.any(sbig):
+        return []
+    
+    invariants = [invariant.reshape((D,)*k)/jnp.max(jnp.abs(invariant)) for invariant in v[sbig]]
+    return [jnp.around(invariant, decimals=4) for invariant in invariants]
 
 # ------------------------------------------------------------------------------
 # PART 3: Use group averaging to find unique invariant filters.
@@ -580,15 +609,17 @@ def conv_contract_image_expand(D, image, filter_k):
 
     return jnp.tensordot(image, jnp.ones((D,)*k_prime), axes=0)
 
-def mul(D, image_a, image_b):
+def mul(D, image_a, image_b, a_offset=0, b_offset=0):
     """
     Multiplication operator between two images, implemented as a tensor product of the pixels.
     args:
         D (int): dimension of the images
         image_a (jnp.array): image data
         image_b (jnp.array): image data
+        a_offset (int): number of axes before the spatial axes (batch, channels, etc.), default 0
+        b_offset (int): number of axes before the spatial axes (batch, channels, etc.), default 0
     """
-    image_a_data, image_b_data = pre_tensor_product_expand(D, image_a, image_b)
+    image_a_data, image_b_data = pre_tensor_product_expand(D, image_a, image_b, a_offset, b_offset)
     return image_a_data * image_b_data #now that shapes match, do elementwise multiplication
 
 @partial(jit, static_argnums=[0,3,4,5,6,7,8])
@@ -896,14 +927,49 @@ def times_group_element(D, data, parity, gg, precision=None):
 
         return newdata
 
-def norm(D, data):
+def tensor_times_gg(tensor, parity, gg, precision=None):
+    """
+    Apply a group element of SO(2) or SO(3) to a single tensor.
+    args:
+        D (int): dimension of the data
+        tensor (jnp.array): data of the tensor
+        parity (int): parity of the data, 0 for even parity, 1 for odd parity
+        gg (group operation matrix): a DxD matrix that rotates the tensor. Note that you cannot vmap
+            by this argument because it needs to deal with concrete values
+        precision (jax.lax.Precision): eisnum precision, normally uses lower precision, use 
+            jax.lax.Precision.HIGH for testing equality in unit tests
+    """
+    k = len(tensor.shape)
+    sign, _ = jnp.linalg.slogdet(gg)
+    parity_flip = sign ** parity #if parity=1, the flip operators don't flip the tensors
+
+    if k == 0:
+        newdata = 1. * tensor * parity_flip
+    else:
+        # applying the rotation to tensors is essentially multiplying each index, which we can think of as a
+        # vector, by the group action. The image pixels have already been rotated.
+        einstr = LETTERS[:k] + ','
+        einstr += ",".join([LETTERS[i+13] + LETTERS[i] for i in range(k)])
+        tensor_inputs = (tensor, ) + k * (gg, )
+        newdata = jnp.einsum(einstr, *tensor_inputs, precision=precision) * (parity_flip)
+
+    return newdata
+
+
+def norm(idx_shift, data, keepdims=False):
     """
     Perform the frobenius norm on each pixel tensor, returning a scalar image
     args:
-        D (int): dimension of the image
+        idx_shift (int): the number of leading axes before the tensor, should be D for spatial plus
+            the batch and spatial axes if they
         data (jnp.array): image data, shape (N,)*D + (D,)*k
+        keepdims (bool): passed to jnp.linalg.norm, defaults to False
     """
-    return jnp.linalg.norm(data.reshape(data.shape[:D] + (-1,)), axis=D)
+    assert idx_shift <= data.ndim, f'norm: idx shift must be at most ndim, but {idx_shift} > {data.ndim}'
+    if data.ndim == idx_shift: # in this case, reshape creates an axis, so we need to collapse it
+        keepdims = False
+        
+    return jnp.linalg.norm(data.reshape(data.shape[:idx_shift] + (-1,)), axis=idx_shift, keepdims=keepdims)
 
 @partial(jax.jit, static_argnums=[0,2,3])
 def max_pool(D, image_data, patch_len, use_norm=True):
@@ -1286,9 +1352,10 @@ class GeometricImage:
     @jit
     def norm(self):
         """
-        Calculate the norm pixel-wise
+        Calculate the norm pixel-wise. This becomes a 0 parity image.
+        returns: scalar image
         """
-        return self.__class__(norm(self.D, self.data), self.parity, self.D, self.is_torus)
+        return self.__class__(norm(self.D, self.data), 0, self.D, self.is_torus)
 
     def normalize(self):
         """

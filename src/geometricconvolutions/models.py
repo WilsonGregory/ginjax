@@ -485,8 +485,15 @@ def resnet(
             bias=True,
             mold_params=return_params,
         )
-        if activation_f is not None:
-            layer = ml.batch_scalar_activation(layer, activation_f)
+        layer, params = ml.VN_nonlinear(
+            params, 
+            layer, 
+            scalar_activation=activation_f, 
+            mold_params=return_params,
+        )
+
+        # if activation_f is not None:
+        #     layer = ml.batch_scalar_activation(layer, activation_f)
 
     for _ in range(num_blocks):
 
@@ -495,8 +502,14 @@ def resnet(
         for _ in range(num_conv):
             # pre-activation order
             layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
-            if activation_f is not None:
-                layer = ml.batch_scalar_activation(layer, activation_f)
+            layer, params = ml.VN_nonlinear(
+                params, 
+                layer, 
+                scalar_activation=activation_f, 
+                mold_params=return_params,
+            )
+            # if activation_f is not None:
+            #     layer = ml.batch_scalar_activation(layer, activation_f)
 
             layer, params = ml.batch_conv_layer(
                 params, 
@@ -520,8 +533,15 @@ def resnet(
         bias=True,
         mold_params=return_params,
     )
-    if activation_f is not None:
-        layer = ml.batch_scalar_activation(layer, activation_f)
+    layer, params = ml.VN_nonlinear(
+        params, 
+        layer, 
+        scalar_activation=activation_f, 
+        mold_params=return_params,
+    )
+    # if activation_f is not None:
+    #     layer = ml.batch_scalar_activation(layer, activation_f)
+    
     layer, params = ml.batch_conv_layer(
         params, 
         layer,

@@ -23,6 +23,8 @@ PARAMED_CONTRACTIONS = 'paramed_contractions'
 BATCH_NORM = 'batch_norm'
 GROUP_NORM = 'group_norm'
 EQUIV_DENSE = 'equiv_dense'
+VN_NONLINEAR = 'vector_neuron_nonlinear'
+NORM_NONLINEAR = 'norm_nonlinear'
 
 SCALE = 'scale'
 BIAS = 'bias'
@@ -403,6 +405,51 @@ def batch_scalar_activation(layer, activation_function):
         out_layer.append(k, parity, out_image_block)
 
     return out_layer
+
+def VN_nonlinear(params, layer, depth=None, scalar_activation=jax.nn.relu, eps=1e-5, mold_params=False):
+    """
+    The vector nonlinearity in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
+    Basically use the channels of a vector to get a direction vector and a value vector. Use the 
+    direction vector the split the value vector space in two. In one hemisphere, the value vector
+    is unchanged, while in the other it is projected to the hemispheres boundary.
+    args:
+        params (): params tree
+        layer (BatchLayer): the input layer, must
+        depth (int): out depth, defaults to None which will be set to the number of input channels
+        scalar_activation (func): nonlinearity used for scalar
+        eps (float): small value to avoid dividing by zero if the k_vec is close to 0, defaults to 1e-5
+    """
+    params_idx, this_params = get_layer_params(params, mold_params, VN_NONLINEAR)
+
+    out_layer = layer.empty()
+    for (k,parity), img_block in layer.items():
+        assert k == 0 or k == 1, 'batch_VN_nonlinear: Layer can only have scalars and vectors'
+        in_c = img_block.shape[1]
+
+        if k == 0:
+            out_layer.append(k, parity, scalar_activation(img_block))
+        else: # k==1
+            if mold_params:
+                if depth is None:
+                    this_params['W'] = jnp.ones((in_c,1,in_c) + (1,)*layer.D + (1,))
+                    this_params['U'] = jnp.ones((in_c,1,in_c) + (1,)*layer.D + (1,))
+                else:
+                    this_params['W'] = jnp.ones((depth,1,in_c) + (1,)*layer.D + (1,))
+                    this_params['U'] = jnp.ones((depth,1,in_c) + (1,)*layer.D + (1,))
+
+            # (batch,out_c,spatial,tensor)
+            q = jnp.moveaxis(jnp.sum(this_params['W'] * img_block[None], axis=2), 0, 1)
+            k_vec = jnp.moveaxis(jnp.sum(this_params['U'] * img_block[None], axis=2), 0, 1)
+            k_normed = k_vec / (geom.norm(layer.D+2, k_vec, keepdims=True) + eps)
+
+            q_k_inner_product = geom.multicontract(geom.mul(layer.D, q, k_normed, 2, 2), ((0,1),), layer.D + 2)[...,None]
+            projected_q = q - q_k_inner_product * k_normed
+            res = jnp.where(q_k_inner_product >= 0, q, projected_q)
+            out_layer.append(k, parity, res)
+
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return out_layer, params
 
 @functools.partial(jit, static_argnums=[1,3,4])
 def polynomial_layer(params, param_idx, layer, D, poly_degree):
@@ -1019,6 +1066,8 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
         CASCADING_CONTRACTIONS: cascading_contractions_init,
         PARAMED_CONTRACTIONS: paramed_contractions_init,
         EQUIV_DENSE: equiv_dense_init,
+        VN_NONLINEAR: VN_nonlinear_init,
+        NORM_NONLINEAR: norm_nonlinear_init,
     }
 
     initializers = { **initializers, **override_initializers }
@@ -1143,6 +1192,25 @@ def equiv_dense_init(rand_key, tree):
         rand_key, subkey = random.split(rand_key)
         bound = 1./jnp.sqrt(param_block.size)
         out_params[key] = random.uniform(subkey, shape=param_block.shape, minval=-bound, maxval=bound)
+
+    return out_params
+
+def VN_nonlinear_init(rand_key, tree):
+    out_params = {}
+    for key, param_block in tree.items():
+        rand_key, subkey = random.split(rand_key)
+        bound = 1./jnp.sqrt(param_block.shape[2])
+        out_params[key] = random.uniform(subkey, shape=param_block.shape, minval=-bound, maxval=bound)
+
+    return out_params
+
+def norm_nonlinear_init(rand_key, tree):
+    out_params = {}
+    for key, param_block in tree.items():
+        out_params[key] = { 
+            BIAS: jnp.zeros(param_block[BIAS].shape), 
+            SCALE: jnp.ones(param_block[SCALE].shape),
+        }
 
     return out_params
 
@@ -1583,7 +1651,7 @@ def train(
                 )
             else:
                 pmap_loss_val, pmap_grads = pmap_loss_grad(params, X_batch, Y_batch, subkey, True)
-            
+
             batch_times.append(time.time() - start_time)
             updates, opt_state = optimizer.update(grads_mean(pmap_grads), opt_state, params)
             params = optax.apply_updates(params, updates)

@@ -416,34 +416,34 @@ train_and_eval = partial(
 )
 
 models = [
-    (
-        'dil_resnet',
-        partial(
-            train_and_eval, 
-            net=partial(models.dil_resnet, depth=128, activation_f=jax.nn.gelu, output_keys=output_keys),
-        ),
-    ),
-    (
-        'dil_resnet_equiv',
-        partial(
-            train_and_eval, 
-            net=partial(
-                models.dil_resnet, 
-                depth=64, 
-                activation_f=jax.nn.gelu, 
-                equivariant=True, 
-                conv_filters=conv_filters,
-                output_keys=output_keys,
-            ),
-        ),
-    ),
-    (
-        'resnet',
-        partial(
-            train_and_eval, 
-            net=partial(models.resnet, output_keys=output_keys),
-        ),   
-    ),
+    # (
+    #     'dil_resnet',
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(models.dil_resnet, depth=128, activation_f=jax.nn.gelu, output_keys=output_keys),
+    #     ),
+    # ),
+    # (
+    #     'dil_resnet_equiv',
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(
+    #             models.dil_resnet, 
+    #             depth=64, 
+    #             activation_f=jax.nn.gelu, 
+    #             equivariant=True, 
+    #             conv_filters=conv_filters,
+    #             output_keys=output_keys,
+    #         ),
+    #     ),
+    # ),
+    # (
+    #     'resnet',
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(models.resnet, output_keys=output_keys),
+    #     ),   
+    # ),
     (
         'resnet_equiv',
         partial(
@@ -453,55 +453,55 @@ models = [
                 output_keys=output_keys, 
                 equivariant=True, 
                 conv_filters=conv_filters,
-                depth=64,
+                depth=32,
             ),
         ),  
     ),
-    (
-        'unet2015',
-        partial(
-            train_and_eval,
-            net=partial(models.unet2015, output_keys=output_keys),
-            has_aux=True,
-        ),
-    ),
-    (
-        'unet2015_equiv',
-        partial(
-            train_and_eval,
-            net=partial(
-                models.unet2015, 
-                equivariant=True,
-                conv_filters=conv_filters, 
-                upsample_filters=upsample_filters,
-                output_keys=output_keys,
-                depth=32, # 64=41M, 48=23M, 32=10M
-            ),
-        ),
-    ),
-    (
-        'unetBase',
-        partial(
-            train_and_eval,
-            net=partial(
-                models.unetBase, 
-                output_keys=output_keys, 
-            ),
-        ),
-    ),
-    (
-        'unetBase_equiv', # might want to try lr=1e-4 for this one
-        partial(
-            train_and_eval,
-            net=partial(
-                models.unetBase, 
-                output_keys=output_keys,
-                equivariant=True,
-                conv_filters=conv_filters,
-                upsample_filters=upsample_filters,
-            ),
-        ),
-    ),
+    # (
+    #     'unet2015',
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(models.unet2015, output_keys=output_keys),
+    #         has_aux=True,
+    #     ),
+    # ),
+    # (
+    #     'unet2015_equiv',
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unet2015, 
+    #             equivariant=True,
+    #             conv_filters=conv_filters, 
+    #             upsample_filters=upsample_filters,
+    #             output_keys=output_keys,
+    #             depth=32, # 64=41M, 48=23M, 32=10M
+    #         ),
+    #     ),
+    # ),
+    # (
+    #     'unetBase',
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unetBase, 
+    #             output_keys=output_keys, 
+    #         ),
+    #     ),
+    # ),
+    # (
+    #     'unetBase_equiv', # might want to try lr=1e-4 for this one
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unetBase, 
+    #             output_keys=output_keys,
+    #             equivariant=True,
+    #             conv_filters=conv_filters,
+    #             upsample_filters=upsample_filters,
+    #         ),
+    #     ),
+    # ),
 ]
 
 key, subkey = random.split(key)

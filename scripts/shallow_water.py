@@ -193,17 +193,17 @@ def get_data(
         normstats=normstats,
     )
     return train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y
-    
-def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, has_aux=False):
+
+def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, has_aux=False, future_steps=1):
     assert net is not None
     curr_layer = layer_x
     out_layer = layer_y.empty()
-    future_steps = layer_y[(0,0)].shape[1] # number of output scalar channels
     for _ in range(future_steps):
+        key, subkey = random.split(key)
         if has_aux:
-            learned_x, aux_data = net(params, curr_layer, key, train, batch_stats=aux_data)
+            learned_x, aux_data = net(params, curr_layer, subkey, train, batch_stats=aux_data)
         else:
-            learned_x = net(params, curr_layer, key, train)
+            learned_x = net(params, curr_layer, subkey, train)
 
         out_layer = out_layer.concat(learned_x, axis=1)
         next_layer = curr_layer.empty()
@@ -212,13 +212,8 @@ def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, 
 
         curr_layer = next_layer
 
-    spatial_size = np.multiply.reduce(layer_x.get_spatial_dims())
-    batch_smse = jax.vmap(lambda x,y: ml.l2_squared_loss(x.to_vector(), y.to_vector())/spatial_size)
-
-    if has_aux:
-        return jnp.mean(batch_smse(out_layer, layer_y)), aux_data
-    else:
-        return jnp.mean(batch_smse(out_layer, layer_y))
+    loss = ml.smse_loss(out_layer, layer_y)
+    return (loss, aux_data) if has_aux else loss
 
 def train_and_eval(
     data, 
@@ -292,7 +287,7 @@ def train_and_eval(
 
     key, subkey = random.split(key)
     test_rollout_loss = ml.map_loss_in_batches(
-        partial(map_and_loss, net=net, has_aux=has_aux), 
+        partial(map_and_loss, net=net, has_aux=has_aux, future_steps=5), # rollout_steps hardcoded
         params, 
         test_rollout_X, 
         test_rollout_Y, 

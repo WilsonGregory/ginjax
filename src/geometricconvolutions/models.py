@@ -1,7 +1,6 @@
 import functools
 from collections import defaultdict
 
-import jax.numpy as jnp
 import jax
 
 import geometricconvolutions.geometric as geom
@@ -28,7 +27,7 @@ def unet_conv_block(
         conv_kwargs (dict): keyword args to pass the the convolution function
         batch_stats (dict): state for batch_norm, also determines whether batch_norm layer happens
         batch_stats_idx (int): the index of batch_norm that we are on
-        activaton_f (function): the function that we pass to batch_scalar_activation
+        activation_f (string or function): the function that we pass to batch_scalar_activation
         mold_params (bool): whether we are mapping the params, or applying them
     returns: layer, params, batch_stats, batch_stats_idx 
     """
@@ -50,10 +49,26 @@ def unet_conv_block(
             )
             batch_stats[batch_stats_idx] = { 'mean': mean, 'var': var }
             batch_stats_idx += 1
-        if activation_f is not None:
-            layer = ml.batch_scalar_activation(layer, activation_f)
+        layer, params = handle_activation(activation_f, params, layer, mold_params)
 
     return layer, params, batch_stats, batch_stats_idx
+
+ACTIVATION_REGISTRY = {
+    'relu': jax.nn.relu,
+    'gelu': jax.nn.gelu,
+    'tanh': jax.nn.tanh,
+}
+
+def handle_activation(activation_f, params, layer, mold_params):
+    if activation_f is None:
+        return layer, params
+    elif isinstance(activation_f, str):
+        if activation_f == ml.VN_NONLINEAR:
+            return ml.VN_nonlinear(params, layer, mold_params=mold_params)
+        else:
+            return ml.batch_scalar_activation(layer, ACTIVATION_REGISTRY[activation_f]), params
+    else:
+        return ml.batch_scalar_activation(layer, activation_f), params
 
 @functools.partial(jax.jit, static_argnums=[3,4,5,6,7,10])
 def unetBase(
@@ -67,6 +82,7 @@ def unetBase(
     equivariant=False,
     conv_filters=None, 
     upsample_filters=None, # 2x2 filters
+    use_group_norm=True,
     return_params=False,
 ):
     """
@@ -85,10 +101,11 @@ def unetBase(
             experiments, should be ((0,0),(1,0)) for the pressure/velocity form and ((0,0),(0,1)) for 
             the pressure/vorticity form.
         depth (int): the depth of the layers, defaults to 64
-        activaton_f (function): the function that we pass to batch_scalar_activation
+        activation_f (string or function): the function that we pass to batch_scalar_activation
         equivariant (bool): whether to use the equivariant version of the model, defaults to False
         conv_filters (Layer): the conv filters used for the equivariant version
         upsample_filters (Layer): the conv filters used for the upsample layer of the equivariant version
+        use_group_norm (bool): whether to use group_norm, defaults to True
         return_params (bool): whether we are mapping the params, or applying them
     """
     num_downsamples = 4
@@ -101,12 +118,10 @@ def unetBase(
         filter_info = { 'type': ml.CONV_FIXED, 'filters': conv_filters }
         filter_info_upsample = { 'type': ml.CONV_FIXED, 'filters': upsample_filters }
         target_keys = output_keys
-        use_group_norm = True
     else:
         filter_info = { 'type': ml.CONV_FREE, 'M': 3 }
         filter_info_upsample = { 'type': ml.CONV_FREE, 'M': 2 }
         target_keys = ((0,0),)
-        use_group_norm = True
 
         # convert to channels of a scalar layer
         layer = layer.to_scalar_layer()
@@ -124,8 +139,7 @@ def unetBase(
         )
         if use_group_norm:
             layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
-        if activation_f is not None:
-            layer = ml.batch_scalar_activation(layer, activation_f)
+        layer, params = handle_activation(activation_f, params, layer, return_params)
 
     # first we do the downsampling
     residual_layers = []
@@ -147,8 +161,7 @@ def unetBase(
             )
             if use_group_norm:
                 layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
-            if activation_f is not None:
-                layer = ml.batch_scalar_activation(layer, activation_f)
+            layer, params = handle_activation(activation_f, params, layer, return_params)
 
     # now we do the upsampling and concatenation
     for upsample in reversed(range(num_downsamples)):
@@ -180,8 +193,7 @@ def unetBase(
             )
             if use_group_norm:
                 layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
-            if activation_f is not None:
-                layer = ml.batch_scalar_activation(layer, activation_f)
+            layer, params = handle_activation(activation_f, params, layer, return_params)
 
     layer, params = ml.batch_conv_layer(
         params,
@@ -332,7 +344,7 @@ def unet2015(
 
     return res
 
-@functools.partial(jax.jit, static_argnums=[3,4,5,6,8])
+@functools.partial(jax.jit, static_argnums=[3,4,5,6,7,9])
 def dil_resnet(
     params, 
     layer, 
@@ -343,6 +355,7 @@ def dil_resnet(
     activation_f=jax.nn.relu, 
     equivariant=False, 
     conv_filters=None, 
+    use_group_norm=False,
     return_params=False,
 ):
     """
@@ -356,7 +369,7 @@ def dil_resnet(
         key (jnp.random key): key for any layers requiring randomization
         train (bool): whether train mode or test mode, relevant for batch_norm
         depth (int): the depth of the layers, defaults to 48
-        activaton_f (function): the function that we pass to batch_scalar_activation, defaults to relu
+        activation_f (string or function): the function that we pass to batch_scalar_activation, defaults to relu
         equivariant (bool): whether to use the equivariant version of the model, defaults to False
         conv_filters (Layer): the conv filters used for the equivariant version
         return_params (bool): whether we are mapping the params, or applying them
@@ -386,8 +399,7 @@ def dil_resnet(
             bias=True,
             mold_params=return_params,
         )
-        if activation_f is not None:
-            layer = ml.batch_scalar_activation(layer, activation_f)
+        layer, params = handle_activation(activation_f, params, layer, return_params)
 
     for _ in range(num_blocks):
 
@@ -404,8 +416,9 @@ def dil_resnet(
                 mold_params=return_params,
                 rhs_dilation=(dilation,)*layer.D,
             )
-            if activation_f is not None:
-                layer = ml.batch_scalar_activation(layer, activation_f)
+            if use_group_norm:
+                layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
+            layer, params = handle_activation(activation_f, params, layer, return_params)
 
         layer = geom.BatchLayer.from_vector(layer.to_vector() + residual_layer.to_vector(), layer)
 
@@ -419,8 +432,7 @@ def dil_resnet(
         bias=True,
         mold_params=return_params,
     )
-    if activation_f is not None:
-        layer = ml.batch_scalar_activation(layer, activation_f)
+    layer, params = handle_activation(activation_f, params, layer, return_params)
     layer, params = ml.batch_conv_layer(
         params, 
         layer,
@@ -455,7 +467,7 @@ def resnet(
         key (jnp.random key): key for any layers requiring randomization
         train (bool): whether train mode or test mode, relevant for batch_norm
         depth (int): the depth of the layers, defaults to 48
-        activaton_f (function): the function that we pass to batch_scalar_activation, defaults to relu
+        activation_f (string or function): the function that we pass to batch_scalar_activation, defaults to relu
         equivariant (bool): whether to use the equivariant version of the model, defaults to False
         conv_filters (Layer): the conv filters used for the equivariant version
         return_params (bool): whether we are mapping the params, or applying them
@@ -485,8 +497,7 @@ def resnet(
             bias=True,
             mold_params=return_params,
         )
-        if activation_f is not None:
-            layer = ml.batch_scalar_activation(layer, activation_f)
+        layer, params = handle_activation(activation_f, params, layer, return_params)
 
     for _ in range(num_blocks):
 
@@ -495,8 +506,7 @@ def resnet(
         for _ in range(num_conv):
             # pre-activation order
             layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
-            if activation_f is not None:
-                layer = ml.batch_scalar_activation(layer, activation_f)
+            layer, params = handle_activation(activation_f, params, layer, return_params)
 
             layer, params = ml.batch_conv_layer(
                 params, 
@@ -520,8 +530,7 @@ def resnet(
         bias=True,
         mold_params=return_params,
     )
-    if activation_f is not None:
-        layer = ml.batch_scalar_activation(layer, activation_f)
+    layer, params = handle_activation(activation_f, params, layer, return_params)
     
     layer, params = ml.batch_conv_layer(
         params, 
@@ -534,3 +543,22 @@ def resnet(
     )
 
     return (layer, params) if return_params else layer
+
+def do_nothing(params, layer, key, train, idxs, return_params=False):
+    """
+    Not to be confused with Calvin Coolidge. Allows you to compare the loss to a model that just picks one 
+    channel of each layer as the output. This is helpful for dynamics problems where sometimes just picking
+    the next step as the previous step is a surprisingly effective strategy.
+    args:
+        params (dict): the params tree
+        layer (BatchLayer): input layer
+        key (rand_key):
+        train (bool): whether we are train mode
+        idxs (dict): dict of (k,parity): idx where idx is layer to select as the output
+    """
+    out_layer = layer.empty()
+    for (k, parity), image_block in layer.items():
+        idx = idxs[(k,parity)]
+        out_layer.append(k, parity, image_block[:,idx:idx+1])
+
+    return (out_layer, params) if return_params else out_layer

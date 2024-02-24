@@ -24,6 +24,7 @@ BATCH_NORM = 'batch_norm'
 GROUP_NORM = 'group_norm'
 EQUIV_DENSE = 'equiv_dense'
 VN_NONLINEAR = 'vector_neuron_nonlinear'
+VECTOR_DOTS_NONLINEAR = 'vector_dots_nonlinear'
 
 SCALE = 'scale'
 BIAS = 'bias'
@@ -405,6 +406,7 @@ def batch_scalar_activation(layer, activation_function):
 
     return out_layer
 
+@functools.partial(jax.jit, static_argnums=[2,3,4,5])
 def VN_nonlinear(params, layer, depth=None, scalar_activation=jax.nn.relu, eps=1e-5, mold_params=False):
     """
     The vector nonlinearity in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
@@ -424,17 +426,14 @@ def VN_nonlinear(params, layer, depth=None, scalar_activation=jax.nn.relu, eps=1
     for (k,parity), img_block in layer.items():
         assert k == 0 or k == 1, 'batch_VN_nonlinear: Layer can only have scalars and vectors'
         in_c = img_block.shape[1]
+        out_c = in_c if depth is None else depth
 
         if k == 0:
             out_layer.append(k, parity, scalar_activation(img_block))
         else: # k==1
             if mold_params:
-                if depth is None:
-                    this_params['W'] = jnp.ones((in_c,1,in_c) + (1,)*layer.D + (1,))
-                    this_params['U'] = jnp.ones((in_c,1,in_c) + (1,)*layer.D + (1,))
-                else:
-                    this_params['W'] = jnp.ones((depth,1,in_c) + (1,)*layer.D + (1,))
-                    this_params['U'] = jnp.ones((depth,1,in_c) + (1,)*layer.D + (1,))
+                this_params['W'] = jnp.ones((out_c,1,in_c) + (1,)*layer.D + (1,))
+                this_params['U'] = jnp.ones((out_c,1,in_c) + (1,)*layer.D + (1,))
 
             # (batch,out_c,spatial,tensor)
             q = jnp.moveaxis(jnp.sum(this_params['W'] * img_block[None], axis=2), 0, 1)
@@ -445,6 +444,55 @@ def VN_nonlinear(params, layer, depth=None, scalar_activation=jax.nn.relu, eps=1
             projected_q = q - q_k_inner_product * k_normed
             res = jnp.where(q_k_inner_product >= 0, q, projected_q)
             out_layer.append(k, parity, res)
+
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return out_layer, params
+
+def vector_dots_nonlinear(params, layer, depth=None, scalar_activation=jax.nn.relu, mold_params=False):
+    """
+    The vector nonlinearity based on scalars are universal: https://arxiv.org/abs/2106.06610
+    We get a map from in_c vectors to depth vectors by taking the dot products of the channel of vectors,
+    then do a little MLP on those scalars and use them as coefficients of the output vectors.
+    args:
+        params (): params tree
+        layer (BatchLayer): the input layer, must
+        depth (int): out depth, defaults to None which will be set to the number of input channels
+        scalar_activation (func): nonlinearity used for scalar
+    """
+    params_idx, this_params = get_layer_params(params, mold_params, VECTOR_DOTS_NONLINEAR)
+
+    out_layer = layer.empty()
+    for (k,parity), img_block in layer.items():
+        assert k == 0 or k == 1, 'vector_dots_nonlinear: Layer can only have scalars and vectors'
+        batch,in_c = img_block.shape[:2]
+        spatial,_ = geom.parse_shape(img_block.shape[2:], layer.D)
+        out_c = in_c if depth is None else depth
+
+        if k == 0:
+            out_layer.append(k, parity, scalar_activation(img_block))
+        else: # k==1
+            if mold_params:
+                this_params[(k,parity)] = {
+                    'W1': jnp.ones((in_c**2,in_c*out_c)),
+                    'b1': jnp.ones((1,in_c*out_c)),
+                    'W2': jnp.ones((in_c*out_c,in_c*out_c)),
+                    'b2': jnp.ones((1,in_c*out_c)),
+                }
+
+            # (batch,in_c,spatial,tensor) -> (batch*spatial,in_c,tensor)
+            vecs = jnp.moveaxis(img_block, 1, 2+layer.D).reshape((-1,in_c) + (layer.D,)) 
+            scalars = jax.vmap(lambda A: A @ A.T)(vecs) # (batch*spatial,in_c,in_c)
+            scalars = scalars.reshape((len(scalars),-1)) # (batch*spatial,in_c^2)
+
+            scalars = scalars @ this_params[(k,parity)]['W1'] + this_params[(k,parity)]['b1'] # (batch*spatial,in_c*out_c)
+            scalars = scalar_activation(scalars)
+            scalars = scalars @ this_params[(k,parity)]['W2'] + this_params[(k,parity)]['b2'] # (batch*spatial,in_c*out_c)
+
+            out_vecs = jax.vmap(lambda V,S: S @ V)(vecs,scalars.reshape((len(scalars),out_c,in_c)))
+            out_vecs = out_vecs.reshape((batch,) + spatial + (out_c,layer.D))
+
+            out_layer.append(k, parity, jnp.moveaxis(out_vecs, 1+layer.D, 1))
 
     params = update_params(params, params_idx, this_params, mold_params)
 
@@ -1066,6 +1114,7 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
         PARAMED_CONTRACTIONS: paramed_contractions_init,
         EQUIV_DENSE: equiv_dense_init,
         VN_NONLINEAR: VN_nonlinear_init,
+        VECTOR_DOTS_NONLINEAR: vector_dots_init,
     }
 
     initializers = { **initializers, **override_initializers }
@@ -1202,6 +1251,21 @@ def VN_nonlinear_init(rand_key, tree):
 
     return out_params
 
+def vector_dots_init(rand_key, tree):
+    out_params = {}
+    for key, param_block_dict in tree.items():
+        out_params[key] = {}
+        rand_key, subkey = random.split(rand_key)
+        bound = 1./jnp.sqrt(len(param_block_dict['W1']))
+        out_params[key]['W1'] = random.uniform(subkey, shape=param_block_dict['W1'].shape, minval=-bound, maxval=bound)
+        out_params[key]['b1'] = random.uniform(subkey, shape=param_block_dict['b1'].shape, minval=-bound, maxval=bound)
+
+        bound = 1./jnp.sqrt(len(param_block_dict['W2']))
+        out_params[key]['W2'] = random.uniform(subkey, shape=param_block_dict['W2'].shape, minval=-bound, maxval=bound)
+        out_params[key]['b2'] = random.uniform(subkey, shape=param_block_dict['b2'].shape, minval=-bound, maxval=bound)
+
+    return out_params
+
 ## Losses
 
 def rmse_loss(x, y):
@@ -1216,11 +1280,38 @@ def rmse_loss(x, y):
 def mse_loss(x, y):
     return jnp.mean((x - y) ** 2)
 
+def smse_loss(layer_x, layer_y):
+    """
+    Sum of mean squared error loss. The sum is over the channels, the mean is over the spatial dimensions and
+    the batch.
+    """
+    spatial_size = np.multiply.reduce(layer_x.get_spatial_dims())
+    return jnp.mean(jnp.sum((layer_x.to_vector() - layer_y.to_vector())**2/spatial_size, axis=1))
+
 def l2_loss(x, y):
     return jnp.sqrt(l2_squared_loss(x, y))
 
 def l2_squared_loss(x, y):
     return jnp.sum((x - y) ** 2)
+
+def pointwise_normalized_loss(layer_x, layer_y, eps=1e-5):
+    """
+    Pointwise normalized loss. We find the norm of each channel at each spatial point of the true value
+    and divide the tensor by that norm. Then we take the l2 loss, mean over the spatial dimensions, sum 
+    over the channels, take a final square root and mean over the batch.
+    args:
+        layer_x (BatchLayer): input batch layer
+        layer_y (BatchLayer): target batch layer
+    """
+    spatial_size = np.multiply.reduce(layer_x.get_spatial_dims())
+
+    order_loss = jnp.zeros(layer_x.get_L())
+    for (k,parity), img_block in layer_y.items():
+        norm = geom.norm(layer_y.D + 2, img_block, keepdims=True)
+        normalized_l2 = ((layer_x[(k,parity)] - img_block)**2) / (norm + eps)
+        order_loss = order_loss + (jnp.sum(normalized_l2, axis=range(1,img_block.ndim)) / spatial_size)
+
+    return jnp.mean(jnp.sqrt(order_loss))
 
 ## Data and Batching operations
 
@@ -1230,7 +1321,7 @@ def get_batch_layer(layers, batch_size, rand_key, devices=None):
     layers to be a tuple (X,Y) so that the batches have the inputs and outputs. In this case, it will return
     a list of length 2 where the first element is a list of the batches of the input data and the second
     element is the same batches of the output data. Automatically reshapes the batches to use with 
-    pmap based on the number of gpus found.
+    pmap based on the number of gpus found. 
     args:
         layers (BatchLayer or iterable of BatchLayer): batch layers which all get simultaneously batched
         batch_size (int): length of the batch
@@ -1248,7 +1339,8 @@ def get_batch_layer(layers, batch_size, rand_key, devices=None):
         devices = jax.devices()
 
     batches = [[] for _ in range(len(layers))]
-    for i in range(int(math.ceil(L / batch_size))): #iterate through the batches of an epoch
+    # if L is not divisible by batch, the remainder will be ignored
+    for i in range(int(math.floor(L / batch_size))): #iterate through the batches of an epoch
         idxs = batch_indices[i*batch_size:(i+1)*batch_size]
         for j, layer in enumerate(layers):
             batches[j].append(layer.get_subset(idxs).reshape_pmap(devices))

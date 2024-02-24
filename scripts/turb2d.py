@@ -40,7 +40,13 @@ def read_one_h5(filename: str, data_class: str) -> tuple:
 
     return u, vxy
 
-def merge_h5s_into_layer(data_dir: str, num_trajectories: int, data_class: str, window: int) -> tuple:
+def merge_h5s_into_layer(
+    data_dir: str, 
+    num_trajectories: int, 
+    data_class: str, 
+    past_steps: int,
+    future_steps: int,
+) -> tuple:
     """
     Given a specified dataset, load the data into layers where the layer_X has a channel per image in the
     lookback window, and the layer_Y has just the single next image.
@@ -48,7 +54,8 @@ def merge_h5s_into_layer(data_dir: str, num_trajectories: int, data_class: str, 
         data_dir (str): directory of the data
         seeds (list of str): seeds for the data
         data_class (str): type of data, either train, valid, or test
-        window (int): the lookback window, how many steps we look back to predict the next one
+        past_steps (int): the lookback window, how many steps we look back to predict the next one
+        future_steps (int): the number of future steps to predict
     """
     all_files = sorted(filter(lambda file: f'NavierStokes2D_{data_class}' in file, os.listdir(data_dir)))
 
@@ -72,20 +79,26 @@ def merge_h5s_into_layer(data_dir: str, num_trajectories: int, data_class: str, 
         )
         num_trajectories = len(all_u)
 
-    # all_u.shape[1] -1 because the last one is the output
-    window_idx = gc_data.rolling_window_idx(all_u.shape[1]-1, window)
-    input_u = all_u[:num_trajectories, window_idx].reshape((-1, window, N, N))
-    input_vxy = all_vxy[:num_trajectories, window_idx].reshape((-1, window, N, N, D))
+    all_u = all_u[:num_trajectories]
+    all_vxy = all_vxy[:num_trajectories]
 
-    output_u = all_u[:num_trajectories, window:].reshape(-1, 1, N, N)
-    output_vxy = all_vxy[:num_trajectories, window:].reshape(-1, 1, N, N, D)
+    return gc_data.times_series_to_layers(
+        D, 
+        { (0,0): all_u, (1,0): all_vxy }, 
+        {}, 
+        False, 
+        past_steps, 
+        future_steps,
+    )
 
-    layer_X = geom.BatchLayer({ (0,0): input_u, (1,0): input_vxy }, D, False)
-    layer_Y = geom.BatchLayer({ (0,0): output_u, (1,0): output_vxy }, D, False)
-
-    return layer_X, layer_Y
-
-def get_data(data_dir: str, num_train_traj: int, num_val_traj: int, num_test_traj: int, window: int) -> tuple:
+def get_data(
+    data_dir: str, 
+    num_train_traj: int, 
+    num_val_traj: int, 
+    num_test_traj: int, 
+    past_steps: int,
+    future_steps: int,
+) -> tuple:
     """
     Get train, val, and test data sets.
     args:
@@ -93,11 +106,12 @@ def get_data(data_dir: str, num_train_traj: int, num_val_traj: int, num_test_tra
         num_train_traj (int): number of training trajectories
         num_val_traj (int): number of validation trajectories
         num_test_traj (int): number of testing trajectories
-        window (int): length of the lookback to predict the next step
+        past_steps (int): length of the lookback to predict the next step
+        future_steps (int): the number of future steps to predict
     """
-    train_X, train_Y = merge_h5s_into_layer(data_dir, num_train_traj, 'train', window)
-    val_X, val_Y = merge_h5s_into_layer(data_dir, num_val_traj, 'valid', window)
-    test_X, test_Y = merge_h5s_into_layer(data_dir, num_test_traj, 'test', window)
+    train_X, train_Y = merge_h5s_into_layer(data_dir, num_train_traj, 'train', past_steps, future_steps)
+    val_X, val_Y = merge_h5s_into_layer(data_dir, num_val_traj, 'valid', past_steps, future_steps)
+    test_X, test_Y = merge_h5s_into_layer(data_dir, num_test_traj, 'test', past_steps, future_steps)
 
     return train_X, train_Y, val_X, val_Y, test_X, test_Y
 
@@ -147,6 +161,7 @@ def train_and_eval(
     images_dir, 
     noise_stdev=None,
     has_aux=False,
+    verbose=1,
 ):
     train_X, train_Y, val_X, val_Y, test_X, test_Y = data
 
@@ -156,7 +171,7 @@ def train_and_eval(
         train_X.get_one(),
         subkey,
     )
-    print(f'Model params: {ml.count_params(params)}')
+    print(f'Model params: {ml.count_params(params):,}')
 
     steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
 
@@ -167,7 +182,7 @@ def train_and_eval(
         partial(map_and_loss, net=net, has_aux=has_aux),
         params,
         subkey,
-        stop_condition=ml.EpochStop(epochs, verbose=2),
+        stop_condition=ml.EpochStop(epochs, verbose=verbose),
         batch_size=batch_size,
         optimizer=optax.adamw(
             optax.warmup_cosine_decay_schedule(1e-8, lr, 5*steps_per_epoch, epochs*steps_per_epoch, 1e-7),
@@ -251,6 +266,7 @@ def handleArgs(argv):
         type=str, 
         default=None,
     )
+    parser.add_argument('-v', '--verbose', help='verbose argument passed to trainer', type=int, default=1)
 
     args = parser.parse_args()
 
@@ -266,15 +282,17 @@ def handleArgs(argv):
         args.save,
         args.load,
         args.images_dir,
+        args.verbose,
     )
 
 #Main
 args = handleArgs(sys.argv)
-data_dir, epochs, lr, batch_size, train_traj, val_traj, test_traj, seed, save_file, load_file, images_dir = args
+data_dir, epochs, lr, batch_size, train_traj, val_traj, test_traj, seed, save_file, load_file, images_dir, verbose = args
 
 D = 2
 N = 128
-window = 4 # how many steps to look back to predict the next step
+past_steps = 4 # how many steps to look back to predict the next step
+future_steps = 1
 key = random.PRNGKey(time.time_ns()) if (seed is None) else random.PRNGKey(seed)
 
 # an attempt to reduce recompilation, but I don't think it actually is working
@@ -283,12 +301,13 @@ if test_traj is None:
 if val_traj is None:
     val_traj = batch_size
 
-train_X, train_Y, val_X, val_Y, test_X, test_Y = get_data(data_dir, train_traj, val_traj, test_traj, window)
+train_X, train_Y, val_X, val_Y, test_X, test_Y = get_data(data_dir, train_traj, val_traj, test_traj, past_steps, future_steps)
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 upsample_filters = geom.get_invariant_filters(Ms=[2], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 
+output_keys = tuple(train_Y.keys())
 train_and_eval = partial(
     train_and_eval, 
     lr=lr,
@@ -296,6 +315,7 @@ train_and_eval = partial(
     epochs=epochs, 
     save_params=save_file, 
     images_dir=images_dir,
+    verbose=verbose,
 )
 
 models = [
@@ -303,21 +323,28 @@ models = [
         'dil_resnet',
         partial(
             train_and_eval, 
-            net=models.dil_resnet, 
+            net=partial(models.dil_resnet, output_keys=output_keys),
         ),
     ),
     (
         'dil_resnet_equiv',
         partial(
             train_and_eval, 
-            net=partial(models.dil_resnet, equivariant=True, conv_filters=conv_filters),
+            net=partial(
+                models.dil_resnet, 
+                equivariant=True, 
+                conv_filters=conv_filters,
+                output_keys=output_keys,
+                activation_f=ml.VN_NONLINEAR,
+                depth=24, # half of dil_resnet
+            ),
         ),
     ),
     (
         'unet2015',
         partial(
             train_and_eval,
-            net=models.unet2015,
+            net=partial(models.unet2015, output_keys=output_keys),
             has_aux=True,
         ),
     ),
@@ -326,9 +353,12 @@ models = [
         partial(
             train_and_eval,
             net=partial(
-                models.unet2015_equiv, 
+                models.unet2015, 
                 conv_filters=conv_filters, 
                 upsample_filters=upsample_filters,
+                equivariant=True,
+                output_keys=output_keys,
+                activation_f=ml.VN_NONLINEAR,
                 depth=32, # 64=41M, 48=23M, 32=10M
             ),
         ),

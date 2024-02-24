@@ -98,26 +98,34 @@ def get_data_layers(
         # all_vor = (all_vor - normstats['vor']['mean']) / normstats['vor']['std']
         all_vor = all_vor / normstats['vor']['std'] # can only scale to maintain equivariance
 
-    all_uv = all_uv[:num_trajectories,skip_initial::subsample]
-    all_pres = all_pres[:num_trajectories,skip_initial::subsample]
-    all_vor = all_vor[:num_trajectories,skip_initial::subsample]
+    all_uv = all_uv[:num_trajectories]
+    all_pres = all_pres[:num_trajectories]
+    all_vor = all_vor[:num_trajectories]
 
-    input_window_idxs = gc_data.rolling_window_idx(0, all_uv.shape[1]-future_steps, past_steps)
-    input_uv = all_uv[:, input_window_idxs].reshape((-1, past_steps) + spatial_dims + (D,))
-    input_pres = all_pres[:, input_window_idxs].reshape((-1, past_steps) + spatial_dims)
-
-    output_window_idxs = gc_data.rolling_window_idx(past_steps, all_uv.shape[1], future_steps)
-    assert len(output_window_idxs) == len(input_window_idxs)
-    output_uv = all_uv[:, output_window_idxs].reshape((-1, future_steps) + spatial_dims + (D,))
-    output_pres = all_pres[:, output_window_idxs].reshape((-1, future_steps) + spatial_dims)
-    output_vor = all_vor[:, output_window_idxs].reshape((-1, future_steps) + spatial_dims)
-
-    layer_X = geom.BatchLayer({ (0,0): input_pres, (1,0): input_uv }, D, is_torus)
     if pres_vor_form:
-        layer_Y = geom.BatchLayer({ (0,0): output_pres, (0,1): output_vor }, D, is_torus)
+        layer_X, layer_Y = gc_data.times_series_to_layers(
+            D, 
+            { (0,0): all_pres, (0,1): all_vor, (1,0): all_uv }, 
+            {},
+            is_torus, 
+            past_steps, 
+            future_steps,
+            skip_initial,
+            subsample,
+        )
+        del layer_X.data[(0,1)] # remove vorticity from input      
     else:
-        layer_Y = geom.BatchLayer({ (0,0): output_pres, (1,0): output_uv }, D, is_torus)
-
+        layer_X, layer_Y = gc_data.times_series_to_layers(
+            D, 
+            { (0,0): all_pres, (1,0): all_uv }, 
+            {},
+            is_torus, 
+            past_steps, 
+            future_steps,
+            skip_initial,
+            subsample,
+        )
+    
     return layer_X, layer_Y
 
 def get_data(
@@ -193,32 +201,40 @@ def get_data(
         normstats=normstats,
     )
     return train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y
-    
-def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, has_aux=False):
+
+def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, has_aux=False, future_steps=1):
     assert net is not None
+    pres_vor_form = (0,1) in layer_y.keys()
     curr_layer = layer_x
     out_layer = layer_y.empty()
-    future_steps = layer_y[(0,0)].shape[1] # number of output scalar channels
-    for _ in range(future_steps):
+    for i in range(future_steps):
+        key, subkey = random.split(key)
         if has_aux:
-            learned_x, aux_data = net(params, curr_layer, key, train, batch_stats=aux_data)
+            learned_x, aux_data = net(params, curr_layer, subkey, train, batch_stats=aux_data)
         else:
-            learned_x = net(params, curr_layer, key, train)
+            learned_x = net(params, curr_layer, subkey, train)
 
         out_layer = out_layer.concat(learned_x, axis=1)
         next_layer = curr_layer.empty()
-        for (k, parity), img_block in curr_layer.items():
-            next_layer.append(k, parity, jnp.concatenate([img_block[:,1:], learned_x[(k, parity)]], axis=1))
+        if pres_vor_form: 
+            # output is pres/vor, but next step input needs to be pres/velocity, so use the true velocity
+            next_layer.append(0, 0, jnp.concatenate([curr_layer[(0,0)][:,1:], learned_x[(0,0)]], axis=1))
+            next_layer.append(
+                1, 
+                0, 
+                jnp.concatenate([curr_layer[(1,0)][:,1:], layer_y[(1,0)][:,i:i+1]], axis=1),
+            )
+        else:
+            for (k, parity), img_block in curr_layer.items():
+                next_layer.append(k, parity, jnp.concatenate([img_block[:,1:], learned_x[(k, parity)]], axis=1))
 
         curr_layer = next_layer
 
-    spatial_size = np.multiply.reduce(layer_x.get_spatial_dims())
-    batch_smse = jax.vmap(lambda x,y: ml.l2_squared_loss(x.to_vector(), y.to_vector())/spatial_size)
+    if pres_vor_form: # don't include velocity output
+        layer_y = geom.BatchLayer({ (0,0): layer_y[(0,0)], (0,1): layer_y[(0,1)] }, layer_y.D, layer_y.is_torus)
 
-    if has_aux:
-        return jnp.mean(batch_smse(out_layer, layer_y)), aux_data
-    else:
-        return jnp.mean(batch_smse(out_layer, layer_y))
+    loss = ml.smse_loss(out_layer, layer_y)
+    return (loss, aux_data) if has_aux else loss
 
 def train_and_eval(
     data, 
@@ -292,7 +308,7 @@ def train_and_eval(
 
     key, subkey = random.split(key)
     test_rollout_loss = ml.map_loss_in_batches(
-        partial(map_and_loss, net=net, has_aux=has_aux), 
+        partial(map_and_loss, net=net, has_aux=has_aux, future_steps=5),
         params, 
         test_rollout_X, 
         test_rollout_Y, 
@@ -389,7 +405,7 @@ if test_traj is None:
 if val_traj is None:
     val_traj = batch_size
 
-train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y = get_data(
+data = get_data(
     data_dir, 
     train_traj, 
     val_traj, 
@@ -405,7 +421,7 @@ group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 upsample_filters = geom.get_invariant_filters(Ms=[2], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 
-output_keys = tuple(train_Y.keys())
+output_keys = ((0,0),(0,1)) if pres_vor_form else ((0,0), (1,0))
 train_and_eval = partial(
     train_and_eval, 
     lr=lr,
@@ -506,7 +522,7 @@ models = [
 
 key, subkey = random.split(key)
 results = ml.benchmark(
-    lambda _, _2: (train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y),
+    lambda _, _2: data,
     models,
     subkey,
     'Nothing',

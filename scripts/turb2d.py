@@ -61,7 +61,6 @@ def merge_h5s_into_layer(
 
     N = 128
     D = 2
-    spatial_dims = (N,)*D
     all_u = jnp.zeros((0,14,N,N))
     all_vxy = jnp.zeros((0,14,N,N,D))
     for filename in all_files:
@@ -83,19 +82,14 @@ def merge_h5s_into_layer(
     all_u = all_u[:num_trajectories]
     all_vxy = all_vxy[:num_trajectories]
 
-    input_window_idxs = gc_data.rolling_window_idx(0, all_u.shape[1]-future_steps, past_steps)
-    input_u = all_u[:, input_window_idxs].reshape((-1, past_steps) + spatial_dims)
-    input_vxy = all_vxy[:, input_window_idxs].reshape((-1, past_steps) + spatial_dims + (D,))
-
-    output_window_idxs = gc_data.rolling_window_idx(past_steps, all_u.shape[1], future_steps)
-    assert len(output_window_idxs) == len(input_window_idxs)
-    output_u = all_u[:, output_window_idxs].reshape((-1, future_steps) + spatial_dims)
-    output_vxy = all_vxy[:, output_window_idxs].reshape((-1, future_steps) + spatial_dims + (D,))
-
-    layer_X = geom.BatchLayer({ (0,0): input_u, (1,0): input_vxy }, D, False)
-    layer_Y = geom.BatchLayer({ (0,0): output_u, (1,0): output_vxy }, D, False)
-
-    return layer_X, layer_Y
+    return gc_data.times_series_to_layers(
+        D, 
+        { (0,0): all_u, (1,0): all_vxy }, 
+        {}, 
+        False, 
+        past_steps, 
+        future_steps,
+    )
 
 def get_data(
     data_dir: str, 
@@ -329,14 +323,21 @@ models = [
         'dil_resnet',
         partial(
             train_and_eval, 
-            net=models.dil_resnet, 
+            net=partial(models.dil_resnet, output_keys=output_keys),
         ),
     ),
     (
         'dil_resnet_equiv',
         partial(
             train_and_eval, 
-            net=partial(models.dil_resnet, equivariant=True, conv_filters=conv_filters),
+            net=partial(
+                models.dil_resnet, 
+                equivariant=True, 
+                conv_filters=conv_filters,
+                output_keys=output_keys,
+                activation_f=ml.VN_NONLINEAR,
+                depth=24, # half of dil_resnet
+            ),
         ),
     ),
     (

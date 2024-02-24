@@ -34,57 +34,6 @@ def read_one_h5(filename: str) -> tuple:
 
     return force, particles[...,0], velocity
 
-def get_data_layers(
-    force, 
-    particles, 
-    velocity, 
-    past_steps: int,
-    future_steps: int,
-    skip_initial: int = 0, 
-    subsample: int = 1,
-    downsample: int = 0,
-) -> tuple:
-    """
-    args:
-        force (jnp.array): vector field, constant forcing term, shape (batch,spatial,D)
-        particles (jnp.array): scalar field, advected particle density (batch,time,spatial,D)
-        velocity (jnp.array): vector field, velocity of the fluid (batch,time,spatial,D)
-        past_steps (int): number of historical steps to use in the model
-        future_steps (int): number of future steps
-        skip_intial (int): number of initial time steps to skip, defaults to 0
-        subsample (int): subsample the time dimension, defaults to 1 which is no subsampling
-        downsample (int): number of times to downsample the image by average pooling, decreases by a factor
-            of 2, defaults to 0 times.
-    returns tuple of layer_X, layer_Y
-    """
-    D = 2
-    spatial_dims = force.shape[1:D+1]
-
-    particles = particles[:,skip_initial::subsample]
-    velocity = velocity[:,skip_initial::subsample]
-    # add a time dimension to force and fill it with copies
-    force = jnp.full((len(force),velocity.shape[1]) + force.shape[1:], force[:,None])
-
-    input_window_idxs = gc_data.rolling_window_idx(0, velocity.shape[1]-future_steps, past_steps)
-    input_particles = particles[:, input_window_idxs].reshape((-1, past_steps) + spatial_dims)
-    input_velocity = velocity[:, input_window_idxs].reshape((-1, past_steps) + spatial_dims + (D,))
-    input_force = force[:, input_window_idxs].reshape((-1, past_steps) + spatial_dims + (D,))[:,:1]
-    input_vec = jnp.concatenate([input_velocity, input_force], axis=1) # add forcing term as velocity channel
-
-    output_window_idxs = gc_data.rolling_window_idx(past_steps, velocity.shape[1], future_steps)
-    assert len(output_window_idxs) == len(input_window_idxs)
-    output_particles = particles[:, output_window_idxs].reshape((-1, future_steps) + spatial_dims)
-    output_velocity = velocity[:, output_window_idxs].reshape((-1, future_steps) + spatial_dims + (D,))
-
-    layer_X = geom.BatchLayer({ (0,0): input_particles, (1,0): input_vec }, D, False)
-    layer_Y = geom.BatchLayer({ (0,0): output_particles, (1,0): output_velocity }, D, False)
-
-    for _ in range(downsample):
-        layer_X = ml.batch_average_pool(layer_X, 2)
-        layer_Y = ml.batch_average_pool(layer_Y, 2)
-
-    return layer_X, layer_Y
-
 def get_data(
     filename: str, 
     num_train_traj: int, 
@@ -107,51 +56,56 @@ def get_data(
         subsample (int): can subsample for longer timesteps, default 1 (no subsampling)
         downsample (int): number of times to spatial downsample, defaults to 0 (no downsampling)
     """
-    f, p, v = read_one_h5(filename)
+    D = 2
+    force, particles, velocity = read_one_h5(filename)
 
     start = 0
     stop = num_train_traj
-    train_X, train_Y = get_data_layers(
-        f[start:stop], 
-        p[start:stop], 
-        v[start:stop], 
-        past_steps, 
-        1, 
-        0, 
-        subsample, 
+    train_X, train_Y = gc_data.times_series_to_layers(
+        D, 
+        { (0,0): particles[start:stop], (1,0): velocity[start:stop] },
+        { (1,0): force[start:stop] },
+        False,
+        past_steps,
+        1,
+        0,
+        subsample,
         downsample,
     )
     start = stop
     stop = stop + num_val_traj
-    val_X, val_Y = get_data_layers(
-        f[start:stop], 
-        p[start:stop], 
-        v[start:stop], 
-        past_steps, 
-        1, 
-        0, 
-        subsample, 
+    val_X, val_Y = gc_data.times_series_to_layers(
+        D, 
+        { (0,0): particles[start:stop], (1,0): velocity[start:stop] },
+        { (1,0): force[start:stop] },
+        False, # is_torus
+        past_steps,
+        1, # future_steps
+        0, # skip_initial
+        subsample,
         downsample,
     )
     start = stop
     stop = stop + num_test_traj
-    test_single_X, test_single_Y = get_data_layers(
-        f[start:stop], 
-        p[start:stop], 
-        v[start:stop], 
-        past_steps, 
-        1, 
-        0, 
+    test_single_X, test_single_Y = gc_data.times_series_to_layers(
+        D, 
+        { (0,0): particles[start:stop], (1,0): velocity[start:stop] },
+        { (1,0): force[start:stop] },
+        False, # is_torus
+        past_steps,
+        1, # future_steps
+        0, # skip_initial
         subsample,
         downsample,
     )
-    test_rollout_X, test_rollout_Y = get_data_layers(
-        f[start:stop], 
-        p[start:stop], 
-        v[start:stop], 
-        past_steps, 
-        rollout_steps, 
-        0, 
+    test_rollout_X, test_rollout_Y = gc_data.times_series_to_layers(
+        D, 
+        { (0,0): particles[start:stop], (1,0): velocity[start:stop] },
+        { (1,0): force[start:stop] },
+        False, # is_torus
+        past_steps,
+        rollout_steps,
+        0, # skip_initial
         subsample,
         downsample,
     )
@@ -364,6 +318,13 @@ train_and_eval = partial(
 
 models = [
     (
+        'do_nothing', 
+        partial(
+            train_and_eval, 
+            net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
+        ),
+    ),
+    (
         'dil_resnet',
         partial(
             train_and_eval, 
@@ -385,80 +346,73 @@ models = [
         ),
     ),
     (
-        'do_nothing', 
+        'resnet',
         partial(
             train_and_eval, 
-            net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
+            net=partial(models.resnet, output_keys=output_keys, depth=64),
+        ),   
+    ),
+    (
+        'resnet_equiv', # better across the board
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.resnet, 
+                output_keys=output_keys, 
+                equivariant=True, 
+                conv_filters=conv_filters,
+                depth=32,
+            ),
+        ),  
+    ),
+    (
+        'unet2015',
+        partial(
+            train_and_eval,
+            net=partial(models.unet2015, output_keys=output_keys),
+            has_aux=True,
         ),
     ),
-    # (
-    #     'resnet',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.resnet, output_keys=output_keys, depth=64),
-    #     ),   
-    # ),
-    # (
-    #     'resnet_equiv', # better across the board
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(
-    #             models.resnet, 
-    #             output_keys=output_keys, 
-    #             equivariant=True, 
-    #             conv_filters=conv_filters,
-    #             depth=32,
-    #         ),
-    #     ),  
-    # ),
-    # (
-    #     'unet2015',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(models.unet2015, output_keys=output_keys),
-    #         has_aux=True,
-    #     ),
-    # ),
-    # (
-    #     'unet2015_equiv',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             models.unet2015, 
-    #             equivariant=True,
-    #             conv_filters=conv_filters, 
-    #             upsample_filters=upsample_filters,
-    #             output_keys=output_keys,
-    #             activation_f=ml.VN_NONLINEAR,
-    #             depth=32, # 64=41M, 48=23M, 32=10M
-    #         ),
-    #     ),
-    # ),
-    # (
-    #     'unetBase',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             models.unetBase, 
-    #             output_keys=output_keys, 
-    #         ),
-    #     ),
-    # ),
-    # (
-    #     'unetBase_equiv', # works best
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             models.unetBase, 
-    #             output_keys=output_keys,
-    #             equivariant=True,
-    #             conv_filters=conv_filters,
-    #             activation_f=ml.VN_NONLINEAR,
-    #             depth=32,
-    #             upsample_filters=upsample_filters,
-    #         ),
-    #     ),
-    # ),
+    (
+        'unet2015_equiv',
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unet2015, 
+                equivariant=True,
+                conv_filters=conv_filters, 
+                upsample_filters=upsample_filters,
+                output_keys=output_keys,
+                activation_f=ml.VN_NONLINEAR,
+                depth=32, # 64=41M, 48=23M, 32=10M
+            ),
+        ),
+    ),
+    (
+        'unetBase',
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unetBase, 
+                output_keys=output_keys, 
+            ),
+        ),
+    ),
+    (
+        'unetBase_equiv', # works best
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unetBase, 
+                output_keys=output_keys,
+                equivariant=True,
+                conv_filters=conv_filters,
+                activation_f=ml.VN_NONLINEAR,
+                depth=32,
+                upsample_filters=upsample_filters,
+            ),
+        ),
+    ),
 ]
 
 key, subkey = random.split(key)

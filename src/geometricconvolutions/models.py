@@ -27,7 +27,7 @@ def unet_conv_block(
         conv_kwargs (dict): keyword args to pass the the convolution function
         batch_stats (dict): state for batch_norm, also determines whether batch_norm layer happens
         batch_stats_idx (int): the index of batch_norm that we are on
-        activaton_f (function): the function that we pass to batch_scalar_activation
+        activation_f (string or function): the function that we pass to batch_scalar_activation
         mold_params (bool): whether we are mapping the params, or applying them
     returns: layer, params, batch_stats, batch_stats_idx 
     """
@@ -101,7 +101,7 @@ def unetBase(
             experiments, should be ((0,0),(1,0)) for the pressure/velocity form and ((0,0),(0,1)) for 
             the pressure/vorticity form.
         depth (int): the depth of the layers, defaults to 64
-        activaton_f (function): the function that we pass to batch_scalar_activation
+        activation_f (string or function): the function that we pass to batch_scalar_activation
         equivariant (bool): whether to use the equivariant version of the model, defaults to False
         conv_filters (Layer): the conv filters used for the equivariant version
         upsample_filters (Layer): the conv filters used for the upsample layer of the equivariant version
@@ -467,7 +467,7 @@ def resnet(
         key (jnp.random key): key for any layers requiring randomization
         train (bool): whether train mode or test mode, relevant for batch_norm
         depth (int): the depth of the layers, defaults to 48
-        activaton_f (function): the function that we pass to batch_scalar_activation, defaults to relu
+        activation_f (string or function): the function that we pass to batch_scalar_activation, defaults to relu
         equivariant (bool): whether to use the equivariant version of the model, defaults to False
         conv_filters (Layer): the conv filters used for the equivariant version
         return_params (bool): whether we are mapping the params, or applying them

@@ -27,7 +27,6 @@ def read_one_h5(filename: str) -> tuple:
     force = jax.device_put(jnp.array(data_dict['force'][()]), jax.devices('cpu')[0]) # (4,512,512,2)
     particles = jax.device_put(jnp.array(data_dict['particles'][()]), jax.devices('cpu')[0]) # (4,1000,512,512,1)
     # these are advected particles, might be a proxy of density?
-    # t = jax.device_put(jnp.array(data_dict['t'][()]), jax.devices('cpu')[0]) # (4,1000)
     velocity = jax.device_put(jnp.array(data_dict['velocity'][()]), jax.devices('cpu')[0]) # (4,1000,512,512,2)
 
     data_dict.close()
@@ -126,14 +125,13 @@ def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, 
         out_layer = out_layer.concat(learned_x, axis=1)
         next_layer = curr_layer.empty()
         next_layer.append(0, 0, jnp.concatenate([curr_layer[(0,0)][:,1:], learned_x[(0,0)]], axis=1))
-        vector_img = curr_layer[(1,0)]
-        next_layer.append(1, 0, jnp.stack([vector_img[:,1], learned_x[(1,0)][:,0], vector_img[:,2]], axis=1))
-        # ^ second time step becomes first, learned step becomes second, forcing field stays as the 3rd channel
+        vec_img = curr_layer[(1,0)]
+        # drop the first channel, learned step becomes last channel, followed by forcing field channel
+        next_layer.append(1, 0, jnp.concatenate([vec_img[:,1:-1], learned_x[(1,0)], vec_img[:,-1:]], axis=1))
 
         curr_layer = next_layer
 
     loss = ml.pointwise_normalized_loss(out_layer, layer_y)
-    # loss = ml.smse_loss(out_layer, layer_y)  
     return (loss, aux_data) if has_aux else loss
 
 def train_and_eval(
@@ -361,6 +359,7 @@ models = [
                 output_keys=output_keys, 
                 equivariant=True, 
                 conv_filters=conv_filters,
+                activation_f=ml.VN_NONLINEAR,
                 depth=32,
             ),
         ),  

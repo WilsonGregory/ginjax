@@ -97,7 +97,7 @@ def get_data(
     num_val_traj: int, 
     num_test_traj: int, 
     past_steps: int,
-    future_steps: int,
+    rollout_steps: int,
 ) -> tuple:
     """
     Get train, val, and test data sets.
@@ -107,47 +107,64 @@ def get_data(
         num_val_traj (int): number of validation trajectories
         num_test_traj (int): number of testing trajectories
         past_steps (int): length of the lookback to predict the next step
-        future_steps (int): the number of future steps to predict
+        rollout_steps (int): the number of future steps to predict
     """
-    train_X, train_Y = merge_h5s_into_layer(data_dir, num_train_traj, 'train', past_steps, future_steps)
-    val_X, val_Y = merge_h5s_into_layer(data_dir, num_val_traj, 'valid', past_steps, future_steps)
-    test_X, test_Y = merge_h5s_into_layer(data_dir, num_test_traj, 'test', past_steps, future_steps)
+    train_X, train_Y = merge_h5s_into_layer(data_dir, num_train_traj, 'train', past_steps, 1)
+    val_X, val_Y = merge_h5s_into_layer(data_dir, num_val_traj, 'valid', past_steps, 1)
+    test_single_X, test_single_Y = merge_h5s_into_layer(data_dir, num_test_traj, 'test', past_steps, 1)
+    test_rollout_X, test_rollout_Y = merge_h5s_into_layer(data_dir, num_test_traj, 'test', past_steps, rollout_steps)
 
-    return train_X, train_Y, val_X, val_Y, test_X, test_Y
+    return train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y
 
-def plot_layer(test_layer, actual_layer, save_loc):
-    test_rho_img = geom.GeometricImage(test_layer[(0,0)][0,0], 0, test_layer.D, test_layer.is_torus)
-    test_vel_img = geom.GeometricImage(test_layer[(1,0)][0,0], 0, test_layer.D, test_layer.is_torus)
+def plot_layer(test_layer, actual_layer, save_loc, future_steps):
+    test_images = [geom.GeometricImage(img, 0, test_layer.D, test_layer.is_torus) for img in test_layer[(1,0)][0,...,0]]
+    actual_images = [geom.GeometricImage(img, 0, test_layer.D, test_layer.is_torus) for img in actual_layer[(1,0)][0,...,0]]
 
-    actual_rho_img = geom.GeometricImage(actual_layer[(0,0)][0,0], 0, actual_layer.D, actual_layer.is_torus)
-    actual_vel_img = geom.GeometricImage(actual_layer[(1,0)][0,0], 0, actual_layer.D, actual_layer.is_torus)
-
-    fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(24,12)) # 8 per col, 6 per row, (cols,rows)
-    utils.plot_image(test_rho_img, ax=axes[0,0], title='Predicted Rho', colorbar=True)
-    utils.plot_image(actual_rho_img, ax=axes[0,1], title='Actual Rho', colorbar=True)
-    utils.plot_image(actual_rho_img - test_rho_img, ax=axes[0,2], title='Difference', colorbar=True)
-
-    utils.plot_image(test_vel_img, ax=axes[1,0], title='Predicted Velocity')
-    utils.plot_image(actual_vel_img, ax=axes[1,1], title='Actual Velocity')
-    utils.plot_image(actual_vel_img - test_vel_img, ax=axes[1,2], title='Difference')
+    # figsize is 8 per col, 6 per row, (cols,rows)
+    fig, axes = plt.subplots(nrows=3, ncols=future_steps, figsize=(8*future_steps,6*3))
+    for col in range(future_steps):
+        utils.plot_image(test_images[col], ax=axes[0,col], title=f'{col}', colorbar=True)
+        utils.plot_image(actual_images[col], ax=axes[1,col], title=f'{col}', colorbar=True)
+        utils.plot_image((actual_images[col] - test_images[col]).norm(), ax=axes[2,col], title=f'{col}', colorbar=True)
 
     plt.savefig(save_loc)
     plt.close(fig)
 
-def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, has_aux=False):
+def map_and_loss(
+    params, 
+    layer_x, 
+    layer_y, 
+    key, 
+    train, 
+    aux_data=None, 
+    net=None, 
+    has_aux=False, 
+    future_steps=1,
+    return_map_only=False,
+):
     assert net is not None
-    if has_aux:
-        learned_x, batch_stats = net(params, layer_x, key, train, batch_stats=aux_data)
-    else:
-        learned_x = net(params, layer_x, key, train)
+    curr_layer = layer_x
+    out_layer = layer_y.empty()
+    for _ in range(future_steps):
+        key, subkey = random.split(key)
+        if has_aux:
+            learned_x, aux_data = net(params, curr_layer, subkey, train, batch_stats=aux_data)
+        else:
+            learned_x = net(params, curr_layer, subkey, train)
 
-    spatial_size = np.multiply.reduce(geom.parse_shape(layer_x[(1,0)].shape[2:], layer_x.D)[0])
-    batch_smse = jax.vmap(lambda x,y: ml.l2_squared_loss(x.to_vector(), y.to_vector())/spatial_size)
 
-    if has_aux:
-        return jnp.mean(batch_smse(learned_x, layer_y)), batch_stats
+        out_layer = out_layer.concat(learned_x, axis=1)
+        next_layer = curr_layer.empty()
+        for (k,parity), img_block in curr_layer.items():
+            next_layer.append(k, parity, jnp.concatenate([img_block[:,1:], learned_x[(k,parity)]], axis=1))
+
+        curr_layer = next_layer
+
+    loss = ml.smse_loss(out_layer, layer_y)
+    if return_map_only:
+        return out_layer
     else:
-        return jnp.mean(batch_smse(learned_x, layer_y))
+        return (loss, aux_data) if has_aux else loss
 
 def train_and_eval(
     data, 
@@ -163,7 +180,7 @@ def train_and_eval(
     has_aux=False,
     verbose=1,
 ):
-    train_X, train_Y, val_X, val_Y, test_X, test_Y = data
+    train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y = data
 
     key, subkey = random.split(key)
     params = ml.init_params(
@@ -210,8 +227,8 @@ def train_and_eval(
     test_loss = ml.map_loss_in_batches(
         partial(map_and_loss, net=net, has_aux=has_aux), 
         params, 
-        test_X, 
-        test_Y, 
+        test_single_X, 
+        test_single_Y, 
         batch_size, 
         subkey, 
         False,
@@ -220,33 +237,37 @@ def train_and_eval(
     )
     print(f'Test Loss: {test_loss}')
 
-    # keeping this for now
-    # i = 0
-    # err = 0
-    # while (err < 100):
-    #     key, subkey = random.split(key)
-    #     delta_img = net(params, test_img, subkey, False)
+    key, subkey = random.split(key)
+    test_rollout_loss = ml.map_loss_in_batches(
+        partial(map_and_loss, net=net, has_aux=has_aux, future_steps=5), 
+        params, 
+        test_rollout_X, 
+        test_rollout_Y, 
+        batch_size, 
+        subkey, 
+        False,
+        has_aux=has_aux,
+        aux_data=batch_stats,
+    )
+    print(f'Test Rollout Loss: {test_rollout_loss}')
 
-    #     # advance the rollout from the current image, plus the calculated delta.
-    #     # The actual image we compare it against is the true next step.
-    #     test_img = geom.BatchLayer.from_vector(test_img.to_vector() + delta_img.to_vector(), test_img)
-    #     actual_img = test_X.get_one(i+1)
+    if images_dir is not None:
+        key, subkey = random.split(key)
+        rollout_layer = map_and_loss(
+            params, 
+            test_rollout_X.get_one(), 
+            test_rollout_Y.get_one(), 
+            subkey, 
+            False, # train
+            batch_stats,
+            net, 
+            has_aux, 
+            future_steps=5, 
+            return_map_only=True,
+        )
+        plot_layer(rollout_layer.get_one(), test_rollout_Y.get_one(), images_dir + f'/{model_name}_rollout.png', 5)
 
-    #     err = ml.rmse_loss(test_img.to_vector(), actual_img.to_vector())
-    #     print(f'Rollout Loss step {i}: {err}')
-    #     if ((images_dir is not None) and err < 1):
-    #         plot_layer(test_img, actual_img, f'{images_dir}{model_name}_err_{i}.png')
-    #         imax = i
-
-    #     i += 1
-
-    # if images_dir is not None:
-    #     with imageio.get_writer(f'{images_dir}{model_name}_error.gif', mode='I') as writer:
-    #         for j in range(imax+1):
-    #             image = imageio.imread(f'{images_dir}{model_name}_err_{j}.png')
-    #             writer.append_data(image)
-
-    return train_loss[-1], val_loss[-1], test_loss
+    return train_loss[-1], val_loss[-1], test_loss, test_rollout_loss
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -292,7 +313,7 @@ data_dir, epochs, lr, batch_size, train_traj, val_traj, test_traj, seed, save_fi
 D = 2
 N = 128
 past_steps = 4 # how many steps to look back to predict the next step
-future_steps = 1
+rollout_steps = 5
 key = random.PRNGKey(time.time_ns()) if (seed is None) else random.PRNGKey(seed)
 
 # an attempt to reduce recompilation, but I don't think it actually is working
@@ -301,13 +322,13 @@ if test_traj is None:
 if val_traj is None:
     val_traj = batch_size
 
-train_X, train_Y, val_X, val_Y, test_X, test_Y = get_data(data_dir, train_traj, val_traj, test_traj, past_steps, future_steps)
+data = get_data(data_dir, train_traj, val_traj, test_traj, past_steps, rollout_steps)
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 upsample_filters = geom.get_invariant_filters(Ms=[2], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 
-output_keys = tuple(train_Y.keys())
+output_keys = tuple(data[1].keys())
 train_and_eval = partial(
     train_and_eval, 
     lr=lr,
@@ -319,6 +340,13 @@ train_and_eval = partial(
 )
 
 models = [
+    (
+        'do_nothing', 
+        partial(
+            train_and_eval, 
+            net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
+        ),
+    ),
     (
         'dil_resnet',
         partial(
@@ -363,16 +391,41 @@ models = [
             ),
         ),
     ),
+    (
+        'unetBase',
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unetBase, 
+                output_keys=output_keys, 
+            ),
+        ),
+    ),
+    (
+        'unetBase_equiv', # works best
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unetBase, 
+                output_keys=output_keys,
+                equivariant=True,
+                conv_filters=conv_filters,
+                activation_f=ml.VN_NONLINEAR,
+                depth=32,
+                upsample_filters=upsample_filters,
+            ),
+        ),
+    ),
 ]
 
 key, subkey = random.split(key)
 results = ml.benchmark(
-    lambda _, _2: (train_X, train_Y, val_X, val_Y, test_X, test_Y),
+    lambda _, _2: data,
     models,
     subkey,
     'Nothing',
     [0],
-    num_results=3,
+    num_results=4,
 )
 
 print(results)

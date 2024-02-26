@@ -2,8 +2,9 @@ import sys
 import time
 import argparse
 import numpy as np
-from functools import partial, reduce
+from functools import partial
 import h5py
+import matplotlib.pyplot as plt
 
 import jax.numpy as jnp
 import jax
@@ -14,6 +15,7 @@ import geometricconvolutions.geometric as geom
 import geometricconvolutions.data as gc_data
 import geometricconvolutions.ml as ml
 import geometricconvolutions.models as models
+import geometricconvolutions.utils as utils
 
 def read_one_h5(filename: str) -> tuple:
     """
@@ -111,7 +113,32 @@ def get_data(
     
     return train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y
     
-def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, has_aux=False, future_steps=1):
+def plot_layer(test_layer, actual_layer, save_loc, future_steps):
+    test_images = [geom.GeometricImage(img, 0, test_layer.D, test_layer.is_torus) for img in test_layer[(1,0)][0,...,0]]
+    actual_images = [geom.GeometricImage(img, 0, test_layer.D, test_layer.is_torus) for img in actual_layer[(1,0)][0,...,0]]
+
+    # figsize is 8 per col, 6 per row, (cols,rows)
+    fig, axes = plt.subplots(nrows=3, ncols=future_steps, figsize=(8*future_steps,6*3))
+    for col in range(future_steps):
+        utils.plot_image(test_images[col], ax=axes[0,col], title=f'{col}', colorbar=True)
+        utils.plot_image(actual_images[col], ax=axes[1,col], title=f'{col}', colorbar=True)
+        utils.plot_image((actual_images[col] - test_images[col]).norm(), ax=axes[2,col], title=f'{col}', colorbar=True)
+
+    plt.savefig(save_loc)
+    plt.close(fig)
+
+def map_and_loss(
+    params, 
+    layer_x, 
+    layer_y, 
+    key, 
+    train, 
+    aux_data=None, 
+    net=None, 
+    has_aux=False, 
+    future_steps=1,
+    return_map_only=False,
+):
     assert net is not None
     curr_layer = layer_x
     out_layer = layer_y.empty()
@@ -131,8 +158,12 @@ def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, 
 
         curr_layer = next_layer
 
-    loss = ml.pointwise_normalized_loss(out_layer, layer_y)
-    return (loss, aux_data) if has_aux else loss
+    loss = ml.smse_loss(out_layer, layer_y)
+    # loss = ml.pointwise_normalized_loss(out_layer, layer_y)
+    if return_map_only:
+        return out_layer
+    else:
+        return (loss, aux_data) if has_aux else loss
 
 def train_and_eval(
     data, 
@@ -219,6 +250,22 @@ def train_and_eval(
     )
     print(f'Test Rollout Loss: {test_rollout_loss}')
 
+    if images_dir is not None:
+        key, subkey = random.split(key)
+        rollout_layer = map_and_loss(
+            params, 
+            test_rollout_X.get_one(), 
+            test_rollout_Y.get_one(), 
+            subkey, 
+            False, # train
+            batch_stats,
+            net, 
+            has_aux, 
+            future_steps=5, 
+            return_map_only=True,
+        )
+        plot_layer(rollout_layer.get_one(), test_rollout_Y.get_one(), images_dir + f'/{model_name}_rollout.png', 5)
+
     return train_loss[-1], val_loss[-1], test_loss, test_rollout_loss
 
 def handleArgs(argv):
@@ -284,7 +331,7 @@ def handleArgs(argv):
 ) = handleArgs(sys.argv)
 
 D = 2
-past_steps = 2 # how many steps to look back to predict the next step
+past_steps = 4 # how many steps to look back to predict the next step
 rollout_steps = 5
 key = random.PRNGKey(time.time_ns()) if (seed is None) else random.PRNGKey(seed)
 

@@ -880,22 +880,28 @@ def _group_norm_K1(D, image_block, groups, power, eps=1e-5):
 
     X = jnp.moveaxis(centered_img.reshape((batch,groups,-1,D)), 2, -1) # (B,G,D,spatial*in_c//G)
     cov = jax.vmap(lambda a: a @ a.T)(X.reshape((batch*groups,) + X.shape[2:])) / X.shape[-1] #biased cov
-    cov = cov.reshape((batch,groups,D,D))
+    cov = cov.reshape((batch*groups,D,D))
 
-    U,S,V = jnp.linalg.svd(cov, hermitian=True) # U:(B,G,D,D), S:(B,G,D), V:(B,G,D,D)
+    eigvals, eigvecs = jnp.linalg.eigh(cov)
 
-    # U is (B,G,D,D), V is just U.T in this case b/c cov is symmetric
-    # S is (B,G,D)
-    S_invhalf = jnp.power(S + eps, power) # this is S^{power}, starts at S^{-1/2} 
-    vmap_sqrt_matrix = jax.vmap(jax.vmap(lambda U,S,V: U @ jnp.diag(S) @ V))
-    whiten_matrix = vmap_sqrt_matrix(U,S_invhalf,V) # (B,G,D,D)
-    assert whiten_matrix.shape == (batch,groups,D,D)
+    eigvals_invhalf = jnp.power(eigvals + eps, power)
+    print(eigvals_invhalf.shape, eigvecs.shape)
+    whiten_matrix = jax.vmap(lambda S,U: U @ jnp.diag(S) @ U.T)(eigvals_invhalf, eigvecs)
+    assert whiten_matrix.shape == (batch*groups,D,D)
+
+    # U,S,V = jnp.linalg.svd(cov, hermitian=True) # U:(B,G,D,D), S:(B,G,D), V:(B,G,D,D)
+
+    # # U is (B,G,D,D), V is just U.T in this case b/c cov is symmetric
+    # # S is (B,G,D)
+    # S_invhalf = jnp.power(S + eps, power) # this is S^{power}, starts at S^{-1/2} 
+    # vmap_sqrt_matrix = jax.vmap(jax.vmap(lambda U,S,V: U @ jnp.diag(S) @ V))
+    # whiten_matrix = vmap_sqrt_matrix(U,S_invhalf,V) # (B,G,D,D)
+    # assert whiten_matrix.shape == (batch,groups,D,D)
 
     vmap_mult = jax.vmap(lambda W,vec: W @ vec, in_axes=(None,0)) # maps one W over a bunch of vecs
     vmap_whiten = jax.vmap(lambda W,vec_image: vmap_mult(W, vec_image)) 
-    whitened_data = vmap_whiten(whiten_matrix.reshape(batch*groups,D,D), centered_img.reshape((batch*groups,-1) + (D,)))
-    whitened_data = whitened_data.reshape(image_block.shape)
-    return whitened_data
+    whitened_data = vmap_whiten(whiten_matrix, centered_img.reshape((batch*groups,-1) + (D,)))
+    return whitened_data.reshape(image_block.shape)
 
 functools.partial(jax.jit, static_argnums=[2,3,4])
 def group_norm(params, layer, groups, eps=1e-5, equivariant=True, mold_params=False):

@@ -1,4 +1,5 @@
 import sys
+import os
 import time
 import argparse
 import numpy as np
@@ -30,13 +31,46 @@ def read_one_h5(filename: str) -> tuple:
     particles = jax.device_put(jnp.array(data_dict['particles'][()]), jax.devices('cpu')[0]) # (4,1000,512,512,1)
     # these are advected particles, might be a proxy of density?
     velocity = jax.device_put(jnp.array(data_dict['velocity'][()]), jax.devices('cpu')[0]) # (4,1000,512,512,2)
-
     data_dict.close()
 
     return force, particles[...,0], velocity
 
+def read_data(data_dir: str, num_trajectories: int) -> tuple:
+    """
+    Load data from the multiple .hd5 files
+    args:
+        data_dir (str): directory of the data
+        num_trajectories (int): total number of trajectories to read in
+    """
+    all_files = filter(lambda file: 'ns_incom_inhom_2d' in file, os.listdir(data_dir))
+
+    N = 512
+    D = 2
+    all_force = jnp.zeros((0,N,N,D))
+    all_particles = jnp.zeros((0,1000,N,N))
+    all_velocity = jnp.zeros((0,1000,N,N,D))
+    for filename in all_files:
+        force, particles, velocity = read_one_h5(f'{data_dir}/{filename}')
+
+        all_force = jnp.concatenate([all_force, force])
+        all_particles = jnp.concatenate([all_particles, particles])
+        all_velocity = jnp.concatenate([all_velocity, velocity])
+
+        if len(all_force) >= num_trajectories:
+            break
+
+    if len(all_force) < num_trajectories:
+        print(f'WARNING read_data: wanted {num_trajectories} trajectories, but only found {len(all_force)}')
+        num_trajectories = len(all_force)
+
+    all_force = all_force[:num_trajectories]
+    all_particles = all_particles[:num_trajectories]
+    all_velocity = all_velocity[:num_trajectories]
+
+    return all_force, all_particles, all_velocity
+
 def get_data(
-    filename: str, 
+    data_dir: str, 
     num_train_traj: int, 
     num_val_traj: int, 
     num_test_traj: int, 
@@ -48,7 +82,7 @@ def get_data(
     """
     Get train, val, and test data sets.
     args:
-        infile (str): directory of data
+        data_dir (str): directory of data
         num_train_traj (int): number of training trajectories
         num_val_traj (int): number of validation trajectories
         num_test_traj (int): number of testing trajectories
@@ -58,7 +92,7 @@ def get_data(
         downsample (int): number of times to spatial downsample, defaults to 0 (no downsampling)
     """
     D = 2
-    force, particles, velocity = read_one_h5(filename)
+    force, particles, velocity = read_data(data_dir, num_train_traj + num_val_traj + num_test_traj)
 
     start = 0
     stop = num_train_traj
@@ -270,7 +304,7 @@ def train_and_eval(
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument('filename', help='the directory where the .h5 files are located', type=str)
+    parser.add_argument('data_dir', help='the directory where the .h5 files are located', type=str)
     parser.add_argument('-e', '--epochs', help='number of epochs to run', type=int, default=50)
     parser.add_argument('-lr', help='learning rate', type=float, default=2e-4)
     parser.add_argument('-batch', help='batch size', type=int, default=16)
@@ -294,7 +328,7 @@ def handleArgs(argv):
     args = parser.parse_args()
 
     return (
-        args.filename,
+        args.data_dir,
         args.epochs,
         args.lr,
         args.batch,
@@ -313,7 +347,7 @@ def handleArgs(argv):
 
 #Main
 (
-    filename, 
+    data_dir, 
     epochs, 
     lr, 
     batch_size, 
@@ -336,7 +370,7 @@ rollout_steps = 5
 key = random.PRNGKey(time.time_ns()) if (seed is None) else random.PRNGKey(seed)
 
 train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y = get_data(
-    filename, 
+    data_dir, 
     train_traj, 
     val_traj, 
     test_traj, 
@@ -362,88 +396,88 @@ train_and_eval = partial(
 )
 
 models = [
-    (
-        'do_nothing', 
-        partial(
-            train_and_eval, 
-            net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
-        ),
-    ),
-    (
-        'dil_resnet',
-        partial(
-            train_and_eval, 
-            net=partial(models.dil_resnet, depth=64, activation_f=jax.nn.gelu, output_keys=output_keys),
-        ),
-    ),
-    (
-        'dil_resnet_equiv', # test_loss is better, but rollout is worse
-        partial(
-            train_and_eval, 
-            net=partial(
-                models.dil_resnet, 
-                depth=32, 
-                activation_f=ml.VN_NONLINEAR, # takes more memory, hmm
-                equivariant=True, 
-                conv_filters=conv_filters,
-                output_keys=output_keys,
-            ),
-        ),
-    ),
-    (
-        'resnet',
-        partial(
-            train_and_eval, 
-            net=partial(models.resnet, output_keys=output_keys, depth=64),
-        ),   
-    ),
-    (
-        'resnet_equiv', # better across the board
-        partial(
-            train_and_eval, 
-            net=partial(
-                models.resnet, 
-                output_keys=output_keys, 
-                equivariant=True, 
-                conv_filters=conv_filters,
-                activation_f=ml.VN_NONLINEAR,
-                depth=32,
-            ),
-        ),  
-    ),
-    (
-        'unet2015',
-        partial(
-            train_and_eval,
-            net=partial(models.unet2015, output_keys=output_keys),
-            has_aux=True,
-        ),
-    ),
-    (
-        'unet2015_equiv',
-        partial(
-            train_and_eval,
-            net=partial(
-                models.unet2015, 
-                equivariant=True,
-                conv_filters=conv_filters, 
-                upsample_filters=upsample_filters,
-                output_keys=output_keys,
-                activation_f=ml.VN_NONLINEAR,
-                depth=32, # 64=41M, 48=23M, 32=10M
-            ),
-        ),
-    ),
-    (
-        'unetBase',
-        partial(
-            train_and_eval,
-            net=partial(
-                models.unetBase, 
-                output_keys=output_keys, 
-            ),
-        ),
-    ),
+    # (
+    #     'do_nothing', 
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
+    #     ),
+    # ),
+    # (
+    #     'dil_resnet',
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(models.dil_resnet, depth=64, activation_f=jax.nn.gelu, output_keys=output_keys),
+    #     ),
+    # ),
+    # (
+    #     'dil_resnet_equiv', # test_loss is better, but rollout is worse
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(
+    #             models.dil_resnet, 
+    #             depth=32, 
+    #             activation_f=ml.VN_NONLINEAR, # takes more memory, hmm
+    #             equivariant=True, 
+    #             conv_filters=conv_filters,
+    #             output_keys=output_keys,
+    #         ),
+    #     ),
+    # ),
+    # (
+    #     'resnet',
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(models.resnet, output_keys=output_keys, depth=64),
+    #     ),   
+    # ),
+    # (
+    #     'resnet_equiv', # better across the board something is broken here, maybe a memory issue?
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(
+    #             models.resnet, 
+    #             output_keys=output_keys, 
+    #             equivariant=True, 
+    #             conv_filters=conv_filters,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             depth=32,
+    #         ),
+    #     ),  
+    # ),
+    # (
+    #     'unet2015',
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(models.unet2015, output_keys=output_keys),
+    #         has_aux=True,
+    #     ),
+    # ),
+    # (
+    #     'unet2015_equiv',
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unet2015, 
+    #             equivariant=True,
+    #             conv_filters=conv_filters, 
+    #             upsample_filters=upsample_filters,
+    #             output_keys=output_keys,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             depth=32, # 64=41M, 48=23M, 32=10M
+    #         ),
+    #     ),
+    # ),
+    # (
+    #     'unetBase',
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unetBase, 
+    #             output_keys=output_keys, 
+    #         ),
+    #     ),
+    # ),
     (
         'unetBase_equiv', # works best
         partial(
@@ -473,3 +507,6 @@ results = ml.benchmark(
 )
 
 print(results)
+
+
+# CUDA_VISIBLE_DEVICES=4 time python3 scripts/ns_incomp_2d.py ../data/pdebench/ns_incomp_2d/ -batch 8 -train_traj 6 -images_dir ../images/pdebench/ns_incomp_2d/ -subsample 10 -downsample 2 

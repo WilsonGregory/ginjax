@@ -27,6 +27,7 @@ def read_one_h5(filename: str) -> tuple:
     """
     data_dict = h5py.File(filename) # keys 'force', 'particles', 't', 'velocity'
     # 4 runs, 1000 time points, 512x512 grid
+    # time ranges from 0 to 5, presumably seconds
     force = jax.device_put(jnp.array(data_dict['force'][()]), jax.devices('cpu')[0]) # (4,512,512,2)
     particles = jax.device_put(jnp.array(data_dict['particles'][()]), jax.devices('cpu')[0]) # (4,1000,512,512,1)
     # these are advected particles, might be a proxy of density?
@@ -76,8 +77,9 @@ def get_data(
     num_test_traj: int, 
     past_steps: int,
     rollout_steps: int,
-    subsample: int = 1,
+    delta_t: int = 1,
     downsample: int = 0,
+    skip_initial: int = 0,
 ) -> tuple:
     """
     Get train, val, and test data sets.
@@ -88,8 +90,9 @@ def get_data(
         num_test_traj (int): number of testing trajectories
         past_steps (int): length of the lookback to predict the next step
         rollout_steps (int): number of steps of rollout to compare against
-        subsample (int): can subsample for longer timesteps, default 1 (no subsampling)
+        delta_t (int): number of timesteps per model step, default 1
         downsample (int): number of times to spatial downsample, defaults to 0 (no downsampling)
+        skip_initial (int): number of initial steps to skip, default to 0
     """
     D = 2
     force, particles, velocity = read_data(data_dir, num_train_traj + num_val_traj + num_test_traj)
@@ -103,8 +106,8 @@ def get_data(
         False,
         past_steps,
         1,
-        0,
-        subsample,
+        skip_initial,
+        delta_t,
         downsample,
     )
     start = stop
@@ -116,8 +119,8 @@ def get_data(
         False, # is_torus
         past_steps,
         1, # future_steps
-        0, # skip_initial
-        subsample,
+        skip_initial,
+        delta_t,
         downsample,
     )
     start = stop
@@ -129,8 +132,8 @@ def get_data(
         False, # is_torus
         past_steps,
         1, # future_steps
-        0, # skip_initial
-        subsample,
+        skip_initial,
+        delta_t,
         downsample,
     )
     test_rollout_X, test_rollout_Y = gc_data.times_series_to_layers(
@@ -140,8 +143,8 @@ def get_data(
         False, # is_torus
         past_steps,
         rollout_steps,
-        0, # skip_initial
-        subsample,
+        skip_initial,
+        delta_t,
         downsample,
     )
     
@@ -216,11 +219,7 @@ def train_and_eval(
     train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y = data
 
     key, subkey = random.split(key)
-    params = ml.init_params(
-        net,
-        train_X.get_one(),
-        subkey,
-    )
+    params = ml.init_params(net, train_X.get_one(), subkey)
     print(f'Model params: {ml.count_params(params):,}')
 
     steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
@@ -320,8 +319,9 @@ def handleArgs(argv):
         type=str, 
         default=None,
     )
-    parser.add_argument('-subsample', help='how many timesteps per model step, default 1', type=int, default=1)
+    parser.add_argument('-delta_t', help='how many timesteps per model step, default 1', type=int, default=1)
     parser.add_argument('-downsample', help='spatial downsampling, number of times to divide by 2', type=int, default=0)
+    parser.add_argument('-skip_initial', help='beginning steps of each trajectory to skip', type=int, default=0)
     parser.add_argument('-t', '--trials', help='number of trials to run', type=int, default=1)
     parser.add_argument('-v', '--verbose', help='verbose argument passed to trainer', type=int, default=1)
 
@@ -339,8 +339,9 @@ def handleArgs(argv):
         args.save,
         args.load,
         args.images_dir,
-        args.subsample,
+        args.delta_t,
         args.downsample,
+        args.skip_initial,
         args.trials,
         args.verbose,
     )
@@ -358,8 +359,9 @@ def handleArgs(argv):
     save_file, 
     load_file, 
     images_dir,
-    subsample,
+    delta_t,
     downsample,
+    skip_initial,
     trials,
     verbose,
 ) = handleArgs(sys.argv)
@@ -369,22 +371,13 @@ past_steps = 4 # how many steps to look back to predict the next step
 rollout_steps = 5
 key = random.PRNGKey(time.time_ns()) if (seed is None) else random.PRNGKey(seed)
 
-train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y = get_data(
-    data_dir, 
-    train_traj, 
-    val_traj, 
-    test_traj, 
-    past_steps,
-    rollout_steps,
-    subsample,
-    downsample,
-)
+data = get_data(data_dir, train_traj, val_traj, test_traj, past_steps, rollout_steps, delta_t, downsample, skip_initial)
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 upsample_filters = geom.get_invariant_filters(Ms=[2], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 
-output_keys = tuple(train_Y.keys())
+output_keys = tuple(data[1].keys())
 train_and_eval = partial(
     train_and_eval, 
     lr=lr,
@@ -396,88 +389,89 @@ train_and_eval = partial(
 )
 
 models = [
-    # (
-    #     'do_nothing', 
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
-    #     ),
-    # ),
-    # (
-    #     'dil_resnet',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.dil_resnet, depth=64, activation_f=jax.nn.gelu, output_keys=output_keys),
-    #     ),
-    # ),
-    # (
-    #     'dil_resnet_equiv', # test_loss is better, but rollout is worse
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(
-    #             models.dil_resnet, 
-    #             depth=32, 
-    #             activation_f=ml.VN_NONLINEAR, # takes more memory, hmm
-    #             equivariant=True, 
-    #             conv_filters=conv_filters,
-    #             output_keys=output_keys,
-    #         ),
-    #     ),
-    # ),
-    # (
-    #     'resnet',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.resnet, output_keys=output_keys, depth=64),
-    #     ),   
-    # ),
-    # (
-    #     'resnet_equiv', # better across the board something is broken here, maybe a memory issue?
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(
-    #             models.resnet, 
-    #             output_keys=output_keys, 
-    #             equivariant=True, 
-    #             conv_filters=conv_filters,
-    #             activation_f=ml.VN_NONLINEAR,
-    #             depth=32,
-    #         ),
-    #     ),  
-    # ),
-    # (
-    #     'unet2015',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(models.unet2015, output_keys=output_keys),
-    #         has_aux=True,
-    #     ),
-    # ),
-    # (
-    #     'unet2015_equiv',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             models.unet2015, 
-    #             equivariant=True,
-    #             conv_filters=conv_filters, 
-    #             upsample_filters=upsample_filters,
-    #             output_keys=output_keys,
-    #             activation_f=ml.VN_NONLINEAR,
-    #             depth=32, # 64=41M, 48=23M, 32=10M
-    #         ),
-    #     ),
-    # ),
-    # (
-    #     'unetBase',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             models.unetBase, 
-    #             output_keys=output_keys, 
-    #         ),
-    #     ),
-    # ),
+    (
+        'do_nothing', 
+        partial(
+            train_and_eval, 
+            net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
+        ),
+    ),
+    (
+        'dil_resnet',
+        partial(
+            train_and_eval, 
+            net=partial(models.dil_resnet, depth=64, activation_f=jax.nn.gelu, output_keys=output_keys),
+        ),
+    ),
+    (
+        'dil_resnet_equiv', # test_loss is better, but rollout is worse
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.dil_resnet, 
+                depth=32, 
+                activation_f=ml.VN_NONLINEAR, # takes more memory, hmm
+                equivariant=True, 
+                conv_filters=conv_filters,
+                output_keys=output_keys,
+            ),
+        ),
+    ),
+    (
+        'resnet',
+        partial(
+            train_and_eval, 
+            net=partial(models.resnet, output_keys=output_keys, depth=64),
+        ),   
+    ),
+    (
+        'resnet_equiv', 
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.resnet, 
+                output_keys=output_keys, 
+                equivariant=True, 
+                conv_filters=conv_filters,
+                activation_f=ml.VN_NONLINEAR,
+                use_group_norm=False,
+                depth=32,
+            ),
+        ),  
+    ),
+    (
+        'unet2015',
+        partial(
+            train_and_eval,
+            net=partial(models.unet2015, output_keys=output_keys),
+            has_aux=True,
+        ),
+    ),
+    (
+        'unet2015_equiv',
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unet2015, 
+                equivariant=True,
+                conv_filters=conv_filters, 
+                upsample_filters=upsample_filters,
+                output_keys=output_keys,
+                activation_f=ml.VN_NONLINEAR,
+                depth=32, # 64=41M, 48=23M, 32=10M
+            ),
+        ),
+    ),
+    (
+        'unetBase',
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unetBase, 
+                output_keys=output_keys, 
+            ),
+        ),
+    ),
     (
         'unetBase_equiv', # works best
         partial(
@@ -488,6 +482,7 @@ models = [
                 equivariant=True,
                 conv_filters=conv_filters,
                 activation_f=ml.VN_NONLINEAR,
+                use_group_norm=False,
                 depth=32,
                 upsample_filters=upsample_filters,
             ),
@@ -497,7 +492,7 @@ models = [
 
 key, subkey = random.split(key)
 results = ml.benchmark(
-    lambda _, _2: (train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y),
+    lambda _, _2: data,
     models,
     subkey,
     'Nothing',
@@ -509,4 +504,4 @@ results = ml.benchmark(
 print(results)
 
 
-# CUDA_VISIBLE_DEVICES=4 time python3 scripts/ns_incomp_2d.py ../data/pdebench/ns_incomp_2d/ -batch 8 -train_traj 6 -images_dir ../images/pdebench/ns_incomp_2d/ -subsample 10 -downsample 2 
+# CUDA_VISIBLE_DEVICES=4,5,6,7 time python3 scripts/ns_incomp_2d.py /data/wgregor4/pdebench/ns_incomp_2d/ -batch 32 -train_traj 16 -val_traj 2 -test_traj 2 -delta_t 64 -downsample 2 -skip_initial 50

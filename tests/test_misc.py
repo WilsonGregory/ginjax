@@ -217,7 +217,56 @@ class TestMisc:
                 atol=geom.TINY,
             )
 
-    def testRollingWindowIdx(self):
+    def testTimeSeriesIdxsHardcoded(self):
+        past_steps = 2
+        future_steps = 1
+        num_channels = 5
+        delta_t = 1
+        input_idxs, output_idxs = gc_data.time_series_idxs(past_steps, future_steps, delta_t, num_channels)
+        assert len(input_idxs) == 3
+        assert jnp.allclose(input_idxs[0], jnp.array([0,1]))
+        assert jnp.allclose(input_idxs[1], jnp.array([1,2]))
+        assert jnp.allclose(input_idxs[2], jnp.array([2,3]))
+
+        assert len(output_idxs) == 3
+        assert jnp.allclose(output_idxs[0], jnp.array([2]))
+        assert jnp.allclose(output_idxs[1], jnp.array([3]))
+        assert jnp.allclose(output_idxs[2], jnp.array([4]))
+
+        num_channels = 10
+        delta_t = 2
+        input_idxs, output_idxs = gc_data.time_series_idxs(past_steps, future_steps, delta_t, num_channels)
+        assert len(input_idxs) == 6
+        assert jnp.allclose(input_idxs[0], jnp.array([0,2]))
+        assert jnp.allclose(input_idxs[1], jnp.array([1,3]))
+        assert jnp.allclose(input_idxs[2], jnp.array([2,4]))
+        assert jnp.allclose(input_idxs[3], jnp.array([3,5]))
+        assert jnp.allclose(input_idxs[4], jnp.array([4,6]))
+        assert jnp.allclose(input_idxs[5], jnp.array([5,7]))
+
+        assert len(output_idxs) == 6
+        assert jnp.allclose(output_idxs[0], jnp.array([4]))
+        assert jnp.allclose(output_idxs[1], jnp.array([5]))
+        assert jnp.allclose(output_idxs[2], jnp.array([6]))
+        assert jnp.allclose(output_idxs[3], jnp.array([7]))
+        assert jnp.allclose(output_idxs[4], jnp.array([8]))
+        assert jnp.allclose(output_idxs[5], jnp.array([9]))
+
+        future_steps = 2
+        input_idxs, output_idxs = gc_data.time_series_idxs(past_steps, future_steps, delta_t, num_channels)
+        assert len(input_idxs) == 4
+        assert jnp.allclose(input_idxs[0], jnp.array([0,2]))
+        assert jnp.allclose(input_idxs[1], jnp.array([1,3]))
+        assert jnp.allclose(input_idxs[2], jnp.array([2,4]))
+        assert jnp.allclose(input_idxs[3], jnp.array([3,5]))
+
+        assert len(output_idxs) == 4
+        assert jnp.allclose(output_idxs[0], jnp.array([4,6]))
+        assert jnp.allclose(output_idxs[1], jnp.array([5,7]))
+        assert jnp.allclose(output_idxs[2], jnp.array([6,8]))
+        assert jnp.allclose(output_idxs[3], jnp.array([7,9]))
+
+    def testTimeSeriesIdxs(self):
         D = 2
         N = 3
         spatial_dims = (N,)*D
@@ -232,11 +281,10 @@ class TestMisc:
                     img_data = random.normal(subkey, shape=((batch,channels) + spatial_dims + (D,)*k))
                     num_windows = channels-future_steps-past_steps+1
 
-                    input_idxs = gc_data.rolling_window_idx(0, channels-future_steps, past_steps)
+                    input_idxs, output_idxs = gc_data.time_series_idxs(past_steps, future_steps, 1, channels)
                     input_data = img_data[:, input_idxs]
                     assert input_data.shape == (batch,num_windows,past_steps) + spatial_dims + (D,)*k
 
-                    output_idxs = gc_data.rolling_window_idx(past_steps, channels, future_steps)
                     output_data = img_data[:, output_idxs]
                     assert output_data.shape == (batch,num_windows,future_steps) + spatial_dims + (D,)*k
 

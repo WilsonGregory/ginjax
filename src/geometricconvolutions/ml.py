@@ -29,7 +29,6 @@ VECTOR_DOTS_NONLINEAR = 'vector_dots_nonlinear'
 SCALE = 'scale'
 BIAS = 'bias'
 SUM = 'sum'
-POWER = 'power'
 
 CONV_FREE = 'free'
 CONV_FIXED = 'fixed'
@@ -853,10 +852,10 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
 
     return out_layer, params, running_mean, running_var
 
-def _group_norm_K1(D, image_block, groups, power, eps=1e-5):
+def _group_norm_K1(D, image_block, groups, method='eigh', eps=1e-5):
     """
     Perform the layer norm whitening on a vector image block. This is somewhat based on the Clifford
-    Layers Batch norm, link below. However, this differs in that we use svd rather than cholesky because
+    Layers Batch norm, link below. However, this differs in that we use eigh rather than cholesky because
     cholesky is not invariant to all the elements of our group.
     https://github.com/microsoft/cliffordlayers/blob/main/cliffordlayers/nn/functional/batchnorm.py
 
@@ -864,7 +863,8 @@ def _group_norm_K1(D, image_block, groups, power, eps=1e-5):
         D (int): the dimension of the space
         image_block (jnp.array): data block of shape (batch,channels,spatial,tensor)
         groups (int): the number of channel groups, must evenly divide channels
-        power (jnp.array): shape (1,G,1)
+        method (string): method used for the whitening, either 'eigh', or 'cholesky'. Note that
+            'cholesky' is not equivariant.
         eps (float): to avoid non-invertible matrices, added to the covariance matrix
     """
     batch,in_c = image_block.shape[:2]
@@ -876,31 +876,36 @@ def _group_norm_K1(D, image_block, groups, power, eps=1e-5):
     image_grouped = image_block.reshape((batch, groups, channels_per_group) + spatial_dims + (D,))
 
     mean = jnp.mean(image_grouped, axis=tuple(range(2,3+D)), keepdims=True) #(B,G,1,(1,)*D,D)
-    centered_img = image_grouped - mean 
+    centered_img = image_grouped - mean # (B,G,in_c//G,spatial,tensor)
 
-    X = jnp.moveaxis(centered_img.reshape((batch,groups,-1,D)), 2, -1) # (B,G,D,spatial*in_c//G)
-    cov = jax.vmap(lambda a: a @ a.T)(X.reshape((batch*groups,) + X.shape[2:])) / X.shape[-1] #biased cov
-    cov = cov.reshape((batch*groups,D,D))
+    X = centered_img.reshape((batch,groups,-1,D)) # (B,G,spatial*in_c//G,D)
+    cov = jnp.einsum('...ij,...ik->...jk', X, X) / X.shape[-2] # biased cov, (B,G,D,D)
 
-    eigvals, eigvecs = jnp.linalg.eigh(cov)
-
-    eigvals_invhalf = jnp.power(eigvals + eps, power)
-    print(eigvals_invhalf.shape, eigvecs.shape)
-    whiten_matrix = jax.vmap(lambda S,U: U @ jnp.diag(S) @ U.T)(eigvals_invhalf, eigvecs)
-    assert whiten_matrix.shape == (batch*groups,D,D)
-
-    # U,S,V = jnp.linalg.svd(cov, hermitian=True) # U:(B,G,D,D), S:(B,G,D), V:(B,G,D,D)
-
-    # # U is (B,G,D,D), V is just U.T in this case b/c cov is symmetric
-    # # S is (B,G,D)
-    # S_invhalf = jnp.power(S + eps, power) # this is S^{power}, starts at S^{-1/2} 
-    # vmap_sqrt_matrix = jax.vmap(jax.vmap(lambda U,S,V: U @ jnp.diag(S) @ V))
-    # whiten_matrix = vmap_sqrt_matrix(U,S_invhalf,V) # (B,G,D,D)
-    # assert whiten_matrix.shape == (batch,groups,D,D)
-
-    vmap_mult = jax.vmap(lambda W,vec: W @ vec, in_axes=(None,0)) # maps one W over a bunch of vecs
-    vmap_whiten = jax.vmap(lambda W,vec_image: vmap_mult(W, vec_image)) 
-    whitened_data = vmap_whiten(whiten_matrix, centered_img.reshape((batch*groups,-1) + (D,)))
+    if method == 'eigh':
+        # symmetrize_input=True seems to cause issues with autograd, and cov is already symmetric
+        eigvals, eigvecs = jnp.linalg.eigh(cov, symmetrize_input=False)
+        eigvals_invhalf = jnp.sqrt(1./(eigvals+eps))
+        S_diag = jax.vmap(lambda S: jnp.diag(S))(eigvals_invhalf.reshape((-1,D))).reshape((batch,groups,D,D))
+        # do U S U^T, and multiply each vector in centered_img by the resulting matrix
+        whitened_data = jnp.einsum(
+            '...ij,...jk,...kl,...ml->...mi',
+            eigvecs,
+            S_diag,
+            eigvecs.transpose((0,1,3,2)),
+            centered_img.reshape((batch,groups,-1,D)),
+        )
+    elif method == 'cholesky':
+        L = jax.lax.linalg.cholesky(cov, symmetrize_input=False) # (batch*groups,D,D)
+        L + eps*jnp.eye(D).reshape((1,D,D,))
+        whitened_data = jax.lax.linalg.triangular_solve(
+            L, 
+            centered_img.reshape((batch*groups,-1) + (D,)),
+            left_side=False,
+            lower=True,
+        )
+    else:
+        raise NotImplementedError(f'ml::_group_norm_K1: method {method} not implemented.')
+    
     return whitened_data.reshape(image_block.shape)
 
 functools.partial(jax.jit, static_argnums=[2,3,4])
@@ -918,7 +923,7 @@ def group_norm(params, layer, groups, eps=1e-5, equivariant=True, mold_params=Fa
     """
     params_idx, this_params = get_layer_params(params, mold_params, GROUP_NORM)
     if mold_params:
-        this_params = { SCALE: {}, POWER: {} }
+        this_params = { SCALE: {} }
 
     out_layer = layer.empty()
     for (k,parity), image_block in layer.items():
@@ -930,13 +935,7 @@ def group_norm(params, layer, groups, eps=1e-5, equivariant=True, mold_params=Fa
         image_grouped = image_block.reshape((batch, groups, channels_per_group) + spatial_dims + (layer.D,)*k)
 
         if equivariant and k==1:
-            # in order to return to the unscaled version, we need to be able to set the whitening 
-            # multiplication matrix to the identity, which we achieve with this power parameter. 
-            # When power = -1/2, that is the scaled version, 0 is unscaled who knows otherwise.
-            if mold_params:
-                this_params[POWER][(k,parity)] = jnp.ones((1,groups,1))
-
-            whitened_data = _group_norm_K1(layer.D, image_block, groups, this_params[POWER][(k,parity)], eps)
+            whitened_data = _group_norm_K1(layer.D, image_block, groups, eps=eps)
         elif equivariant and k>1:
             raise NotImplementedError(
                 f'ml::group_norm: Currently equivariant group_norm is not implemented for k>1, but k={k}',
@@ -1159,18 +1158,13 @@ def group_norm_init(rand_key, tree):
     out_params = {}
     if BIAS in tree:
         out_params[BIAS] = {}
-        for key, inner_tree in tree[BIAS].items():
-            out_params[BIAS][key] = jnp.zeros(inner_tree[key].shape)
+        for key, params_block in tree[BIAS].items():
+            out_params[BIAS][key] = jnp.zeros(params_block.shape)
 
     if SCALE in tree:
         out_params[SCALE] = {}
-        for key, inner_tree in tree[SCALE].items():
-            out_params[SCALE][key] = jnp.ones(inner_tree[key].shape)
-
-    if POWER in tree:
-        out_params[POWER] = {}
-        for key, inner_tree in tree[POWER].items():
-            out_params[POWER][key] = -0.5*jnp.ones(inner_tree[key].shape)
+        for key, params_block in tree[SCALE].items():
+            out_params[SCALE][key] = jnp.ones(params_block.shape)
 
     return out_params
 

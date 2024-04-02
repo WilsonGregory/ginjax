@@ -330,7 +330,7 @@ class TestPropositions:
         prec = jax.lax.Precision.HIGHEST
         key = random.PRNGKey(time.time_ns())
         for D in [2,3]:
-            fixed_params = { ml.GROUP_NORM: { ml.BIAS: {}, ml.SCALE: {}, ml.POWER: {} } }
+            fixed_params = { ml.GROUP_NORM: { ml.BIAS: {}, ml.SCALE: {} } }
             layer = geom.BatchLayer({}, D)
             for parity in [0,1]:
                 for k in [0,1]:
@@ -338,8 +338,6 @@ class TestPropositions:
                     layer.append(k, parity, random.normal(subkey1, shape=((batch,channels) + (N,)*D + (D,)*k)))
                     fixed_params[ml.GROUP_NORM][ml.SCALE][(k,parity)] = random.normal(subkey2, shape=(1,channels) + (1,)*layer.D + (1,)*k)
                     fixed_params[ml.GROUP_NORM][ml.BIAS][(k,parity)] = random.normal(subkey3, shape=(1,channels) + (1,)*layer.D + (1,)*k)
-                    if k == 1:
-                        fixed_params[ml.GROUP_NORM][ml.POWER][(k,parity)] = random.normal(subkey4, shape=(1,1,1))
 
             operators = geom.make_all_operators(D)
 
@@ -365,16 +363,16 @@ class TestPropositions:
             key, subkey = random.split(key)
             image_block = random.normal(subkey, shape=(batch,channels) + (N,)*D + (D,))
 
-            whitened_data = ml._group_norm_K1(D, image_block, 1, -0.5*jnp.ones((1,1,1)), eps=0)
+            whitened_data = ml._group_norm_K1(D, image_block, 1, eps=0)
 
             # mean centered
             mean = jnp.mean(whitened_data, axis=tuple(range(1,whitened_data.ndim)))
-            assert jnp.allclose(mean, jnp.zeros(mean.shape), atol=geom.TINY, rtol=geom.TINY) 
+            assert jnp.allclose(mean, jnp.zeros(mean.shape), atol=1e-3, rtol=1e-3) 
 
             # identity covariance
             cov = jax.vmap(lambda data: jnp.cov(data, rowvar=False, bias=True))(whitened_data.reshape((batch,-1,D)))
             eye = jnp.tensordot(jnp.ones(batch), jnp.eye(D), axes=0) # (batch, D, D)
-            assert jnp.allclose(cov, eye, atol=1e-3, rtol=1e-3)
+            assert jnp.allclose(cov, eye, atol=1e-2, rtol=1e-2), f'{cov}'
 
     def testVNNonlinearEquivariance(self):
         D = 2

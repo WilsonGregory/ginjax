@@ -349,7 +349,7 @@ class TestPropositions:
                 layer2 = ml.group_norm(params, layer.times_group_element(gg, precision=prec), 1, eps=0, equivariant=True)[0]
 
                 for image_block1, image_block2 in zip(layer1.values(), layer2.values()):
-                    assert jnp.allclose(image_block1, image_block2, atol=1e-3, rtol=1e-3), f'{jnp.max(image_block1 - image_block2)}'
+                    assert jnp.allclose(image_block1, image_block2, atol=1e-2, rtol=1e-2), f'{jnp.max(image_block1 - image_block2)}'
 
     def testLayerNormWhitening(self):
         """

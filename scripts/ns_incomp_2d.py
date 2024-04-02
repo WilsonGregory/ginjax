@@ -502,6 +502,3 @@ results = ml.benchmark(
 )
 
 print(results)
-
-
-# CUDA_VISIBLE_DEVICES=4,5,6,7 time python3 scripts/ns_incomp_2d.py /data/wgregor4/pdebench/ns_incomp_2d/ -batch 32 -train_traj 16 -val_traj 2 -test_traj 2 -delta_t 64 -downsample 2 -skip_initial 50

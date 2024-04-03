@@ -1,4 +1,5 @@
 import sys
+import os
 import time
 import argparse
 import numpy as np
@@ -26,39 +27,75 @@ def read_one_h5(filename: str) -> tuple:
     """
     data_dict = h5py.File(filename) # keys 'force', 'particles', 't', 'velocity'
     # 4 runs, 1000 time points, 512x512 grid
+    # time ranges from 0 to 5, presumably seconds
     force = jax.device_put(jnp.array(data_dict['force'][()]), jax.devices('cpu')[0]) # (4,512,512,2)
     particles = jax.device_put(jnp.array(data_dict['particles'][()]), jax.devices('cpu')[0]) # (4,1000,512,512,1)
     # these are advected particles, might be a proxy of density?
     velocity = jax.device_put(jnp.array(data_dict['velocity'][()]), jax.devices('cpu')[0]) # (4,1000,512,512,2)
-
     data_dict.close()
 
     return force, particles[...,0], velocity
 
+def read_data(data_dir: str, num_trajectories: int) -> tuple:
+    """
+    Load data from the multiple .hd5 files
+    args:
+        data_dir (str): directory of the data
+        num_trajectories (int): total number of trajectories to read in
+    """
+    all_files = filter(lambda file: 'ns_incom_inhom_2d' in file, os.listdir(data_dir))
+
+    N = 512
+    D = 2
+    all_force = jnp.zeros((0,N,N,D))
+    all_particles = jnp.zeros((0,1000,N,N))
+    all_velocity = jnp.zeros((0,1000,N,N,D))
+    for filename in all_files:
+        force, particles, velocity = read_one_h5(f'{data_dir}/{filename}')
+
+        all_force = jnp.concatenate([all_force, force])
+        all_particles = jnp.concatenate([all_particles, particles])
+        all_velocity = jnp.concatenate([all_velocity, velocity])
+
+        if len(all_force) >= num_trajectories:
+            break
+
+    if len(all_force) < num_trajectories:
+        print(f'WARNING read_data: wanted {num_trajectories} trajectories, but only found {len(all_force)}')
+        num_trajectories = len(all_force)
+
+    all_force = all_force[:num_trajectories]
+    all_particles = all_particles[:num_trajectories]
+    all_velocity = all_velocity[:num_trajectories]
+
+    return all_force, all_particles, all_velocity
+
 def get_data(
-    filename: str, 
+    data_dir: str, 
     num_train_traj: int, 
     num_val_traj: int, 
     num_test_traj: int, 
     past_steps: int,
     rollout_steps: int,
-    subsample: int = 1,
+    delta_t: int = 1,
     downsample: int = 0,
+    skip_initial: int = 0,
 ) -> tuple:
     """
     Get train, val, and test data sets.
     args:
-        infile (str): directory of data
+        data_dir (str): directory of data
         num_train_traj (int): number of training trajectories
         num_val_traj (int): number of validation trajectories
         num_test_traj (int): number of testing trajectories
         past_steps (int): length of the lookback to predict the next step
         rollout_steps (int): number of steps of rollout to compare against
-        subsample (int): can subsample for longer timesteps, default 1 (no subsampling)
+        delta_t (int): number of timesteps per model step, default 1
         downsample (int): number of times to spatial downsample, defaults to 0 (no downsampling)
+        skip_initial (int): number of initial steps to skip, default to 0
     """
     D = 2
-    force, particles, velocity = read_one_h5(filename)
+    force, particles, velocity = read_data(data_dir, num_train_traj + num_val_traj + num_test_traj)
 
     start = 0
     stop = num_train_traj
@@ -69,8 +106,8 @@ def get_data(
         False,
         past_steps,
         1,
-        0,
-        subsample,
+        skip_initial,
+        delta_t,
         downsample,
     )
     start = stop
@@ -82,8 +119,8 @@ def get_data(
         False, # is_torus
         past_steps,
         1, # future_steps
-        0, # skip_initial
-        subsample,
+        skip_initial,
+        delta_t,
         downsample,
     )
     start = stop
@@ -95,8 +132,8 @@ def get_data(
         False, # is_torus
         past_steps,
         1, # future_steps
-        0, # skip_initial
-        subsample,
+        skip_initial,
+        delta_t,
         downsample,
     )
     test_rollout_X, test_rollout_Y = gc_data.times_series_to_layers(
@@ -106,8 +143,8 @@ def get_data(
         False, # is_torus
         past_steps,
         rollout_steps,
-        0, # skip_initial
-        subsample,
+        skip_initial,
+        delta_t,
         downsample,
     )
     
@@ -182,11 +219,7 @@ def train_and_eval(
     train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y = data
 
     key, subkey = random.split(key)
-    params = ml.init_params(
-        net,
-        train_X.get_one(),
-        subkey,
-    )
+    params = ml.init_params(net, train_X.get_one(), subkey)
     print(f'Model params: {ml.count_params(params):,}')
 
     steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
@@ -270,7 +303,7 @@ def train_and_eval(
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument('filename', help='the directory where the .h5 files are located', type=str)
+    parser.add_argument('data_dir', help='the directory where the .h5 files are located', type=str)
     parser.add_argument('-e', '--epochs', help='number of epochs to run', type=int, default=50)
     parser.add_argument('-lr', help='learning rate', type=float, default=2e-4)
     parser.add_argument('-batch', help='batch size', type=int, default=16)
@@ -286,15 +319,16 @@ def handleArgs(argv):
         type=str, 
         default=None,
     )
-    parser.add_argument('-subsample', help='how many timesteps per model step, default 1', type=int, default=1)
+    parser.add_argument('-delta_t', help='how many timesteps per model step, default 1', type=int, default=1)
     parser.add_argument('-downsample', help='spatial downsampling, number of times to divide by 2', type=int, default=0)
+    parser.add_argument('-skip_initial', help='beginning steps of each trajectory to skip', type=int, default=0)
     parser.add_argument('-t', '--trials', help='number of trials to run', type=int, default=1)
     parser.add_argument('-v', '--verbose', help='verbose argument passed to trainer', type=int, default=1)
 
     args = parser.parse_args()
 
     return (
-        args.filename,
+        args.data_dir,
         args.epochs,
         args.lr,
         args.batch,
@@ -305,15 +339,16 @@ def handleArgs(argv):
         args.save,
         args.load,
         args.images_dir,
-        args.subsample,
+        args.delta_t,
         args.downsample,
+        args.skip_initial,
         args.trials,
         args.verbose,
     )
 
 #Main
 (
-    filename, 
+    data_dir, 
     epochs, 
     lr, 
     batch_size, 
@@ -324,8 +359,9 @@ def handleArgs(argv):
     save_file, 
     load_file, 
     images_dir,
-    subsample,
+    delta_t,
     downsample,
+    skip_initial,
     trials,
     verbose,
 ) = handleArgs(sys.argv)
@@ -335,22 +371,13 @@ past_steps = 4 # how many steps to look back to predict the next step
 rollout_steps = 5
 key = random.PRNGKey(time.time_ns()) if (seed is None) else random.PRNGKey(seed)
 
-train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y = get_data(
-    filename, 
-    train_traj, 
-    val_traj, 
-    test_traj, 
-    past_steps,
-    rollout_steps,
-    subsample,
-    downsample,
-)
+data = get_data(data_dir, train_traj, val_traj, test_traj, past_steps, rollout_steps, delta_t, downsample, skip_initial)
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 upsample_filters = geom.get_invariant_filters(Ms=[2], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 
-output_keys = tuple(train_Y.keys())
+output_keys = tuple(data[1].keys())
 train_and_eval = partial(
     train_and_eval, 
     lr=lr,
@@ -398,7 +425,7 @@ models = [
         ),   
     ),
     (
-        'resnet_equiv', # better across the board
+        'resnet_equiv', 
         partial(
             train_and_eval, 
             net=partial(
@@ -407,6 +434,7 @@ models = [
                 equivariant=True, 
                 conv_filters=conv_filters,
                 activation_f=ml.VN_NONLINEAR,
+                use_group_norm=False,
                 depth=32,
             ),
         ),  
@@ -454,6 +482,7 @@ models = [
                 equivariant=True,
                 conv_filters=conv_filters,
                 activation_f=ml.VN_NONLINEAR,
+                use_group_norm=False,
                 depth=32,
                 upsample_filters=upsample_filters,
             ),
@@ -463,7 +492,7 @@ models = [
 
 key, subkey = random.split(key)
 results = ml.benchmark(
-    lambda _, _2: (train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y),
+    lambda _, _2: data,
     models,
     subkey,
     'Nothing',

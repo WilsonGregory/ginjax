@@ -456,6 +456,7 @@ def resnet(
     activation_f=jax.nn.gelu,
     equivariant=False, 
     conv_filters=None, 
+    use_group_norm=True,
     return_params=False,
 ):
     """
@@ -505,7 +506,8 @@ def resnet(
 
         for _ in range(num_conv):
             # pre-activation order
-            layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
+            if use_group_norm:
+                layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
             layer, params = handle_activation(activation_f, params, layer, return_params)
 
             layer, params = ml.batch_conv_layer(

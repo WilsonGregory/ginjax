@@ -369,6 +369,28 @@ models = [
         ),
     ),
     (
+        'resnet',
+        partial(
+            train_and_eval, 
+            net=partial(models.resnet, output_keys=output_keys, depth=64),
+        ),   
+    ),
+    (
+        'resnet_equiv', 
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.resnet, 
+                output_keys=output_keys, 
+                equivariant=True, 
+                conv_filters=conv_filters,
+                activation_f=ml.VN_NONLINEAR,
+                use_group_norm=False,
+                depth=32,
+            ),
+        ),  
+    ),
+    (
         'unet2015',
         partial(
             train_and_eval,
@@ -411,6 +433,7 @@ models = [
                 equivariant=True,
                 conv_filters=conv_filters,
                 activation_f=ml.VN_NONLINEAR,
+                use_group_norm=False,
                 depth=32,
                 upsample_filters=upsample_filters,
             ),
@@ -429,4 +452,3 @@ results = ml.benchmark(
 )
 
 print(results)
-

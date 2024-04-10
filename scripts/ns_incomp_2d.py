@@ -279,7 +279,6 @@ def train_and_eval(
     steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
 
     if load_params is None:
-        print('in here')
         key, subkey = random.split(key)
         results = ml.train(
             train_X,
@@ -485,79 +484,79 @@ train_and_eval = partial(
 )
 
 models = [
-    # (
-    #     'do_nothing', 
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
-    #     ),
-    # ),
-    # (
-    #     'dil_resnet',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.dil_resnet, depth=64, activation_f=jax.nn.gelu, output_keys=output_keys),
-    #     ),
-    # ),
-    # (
-    #     'dil_resnet_equiv', # test_loss is better, but rollout is worse
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(
-    #             models.dil_resnet, 
-    #             depth=32, 
-    #             activation_f=ml.VN_NONLINEAR, # takes more memory, hmm
-    #             equivariant=True, 
-    #             conv_filters=conv_filters,
-    #             output_keys=output_keys,
-    #         ),
-    #     ),
-    # ),
-    # (
-    #     'resnet',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.resnet, output_keys=output_keys, depth=64),
-    #     ),   
-    # ),
-    # (
-    #     'resnet_equiv', 
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(
-    #             models.resnet, 
-    #             output_keys=output_keys, 
-    #             equivariant=True, 
-    #             conv_filters=conv_filters,
-    #             activation_f=ml.VN_NONLINEAR,
-    #             use_group_norm=False,
-    #             depth=32,
-    #         ),
-    #     ),  
-    # ),
-    # (
-    #     'unet2015',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(models.unet2015, output_keys=output_keys),
-    #         has_aux=True,
-    #     ),
-    # ),
-    # (
-    #     'unet2015_equiv',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             models.unet2015, 
-    #             equivariant=True,
-    #             conv_filters=conv_filters, 
-    #             upsample_filters=upsample_filters,
-    #             output_keys=output_keys,
-    #             activation_f=ml.VN_NONLINEAR,
-    #             depth=32, # 64=41M, 48=23M, 32=10M
-    #         ),
-    #     ),
-    # ),
+    (
+        'do_nothing', 
+        partial(
+            train_and_eval, 
+            net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
+        ),
+    ),
+    (
+        'dil_resnet',
+        partial(
+            train_and_eval, 
+            net=partial(models.dil_resnet, depth=64, activation_f=jax.nn.gelu, output_keys=output_keys),
+        ),
+    ),
+    (
+        'dil_resnet_equiv', # test_loss is better, but rollout is worse
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.dil_resnet, 
+                depth=32, 
+                activation_f=ml.VN_NONLINEAR, # takes more memory, hmm
+                equivariant=True, 
+                conv_filters=conv_filters,
+                output_keys=output_keys,
+            ),
+        ),
+    ),
+    (
+        'resnet',
+        partial(
+            train_and_eval, 
+            net=partial(models.resnet, output_keys=output_keys, depth=64),
+        ),   
+    ),
+    (
+        'resnet_equiv', 
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.resnet, 
+                output_keys=output_keys, 
+                equivariant=True, 
+                conv_filters=conv_filters,
+                activation_f=ml.VN_NONLINEAR,
+                use_group_norm=False,
+                depth=32,
+            ),
+        ),  
+    ),
+    (
+        'unet2015',
+        partial(
+            train_and_eval,
+            net=partial(models.unet2015, output_keys=output_keys),
+            has_aux=True,
+        ),
+    ),
+    (
+        'unet2015_equiv',
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unet2015, 
+                equivariant=True,
+                conv_filters=conv_filters, 
+                upsample_filters=upsample_filters,
+                output_keys=output_keys,
+                activation_f=ml.VN_NONLINEAR,
+                depth=32, # 64=41M, 48=23M, 32=10M
+            ),
+        ),
+    ),
     (
         'unetBase',
         partial(

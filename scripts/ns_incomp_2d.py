@@ -18,6 +18,57 @@ import geometricconvolutions.ml as ml
 import geometricconvolutions.models as models
 import geometricconvolutions.utils as utils
 
+def downsample_data(filename, downsample):
+    """
+    Given a pdebench .h5 file at filename, spatial downsample by average pooling.
+    args:
+        filename (str): the file to downsample
+        downsample (int): number of times to downsample, i.e. get the sidelength in half.
+    """
+    # data is (traj, timesteps, spatial, spatial, tensor)
+    vmap_average_pool = jax.vmap(jax.vmap(geom.average_pool, in_axes=(None,0,None)), in_axes=(None,0,None))
+    N = int(512 / (2**downsample))
+
+    print(f'downsampling: {filename}')
+    data = h5py.File(filename)
+
+    force = jnp.array(data['force'][()])[:,None]
+    particles = jnp.array(data['particles'][()])[...,0]
+    t = jnp.array(data['t'][()])
+    velocity = jnp.array(data['velocity'][()])
+
+    for _ in range(downsample):
+        force = vmap_average_pool(2, force, 2)
+        particles = vmap_average_pool(2, particles, 2)
+        velocity = vmap_average_pool(2, velocity, 2)
+
+    newfile = h5py.File(filename.replace('512', str(N)), 'w')
+    newfile.create_dataset('force', data=force[:,0])
+    newfile.create_dataset('particles', data=particles[...,None])
+    newfile.create_dataset('t', data=t)
+    newfile.create_dataset('velocity', data=velocity)
+
+def downsample_if_needed(data_dir: str, downsample: int = 0):
+    """
+    Ensure there are downsampled versions of all the data files. This assumes that ns_incom_inhom_2d_512
+    is present in the original file, and the downsampled version will be ns_incom_inhom_2d_N where N is
+    the sidelength of the downsampling.
+    args:
+        data_dir (str): the filepath to the data files
+        downsample (int): the number of times to average pool with 2^D patches
+    """
+    if downsample == 0:
+        return
+    
+    N = int(512 / (2**downsample))
+    target_files = list(filter(lambda file: f'ns_incom_inhom_2d_{N}' in file, os.listdir(data_dir)))
+    
+    for original_file in filter(lambda file: 'ns_incom_inhom_2d_512' in file, os.listdir(data_dir)):
+        downsampled_file = original_file.replace('512', str(N))
+        if downsampled_file not in target_files:
+            print(f'{data_dir}/{original_file}')
+            downsample_data(f'{data_dir}/{original_file}', downsample)
+
 def read_one_h5(filename: str) -> tuple:
     """
     Given a filename and a type of data (train, test, or validation), read the data and return as jax arrays.
@@ -36,17 +87,19 @@ def read_one_h5(filename: str) -> tuple:
 
     return force, particles[...,0], velocity
 
-def read_data(data_dir: str, num_trajectories: int) -> tuple:
+def read_data(data_dir: str, num_trajectories: int, downsample: int = 0) -> tuple:
     """
     Load data from the multiple .hd5 files
     args:
         data_dir (str): directory of the data
         num_trajectories (int): total number of trajectories to read in
     """
-    all_files = filter(lambda file: 'ns_incom_inhom_2d' in file, os.listdir(data_dir))
+    downsample_if_needed(data_dir, downsample)
 
-    N = 512
+    N = int(512 / (2**downsample))
     D = 2
+    all_files = filter(lambda file: f'ns_incom_inhom_2d_{N}' in file, os.listdir(data_dir))
+
     all_force = jnp.zeros((0,N,N,D))
     all_particles = jnp.zeros((0,1000,N,N))
     all_velocity = jnp.zeros((0,1000,N,N,D))
@@ -95,7 +148,11 @@ def get_data(
         skip_initial (int): number of initial steps to skip, default to 0
     """
     D = 2
-    force, particles, velocity = read_data(data_dir, num_train_traj + num_val_traj + num_test_traj)
+    force, particles, velocity = read_data(
+        data_dir, 
+        num_train_traj + num_val_traj + num_test_traj, 
+        downsample, # downsampling handled prior to time_series_to_layers
+    )
 
     start = 0
     stop = num_train_traj
@@ -108,7 +165,6 @@ def get_data(
         1,
         skip_initial,
         delta_t,
-        downsample,
     )
     start = stop
     stop = stop + num_val_traj
@@ -121,7 +177,6 @@ def get_data(
         1, # future_steps
         skip_initial,
         delta_t,
-        downsample,
     )
     start = stop
     stop = stop + num_test_traj
@@ -134,7 +189,6 @@ def get_data(
         1, # future_steps
         skip_initial,
         delta_t,
-        downsample,
     )
     test_rollout_X, test_rollout_Y = gc_data.times_series_to_layers(
         D, 
@@ -145,7 +199,6 @@ def get_data(
         rollout_steps,
         skip_initial,
         delta_t,
-        downsample,
     )
     
     return train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y
@@ -211,6 +264,7 @@ def train_and_eval(
     batch_size, 
     epochs, 
     save_params, 
+    load_params,
     images_dir, 
     noise_stdev=None,
     has_aux=False,
@@ -224,36 +278,72 @@ def train_and_eval(
 
     steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
 
-    key, subkey = random.split(key)
-    results = ml.train(
-        train_X,
-        train_Y,
-        partial(map_and_loss, net=net, has_aux=has_aux),
-        params,
-        subkey,
-        stop_condition=ml.EpochStop(epochs, verbose=verbose),
-        batch_size=batch_size,
-        optimizer=optax.adamw(
-            optax.warmup_cosine_decay_schedule(1e-8, lr, 5*steps_per_epoch, 50*steps_per_epoch, 1e-7),
-            weight_decay=1e-5,
-        ),
-        validation_X=val_X,
-        validation_Y=val_Y,
-        noise_stdev=noise_stdev,
-        has_aux=has_aux,
-    )
-
-    if has_aux:
-        params, batch_stats, train_loss, val_loss = results
-    else:
-        params, train_loss, val_loss = results
-        batch_stats = None
-
-    if save_params is not None:
-        jnp.save(
-            f'{save_params}{model_name}_L{train_X.get_L()}_e{epochs}_params.npy', 
-            { 'params': params, 'batch_stats': None if (batch_stats is None) else dict(batch_stats) },
+    if load_params is None:
+        print('in here')
+        key, subkey = random.split(key)
+        results = ml.train(
+            train_X,
+            train_Y,
+            partial(map_and_loss, net=net, has_aux=has_aux),
+            params,
+            subkey,
+            stop_condition=ml.EpochStop(epochs, verbose=verbose),
+            batch_size=batch_size,
+            optimizer=optax.adamw(
+                optax.warmup_cosine_decay_schedule(1e-8, lr, 5*steps_per_epoch, 50*steps_per_epoch, 1e-7),
+                weight_decay=1e-5,
+            ),
+            validation_X=val_X,
+            validation_Y=val_Y,
+            noise_stdev=noise_stdev,
+            has_aux=has_aux,
         )
+
+        if has_aux:
+            params, batch_stats, train_loss, val_loss = results
+        else:
+            params, train_loss, val_loss = results
+            batch_stats = None
+
+        if save_params is not None:
+            jnp.save(
+                f'{save_params}{model_name}_L{train_X.get_L()}_e{epochs}_params.npy', 
+                { 'params': params, 'batch_stats': None if (batch_stats is None) else dict(batch_stats) },
+            )
+    else:
+        results = jnp.load(
+            f'{load_params}{model_name}_L{train_X.get_L()}_e{epochs}_params.npy',
+            allow_pickle=True,
+        ).item()
+        params = results['params']
+        batch_stats = results['batch_stats']
+
+        key, subkey = random.split(key)
+        train_loss = [ml.map_loss_in_batches(
+            partial(map_and_loss, net=net, has_aux=has_aux), 
+            params, 
+            train_X, 
+            train_Y, 
+            batch_size, 
+            subkey, 
+            False,
+            has_aux=has_aux,
+            aux_data=batch_stats,
+        )]
+        print(f'Train Loss: {train_loss[-1]}')
+        key, subkey = random.split(key)
+        val_loss = [ml.map_loss_in_batches(
+            partial(map_and_loss, net=net, has_aux=has_aux), 
+            params, 
+            val_X, 
+            val_Y, 
+            batch_size, 
+            subkey, 
+            False,
+            has_aux=has_aux,
+            aux_data=batch_stats,
+        )]
+        print(f'Val Loss: {val_loss[-1]}')
 
     key, subkey = random.split(key)
     test_loss = ml.map_loss_in_batches(
@@ -297,7 +387,12 @@ def train_and_eval(
             future_steps=5, 
             return_map_only=True,
         )
-        plot_layer(rollout_layer.get_one(), test_rollout_Y.get_one(), images_dir + f'/{model_name}_rollout.png', 5)
+        plot_layer(
+            rollout_layer.get_one(), 
+            test_rollout_Y.get_one(), 
+            f'{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}_rollout.png',
+            5,
+        )
 
     return train_loss[-1], val_loss[-1], test_loss, test_rollout_loss
 
@@ -384,84 +479,85 @@ train_and_eval = partial(
     batch_size=batch_size, 
     epochs=epochs, 
     save_params=save_file, 
+    load_params=load_file,
     images_dir=images_dir,
     verbose=verbose,
 )
 
 models = [
-    (
-        'do_nothing', 
-        partial(
-            train_and_eval, 
-            net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
-        ),
-    ),
-    (
-        'dil_resnet',
-        partial(
-            train_and_eval, 
-            net=partial(models.dil_resnet, depth=64, activation_f=jax.nn.gelu, output_keys=output_keys),
-        ),
-    ),
-    (
-        'dil_resnet_equiv', # test_loss is better, but rollout is worse
-        partial(
-            train_and_eval, 
-            net=partial(
-                models.dil_resnet, 
-                depth=32, 
-                activation_f=ml.VN_NONLINEAR, # takes more memory, hmm
-                equivariant=True, 
-                conv_filters=conv_filters,
-                output_keys=output_keys,
-            ),
-        ),
-    ),
-    (
-        'resnet',
-        partial(
-            train_and_eval, 
-            net=partial(models.resnet, output_keys=output_keys, depth=64),
-        ),   
-    ),
-    (
-        'resnet_equiv', 
-        partial(
-            train_and_eval, 
-            net=partial(
-                models.resnet, 
-                output_keys=output_keys, 
-                equivariant=True, 
-                conv_filters=conv_filters,
-                activation_f=ml.VN_NONLINEAR,
-                use_group_norm=False,
-                depth=32,
-            ),
-        ),  
-    ),
-    (
-        'unet2015',
-        partial(
-            train_and_eval,
-            net=partial(models.unet2015, output_keys=output_keys),
-            has_aux=True,
-        ),
-    ),
-    (
-        'unet2015_equiv',
-        partial(
-            train_and_eval,
-            net=partial(
-                models.unet2015, 
-                equivariant=True,
-                conv_filters=conv_filters, 
-                upsample_filters=upsample_filters,
-                output_keys=output_keys,
-                activation_f=ml.VN_NONLINEAR,
-                depth=32, # 64=41M, 48=23M, 32=10M
-            ),
-        ),
-    ),
+    # (
+    #     'do_nothing', 
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
+    #     ),
+    # ),
+    # (
+    #     'dil_resnet',
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(models.dil_resnet, depth=64, activation_f=jax.nn.gelu, output_keys=output_keys),
+    #     ),
+    # ),
+    # (
+    #     'dil_resnet_equiv', # test_loss is better, but rollout is worse
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(
+    #             models.dil_resnet, 
+    #             depth=32, 
+    #             activation_f=ml.VN_NONLINEAR, # takes more memory, hmm
+    #             equivariant=True, 
+    #             conv_filters=conv_filters,
+    #             output_keys=output_keys,
+    #         ),
+    #     ),
+    # ),
+    # (
+    #     'resnet',
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(models.resnet, output_keys=output_keys, depth=64),
+    #     ),   
+    # ),
+    # (
+    #     'resnet_equiv', 
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(
+    #             models.resnet, 
+    #             output_keys=output_keys, 
+    #             equivariant=True, 
+    #             conv_filters=conv_filters,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             use_group_norm=False,
+    #             depth=32,
+    #         ),
+    #     ),  
+    # ),
+    # (
+    #     'unet2015',
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(models.unet2015, output_keys=output_keys),
+    #         has_aux=True,
+    #     ),
+    # ),
+    # (
+    #     'unet2015_equiv',
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unet2015, 
+    #             equivariant=True,
+    #             conv_filters=conv_filters, 
+    #             upsample_filters=upsample_filters,
+    #             output_keys=output_keys,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             depth=32, # 64=41M, 48=23M, 32=10M
+    #         ),
+    #     ),
+    # ),
     (
         'unetBase',
         partial(

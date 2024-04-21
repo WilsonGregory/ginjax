@@ -41,7 +41,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
     spatial_dims = layer.get_spatial_dims()
 
     batch_conv_layer = vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
-    batch_add_layer = vmap(lambda layer_a, layer_b: layer_a + layer_b) #better way of doing this?
+    batch_concat_layer = vmap(lambda layer_a, layer_b: layer_a.concat(layer_b)) #better way of doing this?
 
     layer, params = batch_conv_layer(params, conv_filters, layer, None, None, return_params, None, None, None, None)
     out_layer = layer.empty()
@@ -58,7 +58,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
             None,
             (dilation,)*D, #rhs_dilation
         )
-        out_layer = batch_add_layer(out_layer, dilation_out_layer)
+        out_layer = batch_concat_layer(out_layer, dilation_out_layer)
 
     layer = out_layer
 
@@ -76,7 +76,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
             None,
             (dilation,)*D, #rhs_dilation
         )
-        out_layer = batch_add_layer(out_layer, dilation_out_layer)
+        out_layer = batch_concat_layer(out_layer, dilation_out_layer)
 
     layer = out_layer
     layer = ml.batch_all_contractions(target_k, layer)
@@ -92,7 +92,7 @@ def baseline_net(params, layer, key, train, return_params=False):
     out_channels = 2
     spatial_dims = layer.get_spatial_dims()
 
-    batch_add_layer = vmap(lambda layer_a, layer_b: layer_a + layer_b)
+    batch_concat_layer = vmap(lambda layer_a, layer_b: layer_a.concat(layer_b))
 
     layer, params = ml.batch_conv_layer(
         params,
@@ -112,7 +112,7 @@ def baseline_net(params, layer, key, train, return_params=False):
             mold_params=return_params,
             rhs_dilation=(dilation,)*D,
         )
-        out_layer = batch_add_layer(out_layer, dilation_out_layer)
+        out_layer = batch_concat_layer(out_layer, dilation_out_layer)
 
     layer = out_layer
 
@@ -133,7 +133,7 @@ def baseline_net(params, layer, key, train, return_params=False):
             dilation_out_layer.D,
             dilation_out_layer.is_torus,
         )
-        out_layer = batch_add_layer(out_layer, reshaped_layer)
+        out_layer = batch_concat_layer(out_layer, reshaped_layer)
 
     layer, params = ml.batch_channel_collapse(params, out_layer, mold_params=return_params)
     return (layer, params) if return_params else layer

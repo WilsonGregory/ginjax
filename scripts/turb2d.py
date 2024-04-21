@@ -32,13 +32,20 @@ def read_one_h5(filename: str, data_class: str) -> tuple:
 
     # all of these are shape (num_trajectories, t, x, y) = (100, 14, 128, 128)
     u = jax.device_put(jnp.array(data_dict['u'][()]), jax.devices('cpu')[0])
+    trajectories, timesteps, N, _ = u.shape
     vx = jax.device_put(jnp.array(data_dict['vx'][()]), jax.devices('cpu')[0])
     vy = jax.device_put(jnp.array(data_dict['vy'][()]), jax.devices('cpu')[0])
     vxy = jnp.stack([vx, vy], axis=-1)
 
+    D = 2
+    buoyancy_val = jax.device_put(jnp.array(data_dict['buo_y'][()]), jax.devices('cpu')[0]) # (100,)
+    buoyancy_field = jnp.tensordot(buoyancy_val, jnp.ones((N,)*D), axes=0) # (100,128,128)
+    buoyancy = jnp.stack([jnp.zeros(buoyancy_field.shape), buoyancy_field], axis=-1) # (100,128,128,2)
+    assert buoyancy.shape == ((trajectories,) + (N,)*D + (D,))
+
     file.close()
 
-    return u, vxy
+    return u, vxy, buoyancy
 
 def merge_h5s_into_layer(
     data_dir: str, 
@@ -63,11 +70,13 @@ def merge_h5s_into_layer(
     D = 2
     all_u = jnp.zeros((0,14,N,N))
     all_vxy = jnp.zeros((0,14,N,N,D))
+    all_buoyancy = jnp.zeros((0,N,N,D))
     for filename in all_files:
-        u, vxy = read_one_h5(f'{data_dir}/{filename}', data_class)
+        u, vxy, buoyancy = read_one_h5(f'{data_dir}/{filename}', data_class)
 
         all_u = jnp.concatenate([all_u, u])
         all_vxy = jnp.concatenate([all_vxy, vxy])
+        all_buoyancy = jnp.concatenate([all_buoyancy, buoyancy])
 
         if len(all_u) >= num_trajectories:
             break
@@ -81,11 +90,12 @@ def merge_h5s_into_layer(
 
     all_u = all_u[:num_trajectories]
     all_vxy = all_vxy[:num_trajectories]
+    all_buoyancy = all_buoyancy[:num_trajectories]
 
     return gc_data.times_series_to_layers(
         D, 
         { (0,0): all_u, (1,0): all_vxy }, 
-        {}, 
+        { (1,0): all_buoyancy }, 
         False, 
         past_steps, 
         future_steps,
@@ -152,11 +162,12 @@ def map_and_loss(
         else:
             learned_x = net(params, curr_layer, subkey, train)
 
-
         out_layer = out_layer.concat(learned_x, axis=1)
         next_layer = curr_layer.empty()
-        for (k,parity), img_block in curr_layer.items():
-            next_layer.append(k, parity, jnp.concatenate([img_block[:,1:], learned_x[(k,parity)]], axis=1))
+        next_layer.append(0, 0, jnp.concatenate([curr_layer[(0,0)][:,1:], learned_x[(0,0)]], axis=1))
+        vec_img = curr_layer[(1,0)]
+        # drop the first channel, learned step becomes last channel, followed by forcing field channel
+        next_layer.append(1, 0, jnp.concatenate([vec_img[:,1:-1], learned_x[(1,0)], vec_img[:,-1:]], axis=1))
 
         curr_layer = next_layer
 
@@ -331,7 +342,7 @@ upsample_filters = geom.get_invariant_filters(Ms=[2], ks=[0,1,2], parities=[0,1]
 output_keys = tuple(data[1].keys())
 train_and_eval = partial(
     train_and_eval, 
-    lr=lr,
+    # lr=lr,
     batch_size=batch_size, 
     epochs=epochs, 
     save_params=save_file, 
@@ -352,6 +363,7 @@ models = [
         partial(
             train_and_eval, 
             net=partial(models.dil_resnet, output_keys=output_keys),
+            lr=2e-4,
         ),
     ),
     (
@@ -366,6 +378,7 @@ models = [
                 activation_f=ml.VN_NONLINEAR,
                 depth=24, # half of dil_resnet
             ),
+            lr=2e-4,
         ),
     ),
     (
@@ -373,6 +386,7 @@ models = [
         partial(
             train_and_eval, 
             net=partial(models.resnet, output_keys=output_keys, depth=64),
+            lr=2e-4,
         ),   
     ),
     (
@@ -388,6 +402,7 @@ models = [
                 use_group_norm=False,
                 depth=32,
             ),
+            lr=2e-4,
         ),  
     ),
     (
@@ -396,6 +411,7 @@ models = [
             train_and_eval,
             net=partial(models.unet2015, output_keys=output_keys),
             has_aux=True,
+            lr=2e-4,
         ),
     ),
     (
@@ -411,6 +427,7 @@ models = [
                 activation_f=ml.VN_NONLINEAR,
                 depth=32, # 64=41M, 48=23M, 32=10M
             ),
+            lr=2e-4,
         ),
     ),
     (
@@ -421,6 +438,7 @@ models = [
                 models.unetBase, 
                 output_keys=output_keys, 
             ),
+            lr=2e-4,
         ),
     ),
     (
@@ -434,9 +452,9 @@ models = [
                 conv_filters=conv_filters,
                 activation_f=ml.VN_NONLINEAR,
                 use_group_norm=False,
-                depth=32,
                 upsample_filters=upsample_filters,
             ),
+            lr=5e-4,
         ),
     ),
 ]

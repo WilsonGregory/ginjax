@@ -142,7 +142,7 @@ class TestLayer:
         layer2.append(0, 0, random.normal(key, shape=((10,) + (N,)*D + (D,)*0)))
         assert layer2.get_spatial_dims() == (N,)*D
 
-    def testAdd(self):
+    def testConcat(self):
         key = random.PRNGKey(time.time_ns())
         D = 2
         N = 5
@@ -164,7 +164,7 @@ class TestLayer:
             True,
         )
 
-        layer3 = layer1 + layer2
+        layer3 = layer1.concat(layer2)
         assert list(layer3.keys()) == [(0,0),(1,0),(2,0)]
         assert layer3[(0,0)].shape == (10, N, N)
         assert layer3[(1,0)].shape == (7, N, N, D)
@@ -174,13 +174,126 @@ class TestLayer:
         layer4 = geom.Layer({ (0,0): random.normal(key, shape=((10,) + (N,)*D + (D,)*0)) }, D, True)
         layer5 = geom.Layer({ (0,0): random.normal(key, shape=((10,) + (N,)*3 + (D,)*0)) }, 3, True)
         with pytest.raises(AssertionError):
-            layer4 + layer5
+            layer4.concat(layer5)
 
         # mismatched is_torus
         layer6 = geom.Layer({ (0,0): random.normal(key, shape=((10,) + (N,)*D + (D,)*0)) }, D, True)
         layer7 = geom.Layer({ (0,0): random.normal(key, shape=((10,) + (N,)*D + (D,)*0)) }, D, False)
         with pytest.raises(AssertionError):
-            layer6 + layer7
+            layer6.concat(layer7)
+
+    def testAdd(self):
+        key = random.PRNGKey(time.time_ns())
+        D = 2
+        N = 5
+        channels = 4
+
+        key, subkey1, subkey2, subkey3, subkey4, subkey5, subkey6, subkey7, subkey8 = random.split(key, 9)
+
+        layer1 = geom.Layer(
+            {
+                (0,0): random.normal(subkey1, shape=((channels,) + (N,)*D + (D,)*0)),
+                (1,0): random.normal(subkey2, shape=((channels,) + (N,)*D + (D,)*1)), 
+            },
+            D,
+            True,
+        )
+
+        layer2 = geom.Layer(
+            {
+                (0,0): random.normal(subkey3, shape=((channels,) + (N,)*D + (D,)*0)), 
+                (1,0): random.normal(subkey4, shape=((channels,) + (N,)*D + (D,)*1)),
+            },
+            D,
+            True,
+        )
+
+        layer3 = layer1 + layer2
+        layer4 = geom.Layer(
+            { (0,0): layer1[(0,0)] + layer2[(0,0)], (1,0): layer1[(1,0)] + layer2[(1,0)]},
+            D,
+            True,
+        )
+
+        assert layer3 == layer4
+
+        # mismatched layer types
+        layer5 = geom.Layer({ (0,0): random.normal(subkey5, shape=((channels,) + (N,)*D + (D,)*0)) }, D, True)
+        layer6 = geom.Layer({ (1,0): random.normal(subkey6, shape=((channels,) + (N,)*D + (D,)*1)) }, D, True)
+        with pytest.raises(AssertionError):
+            layer5 + layer6
+
+        # mismatched number of channels
+        layer7 = geom.Layer({ (0,0): random.normal(subkey7, shape=((channels+1,) + (N,)*D + (D,)*0)) }, D, True)
+        layer8 = geom.Layer({ (0,0): random.normal(subkey8, shape=((channels,) + (N,)*D + (D,)*0)) }, D, True)
+        with pytest.raises(TypeError):
+            layer7 + layer8
+
+    def testMul(self):
+        key = random.PRNGKey(0)
+        channels = 3
+        N = 5
+        D = 2
+
+        key, subkey1, subkey2 = random.split(key, 3)
+
+        layer1 = geom.Layer(
+            {
+                (0,0): random.normal(subkey1, shape=(channels,) + (N,)*D),
+                (1,0): random.normal(subkey2, shape=(channels,) + (N,)*D + (D,)),
+            },
+            D,
+            True,
+        )
+
+        layer2 = layer1 * 3
+        assert jnp.allclose(layer2[(0,0)], layer1[(0,0)]*3)
+        assert jnp.allclose(layer2[(1,0)], layer1[(1,0)]*3)
+        assert layer2.D == D
+        assert layer2.is_torus == (True,)*D
+
+        layer3 = layer1 * -1
+        assert jnp.allclose(layer3[(0,0)], layer1[(0,0)]*-1)
+        assert jnp.allclose(layer3[(1,0)], layer1[(1,0)]*-1)
+        assert layer2.D == D
+        assert layer2.is_torus == (True,)*D
+
+        # try to multiply two layers together
+        with pytest.raises(AssertionError):
+            layer1 * layer1
+
+    def testDiv(self):
+        key = random.PRNGKey(0)
+        channels = 3
+        N = 5
+        D = 2
+
+        key, subkey1, subkey2 = random.split(key, 3)
+
+        layer1 = geom.Layer(
+            {
+                (0,0): random.normal(subkey1, shape=(channels,) + (N,)*D),
+                (1,0): random.normal(subkey2, shape=(channels,) + (N,)*D + (D,)),
+            },
+            D,
+            True,
+        )
+
+        layer2 = layer1 / 3
+        assert jnp.allclose(layer2[(0,0)], layer1[(0,0)]/3)
+        assert jnp.allclose(layer2[(1,0)], layer1[(1,0)]/3)
+        assert layer2.D == D
+        assert layer2.is_torus == (True,)*D
+
+        layer3 = layer1 / -1
+        assert jnp.allclose(layer3[(0,0)], layer1[(0,0)]/-1)
+        assert jnp.allclose(layer3[(1,0)], layer1[(1,0)]/-1)
+        assert layer2.D == D
+        assert layer2.is_torus == (True,)*D
+
+        # try to multiply two layers together
+        with pytest.raises(AssertionError):
+            layer1 * layer1
 
     def testSize(self):
         D = 2
@@ -293,6 +406,32 @@ class TestLayer:
                     rotated_block = vmap_times_gg(D, img_block, parity, gg)
                     assert jnp.allclose(rotated_layer[(k,parity)], rotated_block)
 
+    def testNorm(self):
+        N = 5
+        D = 2
+        channels = 3
+
+        key = random.PRNGKey(0)
+
+        # norm of scalars, pseudo scalars, and vectors
+        key, subkey1, subkey2, subkey3 = random.split(key, 4)
+        layer = geom.Layer(
+            { 
+                (0,0): random.normal(subkey1, shape=(channels,) + (N,)*D),
+                (0,1): random.normal(subkey2, shape=(channels,) + (N,)*D),
+                (1,0): random.normal(subkey3, shape=(channels,) + (N,)*D + (D,)), 
+            },
+            D,
+        )
+
+        normed_layer = layer.norm()
+        assert list(normed_layer.keys()) == [(0,0)] # odd parity is converted to even parity
+        assert normed_layer[(0,0)].shape == ((3*channels,) + (N,)*D)
+        assert jnp.allclose(normed_layer[(0,0)][:channels], jnp.abs(layer[(0,0)]))
+        assert jnp.allclose(normed_layer[(0,0)][channels:2*channels], jnp.abs(layer[(0,1)]))
+        vector_norm = jnp.linalg.norm(layer[(1,0)].reshape(layer[(1,0)].shape[:1+D] + (-1,)), axis=1+D)
+        assert jnp.allclose(normed_layer[(0,0)][2*channels:], vector_norm)
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Test BatchLayer
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -392,46 +531,6 @@ class TestBatchLayer:
 
         for layer2_image, layer1_image, num in zip(layer2[(1,0)], layer1[(1,0)], jnp.arange(5)):
             assert jnp.allclose(layer2_image, num*jnp.ones(layer1_image.shape))
-
-    def testAdd(self):
-        key = random.PRNGKey(time.time_ns())
-        D = 2
-        N = 5
-
-        layer1 = geom.BatchLayer(
-            {
-                (1,0): random.normal(key, shape=((5,10) + (N,)*D + (D,)*1)),
-                (2,0): random.normal(key, shape=((5,3) + (N,)*D + (D,)*2)), 
-            },
-            D,
-            True,
-        )
-        layer2 = geom.BatchLayer(
-            {
-                (1,0): random.normal(key, shape=((7,10) + (N,)*D + (D,)*1)), 
-                (2,0): random.normal(key, shape=((7,3) + (N,)*D + (D,)*2)),
-            },
-            D,
-            True,
-        )
-
-        layer3 = layer1 + layer2 
-        assert layer3.D == D
-        assert layer3.is_torus == (True,)*D
-        assert layer3[(1,0)].shape == (12,10,N,N,D)
-        assert layer3[(2,0)].shape == (12,3,N,N,D,D)
-
-        # test the vmap case, should add the channels. The vmap dimension must match
-        layer4 = geom.BatchLayer({ (1,0): random.normal(key, shape=((5,10) + (N,)*D + (D,)*1)) }, D, True)
-        layer5 = geom.BatchLayer({ (1,0): random.normal(key, shape=((5,2) + (N,)*D + (D,)*1)) }, D, True)
-
-        def adder(layer_a, layer_b):
-            return layer_a + layer_b
-        
-        layer6 = vmap(adder)(layer4, layer5)
-        assert layer6.D == D
-        assert list(layer6.keys()) == [(1,0)]
-        assert layer6[(1,0)].shape == (5,12,N,N,D)
 
     def testConcat(self):
         key = random.PRNGKey(time.time_ns())
@@ -564,3 +663,143 @@ class TestBatchLayer:
                 for (k,parity), img_block in layer.items():
                     rotated_block = vmap_times_gg(D, img_block, parity, gg)
                     assert jnp.allclose(rotated_layer[(k,parity)], rotated_block)
+
+    def testNorm(self):
+        N = 5
+        D = 2
+        batch = 4
+        channels = 3
+
+        key = random.PRNGKey(0)
+
+        # norm of scalars, pseudo scalars, and vectors
+        key, subkey1, subkey2, subkey3 = random.split(key, 4)
+        layer = geom.BatchLayer(
+            { 
+                (0,0): random.normal(subkey1, shape=(batch,channels) + (N,)*D),
+                (0,1): random.normal(subkey2, shape=(batch,channels) + (N,)*D),
+                (1,0): random.normal(subkey3, shape=(batch,channels) + (N,)*D + (D,)), 
+            },
+            D,
+        )
+
+        normed_layer = layer.norm()
+        assert list(normed_layer.keys()) == [(0,0)] # odd parity is converted to even parity
+        assert normed_layer[(0,0)].shape == ((batch,3*channels) + (N,)*D)
+        assert jnp.allclose(normed_layer[(0,0)][:,:channels], jnp.abs(layer[(0,0)]))
+        assert jnp.allclose(normed_layer[(0,0)][:,channels:2*channels], jnp.abs(layer[(0,1)]))
+        vector_norm = jnp.linalg.norm(layer[(1,0)].reshape(layer[(1,0)].shape[:2+D] + (-1,)), axis=2+D)
+        assert jnp.allclose(normed_layer[(0,0)][:,2*channels:], vector_norm)
+
+    def testAdd(self):
+        key = random.PRNGKey(time.time_ns())
+        D = 2
+        N = 5
+        channels = 4
+        batch = 3
+
+        key, subkey1, subkey2, subkey3, subkey4, subkey5, subkey6, subkey7, subkey8 = random.split(key, 9)
+
+        layer1 = geom.BatchLayer(
+            {
+                (0,0): random.normal(subkey1, shape=((batch,channels) + (N,)*D + (D,)*0)),
+                (1,0): random.normal(subkey2, shape=((batch,channels) + (N,)*D + (D,)*1)), 
+            },
+            D,
+            True,
+        )
+
+        layer2 = geom.BatchLayer(
+            {
+                (0,0): random.normal(subkey3, shape=((batch,channels) + (N,)*D + (D,)*0)), 
+                (1,0): random.normal(subkey4, shape=((batch,channels) + (N,)*D + (D,)*1)),
+            },
+            D,
+            True,
+        )
+
+        layer3 = layer1 + layer2
+        layer4 = geom.BatchLayer(
+            { (0,0): layer1[(0,0)] + layer2[(0,0)], (1,0): layer1[(1,0)] + layer2[(1,0)]},
+            D,
+            True,
+        )
+
+        assert layer3 == layer4
+
+        # mismatched layer types
+        layer5 = geom.BatchLayer(
+            { (0,0): random.normal(subkey5, shape=((batch,channels) + (N,)*D + (D,)*0)) }, 
+            D, 
+            True
+        )
+        layer6 = geom.BatchLayer(
+            { (1,0): random.normal(subkey6, shape=((batch,channels) + (N,)*D + (D,)*1)) },
+            D, 
+            True,
+        )
+        with pytest.raises(AssertionError):
+            layer5 + layer6
+
+        # mismatched number of channels
+        layer7 = geom.Layer(
+            { (0,0): random.normal(subkey7, shape=((batch,channels+1) + (N,)*D + (D,)*0)) }, 
+            D, 
+            True,
+        )
+        layer8 = geom.Layer(
+            { (0,0): random.normal(subkey8, shape=((batch,channels) + (N,)*D + (D,)*0)) },
+            D, 
+            True,
+        )
+        with pytest.raises(TypeError):
+            layer7 + layer8
+
+        # mismatched batch size
+        key, subkey9, subkey10 = random.split(key, 3)
+        layer9 = geom.Layer(
+            { (0,0): random.normal(subkey9, shape=((batch+1,channels) + (N,)*D + (D,)*0)) }, 
+            D, 
+            True,
+        )
+        layer10 = geom.Layer(
+            { (0,0): random.normal(subkey10, shape=((batch,channels) + (N,)*D + (D,)*0)) },
+            D, 
+            True,
+        )
+        with pytest.raises(TypeError):
+            layer9 + layer10
+
+    def testMul(self):
+        key = random.PRNGKey(0)
+        batch = 4
+        channels = 3
+        N = 5
+        D = 2
+
+        key, subkey1, subkey2 = random.split(key, 3)
+
+        layer1 = geom.BatchLayer(
+            {
+                (0,0): random.normal(subkey1, shape=(batch,channels) + (N,)*D),
+                (1,0): random.normal(subkey2, shape=(batch,channels) + (N,)*D + (D,)),
+            },
+            D,
+            True,
+        )
+
+        layer2 = layer1 * 3
+        assert jnp.allclose(layer2[(0,0)], layer1[(0,0)]*3)
+        assert jnp.allclose(layer2[(1,0)], layer1[(1,0)]*3)
+        assert layer2.D == D
+        assert layer2.is_torus == (True,)*D
+
+        layer3 = layer1 * -1
+        assert jnp.allclose(layer3[(0,0)], layer1[(0,0)]*-1)
+        assert jnp.allclose(layer3[(1,0)], layer1[(1,0)]*-1)
+        assert layer2.D == D
+        assert layer2.is_torus == (True,)*D
+
+        # try to multiply two layers together
+        with pytest.raises(AssertionError):
+            layer1 * layer1

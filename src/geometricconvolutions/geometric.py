@@ -42,7 +42,7 @@ def permutation_matrix_from_sequence(seq):
         row = [0]*D
         row[num] = 1
         permutation_matrix.append(row)
-    return jnp.array(permutation_matrix)
+    return np.array(permutation_matrix)
 
 def make_all_operators(D):
     """
@@ -847,21 +847,22 @@ def get_rotated_keys(D, data, gg):
         Get the rotated keys of data when it will be rotated by gg. Note that we rotate the key vector indices
         by the inverse of gg per the definition (this is done by key_array @ gg, rather than gg @ key_array).
         When the spatial_dims are not square, this gets a little tricky.
+        The gg needs to be a concrete (numpy) array, not a traced jax array.
         args:
             D (int): dimension of image
             data (jnp.array): data array to be rotated
             gg (jnp array-like): group operation
         """
         spatial_dims, _ = parse_shape(data.shape, D)
-        rotated_spatial_dims = tuple(jnp.abs(gg @ jnp.array(spatial_dims)))
+        rotated_spatial_dims = tuple(np.abs(gg @ np.array(spatial_dims)))
 
         # When spatial_dims is nonsquare, we have to subtract one version, then add the rotated version.
-        centering_coords = (jnp.array(rotated_spatial_dims).reshape((1,D)) - 1) / 2
-        rotated_centering_coords = jnp.abs(gg @ centering_coords.reshape((D,1))).reshape((1,D))
+        centering_coords = (np.array(rotated_spatial_dims).reshape((1,D)) - 1) / 2
+        rotated_centering_coords = np.abs(gg @ centering_coords.reshape((D,1))).reshape((1,D))
         # rotated keys will need to have the rotated_spatial_dims numbers
-        key_array = jnp.array([key for key in it.product(*list(range(N) for N in rotated_spatial_dims))])
+        key_array = np.array([key for key in it.product(*list(range(N) for N in rotated_spatial_dims))])
         shifted_key_array = key_array - centering_coords
-        return jnp.rint((shifted_key_array @ gg) + rotated_centering_coords).astype(int)
+        return np.rint((shifted_key_array @ gg) + rotated_centering_coords).astype(int)
 
 def times_group_element(D, data, parity, gg, precision=None):
         """
@@ -880,7 +881,7 @@ def times_group_element(D, data, parity, gg, precision=None):
         sign, _ = jnp.linalg.slogdet(gg)
         parity_flip = sign ** parity #if parity=1, the flip operators don't flip the tensors
 
-        rotated_spatial_dims = tuple(jnp.abs(gg @ jnp.array(spatial_dims)))
+        rotated_spatial_dims = tuple(np.abs(gg @ np.array(spatial_dims)))
         rotated_keys = get_rotated_keys(D, data, gg)
         rotated_pixels = data[hash(D, data, rotated_keys)].reshape(rotated_spatial_dims + (D,)*k)
 
@@ -1611,7 +1612,7 @@ class Layer:
 
     def __add__(self, other):
         """
-        Addition operator for Layers, merges them together
+        Addition operator for Layers, must have the same types of layers, adds them together
         """
         assert type(self) == type(other), \
             f'{self.__class__}::__add__: Types of layers being added must match, had {type(self)} and {type(other)}'
@@ -1619,12 +1620,25 @@ class Layer:
             f'{self.__class__}::__add__: Dimension of layers must match, had {self.D} and {other.D}'
         assert self.is_torus == other.is_torus, \
             f'{self.__class__}::__add__: is_torus of layers must match, had {self.is_torus} and {other.is_torus}'
+        assert self.keys() == other.keys(), \
+            f'{self.__class__}::__add__: Must have same types of images, had {self.keys()} and {other.keys()}'
 
-        new_layer = self.copy()
-        for (k,parity), image_block in other.items():
-            new_layer.append(k, parity, image_block)
+        return self.__class__.from_vector(self.to_vector() + other.to_vector(), self)
 
-        return new_layer
+    def __mul__(self, other):
+        """
+        Multiplication operator for a layer and a scalar
+        """
+        assert not isinstance(other, Layer), \
+            f'Layer multiplication is only implemented for numbers, got {type(other)}.'
+        
+        return self.__class__.from_vector(self.to_vector() * other, self)
+
+    def __truediv__(self, other):
+        """
+        True division (a/b) for a layer and a scalar.
+        """
+        return self * (1.0/other)
 
     def concat(self, other, axis=0):
         """
@@ -1705,6 +1719,13 @@ class Layer:
         out_layer = self.empty()
         for (k,parity), image_block in self.items():
             out_layer.append(k, parity, vmap_rotate(self.D, image_block, parity, gg, precision))
+
+        return out_layer
+
+    def norm(self):
+        out_layer = self.empty()
+        for image_block in self.values():
+            out_layer.append(0, 0, norm(self.D + 1, image_block)) # norm is even parity
 
         return out_layer
     
@@ -1834,6 +1855,10 @@ class BatchLayer(Layer):
     @partial(jax.vmap, in_axes=(None, 0, 0))
     def from_vector(cls, vector, layer):
         return super().from_vector(vector, layer)
+
+    @jax.vmap
+    def norm(self):
+        return super(BatchLayer, self).norm()
     
     def device_put(self, sharding, num_devices):
         """

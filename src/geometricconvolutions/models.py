@@ -1,7 +1,10 @@
 import functools
 from collections import defaultdict
+import numpy as np
 
 import jax
+import jax.numpy as jnp
+import jax.random as random
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
@@ -70,7 +73,7 @@ def handle_activation(activation_f, params, layer, mold_params):
     else:
         return ml.batch_scalar_activation(layer, activation_f), params
 
-@functools.partial(jax.jit, static_argnums=[3,4,5,6,7,10])
+@functools.partial(jax.jit, static_argnums=[3,4,5,6,7,10,11,12])
 def unetBase(
     params, 
     layer, 
@@ -84,6 +87,7 @@ def unetBase(
     upsample_filters=None, # 2x2 filters
     use_group_norm=True,
     return_params=False,
+    mold_params=None,
 ):
     """
     The U-Net from the original 2015 paper. The involves 4 downsampling steps and 4 upsampling steps, 
@@ -107,9 +111,13 @@ def unetBase(
         upsample_filters (Layer): the conv filters used for the upsample layer of the equivariant version
         use_group_norm (bool): whether to use group_norm, defaults to True
         return_params (bool): whether we are mapping the params, or applying them
+        mold_params (bool): 
     """
     num_downsamples = 4
     num_conv = 2
+
+    if mold_params is None:
+        mold_params = return_params
 
     assert output_keys is not None
 
@@ -135,11 +143,11 @@ def unetBase(
             depth,
             target_keys,
             bias=True,
-            mold_params=return_params,
+            mold_params=mold_params,
         )
         if use_group_norm:
-            layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
-        layer, params = handle_activation(activation_f, params, layer, return_params)
+            layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=mold_params)
+        layer, params = handle_activation(activation_f, params, layer, mold_params)
 
     # first we do the downsampling
     residual_layers = []
@@ -157,11 +165,11 @@ def unetBase(
                 depth*(2**downsample),
                 target_keys,
                 bias=True,
-                mold_params=return_params,
+                mold_params=mold_params,
             )
             if use_group_norm:
-                layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
-            layer, params = handle_activation(activation_f, params, layer, return_params)
+                layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=mold_params)
+            layer, params = handle_activation(activation_f, params, layer, mold_params)
 
     # now we do the upsampling and concatenation
     for upsample in reversed(range(num_downsamples)):
@@ -176,7 +184,7 @@ def unetBase(
             padding=((1,1),)*layer.D,
             lhs_dilation=(2,)*layer.D, # do the transposed convolution
             bias=True,
-            mold_params=return_params,
+            mold_params=mold_params,
         )
         # concat the upsampled layer and the residual
         layer = layer.concat(residual_layers[upsample], axis=1)
@@ -189,11 +197,11 @@ def unetBase(
                 depth*(2**upsample),
                 target_keys,
                 bias=True,
-                mold_params=return_params,
+                mold_params=mold_params,
             )
             if use_group_norm:
-                layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
-            layer, params = handle_activation(activation_f, params, layer, return_params)
+                layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=mold_params)
+            layer, params = handle_activation(activation_f, params, layer, mold_params)
 
     layer, params = ml.batch_conv_layer(
         params,
@@ -202,7 +210,7 @@ def unetBase(
         1, # depth
         output_keys,
         bias=True,
-        mold_params=return_params,
+        mold_params=mold_params,
     )
 
     return (layer, params) if return_params else layer
@@ -564,3 +572,149 @@ def do_nothing(params, layer, key, train, idxs, return_params=False):
         out_layer.append(k, parity, image_block[:,idx:idx+1])
 
     return (out_layer, params) if return_params else out_layer
+
+def group_average(
+    params, 
+    layer, 
+    key, 
+    train, 
+    model_f,
+    *args,
+    return_params=False,
+    **kwargs,
+): 
+    group_operators = geom.make_all_operators(layer.D)
+    if return_params:
+        copy_params = { k:v for k,v in params.items() }
+        results = model_f(
+            copy_params, 
+            layer.times_group_element(group_operators[0]), 
+            key, 
+            train, 
+            *args,
+            return_params=return_params,
+            **kwargs,
+        )
+        out_params = results[1]
+        sum_layer = results[0].times_group_element(group_operators[0].T)
+        for gg in group_operators[1:]:
+            copy_params = { k:v for k,v in params.items() }
+            results = model_f(
+                copy_params, 
+                layer.times_group_element(gg), 
+                key, 
+                train, 
+                *args,
+                return_params=return_params,
+                **kwargs,
+            )
+            sum_layer = sum_layer + results[0].times_group_element(gg.T)
+
+        return sum_layer / len(group_operators), out_params
+    else:
+        # do the group averaging
+        copy_params = { k:v for k,v in params.items() }
+        sum_layer = model_f(
+            copy_params, 
+            layer.times_group_element(group_operators[0]), 
+            key, 
+            train, 
+            *args,
+            return_params=return_params,
+            **kwargs,
+        ).times_group_element(group_operators[0].T)
+        for gg in group_operators[1:]:
+            copy_params = { k:v for k,v in params.items() }
+            out = model_f(
+                copy_params, 
+                layer.times_group_element(gg), 
+                key, 
+                train, 
+                *args,
+                return_params=return_params,
+                **kwargs,
+            ).times_group_element(gg.T)
+            sum_layer = sum_layer + out
+
+        return sum_layer/len(group_operators)
+
+def unetBase_approx_equiv(
+    params, 
+    layer, 
+    key, 
+    train, 
+    output_keys=None,
+    depth=64, 
+    activation_f=jax.nn.gelu,
+    conv_filters=None, 
+    upsample_filters=None, # 2x2 filters
+    use_group_norm=True,
+    scale_adjust=0.1,
+    return_params=False,
+):
+    """
+    The U-Net Base model that uses an equivariant model and a vanilla model. The involves 4 downsampling
+    steps and 4 upsampling steps, 
+    each interspersed with 2 convolutions interleaved with scalar activations and batch norm. The downsamples
+    are achieved with max_pool layers with patch length of 2 and the upsamples are achieved with transposed
+    convolution. Additionally, there are residual connections after every downsample and upsample. For the 
+    equivariant version, we use invariant filters, norm max_pool, and no batch_norm.
+    args:
+        params (params tree): the params of the model
+        layer (BatchLayer): input batch layer
+        key (jnp.random key): key for any layers requiring randomization
+        train (bool): whether train mode or test mode, relevant for batch_norm
+        batch_stats (dict): state for batch_norm, default None
+        output_keys (tuple of tuples of ints): the output key types of the model. For the Shallow Water
+            experiments, should be ((0,0),(1,0)) for the pressure/velocity form and ((0,0),(0,1)) for 
+            the pressure/vorticity form.
+        depth (int): the depth of the layers, defaults to 64
+        activation_f (string or function): the function that we pass to batch_scalar_activation
+        equivariant (bool): whether to use the equivariant version of the model, defaults to False
+        conv_filters (Layer): the conv filters used for the equivariant version
+        upsample_filters (Layer): the conv filters used for the upsample layer of the equivariant version
+        use_group_norm (bool): whether to use group_norm, defaults to True
+        return_params (bool): whether we are mapping the params, or applying them
+    """
+    equiv_layer, params = unetBase(
+        params, 
+        layer, 
+        key, 
+        train, 
+        output_keys,
+        depth, 
+        activation_f,
+        True, # equivariant
+        conv_filters, 
+        upsample_filters, # 2x2 filters
+        use_group_norm,
+        return_params=True,
+        mold_params=return_params,
+    )
+
+    free_result = unetBase(
+        params, 
+        layer, 
+        key, 
+        train, 
+        output_keys,
+        depth*2, 
+        equivariant=False,
+        return_params=return_params,
+    )
+
+    if return_params:
+        free_layer = free_result[0]
+        params = free_result[1]
+    else:
+        free_layer = free_result
+
+    # scale the non-equivariant result to have 1/10th of max norm
+    equiv_max_norm = jnp.max(equiv_layer.norm().to_vector())
+    free_max_norm = jnp.max(free_layer.norm().to_vector())
+    scale = (equiv_max_norm / free_max_norm)*scale_adjust
+
+    if return_params:
+        return equiv_layer + (free_layer*scale), params
+    else:
+        return equiv_layer + (free_layer*scale)

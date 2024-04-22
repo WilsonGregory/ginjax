@@ -49,6 +49,14 @@ class TestMisc:
             # test the group size
             assert len(operators) == 2*(2**(d-1))*math.factorial(d)
 
+    def testGetOperatorsInversesTranspose(self):
+        # test that the transpose of each group operator is its inverse (orthogonal group)
+        for D in [2,3]:
+            operators = geom.make_all_operators(D)
+            for gg in operators:
+                assert jnp.allclose(gg @ gg.T, jnp.eye(D), atol=geom.TINY, rtol=geom.TINY)
+                assert jnp.allclose(gg.T @ gg, jnp.eye(D), atol=geom.TINY, rtol=geom.TINY) 
+
     def testGetContractionIndices(self):
         idxs = geom.get_contraction_indices(3,1)
         known_list = [((0,1),), ((0,2),), ((1,2),)]
@@ -295,4 +303,58 @@ class TestMisc:
                                 output_data[b,i], 
                                 img_data[b,i+past_steps:i+past_steps+future_steps],
                             )
+
+    def testTimeSeriesToLayers(self):
+        key = random.PRNGKey(time.time_ns())
+        D = 2
+        batch = 5
+        timesteps = 20
+        N = 5
+        past_steps = 4
+        future_steps = 1
+
+        # test basic dynamic fields
+        key, subkey1, subkey2 = random.split(key, 3)
+        dynamic_fields = {
+            (0,0): random.normal(subkey1, shape=(batch,timesteps) + (N,)*D),
+            (1,0): random.normal(subkey2, shape=(batch,timesteps) + (N,)*D + (D,)),
+        }
+
+        X, Y = gc_data.times_series_to_layers(D, dynamic_fields, {}, False, past_steps, future_steps)
+        num_windows = timesteps-past_steps-future_steps+1 # sliding window per original trajectory
+        assert isinstance(X, geom.BatchLayer) and isinstance(Y, geom.BatchLayer)
+        assert list(X.keys()) == [(0,0),(1,0)]
+        assert X[(0,0)].shape == ((batch*num_windows,past_steps) + (N,)*D)
+        assert X[(1,0)].shape == ((batch*num_windows,past_steps) + (N,)*D + (D,))
+        assert jnp.allclose(X[(0,0)][0], dynamic_fields[(0,0)][0,:past_steps])
+        assert jnp.allclose(X[(1,0)][0], dynamic_fields[(1,0)][0,:past_steps])
+
+        assert Y[(0,0)].shape == ((batch*num_windows,future_steps) + (N,)*D)
+        assert Y[(1,0)].shape == ((batch*num_windows,future_steps) + (N,)*D + (D,))
+        assert jnp.allclose(Y[(0,0)][0], dynamic_fields[(0,0)][0,past_steps:past_steps+future_steps])
+        assert jnp.allclose(Y[(1,0)][0], dynamic_fields[(1,0)][0,past_steps:past_steps+future_steps])
+
+        # test with a constant fields
+        key, subkey3 = random.split(key)
+        constant_fields = { (1,0): random.normal(subkey3, shape=(batch,) + (N,)*D + (D,)) }
+
+        X2, Y2 = gc_data.times_series_to_layers(
+            D, 
+            dynamic_fields, 
+            constant_fields, 
+            False, 
+            past_steps, 
+            future_steps,
+        )
+        assert list(X.keys()) == [(0,0),(1,0)]
+        assert X2[(0,0)].shape == ((batch*num_windows,past_steps) + (N,)*D)
+        assert X2[(1,0)].shape == ((batch*num_windows,past_steps+1) + (N,)*D + (D,))
+        assert jnp.allclose(X2[(0,0)][0,:past_steps], dynamic_fields[(0,0)][0,:past_steps])
+        assert jnp.allclose(X2[(1,0)][0,:past_steps], dynamic_fields[(1,0)][0,:past_steps])
+        assert jnp.allclose(X2[(1,0)][0,past_steps], constant_fields[(1,0)][0])
+
+        assert Y2[(0,0)].shape == ((batch*num_windows,future_steps) + (N,)*D)
+        assert Y2[(1,0)].shape == ((batch*num_windows,future_steps) + (N,)*D + (D,))
+        assert jnp.allclose(Y2[(0,0)][0], dynamic_fields[(0,0)][0,past_steps:past_steps+future_steps])
+        assert jnp.allclose(Y2[(1,0)][0], dynamic_fields[(1,0)][0,past_steps:past_steps+future_steps])
                     

@@ -47,7 +47,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
     spatial_dims = layer.get_spatial_dims()
 
     batch_conv_layer = jax.vmap(ml.conv_layer, in_axes=((None,)*2 + (0,) + (None,)*7), out_axes=(0,None))
-    batch_add_layer = jax.vmap(lambda layer_a, layer_b: layer_a + layer_b) #better way of doing this?
+    batch_concat_layer = jax.vmap(lambda layer_a, layer_b: layer_a.concat(layer_b)) #better way of doing this?
 
     layer, params = batch_conv_layer(params, conv_filters, layer, None, None, return_params, None, None, None, None)
     out_layer = layer.empty()
@@ -64,7 +64,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
             None,
             (dilation,)*D, #rhs_dilation
         )
-        out_layer = batch_add_layer(out_layer, dilation_out_layer)
+        out_layer = batch_concat_layer(out_layer, dilation_out_layer)
 
     layer = out_layer
 
@@ -82,7 +82,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
             None,
             (dilation,)*D, #rhs_dilation
         )
-        out_layer = batch_add_layer(out_layer, dilation_out_layer)
+        out_layer = batch_concat_layer(out_layer, dilation_out_layer)
 
     layer = out_layer
     layer = ml.batch_all_contractions(target_k, layer)

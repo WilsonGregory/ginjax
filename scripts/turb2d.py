@@ -342,7 +342,6 @@ upsample_filters = geom.get_invariant_filters(Ms=[2], ks=[0,1,2], parities=[0,1]
 output_keys = tuple(data[1].keys())
 train_and_eval = partial(
     train_and_eval, 
-    # lr=lr,
     batch_size=batch_size, 
     epochs=epochs, 
     save_params=save_file, 

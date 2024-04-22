@@ -49,12 +49,13 @@ class TestMisc:
             # test the group size
             assert len(operators) == 2*(2**(d-1))*math.factorial(d)
 
-    def testGetOperatorsWithInverses(self):
+    def testGetOperatorsInversesTranspose(self):
+        # test that the transpose of each group operator is its inverse (orthogonal group)
         for D in [2,3]:
-            operators_with_inverses = geom.make_all_operators(D, with_inverses=True)
-            for gg, gg_inv in operators_with_inverses:
-                assert jnp.allclose(gg @ gg_inv, jnp.eye(D), atol=geom.TINY, rtol=geom.TINY)
-                assert jnp.allclose(gg_inv @ gg, jnp.eye(D), atol=geom.TINY, rtol=geom.TINY) 
+            operators = geom.make_all_operators(D)
+            for gg in operators:
+                assert jnp.allclose(gg @ gg.T, jnp.eye(D), atol=geom.TINY, rtol=geom.TINY)
+                assert jnp.allclose(gg.T @ gg, jnp.eye(D), atol=geom.TINY, rtol=geom.TINY) 
 
     def testGetContractionIndices(self):
         idxs = geom.get_contraction_indices(3,1)

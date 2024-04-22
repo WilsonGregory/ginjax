@@ -896,7 +896,7 @@ def _group_norm_K1(D, image_block, groups, method='eigh', eps=1e-5):
         )
     elif method == 'cholesky':
         L = jax.lax.linalg.cholesky(cov, symmetrize_input=False) # (batch*groups,D,D)
-        L = L + eps*jnp.eye(D).reshape((1,D,D,)) # Is this right?
+        L = L + eps*jnp.eye(D).reshape((1,D,D,))
         whitened_data = jax.lax.linalg.triangular_solve(
             L, 
             centered_img.reshape((batch*groups,-1) + (D,)),

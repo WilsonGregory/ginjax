@@ -44,7 +44,7 @@ def permutation_matrix_from_sequence(seq):
         permutation_matrix.append(row)
     return np.array(permutation_matrix)
 
-def make_all_operators(D, with_inverses=False):
+def make_all_operators(D):
     """
     Construct all operators of dimension D that are rotations of 90 degrees, or reflections, or a combination of the
     two. This is equivalent to all the permutation matrices where each entry can either be +1 or -1
@@ -58,9 +58,7 @@ def make_all_operators(D, with_inverses=False):
     possible_entries = [np.diag(prod) for prod in it.product([1,-1], repeat=D)]
 
     #combine all the permutation matrices with the possible entries, then flatten to a single array of operators
-    operators = list(it.chain(*list(map(lambda matrix: [matrix @ prod for prod in possible_entries], permutation_matrices))))
-
-    return [(gg, gg.T) for gg in operators] if with_inverses else operators
+    return list(it.chain(*list(map(lambda matrix: [matrix @ prod for prod in possible_entries], permutation_matrices))))
 
 # ------------------------------------------------------------------------------
 # PART 2: Define the Kronecker Delta and Levi Civita symbols to be used in Levi Civita contractions

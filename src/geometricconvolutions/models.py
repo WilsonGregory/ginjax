@@ -583,15 +583,12 @@ def group_average(
     return_params=False,
     **kwargs,
 ): 
-    # if train:
-    #     return model_f(params, layer, key, train, *args, return_params=return_params, **kwargs)
-    # else: # results for validation sets during training will be different
-    group_operators = geom.make_all_operators(layer.D, with_inverses=True)
+    group_operators = geom.make_all_operators(layer.D)
     if return_params:
         copy_params = { k:v for k,v in params.items() }
         results = model_f(
             copy_params, 
-            layer.times_group_element(group_operators[0][0]), 
+            layer.times_group_element(group_operators[0]), 
             key, 
             train, 
             *args,
@@ -599,8 +596,8 @@ def group_average(
             **kwargs,
         )
         out_params = results[1]
-        sum_layer = results[0].times_group_element(group_operators[0][1])
-        for gg, gg_inv in group_operators[1:]:
+        sum_layer = results[0].times_group_element(group_operators[0].T)
+        for gg in group_operators[1:]:
             copy_params = { k:v for k,v in params.items() }
             results = model_f(
                 copy_params, 
@@ -611,7 +608,7 @@ def group_average(
                 return_params=return_params,
                 **kwargs,
             )
-            sum_layer = sum_layer + results[0].times_group_element(gg_inv)
+            sum_layer = sum_layer + results[0].times_group_element(gg.T)
 
         return sum_layer / len(group_operators), out_params
     else:
@@ -619,14 +616,14 @@ def group_average(
         copy_params = { k:v for k,v in params.items() }
         sum_layer = model_f(
             copy_params, 
-            layer.times_group_element(group_operators[0][0]), 
+            layer.times_group_element(group_operators[0]), 
             key, 
             train, 
             *args,
             return_params=return_params,
             **kwargs,
-        ).times_group_element(group_operators[0][1])
-        for gg, gg_inv in group_operators[1:]:
+        ).times_group_element(group_operators[0].T)
+        for gg in group_operators[1:]:
             copy_params = { k:v for k,v in params.items() }
             out = model_f(
                 copy_params, 
@@ -636,7 +633,7 @@ def group_average(
                 *args,
                 return_params=return_params,
                 **kwargs,
-            ).times_group_element(gg_inv)
+            ).times_group_element(gg.T)
             sum_layer = sum_layer + out
 
         return sum_layer/len(group_operators)

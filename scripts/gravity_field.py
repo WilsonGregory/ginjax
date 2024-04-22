@@ -82,7 +82,7 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
             None,
             (dilation,)*D, #rhs_dilation
         )
-        out_layer = batch_add_layer(out_layer, dilation_out_layer)
+        out_layer = batch_concat_layer(out_layer, dilation_out_layer)
 
     layer = out_layer
     layer = ml.batch_all_contractions(target_k, layer)

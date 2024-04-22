@@ -97,8 +97,9 @@ def baseline_net(params, layer, key, train, return_params=False):
     layer, params = ml.batch_conv_layer(
         params,
         layer, 
-        { 'type': 'free', 'M': M, 'filter_key_set': { (0,0) } },
-        depth=out_channels,
+        { 'type': ml.CONV_FREE, 'M': M },
+        out_channels,
+        ((0,0),),
         mold_params=return_params,
     )
 
@@ -107,8 +108,9 @@ def baseline_net(params, layer, key, train, return_params=False):
         dilation_out_layer, params = ml.batch_conv_layer(
             params, 
             layer,
-            { 'type': 'free', 'M': M, 'filter_key_set': { (0,0) } },
-            depth=out_channels,
+            { 'type': ml.CONV_FREE, 'M': M },
+            out_channels,
+            ((0,0),),
             mold_params=return_params,
             rhs_dilation=(dilation,)*D,
         )
@@ -121,22 +123,23 @@ def baseline_net(params, layer, key, train, return_params=False):
         dilation_out_layer, params = ml.batch_conv_layer(
             params, 
             layer,
-            { 'type': 'free', 'M': M, 'filter_key_set': { (0,0) } },
-            depth=D, #out depth is D because we turn it into k=1
+            { 'type': ml.CONV_FREE, 'M': M },
+            1, # depth
+            ((1,0),),
             mold_params=return_params,
             rhs_dilation=(dilation,)*D,
         )
-        # turn the out channels into the vector field k=1
-        dilation_out_image = dilation_out_layer[(0,0)].transpose(0,2,3,1) # move channel to end
-        reshaped_layer = geom.BatchLayer(
-            { (1,0): jnp.expand_dims(dilation_out_image, axis=1) },
-            dilation_out_layer.D,
-            dilation_out_layer.is_torus,
-        )
-        out_layer = batch_concat_layer(out_layer, reshaped_layer)
+        # # turn the out channels into the vector field k=1
+        # dilation_out_image = dilation_out_layer[(0,0)].transpose(0,2,3,1) # move channel to end
+        # reshaped_layer = geom.BatchLayer(
+        #     { (1,0): jnp.expand_dims(dilation_out_image, axis=1) },
+        #     dilation_out_layer.D,
+        #     dilation_out_layer.is_torus,
+        # )
+        out_layer = batch_concat_layer(out_layer, dilation_out_layer)
 
     layer, params = ml.batch_channel_collapse(params, out_layer, mold_params=return_params)
-    return (layer, params) if return_params else layer
+    return (out_layer, params) if return_params else out_layer
 
 def baseline_map_and_loss(params, x, y, key, train):
     # Run x through the net, then return its loss with y
@@ -162,6 +165,8 @@ def handleArgs(argv):
 
 # Main
 num_times, seed, save_file, load_file, verbose = handleArgs(sys.argv)
+print('WARNING: gravity_benchmark is currently broken, exiting')
+exit()
 
 N = 16
 D = 2
@@ -243,7 +248,7 @@ if (not load_file):
                     model,
                     params,
                     subkey,
-                    ml.ValLoss(patience=20, verbose=verbose),
+                    ml.ValLoss(patience=5, verbose=verbose),
                     batch_size=batch_size,
                     optimizer=optax.adam(optax.exponential_decay(
                         lr, 

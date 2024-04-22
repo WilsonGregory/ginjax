@@ -129,13 +129,6 @@ def baseline_net(params, layer, key, train, return_params=False):
             mold_params=return_params,
             rhs_dilation=(dilation,)*D,
         )
-        # # turn the out channels into the vector field k=1
-        # dilation_out_image = dilation_out_layer[(0,0)].transpose(0,2,3,1) # move channel to end
-        # reshaped_layer = geom.BatchLayer(
-        #     { (1,0): jnp.expand_dims(dilation_out_image, axis=1) },
-        #     dilation_out_layer.D,
-        #     dilation_out_layer.is_torus,
-        # )
         out_layer = batch_concat_layer(out_layer, dilation_out_layer)
 
     layer, params = ml.batch_channel_collapse(params, out_layer, mold_params=return_params)
@@ -248,7 +241,7 @@ if (not load_file):
                     model,
                     params,
                     subkey,
-                    ml.ValLoss(patience=5, verbose=verbose),
+                    ml.ValLoss(patience=20, verbose=verbose),
                     batch_size=batch_size,
                     optimizer=optax.adam(optax.exponential_decay(
                         lr, 

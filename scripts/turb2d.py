@@ -284,7 +284,6 @@ def handleArgs(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('data_dir', help='the directory where the .h5 files are located', type=str)
     parser.add_argument('-e', '--epochs', help='number of epochs to run', type=int, default=50)
-    parser.add_argument('-lr', help='learning rate', type=float, default=2e-4)
     parser.add_argument('-batch', help='batch size', type=int, default=16)
     parser.add_argument('-train_traj', help='number of training trajectories', type=int, default=100)
     parser.add_argument('-val_traj', help='number of validation trajectories, defaults to batch', type=int, default=None)
@@ -305,7 +304,6 @@ def handleArgs(argv):
     return (
         args.data_dir,
         args.epochs,
-        args.lr,
         args.batch,
         args.train_traj,
         args.val_traj,
@@ -319,7 +317,7 @@ def handleArgs(argv):
 
 #Main
 args = handleArgs(sys.argv)
-data_dir, epochs, lr, batch_size, train_traj, val_traj, test_traj, seed, save_file, load_file, images_dir, verbose = args
+data_dir, epochs, batch_size, train_traj, val_traj, test_traj, seed, save_file, load_file, images_dir, verbose = args
 
 D = 2
 N = 128
@@ -355,6 +353,7 @@ models = [
         partial(
             train_and_eval, 
             net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
+            lr=2e-4,
         ),
     ),
     (

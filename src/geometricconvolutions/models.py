@@ -68,6 +68,8 @@ def handle_activation(activation_f, params, layer, mold_params):
     elif isinstance(activation_f, str):
         if activation_f == ml.VN_NONLINEAR:
             return ml.VN_nonlinear(params, layer, mold_params=mold_params)
+        elif activation_f == ml.NORM_NONLINEAR:
+            return ml.norm_nonlinear(params, layer, mold_params=mold_params)
         else:
             return ml.batch_scalar_activation(layer, ACTIVATION_REGISTRY[activation_f]), params
     else:
@@ -428,7 +430,7 @@ def dil_resnet(
                 layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=return_params)
             layer, params = handle_activation(activation_f, params, layer, return_params)
 
-        layer = geom.BatchLayer.from_vector(layer.to_vector() + residual_layer.to_vector(), layer)
+        layer = layer + residual_layer
 
     # decoder
     layer, params = ml.batch_conv_layer(
@@ -528,7 +530,7 @@ def resnet(
                 mold_params=return_params,
             )
 
-        layer = geom.BatchLayer.from_vector(layer.to_vector() + shortcut_layer.to_vector(), layer)
+        layer = layer + shortcut_layer
 
     # decoder
     layer, params = ml.batch_conv_layer(

@@ -155,32 +155,32 @@ Bd_equivariant_maps = geom.get_equivariant_map_to_coeffs(embedding_layer, operat
 
 # apply noise to the test data inputs
 if benchmark == 'masking_noise':
-    def apply_noise(masked_percent, rand_key, X_train, Y_train, X_val, Y_val, X_test, Y_test):
+    def apply_noise(rand_key, masking_noise, X_train, Y_train, X_val, Y_val, X_test, Y_test):
         X_test_out = X_test.empty()
         for (k,parity),val in X_test.items():
             rand_key, subkey = random.split(rand_key)
-            X_test_out.append(k, parity, val * (1.*(random.uniform(subkey, shape=(val.shape)) > masked_percent)))
+            X_test_out.append(k, parity, val * (1.*(random.uniform(subkey, shape=(val.shape)) > masking_noise)))
 
         return X_train, Y_train, X_val, Y_val, X_test_out, Y_test
 
 elif benchmark == 'gaussian_noise':
-    def apply_noise(stdev_scale, rand_key, X_train, Y_train, X_val, Y_val, X_test, Y_test):
+    def apply_noise(rand_key, gaussian_noise, X_train, Y_train, X_val, Y_val, X_test, Y_test):
         X_test_out = X_test.empty()
         for (k,parity),val in X_test.items():
             rand_key, subkey = random.split(rand_key)
-            noise_std = jnp.std(val) * stdev_scale # magnitude scales the existing stdev
+            noise_std = jnp.std(val) * gaussian_noise # magnitude scales the existing stdev
             X_test_out.append(k, parity, val + noise_std * random.normal(subkey, shape=val.shape))
 
         return X_train, Y_train, X_val, Y_val, X_test_out, Y_test
 
 elif benchmark == 'parameter_noise': 
-    def apply_noise(noise_stdev, rand_key, X_train, Y_train, X_val, Y_val, X_test, Y_test):
+    def apply_noise(rand_key, parameter_noise, X_train, Y_train, X_val, Y_val, X_test, Y_test):
         _, _, p_test = Y_test
 
         X_test_out = X_test.empty()
         for (k,parity),val in X_test.items():
             rand_key, subkey = random.split(rand_key)
-            p_test_noisy = p_test + noise_stdev * random.normal(subkey, shape=p_test.shape)
+            p_test_noisy = p_test + parameter_noise * random.normal(subkey, shape=p_test.shape)
             vmap_mul = jax.vmap(lambda basis, coeffs: basis @ coeffs, in_axes=(None, 0))
             X_test_out.append(k, parity, vmap_mul(ode_basis, p_test_noisy).reshape(val.shape))
 
@@ -280,6 +280,7 @@ results = ml.benchmark(
     subkey,
     benchmark,
     benchmark_range, 
+    benchmark_type=ml.BENCHMARK_DATA,
     num_trials=trials,
     num_results=2,
 )

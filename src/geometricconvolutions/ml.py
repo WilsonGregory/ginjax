@@ -25,6 +25,7 @@ GROUP_NORM = 'group_norm'
 EQUIV_DENSE = 'equiv_dense'
 VN_NONLINEAR = 'vector_neuron_nonlinear'
 VECTOR_DOTS_NONLINEAR = 'vector_dots_nonlinear'
+NORM_NONLINEAR = 'norm_nonlinear'
 
 SCALE = 'scale'
 BIAS = 'bias'
@@ -224,6 +225,7 @@ def batch_conv_layer(
     """
     params_idx, this_params = get_layer_params(params, mold_params, CONV)
 
+    mean_bias = True
     if (isinstance(filter_info, geom.Layer)): #if just a layer is passed, defaults to fixed filters
         filter_block, filter_block_params = get_filter_block_from_invariants(
             this_params[CONV_FIXED], 
@@ -247,6 +249,7 @@ def batch_conv_layer(
         )
         this_params[CONV_FIXED] = filter_block_params
     elif (filter_info['type'] == CONV_FREE):
+        mean_bias = False
         filter_block, filter_block_params = get_filter_block(
             this_params[CONV_FREE],
             input_layer, 
@@ -270,19 +273,21 @@ def batch_conv_layer(
     )
 
     if bias:
-        layer, this_params = add_bias(this_params, layer, mold_params=mold_params)
+        layer, this_params = add_bias(this_params, layer, mean_bias, mold_params=mold_params)
 
     params = update_params(params, params_idx, this_params, mold_params)
 
     return layer, params
 
-def add_bias(this_params, layer, mold_params=False):
+def add_bias(this_params, layer, mean_bias=True, mold_params=False):
     """
     Per-channel bias. To maintain equivariance, we add a scale of the mean to each layer.
     args:
         this_params (dict): this part of a params tree, not an entire thing. Since you are just adding
             this to the end of a layer.
-        layer (BatchLayer): 
+        layer (BatchLayer): input layer
+        mean_bias (bool): if true, add a scale of the mean, otherwise a single bias per channel, but it
+            is the same across batches.
     """
     out_layer = layer.empty()
     if (mold_params):
@@ -294,9 +299,12 @@ def add_bias(this_params, layer, mold_params=False):
         if (mold_params):
             this_params[BIAS][(k,parity)] = jnp.ones((1,channels) + (1,)*(image_block.ndim-2))
 
-        mean = jnp.mean(image_block, axis=tuple(range(2,2+layer.D)), keepdims=True)
-        assert mean.shape == image_block.shape[:2] + (1,)*layer.D + (layer.D,)*k
-        out_layer.append(k, parity, image_block + this_params[BIAS][(k,parity)]*mean)
+        if mean_bias:
+            mean = jnp.mean(image_block, axis=tuple(range(2,2+layer.D)), keepdims=True)
+            assert mean.shape == image_block.shape[:2] + (1,)*layer.D + (layer.D,)*k
+            out_layer.append(k, parity, image_block + this_params[BIAS][(k,parity)]*mean)
+        else:
+            out_layer.append(k, parity, image_block + this_params[BIAS][(k,parity)])
 
     return out_layer, this_params
 
@@ -404,6 +412,30 @@ def batch_scalar_activation(layer, activation_function):
         out_layer.append(k, parity, out_image_block)
 
     return out_layer
+
+def norm_nonlinear(params, layer, scalar_activation=jax.nn.sigmoid, mold_params=False):
+    """
+    This nonlinearity has so far been unsuccessful.
+    """
+    params_idx, this_params = get_layer_params(params, mold_params, NORM_NONLINEAR)
+
+    out_layer = layer.empty()
+    for (k,parity), image_block in layer.items():
+        norm_img = geom.norm(2 + layer.D, image_block, keepdims=True)
+        in_c = image_block.shape[1]
+
+        if mold_params:
+            this_params[(k,parity)] = { 'bias': jnp.ones((1,in_c) + (1,)*layer.D + (1,)*k) }
+
+        out_layer.append(
+            k, 
+            parity, 
+            scalar_activation(norm_img + this_params[(k,parity)]['bias'])*image_block,
+        )
+
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return out_layer, params
 
 @functools.partial(jax.jit, static_argnums=[2,3,4,5])
 def VN_nonlinear(params, layer, depth=None, scalar_activation=jax.nn.relu, eps=1e-5, mold_params=False):
@@ -952,7 +984,7 @@ def group_norm(params, layer, groups, eps=1e-5, equivariant=True, mold_params=Fa
         scaled_image = whitened_data * this_params[SCALE][(k,parity)]
         out_layer.append(k, parity, scaled_image)
 
-    out_layer, this_params = add_bias(this_params, out_layer, mold_params)
+    out_layer, this_params = add_bias(this_params, out_layer, mean_bias=equivariant, mold_params=mold_params)
     
     params = update_params(params, params_idx, this_params, mold_params)
 
@@ -1119,6 +1151,7 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
         PARAMED_CONTRACTIONS: paramed_contractions_init,
         EQUIV_DENSE: equiv_dense_init,
         VN_NONLINEAR: VN_nonlinear_init,
+        NORM_NONLINEAR: norm_nonlinear_init,
         VECTOR_DOTS_NONLINEAR: vector_dots_init,
     }
 
@@ -1248,6 +1281,16 @@ def VN_nonlinear_init(rand_key, tree):
         rand_key, subkey = random.split(rand_key)
         bound = 1./jnp.sqrt(param_block.shape[2])
         out_params[key] = random.uniform(subkey, shape=param_block.shape, minval=-bound, maxval=bound)
+
+    return out_params
+
+def norm_nonlinear_init(rand_key, tree):
+    out_params = {}
+    for key, param_block_dict in tree.items():
+        param_block = param_block_dict['bias']
+        rand_key, subkey = random.split(rand_key)
+        bound = 1./jnp.sqrt(param_block.shape[1])
+        out_params[key] = { 'bias': random.uniform(subkey, shape=param_block.shape, minval=-bound, maxval=bound) }
 
     return out_params
 
@@ -1767,12 +1810,17 @@ def train(
     else:
         return stop_condition.best_params, jnp.array(train_loss), jnp.array(val_loss)
 
+BENCHMARK_DATA = 'benchmark_data'
+BENCHMARK_MODEL = 'benchmark_model'
+BENCHMARK_NONE = 'benchmark_none'
+
 def benchmark(
     get_data,
     models,
     rand_key, 
     benchmark,
     benchmark_range,
+    benchmark_type=BENCHMARK_DATA,
     num_trials=1,
     num_results=1,
 ):
@@ -1787,24 +1835,38 @@ def benchmark(
         rand_key (jnp.random key): key for randomness
         benchmark (str): the type of benchmarking to do
         benchmark_range (iterable): iterable of the benchmark values to range over
+        benchmark_type (str): one of { BENCHMARK_DATA, BENCHMARK_MODEL, BENCHMARK_NONE }, says 
         num_trials (int): number of trials to run, defaults to 1
         num_results (int): the number of results that will come out of the model function. If num_results is
             greater than 1, it should be indexed by range(num_results)
     returns:
         an np.array of shape (trials, benchmark_range, models, num_results) with the results all filled in
     """
+    assert benchmark_type in { BENCHMARK_DATA, BENCHMARK_MODEL, BENCHMARK_NONE }
+    if benchmark_type == BENCHMARK_NONE:
+        benchmark = ''
+        benchmark_range = [0]
+
     results = np.zeros((num_trials, len(benchmark_range), len(models), num_results))
     for i in range(num_trials):
         for j, benchmark_val in enumerate(benchmark_range):
 
+            data_kwargs = { benchmark: benchmark_val } if benchmark_type == BENCHMARK_DATA else {}
+            model_kwargs = { benchmark: benchmark_val } if benchmark_type == BENCHMARK_MODEL else {}
+
             rand_key, subkey = random.split(rand_key)
-            data = get_data(benchmark_val, subkey)
+            data = get_data(subkey, **data_kwargs)
 
             for k, (model_name, model) in enumerate(models):
                 print(f'trial {i} {benchmark}: {benchmark_val:.4f} {model_name}')
 
                 rand_key, subkey = random.split(rand_key)
-                res = model(data, subkey, f'{model_name}_{benchmark}{benchmark_val}_t{i}')
+                res = model(
+                    data, 
+                    subkey, 
+                    f'{model_name}_{benchmark}{benchmark_val}_t{i}',
+                    **model_kwargs,
+                )
 
                 if num_results > 1:
                     for q in range(num_results):

@@ -5,7 +5,6 @@ import argparse
 import numpy as np
 from functools import partial
 import matplotlib.pyplot as plt
-import imageio.v2 as imageio
 import h5py
 
 import jax.numpy as jnp
@@ -321,6 +320,7 @@ data_dir, epochs, batch_size, train_traj, val_traj, test_traj, seed, save_file, 
 
 D = 2
 N = 128
+output_keys = ((0,0), (1,0))
 past_steps = 4 # how many steps to look back to predict the next step
 rollout_steps = 5
 key = random.PRNGKey(time.time_ns()) if (seed is None) else random.PRNGKey(seed)
@@ -337,7 +337,6 @@ group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 upsample_filters = geom.get_invariant_filters(Ms=[2], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
 
-output_keys = tuple(data[1].keys())
 train_and_eval = partial(
     train_and_eval, 
     batch_size=batch_size, 
@@ -374,21 +373,20 @@ models = [
                 conv_filters=conv_filters,
                 output_keys=output_keys,
                 activation_f=ml.VN_NONLINEAR,
-                depth=24, # half of dil_resnet
             ),
-            lr=2e-4,
+            lr=5e-4,
         ),
     ),
     (
         'resnet',
         partial(
             train_and_eval, 
-            net=partial(models.resnet, output_keys=output_keys, depth=64),
-            lr=2e-4,
+            net=partial(models.resnet, output_keys=output_keys, depth=128),
+            lr=1e-3,
         ),   
     ),
     (
-        'resnet_equiv', 
+        'resnet_equiv_100', 
         partial(
             train_and_eval, 
             net=partial(
@@ -398,10 +396,10 @@ models = [
                 conv_filters=conv_filters,
                 activation_f=ml.VN_NONLINEAR,
                 use_group_norm=False,
-                depth=32,
+                depth=100,
             ),
-            lr=2e-4,
-        ),  
+            lr=7e-4,
+        ),
     ),
     (
         'unet2015',
@@ -409,7 +407,7 @@ models = [
             train_and_eval,
             net=partial(models.unet2015, output_keys=output_keys),
             has_aux=True,
-            lr=2e-4,
+            lr=9e-4,
         ),
     ),
     (
@@ -423,9 +421,8 @@ models = [
                 equivariant=True,
                 output_keys=output_keys,
                 activation_f=ml.VN_NONLINEAR,
-                depth=32, # 64=41M, 48=23M, 32=10M
             ),
-            lr=2e-4,
+            lr=4e-4,
         ),
     ),
     (
@@ -436,7 +433,7 @@ models = [
                 models.unetBase, 
                 output_keys=output_keys, 
             ),
-            lr=2e-4,
+            lr=6e-4,
         ),
     ),
     (
@@ -452,18 +449,32 @@ models = [
                 use_group_norm=False,
                 upsample_filters=upsample_filters,
             ),
-            lr=5e-4,
+            lr=4e-4, # 5e-4 went belly up
         ),
     ),
 ]
 
 key, subkey = random.split(key)
+
+# # Use this for benchmarking over different learning rates
+# results = ml.benchmark(
+#     lambda _: data,
+#     models,
+#     subkey,
+#     'lr',
+#     (jnp.arange(1,11)/10000), # 1e-4 to 1e-3
+#     benchmark_type=ml.BENCHMARK_MODEL,
+#     num_results=4,
+# )
+
+# Use this for benchmarking the models with known learning rates.
 results = ml.benchmark(
-    lambda _, _2: data,
+    lambda _: data,
     models,
     subkey,
-    'Nothing',
+    '',
     [0],
+    benchmark_type=ml.BENCHMARK_NONE,
     num_results=4,
 )
 

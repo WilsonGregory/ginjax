@@ -281,11 +281,12 @@ models = [
 
 key, subkey = random.split(key)
 results = ml.benchmark(
-    lambda _,_2: (X_train, X_train, X_val, X_val, X_test, (X_test, y_test, p_test), eval_data),
+    lambda _,: (X_train, X_train, X_val, X_val, X_test, (X_test, y_test, p_test), eval_data),
     models,
     subkey,
     '',
     [0], 
+    benchmark_type=ml.BENCHMARK_NONE,
     num_trials=trials,
     num_results=8,
 )

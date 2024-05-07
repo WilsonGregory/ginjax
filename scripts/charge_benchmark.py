@@ -77,21 +77,21 @@ def batch_net(params, layer, key, train, conv_filters, return_params=False):
     depth = 5
 
     for dilation in [1,2,4,2,1,1,2,1]: #dilated layers in sequence
-        layer, params = ml.batch_conv_contract(
+        layer, params = ml.batch_conv_layer(
             params, 
             layer, 
-            conv_filters, 
+            { 'type': ml.CONV_FIXED, 'filters': conv_filters }, 
             depth, 
             ((0,0),(0,1),(1,0),(1,1)),
             mold_params=return_params,
             rhs_dilation=(dilation,)*layer.D,
         )
-        layer = ml.scalar_activation(layer, jnp.tanh)
+        layer = ml.batch_scalar_activation(layer, jnp.tanh)
 
-    layer, params = ml.batch_conv_contract(
+    layer, params = ml.batch_conv_layer(
         params, 
         layer, 
-        conv_filters, 
+        { 'type': ml.CONV_FIXED, 'filters': conv_filters }, 
         depth, 
         ((1,0),),
         mold_params=return_params,
@@ -117,8 +117,9 @@ def baseline_net(params, layer, key, train, return_params=False):
         layer, params = ml.batch_conv_layer(
             params, 
             layer,
-            { 'type': 'free', 'M': M, 'filter_key_set': { (0,0) } },
-            depth=out_channels, 
+            { 'type': 'free', 'M': M },
+            depth=out_channels,
+            target_keys=((0,0),),
             mold_params=return_params,
             rhs_dilation=(dilation,)*D,
         )
@@ -127,15 +128,16 @@ def baseline_net(params, layer, key, train, return_params=False):
     layer, params = ml.batch_conv_layer(
         params, 
         layer, 
-        { 'type': 'free', 'M': M, 'filter_key_set': { (0,0) } }, 
+        { 'type': 'free', 'M': M }, 
         depth=2,
+        target_keys=((0,0),),
         mold_params=return_params,
     )
     layer = geom.BatchLayer({ (1,0): jnp.expand_dims(jnp.moveaxis(layer[(0,0)], 1, -1), 1) }, layer.D, layer.is_torus)
 
     return (layer, params) if return_params else layer
 
-def get_all_data(num_train_images, rand_key):
+def get_all_data(rand_key, num_train_images):
     """
     Function that generates train, val, and test data. Benchmarked value is the number of training points.
     """
@@ -196,6 +198,7 @@ def handleArgs(argv):
     parser.add_argument('-s', '--save', help='file name to save loss values', type=str, default=None)
     parser.add_argument('-l', '--load', help='file name to load loss values', type=str, default=None)
     parser.add_argument('-v', '--verbose', help='levels of print statements during training', type=int, default=1)
+    parser.add_argument('-image_dir', help='directory to save the plot', type=str, default=None)
 
     args = parser.parse_args()
 
@@ -205,10 +208,11 @@ def handleArgs(argv):
         args.save,
         args.load,
         args.verbose,
+        args.image_dir,
     )
 
 # Main
-num_trials, seed, save_file, load_file, verbose = handleArgs(sys.argv)
+num_trials, seed, save_file, load_file, verbose, image_dir = handleArgs(sys.argv)
 
 N = 16
 D = 2
@@ -259,7 +263,7 @@ if (not load_file):
         get_all_data,
         models,
         subkey,
-        'Num points',
+        'num_train_images',
         num_train_images_range, 
         num_trials=num_trials,
         num_results=4,
@@ -275,31 +279,32 @@ all_val_loss = results[:,:,:,1]
 all_test_loss = results[:,:,:,2]
 all_time_elapsed = results[:,:,:,3]
 
-plt.rcParams['font.family'] = 'serif'
-plt.rcParams['font.serif'] = 'STIXGeneral'
-plt.tight_layout()
+if image_dir:
+    plt.rcParams['font.family'] = 'serif'
+    plt.rcParams['font.serif'] = 'STIXGeneral'
+    plt.tight_layout()
 
-colors = ['b', 'g', 'r']
-for k, (model_name, model) in enumerate(models):
-    plt.plot(
-        num_train_images_range, 
-        np.mean(all_train_loss[:,:,k], axis=0), 
-        label=f'{model_name} Train', 
-        color=colors[k],
-        marker='o', 
-        linestyle='dashed',
-    )
+    colors = ['b', 'g', 'r']
+    for k, (model_name, model) in enumerate(models):
+        plt.plot(
+            num_train_images_range, 
+            np.mean(all_train_loss[:,:,k], axis=0), 
+            label=f'{model_name} Train', 
+            color=colors[k],
+            marker='o', 
+            linestyle='dashed',
+        )
 
-    plt.plot(
-        num_train_images_range, 
-        np.mean(all_test_loss[:,:,k], axis=0), 
-        label=f'{model_name} Test', 
-        color=colors[k],
-        marker='o', 
-    )
+        plt.plot(
+            num_train_images_range, 
+            np.mean(all_test_loss[:,:,k], axis=0), 
+            label=f'{model_name} Test', 
+            color=colors[k],
+            marker='o', 
+        )
 
-plt.legend()
-plt.title('Charge Field Loss vs. Number of Training Points')
-plt.xlabel('Number of Training Points')
-plt.ylabel('RMSE Loss')
-plt.savefig(f'../images/charge/charge_loss_chart_{seed}.png')
+    plt.legend()
+    plt.title('Charge Field Loss vs. Number of Training Points')
+    plt.xlabel('Number of Training Points')
+    plt.ylabel('RMSE Loss')
+    plt.savefig(f'{image_dir}/charge_loss_chart_{seed}.png')

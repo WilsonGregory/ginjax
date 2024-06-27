@@ -1642,15 +1642,17 @@ class Layer:
 
     def concat(self, other, axis=0):
         """
-        Currently identical to __add__, but I want to move towards using this instead and make add
-        and actual sum.
+        Concatenate the layers along a specified axis.
+        args:
+            other (Layer): a layer with the same dimension and qualities as this one
+            axis (int): the axis along with the concatenate the other layer
         """
         assert type(self) == type(other), \
-            f'{self.__class__}::__add__: Types of layers being added must match, had {type(self)} and {type(other)}'
+            f'{self.__class__}::concat: Types of layers being added must match, had {type(self)} and {type(other)}'
         assert self.D == other.D, \
-            f'{self.__class__}::__add__: Dimension of layers must match, had {self.D} and {other.D}'
+            f'{self.__class__}::concat: Dimension of layers must match, had {self.D} and {other.D}'
         assert self.is_torus == other.is_torus, \
-            f'{self.__class__}::__add__: is_torus of layers must match, had {self.is_torus} and {other.is_torus}'
+            f'{self.__class__}::concat: is_torus of layers must match, had {self.is_torus} and {other.is_torus}'
 
         new_layer = self.copy()
         for (k,parity), image_block in other.items():

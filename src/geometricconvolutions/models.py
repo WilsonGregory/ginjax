@@ -582,27 +582,21 @@ def group_average(
     train, 
     model_f,
     *args,
+    always_average=False,
     return_params=False,
     **kwargs,
 ): 
-    group_operators = geom.make_all_operators(layer.D)
-    if return_params:
-        copy_params = { k:v for k,v in params.items() }
-        results = model_f(
-            copy_params, 
-            layer.times_group_element(group_operators[0]), 
-            key, 
-            train, 
-            *args,
-            return_params=return_params,
-            **kwargs,
-        )
-        out_params = results[1]
-        sum_layer = results[0].times_group_element(group_operators[0].T)
-        for gg in group_operators[1:]:
-            copy_params = { k:v for k,v in params.items() }
-            results = model_f(
-                copy_params, 
+    if train and (not always_average):
+        # train the model as normal
+        return model_f(params, layer, key, train, *args, return_params=return_params, **kwargs)
+    else:
+        # during evaluation time, do the group averaging
+
+        group_operators = geom.make_all_operators(layer.D)
+        sum_layer = None
+        for gg in group_operators:
+            out = model_f(
+                { k:v for k,v in params.items() }, 
                 layer.times_group_element(gg), 
                 key, 
                 train, 
@@ -610,35 +604,15 @@ def group_average(
                 return_params=return_params,
                 **kwargs,
             )
-            sum_layer = sum_layer + results[0].times_group_element(gg.T)
 
-        return sum_layer / len(group_operators), out_params
-    else:
-        # do the group averaging
-        copy_params = { k:v for k,v in params.items() }
-        sum_layer = model_f(
-            copy_params, 
-            layer.times_group_element(group_operators[0]), 
-            key, 
-            train, 
-            *args,
-            return_params=return_params,
-            **kwargs,
-        ).times_group_element(group_operators[0].T)
-        for gg in group_operators[1:]:
-            copy_params = { k:v for k,v in params.items() }
-            out = model_f(
-                copy_params, 
-                layer.times_group_element(gg), 
-                key, 
-                train, 
-                *args,
-                return_params=return_params,
-                **kwargs,
-            ).times_group_element(gg.T)
-            sum_layer = sum_layer + out
+            if return_params:
+                out, out_params = out
 
-        return sum_layer/len(group_operators)
+            out_rot = out.times_group_element(gg.T)
+            sum_layer = out_rot if sum_layer is None else sum_layer + out_rot
+
+        mean_layer = sum_layer / len(group_operators)
+        return (mean_layer, out_params) if return_params else mean_layer
 
 def unetBase_approx_equiv(
     params, 

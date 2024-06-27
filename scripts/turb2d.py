@@ -94,6 +94,7 @@ def merge_h5s_into_layer(
     return gc_data.times_series_to_layers(
         D, 
         { (0,0): all_u, (1,0): all_vxy }, 
+        # { (1,0): jnp.zeros_like(all_buoyancy) }, 
         { (1,0): all_buoyancy }, 
         False, 
         past_steps, 
@@ -229,7 +230,7 @@ def train_and_eval(
 
     if save_params is not None:
         jnp.save(
-            f'{save_params}{model_name}_trajectories{train_X.L // 10}_e{epochs}_params.npy', 
+            f'{save_params}{model_name}_L{train_X.L}_e{epochs}_params.npy', 
             { 'params': params, 'batch_stats': None if (batch_stats is None) else dict(batch_stats) },
         )
 
@@ -248,6 +249,20 @@ def train_and_eval(
     print(f'Test Loss: {test_loss}')
 
     key, subkey = random.split(key)
+    test_loss = ml.map_loss_in_batches(
+        partial(map_and_loss, net=partial(models.group_average, model_f=net), has_aux=has_aux), 
+        params, 
+        test_single_X, 
+        test_single_Y, 
+        batch_size, 
+        subkey, 
+        False,
+        has_aux=has_aux,
+        aux_data=batch_stats,
+    )
+    print(f'Test Loss Group Averaged: {test_loss}')
+
+    key, subkey = random.split(key)
     test_rollout_loss = ml.map_loss_in_batches(
         partial(map_and_loss, net=net, has_aux=has_aux, future_steps=5), 
         params, 
@@ -260,6 +275,20 @@ def train_and_eval(
         aux_data=batch_stats,
     )
     print(f'Test Rollout Loss: {test_rollout_loss}')
+
+    key, subkey = random.split(key)
+    test_rollout_loss = ml.map_loss_in_batches(
+        partial(map_and_loss, net=partial(models.group_average, model_f=net), has_aux=has_aux, future_steps=5), 
+        params, 
+        test_rollout_X, 
+        test_rollout_Y, 
+        batch_size, 
+        subkey, 
+        False,
+        has_aux=has_aux,
+        aux_data=batch_stats,
+    )
+    print(f'Test Rollout Loss Group Averaged: {test_rollout_loss}')
 
     if images_dir is not None:
         key, subkey = random.split(key)
@@ -346,85 +375,85 @@ train_and_eval = partial(
     verbose=verbose,
 )
 
-models = [
-    (
-        'do_nothing', 
-        partial(
-            train_and_eval, 
-            net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
-            lr=2e-4,
-        ),
-    ),
-    (
-        'dil_resnet',
-        partial(
-            train_and_eval, 
-            net=partial(models.dil_resnet, output_keys=output_keys),
-            lr=2e-4,
-        ),
-    ),
-    (
-        'dil_resnet_equiv',
-        partial(
-            train_and_eval, 
-            net=partial(
-                models.dil_resnet, 
-                equivariant=True, 
-                conv_filters=conv_filters,
-                output_keys=output_keys,
-                activation_f=ml.VN_NONLINEAR,
-            ),
-            lr=5e-4,
-        ),
-    ),
-    (
-        'resnet',
-        partial(
-            train_and_eval, 
-            net=partial(models.resnet, output_keys=output_keys, depth=128),
-            lr=1e-3,
-        ),   
-    ),
-    (
-        'resnet_equiv_100', 
-        partial(
-            train_and_eval, 
-            net=partial(
-                models.resnet, 
-                output_keys=output_keys, 
-                equivariant=True, 
-                conv_filters=conv_filters,
-                activation_f=ml.VN_NONLINEAR,
-                use_group_norm=False,
-                depth=100,
-            ),
-            lr=7e-4,
-        ),
-    ),
-    (
-        'unet2015',
-        partial(
-            train_and_eval,
-            net=partial(models.unet2015, output_keys=output_keys),
-            has_aux=True,
-            lr=9e-4,
-        ),
-    ),
-    (
-        'unet2015_equiv',
-        partial(
-            train_and_eval,
-            net=partial(
-                models.unet2015, 
-                conv_filters=conv_filters, 
-                upsample_filters=upsample_filters,
-                equivariant=True,
-                output_keys=output_keys,
-                activation_f=ml.VN_NONLINEAR,
-            ),
-            lr=4e-4,
-        ),
-    ),
+model_list = [
+    # (
+    #     'do_nothing', 
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
+    #         lr=2e-4,
+    #     ),
+    # ),
+    # (
+    #     'dil_resnet',
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(models.dil_resnet, output_keys=output_keys),
+    #         lr=2e-4,
+    #     ),
+    # ),
+    # (
+    #     'dil_resnet_equiv',
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(
+    #             models.dil_resnet, 
+    #             equivariant=True, 
+    #             conv_filters=conv_filters,
+    #             output_keys=output_keys,
+    #             activation_f=ml.VN_NONLINEAR,
+    #         ),
+    #         lr=5e-4,
+    #     ),
+    # ),
+    # (
+    #     'resnet',
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(models.resnet, output_keys=output_keys, depth=128),
+    #         lr=1e-3,
+    #     ),   
+    # ),
+    # (
+    #     'resnet_equiv_100', 
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(
+    #             models.resnet, 
+    #             output_keys=output_keys, 
+    #             equivariant=True, 
+    #             conv_filters=conv_filters,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             use_group_norm=False,
+    #             depth=100,
+    #         ),
+    #         lr=7e-4,
+    #     ),
+    # ),
+    # (
+    #     'unet2015',
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(models.unet2015, output_keys=output_keys),
+    #         has_aux=True,
+    #         lr=9e-4,
+    #     ),
+    # ),
+    # (
+    #     'unet2015_equiv',
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unet2015, 
+    #             conv_filters=conv_filters, 
+    #             upsample_filters=upsample_filters,
+    #             equivariant=True,
+    #             output_keys=output_keys,
+    #             activation_f=ml.VN_NONLINEAR,
+    #         ),
+    #         lr=4e-4,
+    #     ),
+    # ),
     (
         'unetBase',
         partial(
@@ -437,21 +466,34 @@ models = [
         ),
     ),
     (
-        'unetBase_equiv', # works best
+        'unetBase_group_averaged',
         partial(
             train_and_eval,
             net=partial(
-                models.unetBase, 
+                models.group_average,
+                model_f=models.unetBase,
+                always_average=True,
                 output_keys=output_keys,
-                equivariant=True,
-                conv_filters=conv_filters,
-                activation_f=ml.VN_NONLINEAR,
-                use_group_norm=False,
-                upsample_filters=upsample_filters,
             ),
-            lr=4e-4, # 5e-4 went belly up
-        ),
-    ),
+            lr=6e-4,
+        )
+    )
+    # (
+    #     'unetBase_equiv', # works best
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unetBase, 
+    #             output_keys=output_keys,
+    #             equivariant=True,
+    #             conv_filters=conv_filters,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             use_group_norm=False,
+    #             upsample_filters=upsample_filters,
+    #         ),
+    #         lr=4e-4, # 5e-4 went belly up
+    #     ),
+    # ),
 ]
 
 key, subkey = random.split(key)
@@ -459,7 +501,7 @@ key, subkey = random.split(key)
 # # Use this for benchmarking over different learning rates
 # results = ml.benchmark(
 #     lambda _: data,
-#     models,
+#     model_list,
 #     subkey,
 #     'lr',
 #     (jnp.arange(1,11)/10000), # 1e-4 to 1e-3
@@ -470,7 +512,7 @@ key, subkey = random.split(key)
 # Use this for benchmarking the models with known learning rates.
 results = ml.benchmark(
     lambda _: data,
-    models,
+    model_list,
     subkey,
     '',
     [0],

@@ -1561,17 +1561,17 @@ class StopCondition:
         self.best_params = None
         self.verbose = verbose
 
-    def stop(self, params, current_epoch, train_loss, val_loss, batch_time):
+    def stop(self, params, current_epoch, train_loss, val_loss, epoch_time):
         pass
 
-    def log_status(self, epoch, train_loss, val_loss, batch_time):
+    def log_status(self, epoch, train_loss, val_loss, epoch_time):
         if (train_loss is not None):
             if (val_loss is not None):
                 print(
-                    f'Epoch {epoch} Train: {train_loss:.7f} Val: {val_loss:.7f} Batch time: {batch_time:.5f}',
+                    f'Epoch {epoch} Train: {train_loss:.7f} Val: {val_loss:.7f} Epoch time: {epoch_time:.5f}',
                 )
             else:
-                print(f'Epoch {epoch} Train: {train_loss:.7f} Batch time: {batch_time:.5f}')
+                print(f'Epoch {epoch} Train: {train_loss:.7f} Epoch time: {epoch_time:.5f}')
 
 class EpochStop(StopCondition):
     # Stop when enough epochs have passed.
@@ -1580,14 +1580,14 @@ class EpochStop(StopCondition):
         super(EpochStop, self).__init__(verbose=verbose)
         self.epochs = epochs
 
-    def stop(self, params, current_epoch, train_loss, val_loss, batch_time) -> bool:
+    def stop(self, params, current_epoch, train_loss, val_loss, epoch_time) -> bool:
         self.best_params = params
 
         if (
             self.verbose == 2 or
             (self.verbose == 1 and (current_epoch % (self.epochs // np.min([10,self.epochs])) == 0))
         ):
-            self.log_status(current_epoch, train_loss, val_loss, batch_time)
+            self.log_status(current_epoch, train_loss, val_loss, epoch_time)
 
         return current_epoch >= self.epochs
     
@@ -1601,7 +1601,7 @@ class TrainLoss(StopCondition):
         self.best_train_loss = jnp.inf
         self.epochs_since_best = 0
 
-    def stop(self, params, current_epoch, train_loss, val_loss, batch_time) -> bool:
+    def stop(self, params, current_epoch, train_loss, val_loss, epoch_time) -> bool:
         if (train_loss is None):
             return False
         
@@ -1611,7 +1611,7 @@ class TrainLoss(StopCondition):
             self.epochs_since_best = 0
 
             if (self.verbose >= 1):
-                self.log_status(current_epoch, train_loss, val_loss, batch_time)
+                self.log_status(current_epoch, train_loss, val_loss, epoch_time)
         else:
             self.epochs_since_best += 1
 
@@ -1627,7 +1627,7 @@ class ValLoss(StopCondition):
         self.best_val_loss = jnp.inf
         self.epochs_since_best = 0
 
-    def stop(self, params, current_epoch, train_loss, val_loss, batch_time) -> bool:
+    def stop(self, params, current_epoch, train_loss, val_loss, epoch_time) -> bool:
         if (val_loss is None):
             return False
         
@@ -1637,7 +1637,7 @@ class ValLoss(StopCondition):
             self.epochs_since_best = 0
 
             if (self.verbose >= 1):
-                self.log_status(current_epoch, train_loss, val_loss, batch_time)
+                self.log_status(current_epoch, train_loss, val_loss, epoch_time)
         else:
             self.epochs_since_best += 1
 
@@ -1746,9 +1746,9 @@ def train(
     epoch_loss = None
     train_loss = []
     val_loss = []
-    batch_times = []
+    epoch_time = 0
     while (
-        not stop_condition.stop(params, epoch, epoch_loss, epoch_val_loss, jnp.mean(jnp.array(batch_times)))
+        not stop_condition.stop(params, epoch, epoch_loss, epoch_val_loss, epoch_time)
     ):
         if noise_stdev:
             rand_key, subkey = random.split(rand_key)
@@ -1759,10 +1759,9 @@ def train(
         rand_key, subkey = random.split(rand_key)
         X_batches, Y_batches = get_batch_layer((train_X, Y), batch_size, subkey, devices)
         epoch_loss = 0
-        batch_times = []
+        start_time = time.time()
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             rand_key, subkey = random.split(rand_key)
-            start_time = time.time()
             if (has_aux):
                 (pmap_loss_val, aux_data), pmap_grads = pmap_loss_grad(
                     params, 
@@ -1775,7 +1774,6 @@ def train(
             else:
                 pmap_loss_val, pmap_grads = pmap_loss_grad(params, X_batch, Y_batch, subkey, True)
 
-            batch_times.append(time.time() - start_time)
             updates, opt_state = optimizer.update(grads_mean(pmap_grads), opt_state, params)
             params = optax.apply_updates(params, updates)
             epoch_loss += jnp.mean(pmap_loss_val)
@@ -1804,6 +1802,8 @@ def train(
 
         if (save_params and ((epoch % 10) == 0)):
             jnp.save(save_params, stop_condition.best_params)
+
+        epoch_time = time.time() - start_time
 
     if (has_aux):
         return stop_condition.best_params, aux_data, jnp.array(train_loss), jnp.array(val_loss)

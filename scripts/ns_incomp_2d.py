@@ -483,7 +483,7 @@ train_and_eval = partial(
     verbose=verbose,
 )
 
-models = [
+model_list = [
     (
         'do_nothing', 
         partial(
@@ -588,7 +588,7 @@ models = [
 key, subkey = random.split(key)
 results = ml.benchmark(
     lambda _: data,
-    models,
+    model_list,
     subkey,
     '',
     [0],

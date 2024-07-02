@@ -75,13 +75,14 @@ def handle_activation(activation_f, params, layer, mold_params):
     else:
         return ml.batch_scalar_activation(layer, activation_f), params
 
-@functools.partial(jax.jit, static_argnums=[3,4,5,6,7,10,11,12])
+@functools.partial(jax.jit, static_argnums=[3,4,5,6,7,8,11,12,13])
 def unetBase(
     params, 
     layer, 
     key, 
     train, 
     output_keys=None,
+    output_depth=1,
     depth=64, 
     activation_f=jax.nn.gelu,
     equivariant=False,
@@ -106,6 +107,9 @@ def unetBase(
         output_keys (tuple of tuples of ints): the output key types of the model. For the Shallow Water
             experiments, should be ((0,0),(1,0)) for the pressure/velocity form and ((0,0),(0,1)) for 
             the pressure/vorticity form.
+        output_depth (int or tuple): output depth for each output key. If an int, then the depth is 
+            that int for each key. Defaults to 1, cannot be None. Needs to be hashable, so the structure
+            is ( (key,depth), (key,depth)) where key itself is a tuple like (0,0)
         depth (int): the depth of the layers, defaults to 64
         activation_f (string or function): the function that we pass to batch_scalar_activation
         equivariant (bool): whether to use the equivariant version of the model, defaults to False
@@ -122,6 +126,10 @@ def unetBase(
         mold_params = return_params
 
     assert output_keys is not None
+    assert output_depth is not None
+
+    if isinstance(output_depth, int):
+        output_depth = tuple((key,output_depth) for key in output_keys)
 
     if equivariant:
         assert (conv_filters is not None) and (upsample_filters is not None)
@@ -209,7 +217,7 @@ def unetBase(
         params,
         layer,
         filter_info,
-        1, # depth
+        output_depth,
         output_keys,
         bias=True,
         mold_params=mold_params,
@@ -582,27 +590,21 @@ def group_average(
     train, 
     model_f,
     *args,
+    always_average=False,
     return_params=False,
     **kwargs,
 ): 
-    group_operators = geom.make_all_operators(layer.D)
-    if return_params:
-        copy_params = { k:v for k,v in params.items() }
-        results = model_f(
-            copy_params, 
-            layer.times_group_element(group_operators[0]), 
-            key, 
-            train, 
-            *args,
-            return_params=return_params,
-            **kwargs,
-        )
-        out_params = results[1]
-        sum_layer = results[0].times_group_element(group_operators[0].T)
-        for gg in group_operators[1:]:
-            copy_params = { k:v for k,v in params.items() }
-            results = model_f(
-                copy_params, 
+    if train and (not always_average):
+        # train the model as normal
+        return model_f(params, layer, key, train, *args, return_params=return_params, **kwargs)
+    else:
+        # during evaluation time, do the group averaging
+
+        group_operators = geom.make_all_operators(layer.D)
+        sum_layer = None
+        for gg in group_operators:
+            out = model_f(
+                { k:v for k,v in params.items() }, 
                 layer.times_group_element(gg), 
                 key, 
                 train, 
@@ -610,35 +612,15 @@ def group_average(
                 return_params=return_params,
                 **kwargs,
             )
-            sum_layer = sum_layer + results[0].times_group_element(gg.T)
 
-        return sum_layer / len(group_operators), out_params
-    else:
-        # do the group averaging
-        copy_params = { k:v for k,v in params.items() }
-        sum_layer = model_f(
-            copy_params, 
-            layer.times_group_element(group_operators[0]), 
-            key, 
-            train, 
-            *args,
-            return_params=return_params,
-            **kwargs,
-        ).times_group_element(group_operators[0].T)
-        for gg in group_operators[1:]:
-            copy_params = { k:v for k,v in params.items() }
-            out = model_f(
-                copy_params, 
-                layer.times_group_element(gg), 
-                key, 
-                train, 
-                *args,
-                return_params=return_params,
-                **kwargs,
-            ).times_group_element(gg.T)
-            sum_layer = sum_layer + out
+            if return_params:
+                out, out_params = out
 
-        return sum_layer/len(group_operators)
+            out_rot = out.times_group_element(gg.T)
+            sum_layer = out_rot if sum_layer is None else sum_layer + out_rot
+
+        mean_layer = sum_layer / len(group_operators)
+        return (mean_layer, out_params) if return_params else mean_layer
 
 def unetBase_approx_equiv(
     params, 

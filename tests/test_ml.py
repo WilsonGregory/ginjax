@@ -142,4 +142,46 @@ class TestMachineLearning:
         params = { ml.VN_NONLINEAR: { 'W': W, 'U': U } }
         out_layer, params = ml.VN_nonlinear(params, layer)
         assert jnp.allclose(out_layer[(1,0)].reshape((2,)), jnp.array([-0.5,0.5]), rtol=geom.TINY, atol=geom.TINY)
+
+    def testAutoregressiveStep(self):
+        batch = 10
+        past_steps = 4
+        N = 5
+        D = 2
+
+        key = random.PRNGKey(0)
+        key1, key2, key3, key4, key5 = random.split(key, 5)
+
+        data1 = random.normal(key1, shape=(batch,past_steps) + (N,)*D)
+
+        input1 = geom.BatchLayer({ (0,0): data1 }, D)
+        one_step1 = geom.BatchLayer({ (0,0): random.normal(key2, shape=(batch,1) + (N,)*D) }, D)
+
+        new_input, output = ml.autoregressive_step(input1, one_step1, input1.empty(), past_steps)
+        assert jnp.allclose(new_input[(0,0)], jnp.concatenate([input1[(0,0)][:,1:], one_step1[(0,0)]], axis=1))
+        assert output == one_step1
             
+        data2 = random.normal(key3, shape=(batch,2*past_steps) + (N,)*D + (D,))
+
+        input2 = geom.BatchLayer({ (0,0): data1, (1,0): data2 }, D)
+        one_step2 = geom.BatchLayer(
+            { 
+                (0,0): random.normal(key4, shape=(batch,1) + (N,)*D), 
+                (1,0): random.normal(key5, shape=(batch,2) + (N,)*D + (D,)),
+            },
+            D,
+        )
+
+        new_input, output = ml.autoregressive_step(input2, one_step2, input2.empty(), past_steps)
+        assert jnp.allclose(new_input[(0,0)], jnp.concatenate([input2[(0,0)][:,1:], one_step2[(0,0)]], axis=1))
+        assert output == one_step2
+        assert jnp.allclose(new_input[(1,0)][:,:past_steps-1], input2[(1,0)][:,1:past_steps])
+        assert jnp.allclose(new_input[(1,0)][:,past_steps-1], one_step2[(1,0)][:,0])
+        assert jnp.allclose(new_input[(1,0)][:,past_steps:-1], input2[(1,0)][:,past_steps+1:])
+        assert jnp.allclose(new_input[(1,0)][:,-1], one_step2[(1,0)][:,1])
+
+
+
+
+
+

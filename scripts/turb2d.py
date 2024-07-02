@@ -229,7 +229,7 @@ def train_and_eval(
 
     if save_params is not None:
         jnp.save(
-            f'{save_params}{model_name}_trajectories{train_X.L // 10}_e{epochs}_params.npy', 
+            f'{save_params}{model_name}_L{train_X.L}_e{epochs}_params.npy', 
             { 'params': params, 'batch_stats': None if (batch_stats is None) else dict(batch_stats) },
         )
 
@@ -346,7 +346,7 @@ train_and_eval = partial(
     verbose=verbose,
 )
 
-models = [
+model_list = [
     (
         'do_nothing', 
         partial(
@@ -459,7 +459,7 @@ key, subkey = random.split(key)
 # # Use this for benchmarking over different learning rates
 # results = ml.benchmark(
 #     lambda _: data,
-#     models,
+#     model_list,
 #     subkey,
 #     'lr',
 #     (jnp.arange(1,11)/10000), # 1e-4 to 1e-3
@@ -470,7 +470,7 @@ key, subkey = random.split(key)
 # Use this for benchmarking the models with known learning rates.
 results = ml.benchmark(
     lambda _: data,
-    models,
+    model_list,
     subkey,
     '',
     [0],

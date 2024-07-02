@@ -129,13 +129,15 @@ def get_filter_block_from_invariants(params, input_layer, invariant_filters, tar
         input_layer (BatchLayer): input layer so that we know the input depth at each (k,parity) that we need
         invariant_filters (Layer): available invariant filters of each (k,parity) that will be used 
         target_keys (tuple of (k,parity) tuples): targeted keys for the output layer
-        out_depth (int): the output depth of this conv layer
+        out_depth (tuple): for each target_key, the output depth of this conv layer
         mold_params (bool): True if we are building the params shape, defaults to False
     """
     vmap_sum = vmap(vmap(geom.linear_combination, in_axes=(None, 0)), in_axes=(None, 0))
 
     if (mold_params):
         params = {}
+
+    out_depth = { key: depth for key,depth in out_depth }
 
     filter_layer = {}
     for key, image_block in input_layer.items():
@@ -154,10 +156,10 @@ def get_filter_block_from_invariants(params, input_layer, invariant_filters, tar
             filter_block = invariant_filters[(k+target_k, (parity + target_parity) % 2)]
             if (mold_params):
                 params[key][target_key] = (
-                    (out_depth, in_depth, len(filter_block)), # params_shape
+                    (out_depth[target_key], in_depth, len(filter_block)), # params_shape
                     (in_depth,) + filter_block.shape[1:1+input_layer.D+k], # shape to use for input bounds
                 )
-                params_block = jnp.ones((out_depth, in_depth, len(filter_block)))
+                params_block = jnp.ones((out_depth[target_key], in_depth, len(filter_block)))
             else:
                 params_block = params[key][target_key]
 
@@ -175,12 +177,14 @@ def get_filter_block(params, input_layer, M, target_keys, out_depth, mold_params
         input_layer (BatchLayer): input layer so that we know the input depth at each (k,parity) that we need
         M (int): the edge length of the filters
         target_keys (tuple of tuple of ints): the target (k,parity) for this layer
-        out_depth (int): the output depth of this conv layer
+        out_depth (tuple): for each target_key, the output depth of this conv layer
         mold_params (bool): True if we are building the params shape, defaults to False
     """
     D = input_layer.D
     if mold_params:
         params = {}
+
+    out_depth = { key: depth for key,depth in out_depth }
 
     filter_layer = {}
     for key, image_block in input_layer.items():
@@ -194,7 +198,7 @@ def get_filter_block(params, input_layer, M, target_keys, out_depth, mold_params
             filter_k = key[0] + target_key[0]
             if (mold_params):
                 params[key][target_key] = (
-                    (out_depth,in_depth) + (M,)*D + (D,)*filter_k, # params_shape
+                    (out_depth[target_key],in_depth) + (M,)*D + (D,)*filter_k, # params_shape
                     (in_depth,) + (M,)*D + (D,)*key[0], # shape to use for input bounds
                 )
                 params_block = jnp.ones(params[key][target_key][0])
@@ -220,10 +224,23 @@ def batch_conv_layer(
     rhs_dilation=None,
 ):
     """
-    Wrapper for conv_layer_alt that constructs the filter_block from either invariant filters or 
+    Wrapper for batch_conv_contract that constructs the filter_block from either invariant filters or 
     free parameters, i.e. regular convolution with fully learned filters. 
+    args:
+        params: params_dict
+        input_layer (Layer): the input data layer
+        filter_info (Layer or dict): the filter info. If it is a layer, then that layer is treated as the
+            fixed filters. Otherwise, it is a dict with 'type' that is fixed, in which case there is a
+            'filters' entry for the invariant filters, or free in which case there is an 'M' int for the 
+            edge length of the filters to construct.
+        depth (int or tuple): if int, output depth of each target_key. If tuple, a tuple of of tuples
+            associating a key with a depth. For example, ( (key,depth), (key,depth) ) where each key is 
+            also a tuple. So it could be something like ( ((0,0), 2), ((1,0),1) )
+        bias (bool): whether to add a bias. For equivariant layers, this will be a multiple of the mean.
     """
     params_idx, this_params = get_layer_params(params, mold_params, CONV)
+    if isinstance(depth, int):
+        depth = tuple((key,depth) for key in target_keys)
 
     mean_bias = True
     if (isinstance(filter_info, geom.Layer)): #if just a layer is passed, defaults to fixed filters
@@ -1552,6 +1569,43 @@ def get_timeseries_XY(X, loss_steps=1, circular=False):
             Y.append(Y_steps)
 
     return X[:data_len], Y
+
+def autoregressive_step(input, one_step, output, past_steps, future_steps=1):
+    """
+    Given the input layer, the next step of the model, and the output, update the input
+    and output to be fed into the model next. Batch Layers should have shape (batch,channels,spatial,tensor)
+    where channels is of length c*past_steps where c is some positive integer.
+    args:
+        input (BatchLayer): the input to the model
+        one_step (BatchLayer): the model output at this step, assumed to be a single time step
+        output (BatchLayer): the full output that we are building up
+        past_steps (int): the number of past time steps that are fed into the model
+        future_steps (int): number of future steps that the model outputs, currently must be 1
+    """
+    assert future_steps == 1, f'ml::autoregressive_step: future_steps must be 1, but found {future_steps}.'
+
+    new_input = input.empty()
+    new_output = output.empty()
+    for key,step_data in one_step.items():
+        k, parity = key
+        batch = step_data.shape[0] # the shape of the image, spatial + tensor
+        img_shape = step_data.shape[2:]
+        exp_data = step_data.reshape((batch,-1,future_steps) + img_shape)
+        n_channels = exp_data.shape[1] # number of channels for the key, not timesteps
+
+        exp_input = input[key].reshape((batch,-1,past_steps) + img_shape)
+        next_input = jnp.concatenate([exp_input[:,:,1:], exp_data], axis=2)
+        new_input.append(k, parity, next_input.reshape((batch,-1) + img_shape))
+
+        if key in output:
+            exp_output = output[key].reshape((batch,n_channels,-1) + img_shape)
+            full_output = jnp.concatenate([exp_output, exp_data], axis=2).reshape((batch,-1) + img_shape)
+        else:
+            full_output = step_data
+
+        new_output.append(k, parity, full_output)
+
+    return new_input, new_output
 
 ### Train
 

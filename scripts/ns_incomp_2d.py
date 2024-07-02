@@ -359,20 +359,6 @@ def train_and_eval(
     print(f'Test Loss: {test_loss}')
 
     key, subkey = random.split(key)
-    test_loss = ml.map_loss_in_batches(
-        partial(map_and_loss, net=partial(models.group_average, model_f=net), has_aux=has_aux), 
-        params, 
-        test_single_X, 
-        test_single_Y, 
-        batch_size, 
-        subkey, 
-        False,
-        has_aux=has_aux,
-        aux_data=batch_stats,
-    )
-    print(f'Test Loss Group Averaged: {test_loss}')
-
-    key, subkey = random.split(key)
     test_rollout_loss = ml.map_loss_in_batches(
         partial(map_and_loss, net=net, has_aux=has_aux, future_steps=5), 
         params, 
@@ -385,20 +371,6 @@ def train_and_eval(
         aux_data=batch_stats,
     )
     print(f'Test Rollout Loss: {test_rollout_loss}')
-
-    key, subkey = random.split(key)
-    test_rollout_loss = ml.map_loss_in_batches(
-        partial(map_and_loss, net=partial(models.group_average, model_f=net), has_aux=has_aux, future_steps=5), 
-        params, 
-        test_rollout_X, 
-        test_rollout_Y, 
-        batch_size, 
-        subkey, 
-        False,
-        has_aux=has_aux,
-        aux_data=batch_stats,
-    )
-    print(f'Test Rollout Loss Group Averaged: {test_rollout_loss}')
 
     if images_dir is not None:
         key, subkey = random.split(key)
@@ -512,79 +484,79 @@ train_and_eval = partial(
 )
 
 model_list = [
-    # (
-    #     'do_nothing', 
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
-    #     ),
-    # ),
-    # (
-    #     'dil_resnet',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.dil_resnet, depth=64, activation_f=jax.nn.gelu, output_keys=output_keys),
-    #     ),
-    # ),
-    # (
-    #     'dil_resnet_equiv', # test_loss is better, but rollout is worse
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(
-    #             models.dil_resnet, 
-    #             depth=32, 
-    #             activation_f=ml.VN_NONLINEAR, # takes more memory, hmm
-    #             equivariant=True, 
-    #             conv_filters=conv_filters,
-    #             output_keys=output_keys,
-    #         ),
-    #     ),
-    # ),
-    # (
-    #     'resnet',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.resnet, output_keys=output_keys, depth=64),
-    #     ),   
-    # ),
-    # (
-    #     'resnet_equiv', 
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(
-    #             models.resnet, 
-    #             output_keys=output_keys, 
-    #             equivariant=True, 
-    #             conv_filters=conv_filters,
-    #             activation_f=ml.VN_NONLINEAR,
-    #             use_group_norm=False,
-    #             depth=32,
-    #         ),
-    #     ),  
-    # ),
-    # (
-    #     'unet2015',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(models.unet2015, output_keys=output_keys),
-    #         has_aux=True,
-    #     ),
-    # ),
-    # (
-    #     'unet2015_equiv',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             models.unet2015, 
-    #             equivariant=True,
-    #             conv_filters=conv_filters, 
-    #             upsample_filters=upsample_filters,
-    #             output_keys=output_keys,
-    #             activation_f=ml.VN_NONLINEAR,
-    #             depth=32, # 64=41M, 48=23M, 32=10M
-    #         ),
-    #     ),
-    # ),
+    (
+        'do_nothing', 
+        partial(
+            train_and_eval, 
+            net=partial(models.do_nothing, idxs={ (1,0): past_steps-1, (0,0): past_steps-1 }),
+        ),
+    ),
+    (
+        'dil_resnet',
+        partial(
+            train_and_eval, 
+            net=partial(models.dil_resnet, depth=64, activation_f=jax.nn.gelu, output_keys=output_keys),
+        ),
+    ),
+    (
+        'dil_resnet_equiv', # test_loss is better, but rollout is worse
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.dil_resnet, 
+                depth=32, 
+                activation_f=ml.VN_NONLINEAR, # takes more memory, hmm
+                equivariant=True, 
+                conv_filters=conv_filters,
+                output_keys=output_keys,
+            ),
+        ),
+    ),
+    (
+        'resnet',
+        partial(
+            train_and_eval, 
+            net=partial(models.resnet, output_keys=output_keys, depth=64),
+        ),   
+    ),
+    (
+        'resnet_equiv', 
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.resnet, 
+                output_keys=output_keys, 
+                equivariant=True, 
+                conv_filters=conv_filters,
+                activation_f=ml.VN_NONLINEAR,
+                use_group_norm=False,
+                depth=32,
+            ),
+        ),  
+    ),
+    (
+        'unet2015',
+        partial(
+            train_and_eval,
+            net=partial(models.unet2015, output_keys=output_keys),
+            has_aux=True,
+        ),
+    ),
+    (
+        'unet2015_equiv',
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unet2015, 
+                equivariant=True,
+                conv_filters=conv_filters, 
+                upsample_filters=upsample_filters,
+                output_keys=output_keys,
+                activation_f=ml.VN_NONLINEAR,
+                depth=32, # 64=41M, 48=23M, 32=10M
+            ),
+        ),
+    ),
     (
         'unetBase',
         partial(
@@ -595,33 +567,22 @@ model_list = [
             ),
         ),
     ),
-    # (
-    #     'unetBase_group_averaged',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             models.group_average,
-    #             model_f=models.unetBase, 
-    #             output_keys=output_keys, 
-    #         ),
-    #     ),
-    # ),
-    # (
-    #     'unetBase_equiv', # works best
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             models.unetBase, 
-    #             output_keys=output_keys,
-    #             equivariant=True,
-    #             conv_filters=conv_filters,
-    #             activation_f=ml.VN_NONLINEAR,
-    #             use_group_norm=False,
-    #             depth=32,
-    #             upsample_filters=upsample_filters,
-    #         ),
-    #     ),
-    # ),
+    (
+        'unetBase_equiv', # works best
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unetBase, 
+                output_keys=output_keys,
+                equivariant=True,
+                conv_filters=conv_filters,
+                activation_f=ml.VN_NONLINEAR,
+                use_group_norm=False,
+                depth=32,
+                upsample_filters=upsample_filters,
+            ),
+        ),
+    ),
 ]
 
 key, subkey = random.split(key)

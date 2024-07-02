@@ -51,10 +51,8 @@ def get_data(
     density, pressure, velocity = read_one_h5(filename, n_train + n_val + n_test)
 
     if normalize:
-        density = density - jnp.mean(density[:(n_train + n_val)])
-        density = density / jnp.std(density[:(n_train + n_val)])
-        pressure = pressure - jnp.mean(pressure[:(n_train + n_val)])
-        pressure = pressure / jnp.std(pressure[:(n_train + n_val)])
+        density = (density - jnp.mean(density[:(n_train + n_val)])) / jnp.std(density[:(n_train + n_val)])
+        pressure = (pressure - jnp.mean(pressure[:(n_train + n_val)])) / jnp.std(pressure[:(n_train + n_val)])
         velocity = velocity / jnp.std(velocity[:(n_train + n_val)]) # this one I am not so sure about
 
     start = 0

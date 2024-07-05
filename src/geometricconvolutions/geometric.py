@@ -26,6 +26,8 @@ from jax import jit, vmap
 from jax.tree_util import register_pytree_node_class
 from functools import partial, reduce
 
+import geometricconvolutions.utils as utils
+
 TINY = 1.e-5
 LETTERS = 'abcdefghijklmnopqrstuvwxyxABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
@@ -1410,6 +1412,75 @@ class GeometricImage:
             self.is_torus,
         )
 
+    def plot(
+        self, 
+        ax=None, 
+        title='', 
+        boxes=False, 
+        fill=True, 
+        symbols=False, 
+        vmin=None, 
+        vmax=None, 
+        colorbar=False,
+        vector_scaling=0.5,
+    ):
+        # plot functions should fail gracefully
+        if self.D != 2 and self.D != 3:
+            print(f'GeometricImage::plot: Can only plot dimension 2 or 3 images, but got D={self.D}')
+            return
+        if self.k > 2:
+            print(f'GeometricImage::plot: Can only plot tensor order 0,1, or 2 images, but got k={self.k}')
+            return
+        if self.k == 2 and self.D == 3:
+            print(f'GeometricImage::plot: Cannot plot D=3, k=2 geometric images.')
+            return
+        
+        ax = utils.setup_plot() if ax is None else ax
+        
+        # This was breaking earlier with jax arrays, not sure why. I really don't want plotting to break,
+        # so I am will swap to numpy arrays just in case.
+        xs, ys, *zs = np.array(self.key_array()).T
+        if self.D == 3:
+            xs = xs + utils.XOFF * zs
+            ys = ys + utils.YOFF * zs
+
+        pixels = np.array(list(self.pixels()))
+
+        if self.k == 0:
+            vmin = np.percentile(pixels,  2.5) if vmin is None else vmin
+            vmax = np.percentile(pixels, 97.5) if vmax is None else vmax
+            utils.plot_scalars(
+                ax, 
+                self.spatial_dims, 
+                xs, 
+                ys, 
+                pixels, 
+                boxes=boxes, 
+                fill=fill, 
+                symbols=symbols,
+                vmin=vmin,
+                vmax=vmax,
+                colorbar=colorbar,
+            )
+        elif self.k == 1:
+            vmin = 0. if vmin is None else vmin
+            vmax = 2. if vmax is None else vmax
+            utils.plot_vectors(
+                ax, 
+                xs, 
+                ys, 
+                pixels, 
+                boxes=boxes, 
+                fill=fill, 
+                vmin=vmin, 
+                vmax=vmax, 
+                scaling=vector_scaling,
+            )
+        else: # self.k == 2
+            utils.plot_tensors(ax, xs, ys, pixels, boxes=boxes)
+
+        utils.finish_plot(ax, title, xs, ys, self.D)
+
     def tree_flatten(self):
         """
         Helper function to define GeometricImage as a pytree so jax.jit handles it correctly. Children and aux_data
@@ -1479,6 +1550,27 @@ class GeometricFilter(GeometricImage):
                 if np.sum([np.cross(np.array(key), self[key]) for key in self.keys()]) < 0:
                     return self.times_scalar(-1)
         return self
+
+    def plot(
+        self, 
+        ax=None, 
+        title='', 
+        boxes=True, 
+        fill=True, 
+        symbols=True, 
+        vmin=None, 
+        vmax=None, 
+        colorbar=False,
+        vector_scaling=0.33,
+    ):
+        if self.k == 0:
+            vmin = -3. if vmin is None else vmin
+            vmax = 3. if vmax is None else vmax
+        else:
+            vmin = 0. if vmin is None else vmin
+            vmax = 3. if vmax is None else vmax
+
+        super(GeometricFilter, self).plot(ax, title, boxes, fill, symbols, vmin, vmax, colorbar, vector_scaling)
 
 @register_pytree_node_class
 class Layer:

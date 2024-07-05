@@ -1912,7 +1912,7 @@ def benchmark(
             data = get_data(subkey, **data_kwargs)
 
             for k, (model_name, model) in enumerate(models):
-                print(f'trial {i} {benchmark}: {benchmark_val:.4f} {model_name}')
+                print(f'trial {i} {benchmark}: {benchmark_val} {model_name}')
 
                 rand_key, subkey = random.split(rand_key)
                 res = model(

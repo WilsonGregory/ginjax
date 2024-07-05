@@ -316,9 +316,9 @@ def handleArgs(argv):
     parser.add_argument('data', help='the data .hdf5 file', type=str)
     parser.add_argument('-e', '--epochs', help='number of epochs to run', type=int, default=50)
     parser.add_argument('-batch', help='batch size', type=int, default=8)
-    parser.add_argument('-train_traj', help='number of training trajectories', type=int, default=100)
-    parser.add_argument('-val_traj', help='number of validation trajectories, defaults to batch', type=int, default=None)
-    parser.add_argument('-test_traj', help='number of testing trajectories, defaults to batch', type=int, default=None)
+    parser.add_argument('-n_train', help='number of training trajectories', type=int, default=100)
+    parser.add_argument('-n_val', help='number of validation trajectories, defaults to batch', type=int, default=None)
+    parser.add_argument('-n_test', help='number of testing trajectories, defaults to batch', type=int, default=None)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-s', '--save', help='file name to save the params', type=str, default=None)
     parser.add_argument('-l', '--load', help='file name to load params from', type=str, default=None)
@@ -336,9 +336,9 @@ def handleArgs(argv):
         args.data,
         args.epochs,
         args.batch,
-        args.train_traj,
-        args.val_traj,
-        args.test_traj,
+        args.n_train,
+        args.n_val,
+        args.n_test,
         args.seed,
         args.save,
         args.load,
@@ -391,11 +391,11 @@ model_list = [
                 output_keys=output_keys, 
                 output_depth=output_depth,
             ),
-            lr=6e-4,
+            lr=8e-4,
         ),
     ),
     (
-        'unetBase_equiv', # works best
+        'unetBase_equiv64', # works best
         partial(
             train_and_eval,
             net=partial(
@@ -408,36 +408,54 @@ model_list = [
                 use_group_norm=False,
                 upsample_filters=upsample_filters,
             ),
-            lr=1e-4, 
+            lr=3e-4, 
+        ),
+    ),
+    (
+        'unetBase_equiv48', # works best
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unetBase, 
+                output_keys=output_keys,
+                output_depth=output_depth,
+                depth=48,
+                equivariant=True,
+                conv_filters=conv_filters,
+                activation_f=ml.VN_NONLINEAR,
+                use_group_norm=False,
+                upsample_filters=upsample_filters,
+            ),
+            lr=5e-4, 
         ),
     ),
 ]
 
 key, subkey = random.split(key)
 
-# Use this for benchmarking over different learning rates
-results = ml.benchmark(
-    lambda _: data,
-    model_list,
-    subkey,
-    'lr',
-    [6e-4, 7e-4, 8e-4, 9e-4, 1e-3],
-    benchmark_type=ml.BENCHMARK_MODEL,
-    num_trials=3,
-    num_results=4,
-)
-
-# # Use this for benchmarking the models with known learning rates.
+# # Use this for benchmarking over different learning rates
 # results = ml.benchmark(
 #     lambda _: data,
 #     model_list,
 #     subkey,
-#     '',
-#     [0],
-#     benchmark_type=ml.BENCHMARK_NONE,
+#     'lr',
+#     [4e-4, 5e-4, 6e-4],
+#     benchmark_type=ml.BENCHMARK_MODEL,
 #     num_trials=3,
 #     num_results=4,
 # )
+
+# Use this for benchmarking the models with known learning rates.
+results = ml.benchmark(
+    lambda _: data,
+    model_list,
+    subkey,
+    '',
+    [0],
+    benchmark_type=ml.BENCHMARK_NONE,
+    num_trials=3,
+    num_results=4,
+)
 
 print(results)
 print('Mean', jnp.mean(results, axis=0), sep='\n')

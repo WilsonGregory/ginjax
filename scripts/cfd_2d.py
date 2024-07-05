@@ -151,10 +151,10 @@ def plot_layer(test_layer, actual_layer, save_loc, future_steps):
 
     # figsize is 8 per col, 6 per row, (cols,rows)
     fig, axes = plt.subplots(nrows=3, ncols=future_steps, figsize=(8*future_steps,6*3))
-    for col in range(future_steps):
-        utils.plot_image(test_images[col], ax=axes[0,col], title=f'{col}', colorbar=True)
-        utils.plot_image(actual_images[col], ax=axes[1,col], title=f'{col}', colorbar=True)
-        utils.plot_image((actual_images[col] - test_images[col]).norm(), ax=axes[2,col], title=f'{col}', colorbar=True)
+    for col, (test_image, actual_image) in enumerate(zip(test_images, actual_images)):
+        test_image.plot(axes[0,col], title=f'test {col}', colorbar=True)
+        actual_image.plot(axes[1,col], title=f'actual {col}', colorbar=True)
+        (actual_image - test_image).plot(axes[2,col], title=f'{col}', colorbar=True)
 
     plt.savefig(save_loc)
     plt.close(fig)
@@ -319,6 +319,7 @@ def handleArgs(argv):
     parser.add_argument('-n_train', help='number of training trajectories', type=int, default=100)
     parser.add_argument('-n_val', help='number of validation trajectories, defaults to batch', type=int, default=None)
     parser.add_argument('-n_test', help='number of testing trajectories, defaults to batch', type=int, default=None)
+    parser.add_argument('-t', '--n_trials', help='number of trials to run', type=int, default=1)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-s', '--save', help='file name to save the params', type=str, default=None)
     parser.add_argument('-l', '--load', help='file name to load params from', type=str, default=None)
@@ -339,6 +340,7 @@ def handleArgs(argv):
         args.n_train,
         args.n_val,
         args.n_test,
+        args.n_trials,
         args.seed,
         args.save,
         args.load,
@@ -348,7 +350,7 @@ def handleArgs(argv):
 
 #Main
 args = handleArgs(sys.argv)
-data_path, epochs, batch_size, n_train, n_val, n_test, seed, save_file, load_file, images_dir, verbose = args
+data_path, epochs, batch_size, n_train, n_val, n_test, n_trials, seed, save_file, load_file, images_dir, verbose = args
 
 D = 2
 N = 128
@@ -394,23 +396,7 @@ model_list = [
             lr=8e-4,
         ),
     ),
-    (
-        'unetBase_equiv64', # works best
-        partial(
-            train_and_eval,
-            net=partial(
-                models.unetBase, 
-                output_keys=output_keys,
-                output_depth=output_depth,
-                equivariant=True,
-                conv_filters=conv_filters,
-                activation_f=ml.VN_NONLINEAR,
-                use_group_norm=False,
-                upsample_filters=upsample_filters,
-            ),
-            lr=3e-4, 
-        ),
-    ),
+    # unetBase_equiv64, lr=3e-4 but maybe not ideal
     (
         'unetBase_equiv48', # works best
         partial(
@@ -441,7 +427,7 @@ key, subkey = random.split(key)
 #     'lr',
 #     [4e-4, 5e-4, 6e-4],
 #     benchmark_type=ml.BENCHMARK_MODEL,
-#     num_trials=3,
+#     num_trials=n_trials,
 #     num_results=4,
 # )
 
@@ -453,7 +439,7 @@ results = ml.benchmark(
     '',
     [0],
     benchmark_type=ml.BENCHMARK_NONE,
-    num_trials=3,
+    num_trials=n_trials,
     num_results=4,
 )
 

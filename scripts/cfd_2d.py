@@ -426,7 +426,7 @@ model_list = [
                 use_group_norm=False,
                 upsample_filters=upsample_filters,
             ),
-            lr=6e-4, 
+            lr=5e-4, 
         ),
     ),
 ]

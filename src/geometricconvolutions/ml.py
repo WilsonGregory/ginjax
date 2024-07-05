@@ -1543,43 +1543,17 @@ def add_noise(layer, stdev, rand_key):
 
     return noisy_layer
 
-def get_timeseries_XY(X, loss_steps=1, circular=False):
-    """
-    Given data X that is a time series, we want to form Y that is one step in the timeseries. If loss_steps is 1,
-    then this function will return a list of GeometricImages. If loss steps is greater than 1, this function will
-    return a list of lists where the inner list is the sequence of steps. If circular is true, then the end of the
-    time series feeds directly into the beginning.
-    args:
-        X (list of GeometricImages): GeometricImages of the time series
-        loss_steps (int): how many steps in our loss, defaults to 1
-        circular (bool): whether the time series is circular, defaults to False
-    """
-    assert loss_steps >= 1
-    data_len = len(X) if circular else (len(X) - loss_steps)
-
-    Y = []
-    for i in range(data_len):
-        if (loss_steps == 1):
-            Y.append(X[(i + 1) % len(X)])
-        else:
-            Y_steps = []
-            for step_size in range(1, loss_steps + 1): #iterate through the number of steps we are rolling out
-                Y_steps.append(X[(i + step_size) % len(X)])
-
-            Y.append(Y_steps)
-
-    return X[:data_len], Y
-
-def autoregressive_step(input, one_step, output, past_steps, future_steps=1):
+def autoregressive_step(input, one_step, output, past_steps, constant_fields={}, future_steps=1):
     """
     Given the input layer, the next step of the model, and the output, update the input
-    and output to be fed into the model next. Batch Layers should have shape (batch,channels,spatial,tensor)
-    where channels is of length c*past_steps where c is some positive integer.
+    and output to be fed into the model next. Batch Layers should have shape (batch,channels,spatial,tensor).
+    Channels are c*past_steps + constant_steps where c is some positive integer.
     args:
         input (BatchLayer): the input to the model
         one_step (BatchLayer): the model output at this step, assumed to be a single time step
         output (BatchLayer): the full output that we are building up
         past_steps (int): the number of past time steps that are fed into the model
+        constant_fields (dict): a map {key:n_constant_fields} for fields that don't depend on timestep
         future_steps (int): number of future steps that the model outputs, currently must be 1
     """
     assert future_steps == 1, f'ml::autoregressive_step: future_steps must be 1, but found {future_steps}.'
@@ -1588,14 +1562,21 @@ def autoregressive_step(input, one_step, output, past_steps, future_steps=1):
     new_output = output.empty()
     for key,step_data in one_step.items():
         k, parity = key
-        batch = step_data.shape[0] # the shape of the image, spatial + tensor
-        img_shape = step_data.shape[2:]
+        batch = step_data.shape[0] 
+        img_shape = step_data.shape[2:] # the shape of the image, spatial + tensor
         exp_data = step_data.reshape((batch,-1,future_steps) + img_shape)
         n_channels = exp_data.shape[1] # number of channels for the key, not timesteps
 
-        exp_input = input[key].reshape((batch,-1,past_steps) + img_shape)
-        next_input = jnp.concatenate([exp_input[:,:,1:], exp_data], axis=2)
-        new_input.append(k, parity, next_input.reshape((batch,-1) + img_shape))
+        if (key in constant_fields) and constant_fields[key]:
+            n_const_fields = constant_fields[key]
+            const_fields = input[key][:,-n_const_fields:]
+        else:
+            n_const_fields = 0
+            const_fields = jnp.zeros((batch,0) + img_shape)
+
+        exp_input = input[key][:,:(-n_const_fields or None)].reshape((batch,-1,past_steps) + img_shape)
+        next_input = jnp.concatenate([exp_input[:,:,1:], exp_data], axis=2).reshape((batch,-1) + img_shape)
+        new_input.append(k, parity, jnp.concatenate([next_input, const_fields], axis=1))
 
         if key in output:
             exp_output = output[key].reshape((batch,n_channels,-1) + img_shape)

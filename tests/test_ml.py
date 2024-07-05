@@ -8,46 +8,6 @@ import geometricconvolutions.ml as ml
 class TestMachineLearning:
     # Class to test the functions in the ml.py file, which include layers, data pre-processing, batching, etc.
 
-    def testGetTimeSeriesXY(self):
-        N = 5
-        parity = 0
-        D = 2
-        ts = [geom.GeometricImage.fill(N, parity, D, fill_val) for fill_val in jnp.arange(10)]
-
-        # regular
-        X,Y = ml.get_timeseries_XY(ts, loss_steps=1, circular=False)
-        assert len(X) == len(Y) == (len(ts)-1)
-        for i in range(len(ts)-1):
-            assert ts[i] == X[i]
-            if i > 0:
-                assert X[i] == Y[i-1]
-
-        # loss_steps = 3
-        X,Y = ml.get_timeseries_XY(ts, loss_steps=3, circular=False)
-        assert X[0].__class__ == geom.GeometricImage
-        assert isinstance(Y[0], list)
-        assert len(Y[2]) == 3
-        assert Y[3][0] == ts[4]
-        assert Y[3][1] == ts[5]
-        assert Y[3][2] == ts[6]
-        assert Y[5][1] == Y[6][0]
-        assert len(X) == len(Y) == (len(ts)-3)
-
-        # circular
-        X,Y = ml.get_timeseries_XY(ts, loss_steps=1, circular=True)
-        assert len(X) == len(Y) == len(ts)
-        assert X[-1] == ts[-1]
-        assert Y[-1] == X[0]
-
-        #circular, loss_steps=2
-        X,Y = ml.get_timeseries_XY(ts, loss_steps=2, circular=True)
-        assert len(X) == len(Y) == len(ts)
-        assert len(Y[3]) == 2
-        assert Y[-1][0] == X[0]
-        assert Y[-1][1] == X[1]
-        assert Y[-2][0] == X[-1]
-        assert Y[-2][1] == X[0]
-
     def testGetBatchLayer(self):
         num_devices = 1 # since it can only see the cpu
         cpu = [jax.devices('cpu')[0]]
@@ -150,7 +110,7 @@ class TestMachineLearning:
         D = 2
 
         key = random.PRNGKey(0)
-        key1, key2, key3, key4, key5 = random.split(key, 5)
+        key1, key2, key3, key4, key5, key6, key7 = random.split(key, 7)
 
         data1 = random.normal(key1, shape=(batch,past_steps) + (N,)*D)
 
@@ -180,6 +140,21 @@ class TestMachineLearning:
         assert jnp.allclose(new_input[(1,0)][:,past_steps:-1], input2[(1,0)][:,past_steps+1:])
         assert jnp.allclose(new_input[(1,0)][:,-1], one_step2[(1,0)][:,1])
 
+        constant_field1 = random.normal(key6, shape=(batch,1) + (N,)*D)
+        constant_field2 = random.normal(key7, shape=(batch,1) + (N,)*D + (D,))
+
+        input3 = input2.concat(geom.BatchLayer({ (0,0): constant_field1, (1,0): constant_field2 }, D), axis=1)
+        new_input, output = ml.autoregressive_step(input3, one_step2, input3.empty(), past_steps, {(0,0): 1, (1,0): 1})
+        assert jnp.allclose(
+            new_input[(0,0)], 
+            jnp.concatenate([input3[(0,0)][:,1:-1], one_step2[(0,0)], constant_field1], axis=1),
+        )
+        assert output == one_step2
+        assert jnp.allclose(new_input[(1,0)][:,:past_steps-1], input3[(1,0)][:,1:past_steps])
+        assert jnp.allclose(new_input[(1,0)][:,past_steps-1], one_step2[(1,0)][:,0])
+        assert jnp.allclose(new_input[(1,0)][:,past_steps:-2], input3[(1,0)][:,past_steps+1:-1])
+        assert jnp.allclose(new_input[(1,0)][:,-2], one_step2[(1,0)][:,1])
+        assert jnp.allclose(new_input[(1,0)][:,-1:], constant_field2)
 
 
 

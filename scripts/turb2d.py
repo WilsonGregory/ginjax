@@ -152,23 +152,16 @@ def map_and_loss(
     return_map_only=False,
 ):
     assert net is not None
-    curr_layer = layer_x
+    past_steps = layer_x[(0,0)].shape[1]
     out_layer = layer_y.empty()
     for _ in range(future_steps):
         key, subkey = random.split(key)
         if has_aux:
-            learned_x, aux_data = net(params, curr_layer, subkey, train, batch_stats=aux_data)
+            learned_x, aux_data = net(params, layer_x, subkey, train, batch_stats=aux_data)
         else:
-            learned_x = net(params, curr_layer, subkey, train)
+            learned_x = net(params, layer_x, subkey, train)
 
-        out_layer = out_layer.concat(learned_x, axis=1)
-        next_layer = curr_layer.empty()
-        next_layer.append(0, 0, jnp.concatenate([curr_layer[(0,0)][:,1:], learned_x[(0,0)]], axis=1))
-        vec_img = curr_layer[(1,0)]
-        # drop the first channel, learned step becomes last channel, followed by forcing field channel
-        next_layer.append(1, 0, jnp.concatenate([vec_img[:,1:-1], learned_x[(1,0)], vec_img[:,-1:]], axis=1))
-
-        curr_layer = next_layer
+        layer_x, out_layer = ml.autoregressive_step(layer_x, learned_x, out_layer, past_steps, {(1,0): 1})
 
     loss = ml.smse_loss(out_layer, layer_y)
     if return_map_only:

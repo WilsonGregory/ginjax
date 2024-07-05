@@ -318,10 +318,9 @@ class TestPropositions:
 
                     # assert that norm is equivariant
                     for gg in operators:
-                        assert jnp.allclose(
-                            geom.times_group_element(D, geom.max_pool(D, image, 2), parity, gg),
-                            geom.max_pool(D, geom.times_group_element(D, image, parity, gg), 2),
-                        )
+                        first = geom.times_group_element(D, geom.max_pool(D, image, 2), parity, gg)
+                        second = geom.max_pool(D, geom.times_group_element(D, image, parity, gg), 2)
+                        assert jnp.allclose(first, second), f'{jnp.max(jnp.abs(first - second))}'
 
     def testLayerNormEquivariance(self):
         N = 3

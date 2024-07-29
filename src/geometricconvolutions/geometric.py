@@ -16,7 +16,8 @@ See the file `LICENSE` for more details.
 - Need to implement bin-down and bin-up operators.
 """
 
-from typing import Self, Union
+from typing import Union
+from typing_extensions import Self
 
 import itertools as it
 import numpy as np #removing this

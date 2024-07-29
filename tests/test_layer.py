@@ -435,13 +435,13 @@ class TestLayer:
     def testGetComponent(self):
         N = 5
         D = 2
-        channels = 2
+        channels = 10
         timesteps = 4
         key = random.PRNGKey(0)
         key, subkey1 = random.split(key, 2)
         layer = geom.Layer(
             {
-                (0,0): random.normal(subkey1, shape=(channels*channels,) + (N,)*D),
+                (0,0): random.normal(subkey1, shape=(channels*timesteps,) + (N,)*D),
             },
             D,
         )
@@ -453,6 +453,12 @@ class TestLayer:
         assert jnp.allclose(
             layer.get_component(1, future_steps=timesteps)[(0,0)], 
             layer[(0,0)].reshape((-1,timesteps) + (N,)*D)[1],
+        )
+
+        # slices work as well
+        assert jnp.allclose(
+            layer.get_component(slice(0,2), future_steps=timesteps)[(0,0)],
+            layer[(0,0)].reshape((-1,timesteps) + (N,)*D)[:2].reshape((2*timesteps,) + (N,)*D),
         )
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

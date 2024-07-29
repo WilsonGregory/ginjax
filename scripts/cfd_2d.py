@@ -417,30 +417,30 @@ model_list = [
             # lr=2e-4,
         ),
     ),
-    # (
-    #     'dil_resnet_equiv48',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(
-    #             models.dil_resnet, 
-    #             equivariant=True, 
-    #             conv_filters=conv_filters,
-    #             output_keys=output_keys,
-    #             output_depth=output_depth,
-    #             depth=48,
-    #             activation_f=ml.VN_NONLINEAR,
-    #         ),
-    #         lr=5e-4,
-    #     ),
-    # ),
-    # (
-    #     'resnet',
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(models.resnet, output_keys=output_keys, output_depth=output_depth, depth=128),
-    #         lr=1e-3,
-    #     ),   
-    # ),
+    (
+        'dil_resnet_equiv48',
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.dil_resnet, 
+                equivariant=True, 
+                conv_filters=conv_filters,
+                output_keys=output_keys,
+                output_depth=output_depth,
+                depth=48,
+                activation_f=ml.VN_NONLINEAR,
+            ),
+            lr=5e-4,
+        ),
+    ),
+    (
+        'resnet',
+        partial(
+            train_and_eval, 
+            net=partial(models.resnet, output_keys=output_keys, output_depth=output_depth, depth=128),
+            lr=1e-3,
+        ),   
+    ),
     # (
     #     'resnet_equiv_100', 
     #     partial(
@@ -458,98 +458,98 @@ model_list = [
     #         lr=7e-4,
     #     ),
     # ),
+    (
+        'resnet_equiv_groupnorm_100', 
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.resnet, 
+                output_keys=output_keys, 
+                output_depth=output_depth,
+                equivariant=True, 
+                conv_filters=conv_filters,
+                activation_f=ml.VN_NONLINEAR,
+                use_group_norm=True,
+                depth=100,
+            ),
+            lr=7e-4,
+        ),
+    ),
+    (
+        'unetBase',
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unetBase, 
+                output_keys=output_keys, 
+                output_depth=output_depth,
+            ),
+            lr=8e-4,
+        ),
+    ),
     # (
-    #     'resnet_equiv_groupnorm_100', 
-    #     partial(
-    #         train_and_eval, 
-    #         net=partial(
-    #             models.resnet, 
-    #             output_keys=output_keys, 
-    #             output_depth=output_depth,
-    #             equivariant=True, 
-    #             conv_filters=conv_filters,
-    #             activation_f=ml.VN_NONLINEAR,
-    #             use_group_norm=True,
-    #             depth=100,
-    #         ),
-    #         lr=7e-4,
-    #     ),
-    # ),
-    # (
-    #     'unetBase',
-    #     partial(
-    #         train_and_eval,
-    #         net=partial(
-    #             models.unetBase, 
-    #             output_keys=output_keys, 
-    #             output_depth=output_depth,
-    #         ),
-    #         lr=8e-4,
-    #     ),
-    # ),
-    # # (
-    # #     'unetBase_equiv',
-    # #     partial(
-    # #         train_and_eval,
-    # #         net=partial(
-    # #             models.unetBase, 
-    # #             output_keys=output_keys,
-    # #             output_depth=output_depth,
-    # #             depth=64,
-    # #             equivariant=True,
-    # #             conv_filters=conv_filters,
-    # #             activation_f=ml.VN_NONLINEAR,
-    # #             use_group_norm=False,
-    # #             upsample_filters=upsample_filters,
-    # #         ),
-    # #         lr=3e-4, 
-    # #     ),
-    # # ),
-    # (
-    #     'unetBase_equiv48',
+    #     'unetBase_equiv',
     #     partial(
     #         train_and_eval,
     #         net=partial(
     #             models.unetBase, 
     #             output_keys=output_keys,
     #             output_depth=output_depth,
-    #             depth=48,
+    #             depth=64,
     #             equivariant=True,
     #             conv_filters=conv_filters,
     #             activation_f=ml.VN_NONLINEAR,
     #             use_group_norm=False,
     #             upsample_filters=upsample_filters,
     #         ),
-    #         lr=4e-4, # 4e-4 to 6e-4 works, larger sometimes explodes
+    #         lr=3e-4, 
     #     ),
     # ),
+    (
+        'unetBase_equiv48',
+        partial(
+            train_and_eval,
+            net=partial(
+                models.unetBase, 
+                output_keys=output_keys,
+                output_depth=output_depth,
+                depth=48,
+                equivariant=True,
+                conv_filters=conv_filters,
+                activation_f=ml.VN_NONLINEAR,
+                use_group_norm=False,
+                upsample_filters=upsample_filters,
+            ),
+            lr=4e-4, # 4e-4 to 6e-4 works, larger sometimes explodes
+        ),
+    ),
 ]
 
 key, subkey = random.split(key)
 
-# Use this for benchmarking over different learning rates
-results = ml.benchmark(
-    lambda _: data,
-    model_list,
-    subkey,
-    'lr',
-    [2e-3, 5e-3, 1e-2],
-    benchmark_type=ml.BENCHMARK_MODEL,
-    num_trials=args.n_trials,
-    num_results=4,
-)
-
-# # Use this for benchmarking the models with known learning rates.
+# # Use this for benchmarking over different learning rates
 # results = ml.benchmark(
 #     lambda _: data,
 #     model_list,
 #     subkey,
-#     '',
-#     [0],
-#     benchmark_type=ml.BENCHMARK_NONE,
+#     'lr',
+#     [2e-3, 5e-3, 1e-2],
+#     benchmark_type=ml.BENCHMARK_MODEL,
 #     num_trials=args.n_trials,
 #     num_results=4,
 # )
+
+# Use this for benchmarking the models with known learning rates.
+results = ml.benchmark(
+    lambda _: data,
+    model_list,
+    subkey,
+    '',
+    [0],
+    benchmark_type=ml.BENCHMARK_NONE,
+    num_trials=args.n_trials,
+    num_results=4,
+)
 
 print(results)
 print('Mean', jnp.mean(results, axis=0), sep='\n')

@@ -953,7 +953,7 @@ def max_pool(D, image_data, patch_len, use_norm=True, comparator_image=None):
     is true, then finally the image_data otherwise.
     args:
         D (int): the dimension of the space
-        image_data (jnp.array): the image data
+        image_data (jnp.array): the image data, currently shape (N,)*D + (D,)*k
         patch_len (int): the side length of the patches, must evenly divide all spatial dims
         use_norm (bool): if true, use the norm (over the tensor) of the image as the comparator image
         comparator_image (jnp.array): scalar image whose argmax is used to determine what value to use.
@@ -1857,7 +1857,6 @@ class Layer:
             future_steps (int): the number of future timesteps of this layer, defaults to 1
             as_layer (bool): if true, return as a new layer with a scalar feature, otherwise just the data
         """
-        # TODO: check if component can be a slice
         # explicitly call Layer's version, even if calling from vmapped BatchLayer
         spatial_dims = Layer.get_spatial_dims(self) 
 
@@ -1869,7 +1868,8 @@ class Layer:
 
             data = exp_data if data is None else jnp.concatenate([data, exp_data], axis=-1)
 
-        component_data = data[...,component]
+        component_data = data[...,component].reshape((future_steps,) + spatial_dims + (-1,))
+        component_data = jnp.moveaxis(component_data, -1, 0).reshape((-1,) + spatial_dims)
         if as_layer:
             return self.__class__({ (0,0): component_data }, self.D, self.is_torus)
         else:

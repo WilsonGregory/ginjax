@@ -254,7 +254,7 @@ def plot_grid(images, names, n_cols, **kwargs):
 
     return fig
 
-def power2(img):
+def power(img):
     """
     Compute the power of image
     From: https://bertvandenbroucke.netlify.app/2019/05/24/computing-a-power-spectrum-in-python/
@@ -307,7 +307,7 @@ def plot_power(fields, labels, ax, title=''):
 
     ks, Ps = [], []
     for field in fields:
-        k, P, _ = power2(field)
+        k, P, _ = power(field)
         ks.append(k)
         Ps.append(P)
 

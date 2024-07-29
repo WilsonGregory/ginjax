@@ -1602,7 +1602,8 @@ def map_in_batches(
             devices=devices,
         )
     else:
-        pmap_f = jax.pmap(map_f, 
+        pmap_f = jax.pmap(
+            map_f, 
             axis_name='batch', 
             in_axes=(None, 0, None, None),
             static_broadcasted_argnums=3,
@@ -1622,7 +1623,8 @@ def map_in_batches(
     if merge_layer: # if the results is a list of layers, automatically merge those layers
         out_layer = results[0].empty()
         for layer in results:
-            out_layer.concat(layer)
+            for (k,parity), image_block in layer.items(): # (num_batches, batch_size, channels, spatial, tensor)
+                out_layer.append(k, parity, image_block.reshape((-1,) + image_block.shape[2:]))
 
         return out_layer
     else:

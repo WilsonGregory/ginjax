@@ -445,8 +445,15 @@ class TestLayer:
             },
             D,
         )
-        assert jnp.allclose(layer.get_component(0, future_steps=timesteps), layer[(0,0)].reshape((-1,timesteps) + (N,)*D)[0])
-        assert jnp.allclose(layer.get_component(1, future_steps=timesteps), layer[(0,0)].reshape((-1,timesteps) + (N,)*D)[1])
+        assert isinstance(layer.get_component(0, future_steps=timesteps), geom.Layer)
+        assert jnp.allclose(
+            layer.get_component(0, future_steps=timesteps)[(0,0)], 
+            layer[(0,0)].reshape((-1,timesteps) + (N,)*D)[0],
+        )
+        assert jnp.allclose(
+            layer.get_component(1, future_steps=timesteps)[(0,0)], 
+            layer[(0,0)].reshape((-1,timesteps) + (N,)*D)[1],
+        )
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Test BatchLayer
@@ -515,6 +522,25 @@ class TestBatchLayer:
 
         with pytest.raises(AssertionError):
             layer1.get_subset(jnp.array(0))
+
+    def testGetOneLayer(self):
+        key = random.PRNGKey(time.time_ns())
+        D = 2
+        N = 5
+        k = 1
+
+        layer1 = geom.BatchLayer({ (k,0): random.normal(key, shape=((100,1) + (N,)*D + (D,)*k)) }, D, False)
+
+        layer2 = layer1.get_one_layer()
+        assert isinstance(layer2, geom.Layer)
+        assert layer2[(1,0)].shape == (1, N, N, D)
+        assert jnp.allclose(layer1[(1,0)][0], layer2[(1,0)])
+
+        idx = 12
+        layer3 = layer1.get_one_layer(idx)
+        assert isinstance(layer2, geom.Layer)
+        assert layer3[(1,0)].shape == (1, N, N, D)
+        assert jnp.allclose(layer1[(1,0)][idx], layer3[(1,0)])
 
     def testAppend(self):
         # For BatchLayer, append should probably only be used while it is vmapped to a Layer

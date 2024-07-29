@@ -180,6 +180,7 @@ def times_series_to_layers(
     Given time series fields, convert them to input and output BatchLayers based on the number of past steps,
     future steps, and any subsampling/downsampling.
     args:
+        D (int): dimension of problem
         dynamic_fields (dict of jnp.array): the fields to build layers, dict with keys (k,parity) and values
             of array of shape (batch,time,spatial,tensor)
         constant_fields (dict of jnp.array): fields constant over time, dict with keys (k,parity) and values

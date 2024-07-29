@@ -303,52 +303,6 @@ def power2(img):
 
     return k,P,N
 
-
-# def power(img):
-#     """
-#     Compute the power of image
-#     args:
-#         img (jnp.array): scalar image data, shape (batch,channel,spatial)
-#     """
-#     # images are assumed to be scalar images
-#     spatial_dims = img.shape[2:]
-#     kmax = min(s for s in spatial_dims) // 2
-#     even = spatial_dims[0] % 2 == 0 # are the image sides even?
-
-#     img = jnp.fft.fftn(img, s=spatial_dims) # fourier transform
-#     P = img.real**2 + img.imag**2
-#     P = jnp.sum(jnp.mean(P, axis=0), axis=0) # mean over batch, then sum over channels. Shape (spatial,)
-
-#     k = [jnp.arange(d, dtype=jnp.float32) for d in P.shape]
-#     k = [j - len(j) * (j > len(j) // 2) for j in k[:-1]] + [k[-1]]
-#     k = jnp.meshgrid(*k)
-#     k = jnp.stack(k, axis=0) # (D, spatial)
-#     k = jnp.linalg.norm(k, axis=0) 
-
-#     N = np.full_like(P, 2, dtype=jnp.int32)
-#     N[..., 0] = 1
-#     if even:
-#         N[..., -1] = 1
-
-#     k = k.flatten()
-#     P = P.flatten()
-#     N = N.flatten()
-
-#     kbin = jnp.ceil(k).astype(jnp.int32)
-#     k = jnp.bincount(kbin, weights=k * N)
-#     P = jnp.bincount(kbin, weights=P * N)
-#     N = jnp.bincount(kbin, weights=N).round().astype(jnp.int32)
-
-#     # drop k=0 mode and cut at kmax (smallest Nyquist)
-#     k = k[1:1+kmax]
-#     P = P[1:1+kmax]
-#     N = N[1:1+kmax]
-
-#     k /= N
-#     P /= N
-
-#     return k,P,N
-
 def plot_power(fields, labels, ax, title=''):
 
     ks, Ps = [], []

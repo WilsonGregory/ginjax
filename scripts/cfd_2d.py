@@ -139,35 +139,27 @@ def get_data(
 
     return train_X, train_Y, val_X, val_Y, test_X, test_Y, test_rollout_X, test_rollout_Y
 
-def plot_layer(test_layer, actual_layer, save_loc, future_steps, component=0, scale=False, show_power=False, title=''):
-    test_component = test_layer.get_component(component, future_steps)[0] # 0 for first batch component
-    actual_component = actual_layer.get_component(component, future_steps)[0]
-
-    if scale:
-        # scale the images so that they range from -1 to 1
-        data = jnp.concatenate([test_component, actual_component])
-        max_val = jnp.max(jnp.abs(data))
-        test_component = test_component / max_val
-        actual_component = actual_component / max_val
-        vmin = -1.
-        vmax = 1.
-    else:
-
-        vmin = None
-        vmax = None
+def plot_layer(
+    test_layer: geom.BatchLayer, 
+    actual_layer: geom.BatchLayer, 
+    save_loc: str, 
+    future_steps: int, 
+    component: int = 0, 
+    show_power: bool = False, 
+    title: str = '',
+):
+    test_images = test_layer.get_component(component, future_steps).get_one_layer().to_images()
+    actual_images = actual_layer.get_component(component, future_steps).get_one_layer().to_images()
 
     nrows = 4 if show_power else 3
-
-    test_images = [geom.GeometricImage(img, 0, test_layer.D, test_layer.is_torus) for img in test_component]
-    actual_images = [geom.GeometricImage(img, 0, test_layer.D, test_layer.is_torus) for img in actual_component]
 
     # figsize is 8 per col, 6 per row, (cols,rows)
     fig, axes = plt.subplots(nrows=nrows, ncols=future_steps, figsize=(8*future_steps,6*nrows))
     for col, (test_image, actual_image) in enumerate(zip(test_images, actual_images)):
-        test_image.plot(axes[0,col], title=f'test {title} {col}', vmin=vmin, vmax=vmax, colorbar=True)
-        actual_image.plot(axes[1,col], title=f'actual {title} {col}', vmin=vmin, vmax=vmax, colorbar=True)
+        test_image.plot(axes[0,col], title=f'test {title} {col}', colorbar=True)
+        actual_image.plot(axes[1,col], title=f'actual {title} {col}', colorbar=True)
         diff = (actual_image - test_image).norm()
-        diff.plot(axes[2,col], title=f'diff {title} {col} (mse: {jnp.mean(diff.data)})', vmin=vmin, vmax=vmax, colorbar=True)
+        diff.plot(axes[2,col], title=f'diff {title} {col} (mse: {jnp.mean(diff.data)})', colorbar=True)
 
         if show_power:
             utils.plot_power(
@@ -179,11 +171,18 @@ def plot_layer(test_layer, actual_layer, save_loc, future_steps, component=0, sc
     plt.savefig(save_loc)
     plt.close(fig)
 
-def plot_timestep_power(layers, labels, save_loc, future_steps, component=0, title=''):
+def plot_timestep_power(
+    layers: list[geom.BatchLayer], 
+    labels: list[str], 
+    save_loc: str, 
+    future_steps: int, 
+    component: int = 0, 
+    title: str = '',
+):
     fig, axes = plt.subplots(nrows=1, ncols=future_steps, figsize=(8*future_steps,6*1))
     for i, ax in enumerate(axes):
         utils.plot_power(
-            [layer.get_component(component, future_steps=future_steps)[:,i:i+1] for layer in layers],
+            [layer.get_component(component, future_steps, as_layer=False)[:,i:i+1] for layer in layers],
             labels,
             ax,
             title=f'{title} {i}',

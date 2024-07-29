@@ -16,6 +16,8 @@ See the file `LICENSE` for more details.
 - Need to implement bin-down and bin-up operators.
 """
 
+from typing import Self, Union
+
 import itertools as it
 import numpy as np #removing this
 import jax.numpy as jnp
@@ -1609,10 +1611,10 @@ class Layer:
         #copy dict, but image_block is immutable jnp array
         self.data = { key: image_block for key, image_block in data.items() } 
 
-    def copy(self):
+    def copy(self: Self) -> Self:
         return self.__class__(self.data, self.D, self.is_torus)
 
-    def empty(self):
+    def empty(self: Self) -> Self:
         return self.__class__({}, self.D, self.is_torus)
     
     @classmethod
@@ -1747,7 +1749,7 @@ class Layer:
         """
         return self * (1.0/other)
 
-    def concat(self, other, axis=0):
+    def concat(self: Self, other: Self, axis: int = 0) -> Self:
         """
         Concatenate the layers along a specified axis.
         args:
@@ -1767,7 +1769,7 @@ class Layer:
 
         return new_layer
 
-    def to_images(self):
+    def to_images(self: Self) -> list[GeometricImage]:
         # Should only be used in Layer of vmapped BatchLayer
         images = []
         for image_block in self.values():
@@ -1838,7 +1840,12 @@ class Layer:
 
         return out_layer
 
-    def get_component(self, component, future_steps=1, as_layer=False):
+    def get_component(
+        self: Self, 
+        component: int, 
+        future_steps: int = 1, 
+        as_layer: bool = True,
+    ) -> Union[Self, jnp.ndarray]:
         """
         Given a layer with data with shape (channels*future_steps,spatial,tensor), combine all
         fields into a single block of data (future_steps,spatial,channels*tensor) then pick the
@@ -1864,7 +1871,7 @@ class Layer:
 
         component_data = data[...,component]
         if as_layer:
-            self.__class__({ (0,0): component_data }, self.D, self.is_torus)
+            return self.__class__({ (0,0): component_data }, self.D, self.is_torus)
         else:
             return component_data
     
@@ -1971,6 +1978,18 @@ class BatchLayer(Layer):
     def get_one(self, idx=0):
         return self.get_subset(jnp.array([idx]))
     
+    def get_one_layer(self: Self, idx: int = 0) -> Layer:
+        """
+        Similar to get_one, but instead get a single index of a BatchLayer as a Layer
+        args:
+            idx (int): the index along the batch to get as a Layer.
+        """
+        return Layer(
+            { k: image_block[idx] for k, image_block in self.items() },
+            self.D,
+            self.is_torus,
+        )
+    
     def times_group_element(self, gg, precision=None):
         return self._times_group_element(gg, precision)
 
@@ -1999,11 +2018,16 @@ class BatchLayer(Layer):
     def norm(self):
         return super(BatchLayer, self).norm()
 
-    def get_component(self, component, future_steps=1, as_layer=False):
+    def get_component(
+        self: Self, 
+        component: int, 
+        future_steps: int = 1, 
+        as_layer: bool = True,
+    ) -> Union[Self, jnp.ndarray]:
         return self._get_component(component, future_steps, as_layer)
 
     @partial(jax.vmap, in_axes=(0,None,None,None))
-    def _get_component(self, component, future_steps, as_layer):
+    def _get_component(self: Self, component: int, future_steps: int, as_layer: bool) -> Union[Self, jnp.ndarray]:
         return super(BatchLayer, self).get_component(component, future_steps, as_layer)
     
     def device_put(self, sharding, num_devices):

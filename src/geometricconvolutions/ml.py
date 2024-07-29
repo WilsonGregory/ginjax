@@ -24,6 +24,7 @@ BATCH_NORM = 'batch_norm'
 GROUP_NORM = 'group_norm'
 EQUIV_DENSE = 'equiv_dense'
 VN_NONLINEAR = 'vector_neuron_nonlinear'
+VN_MAX_POOL = 'vector_neuron_max_pool'
 VECTOR_DOTS_NONLINEAR = 'vector_dots_nonlinear'
 NORM_NONLINEAR = 'norm_nonlinear'
 
@@ -1035,6 +1036,56 @@ def batch_max_pool(input_layer, patch_len, use_norm=True):
 
     return out_layer
 
+@functools.partial(jax.jit, static_argnums=[2,3])
+def batch_VN_max_pool(params, layer, patch_len, mold_params=False):
+    """
+    The max pool in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
+    Basically use the channels of a vector to get a direction vector. Then the vector that is most
+    aligned in the direction is the "max" vector.
+    args:
+        params (): params tree
+        layer (BatchLayer): the input layer
+        patch_len (int): sidelength of the patch to pool over
+        eps (float): small value to avoid dividing by zero if the k_vec is close to 0, defaults to 1e-5
+    """
+    params_idx, this_params = get_layer_params(params, mold_params, VN_MAX_POOL)
+
+    if mold_params:
+        this_params
+
+    out_layer = layer.empty()
+    for (k,parity), img_block in layer.items():
+        assert k == 0 or k == 1, 'batch_VN_nonlinear: Layer can only have scalars and vectors'
+        in_c = img_block.shape[1]
+
+        if k == 0:
+            # do normal max pool
+            vmap_max_pool = jax.vmap(
+                jax.vmap(geom.max_pool, in_axes=(None, 0, None, None)), 
+                in_axes=(None, 0, None, None),
+            )
+            out_layer.append(k, parity, vmap_max_pool(layer.D, img_block, patch_len, True))
+        elif k == 1: # k==1
+            if mold_params:
+                this_params[(k,parity)] = { 'W': jnp.ones((in_c,in_c)) }
+
+            directions = jnp.einsum('ab,cb...->ca...', this_params[(k,parity)]['W'], img_block)
+            inner_product = jnp.einsum('...a,...a->...', directions, img_block)
+
+            vmap_max_pool = jax.vmap(
+                jax.vmap(geom.max_pool, in_axes=(None, 0, None, None, 0)), 
+                in_axes=(None, 0, None, None, 0),
+            )
+
+            pooled_image = vmap_max_pool(layer.D, img_block, patch_len, False, inner_product)
+            out_layer.append(k, parity, pooled_image)
+        else:
+            raise NotImplementedError(f'batch_VN_max_pool: only k==0,k==1 implemented but got k=={k}')
+
+    params = update_params(params, params_idx, this_params, mold_params)
+
+    return out_layer, params
+
 @functools.partial(jit, static_argnums=1)
 def average_pool_layer(input_layer, patch_len):
     out_layer = input_layer.empty()
@@ -1167,6 +1218,7 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
         CASCADING_CONTRACTIONS: cascading_contractions_init,
         PARAMED_CONTRACTIONS: paramed_contractions_init,
         EQUIV_DENSE: equiv_dense_init,
+        VN_MAX_POOL: VN_max_pool_init,
         VN_NONLINEAR: VN_nonlinear_init,
         NORM_NONLINEAR: norm_nonlinear_init,
         VECTOR_DOTS_NONLINEAR: vector_dots_init,
@@ -1326,6 +1378,21 @@ def vector_dots_init(rand_key, tree):
 
     return out_params
 
+def VN_max_pool_init(rand_key, tree):
+    out_params = {}
+    for key, params in tree.items():
+        out_params[key] = {}
+        rand_key, subkey = random.split(rand_key)
+        bound = 1./jnp.sqrt(len(params['W']))
+        out_params[key]['W'] = random.uniform(
+            subkey, 
+            shape=params['W'].shape, 
+            minval=-bound, 
+            maxval=bound,
+        )
+
+    return out_params
+
 ## Losses
 
 def rmse_loss(x, y):
@@ -1340,10 +1407,33 @@ def rmse_loss(x, y):
 def mse_loss(x, y):
     return jnp.mean((x - y) ** 2)
 
+def timestep_smse_loss(layer_x, layer_y, n_steps):
+    """
+    Returns loss for each timestep. Loss is summed over the channels, and mean over spatial dimensions
+    and the batch.
+    args:
+        layer_x (BatchLayer): predicted data
+        layer_y (BatchLayer): target data
+        n_steps (int): number of timesteps, all channels should be a multiple of this
+    """
+    spatial_size = np.multiply.reduce(layer_x.get_spatial_dims())
+    loss_per_step = jnp.zeros(n_steps)
+    for image_a, image_b in zip(layer_x.values(), layer_y.values()):
+        batch = len(image_a)
+        image_a = image_a.reshape((batch,-1,n_steps) + image_a.shape[2:])
+        image_b = image_b.reshape((batch,-1,n_steps) + image_b.shape[2:])
+        loss = jnp.sum((image_a - image_b)**2, axis=(1,) + tuple(range(3,image_a.ndim))) / spatial_size
+        loss_per_step = loss_per_step + jnp.mean(loss, axis=0)
+
+    return loss_per_step
+
 def smse_loss(layer_x, layer_y):
     """
     Sum of mean squared error loss. The sum is over the channels, the mean is over the spatial dimensions and
     the batch.
+    args:
+        layer_x (Layer): the input layer or batch layer
+        layer_y (Layer): the target layer or batch layer
     """
     spatial_size = np.multiply.reduce(layer_x.get_spatial_dims())
     return jnp.mean(jnp.sum((layer_x.to_vector() - layer_y.to_vector())**2/spatial_size, axis=1))
@@ -1354,24 +1444,25 @@ def l2_loss(x, y):
 def l2_squared_loss(x, y):
     return jnp.sum((x - y) ** 2)
 
-def pointwise_normalized_loss(layer_x, layer_y, eps=1e-5):
+def normalized_smse_loss(layer_x, layer_y, eps=1e-5):
     """
     Pointwise normalized loss. We find the norm of each channel at each spatial point of the true value
     and divide the tensor by that norm. Then we take the l2 loss, mean over the spatial dimensions, sum 
-    over the channels, take a final square root and mean over the batch.
+    over the channels, then mean over the batch.
     args:
         layer_x (BatchLayer): input batch layer
         layer_y (BatchLayer): target batch layer
+        eps (float): ensure that we aren't dividing by 0 norm, defaults to 1e-5
     """
     spatial_size = np.multiply.reduce(layer_x.get_spatial_dims())
 
     order_loss = jnp.zeros(layer_x.get_L())
     for (k,parity), img_block in layer_y.items():
-        norm = geom.norm(layer_y.D + 2, img_block, keepdims=True)
+        norm = geom.norm(layer_y.D + 2, img_block, keepdims=True)**2 # (b,c,spatial, (1,)*k)
         normalized_l2 = ((layer_x[(k,parity)] - img_block)**2) / (norm + eps)
-        order_loss = order_loss + (jnp.sum(normalized_l2, axis=range(1,img_block.ndim)) / spatial_size)
+        order_loss = order_loss + (jnp.sum(normalized_l2, axis=range(1,img_block.ndim)) / spatial_size) # (b,)
 
-    return jnp.mean(jnp.sqrt(order_loss))
+    return jnp.mean(order_loss)
 
 ## Data and Batching operations
 
@@ -1458,7 +1549,7 @@ def map_loss_in_batches(
 
     rand_key, subkey = random.split(rand_key)
     X_batches, Y_batches = get_batch_layer((layer_X, layer_Y), batch_size, subkey, devices)
-    total_loss = 0
+    total_loss = None
     for X_batch, Y_batch in zip(X_batches, Y_batches):
         rand_key, subkey = random.split(rand_key)
         if (has_aux):
@@ -1466,7 +1557,7 @@ def map_loss_in_batches(
         else:
             one_loss = pmap_loss_grad(params, X_batch, Y_batch, subkey, False)
 
-        total_loss += jnp.mean(one_loss)
+        total_loss = (0 if total_loss is None else total_loss) + jnp.mean(one_loss, axis=0)
 
     return total_loss / len(X_batches)
 
@@ -1480,6 +1571,7 @@ def map_in_batches(
     has_aux=False, 
     aux_data=None,
     devices=None,
+    merge_layer=False,
 ):
     """
     Runs map_f for the entire layer_X, splitting into batches if the layer is larger than
@@ -1497,6 +1589,7 @@ def map_in_batches(
         has_aux (bool): has auxilliary data, such as batch_stats, defaults to False
         aux_data (any): auxilliary data, such as batch stats. Passed to the function is has_aux is True.
         devices (list): gpu/cpu devices to use
+        merge_layer (bool): if the result is a list of layers, automatically merge those layers
     returns: average loss over the entire layer
     """
     if has_aux:
@@ -1526,7 +1619,14 @@ def map_in_batches(
 
         results.append(batch_out)
 
-    return results
+    if merge_layer: # if the results is a list of layers, automatically merge those layers
+        out_layer = results[0].empty()
+        for layer in results:
+            out_layer.concat(layer)
+
+        return out_layer
+    else:
+        return results
 
 def add_noise(layer, stdev, rand_key):
     """
@@ -1587,6 +1687,45 @@ def autoregressive_step(input, one_step, output, past_steps, constant_fields={},
         new_output.append(k, parity, full_output)
 
     return new_input, new_output
+
+def autoregressive_map(
+    params, 
+    layer_x, 
+    key, 
+    train, 
+    past_steps,
+    future_steps,
+    aux_data=None, 
+    net=None, 
+    has_aux=False, 
+):
+    """
+    Given a network, perform an autoregressive step (future_steps) times, and return the output
+    steps in a single layer.
+    args:
+        params (params tree): the params
+        layer_x (Layer): the input layer to map
+        key (rand key):
+        train (bool): whether it is in training mode or test mode
+        past_steps (int): the number of past steps input to the autoregressive map
+        future_steps (int): how many times to loop through the autoregression
+        aux_data (): auxilliary data to pass to the network
+        net (func): the network that performs one step of the autoregression
+        has_aux (bool): whether net returns an aux_data, defaults to False
+    """
+    assert net is not None
+
+    out_layer = layer_x.empty() # assume that the out layer has the same D and is_torus as the inptu
+    for _ in range(future_steps):
+        key, subkey = random.split(key)
+        if has_aux:
+            learned_x, aux_data = net(params, layer_x, subkey, train, batch_stats=aux_data)
+        else:
+            learned_x = net(params, layer_x, subkey, train)
+
+        layer_x, out_layer = autoregressive_step(layer_x, learned_x, out_layer, past_steps)
+
+    return out_layer
 
 ### Train
 

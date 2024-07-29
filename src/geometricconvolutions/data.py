@@ -184,9 +184,7 @@ def times_series_to_layers(
             of array of shape (batch,time,spatial,tensor)
         constant_fields (dict of jnp.array): fields constant over time, dict with keys (k,parity) and values
             of array of shape (batch,spatial,tensor)
-        force (jnp.array): vector field, constant forcing term, shape (batch,spatial,D)
-        particles (jnp.array): scalar field, advected particle density (batch,time,spatial,D)
-        velocity (jnp.array): vector field, velocity of the fluid (batch,time,spatial,D)
+        is_torus (bool or tuple of bools): whether the images are tori
         past_steps (int): number of historical steps to use in the model
         future_steps (int): number of future steps
         skip_intial (int): number of initial time steps to skip, defaults to 0

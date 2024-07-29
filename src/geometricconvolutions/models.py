@@ -168,6 +168,10 @@ def unetBase(
         layer = ml.batch_max_pool(layer, 2, use_norm=equivariant)
 
         for _ in range(num_conv):
+            if use_group_norm: # try the pre-activations
+                layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=mold_params)
+            layer, params = handle_activation(activation_f, params, layer, mold_params)
+
             layer, params = ml.batch_conv_layer(
                 params,
                 layer,
@@ -177,9 +181,7 @@ def unetBase(
                 bias=True,
                 mold_params=mold_params,
             )
-            if use_group_norm:
-                layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=mold_params)
-            layer, params = handle_activation(activation_f, params, layer, mold_params)
+            
 
     # now we do the upsampling and concatenation
     for upsample in reversed(range(num_downsamples)):
@@ -200,6 +202,10 @@ def unetBase(
         layer = layer.concat(residual_layers[upsample], axis=1)
 
         for _ in range(num_conv):
+            if use_group_norm:
+                layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=mold_params)
+            layer, params = handle_activation(activation_f, params, layer, mold_params)
+            
             layer, params = ml.batch_conv_layer(
                 params,
                 layer,
@@ -209,9 +215,7 @@ def unetBase(
                 bias=True,
                 mold_params=mold_params,
             )
-            if use_group_norm:
-                layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=mold_params)
-            layer, params = handle_activation(activation_f, params, layer, mold_params)
+            
 
     layer, params = ml.batch_conv_layer(
         params,
@@ -362,13 +366,14 @@ def unet2015(
 
     return res
 
-@functools.partial(jax.jit, static_argnums=[3,4,5,6,7,9])
+@functools.partial(jax.jit, static_argnums=[3,4,5,6,7,8,10,11])
 def dil_resnet(
     params, 
     layer, 
     key, 
     train, 
     output_keys,
+    output_depth=1,
     depth=48, 
     activation_f=jax.nn.relu, 
     equivariant=False, 
@@ -386,6 +391,12 @@ def dil_resnet(
         layer (BatchLayer): input batch layer
         key (jnp.random key): key for any layers requiring randomization
         train (bool): whether train mode or test mode, relevant for batch_norm
+        output_keys (tuple of tuples of ints): the output key types of the model. For the Shallow Water
+            experiments, should be ((0,0),(1,0)) for the pressure/velocity form and ((0,0),(0,1)) for 
+            the pressure/vorticity form.
+        output_depth (int or tuple): output depth for each output key. If an int, then the depth is 
+            that int for each key. Defaults to 1, cannot be None. Needs to be hashable, so the structure
+            is ( (key,depth), (key,depth)) where key itself is a tuple like (0,0)
         depth (int): the depth of the layers, defaults to 48
         activation_f (string or function): the function that we pass to batch_scalar_activation, defaults to relu
         equivariant (bool): whether to use the equivariant version of the model, defaults to False
@@ -394,6 +405,9 @@ def dil_resnet(
     """
     assert layer.D == 2
     num_blocks = 4
+
+    if isinstance(output_depth, int):
+        output_depth = tuple((key,output_depth) for key in output_keys)
 
     if equivariant:
         assert conv_filters is not None
@@ -455,7 +469,7 @@ def dil_resnet(
         params, 
         layer,
         filter_info_M1,
-        1,
+        output_depth,
         output_keys,
         bias=True,
         mold_params=return_params,
@@ -463,13 +477,14 @@ def dil_resnet(
 
     return (layer, params) if return_params else layer
 
-@functools.partial(jax.jit, static_argnums=[3,4,5,6,7,9])
+@functools.partial(jax.jit, static_argnums=[3,4,5,6,7,8,10,11])
 def resnet(
     params, 
     layer, 
     key, 
     train, 
     output_keys,
+    output_depth=1,
     depth=128, 
     activation_f=jax.nn.gelu,
     equivariant=False, 
@@ -485,6 +500,12 @@ def resnet(
         layer (BatchLayer): input batch layer
         key (jnp.random key): key for any layers requiring randomization
         train (bool): whether train mode or test mode, relevant for batch_norm
+        output_keys (tuple of tuples of ints): the output key types of the model. For the Shallow Water
+            experiments, should be ((0,0),(1,0)) for the pressure/velocity form and ((0,0),(0,1)) for 
+            the pressure/vorticity form.
+        output_depth (int or tuple): output depth for each output key. If an int, then the depth is 
+            that int for each key. Defaults to 1, cannot be None. Needs to be hashable, so the structure
+            is ( (key,depth), (key,depth)) where key itself is a tuple like (0,0)
         depth (int): the depth of the layers, defaults to 48
         activation_f (string or function): the function that we pass to batch_scalar_activation, defaults to relu
         equivariant (bool): whether to use the equivariant version of the model, defaults to False
@@ -493,6 +514,12 @@ def resnet(
     """
     num_blocks = 8
     num_conv = 2
+
+    assert output_keys is not None
+    assert output_depth is not None
+
+    if isinstance(output_depth, int):
+        output_depth = tuple((key,output_depth) for key in output_keys)
 
     if equivariant:
         assert conv_filters is not None
@@ -556,7 +583,7 @@ def resnet(
         params, 
         layer,
         filter_info_M1,
-        1,
+        output_depth,
         output_keys,
         bias=True,
         mold_params=return_params,

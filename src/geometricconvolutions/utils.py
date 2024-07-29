@@ -5,6 +5,9 @@ from matplotlib.collections import PatchCollection
 from matplotlib.patches import Wedge
 import cmastro
 
+import jax.numpy as jnp
+import jax
+
 # Visualize the filters.
 
 FIGSIZE = (4, 3)
@@ -250,3 +253,115 @@ def plot_grid(images, names, n_cols, **kwargs):
         plot_nothing(axis)
 
     return fig
+
+def power2(img):
+    """
+    Compute the power of image
+    From: https://bertvandenbroucke.netlify.app/2019/05/24/computing-a-power-spectrum-in-python/
+    args:
+        img (jnp.array): scalar image data, shape (batch,channel,spatial)
+    """
+    # images are assumed to be scalar images
+    spatial_dims = img.shape[2:]
+
+    # some assumptions about the image
+    assert len(spatial_dims) == 2 # assert the D=2
+    assert spatial_dims[0] == spatial_dims[1] # the image is square
+
+    kmax = min(s for s in spatial_dims) // 2
+    even = spatial_dims[0] % 2 == 0 # are the image sides even?
+
+    img = jnp.fft.fftn(img, s=spatial_dims) # fourier transform
+    P = img.real**2 + img.imag**2
+    P = jnp.sum(jnp.mean(P, axis=0), axis=0) # mean over batch, then sum over channels. Shape (spatial,)
+
+    kfreq = jnp.fft.fftfreq(spatial_dims[0]) * spatial_dims[0]
+    kfreq2D = jnp.meshgrid(kfreq, kfreq)
+    k = jnp.linalg.norm(jnp.stack(kfreq2D, axis=0), axis=0)
+
+    N = np.full_like(P, 2, dtype=jnp.int32)
+    N[..., 0] = 1
+    if even:
+        N[..., -1] = 1
+
+    k = k.flatten()
+    P = P.flatten()
+    N = N.flatten()
+
+    kbin = jnp.ceil(k).astype(jnp.int32)
+    k = jnp.bincount(kbin, weights=k * N)
+    P = jnp.bincount(kbin, weights=P * N)
+    N = jnp.bincount(kbin, weights=N).round().astype(jnp.int32)
+
+    # drop k=0 mode and cut at kmax (smallest Nyquist)
+    k = k[1:1+kmax]
+    P = P[1:1+kmax]
+    N = N[1:1+kmax]
+
+    k /= N
+    P /= N
+
+    return k,P,N
+
+
+# def power(img):
+#     """
+#     Compute the power of image
+#     args:
+#         img (jnp.array): scalar image data, shape (batch,channel,spatial)
+#     """
+#     # images are assumed to be scalar images
+#     spatial_dims = img.shape[2:]
+#     kmax = min(s for s in spatial_dims) // 2
+#     even = spatial_dims[0] % 2 == 0 # are the image sides even?
+
+#     img = jnp.fft.fftn(img, s=spatial_dims) # fourier transform
+#     P = img.real**2 + img.imag**2
+#     P = jnp.sum(jnp.mean(P, axis=0), axis=0) # mean over batch, then sum over channels. Shape (spatial,)
+
+#     k = [jnp.arange(d, dtype=jnp.float32) for d in P.shape]
+#     k = [j - len(j) * (j > len(j) // 2) for j in k[:-1]] + [k[-1]]
+#     k = jnp.meshgrid(*k)
+#     k = jnp.stack(k, axis=0) # (D, spatial)
+#     k = jnp.linalg.norm(k, axis=0) 
+
+#     N = np.full_like(P, 2, dtype=jnp.int32)
+#     N[..., 0] = 1
+#     if even:
+#         N[..., -1] = 1
+
+#     k = k.flatten()
+#     P = P.flatten()
+#     N = N.flatten()
+
+#     kbin = jnp.ceil(k).astype(jnp.int32)
+#     k = jnp.bincount(kbin, weights=k * N)
+#     P = jnp.bincount(kbin, weights=P * N)
+#     N = jnp.bincount(kbin, weights=N).round().astype(jnp.int32)
+
+#     # drop k=0 mode and cut at kmax (smallest Nyquist)
+#     k = k[1:1+kmax]
+#     P = P[1:1+kmax]
+#     N = N[1:1+kmax]
+
+#     k /= N
+#     P /= N
+
+#     return k,P,N
+
+def plot_power(fields, labels, ax, title=''):
+
+    ks, Ps = [], []
+    for field in fields:
+        k, P, _ = power2(field)
+        ks.append(k)
+        Ps.append(P)
+
+    for k, P, l in zip(ks, Ps, labels):
+        ax.loglog(k, P, label=l, alpha=0.7)
+
+    ax.legend()
+    ax.set_xlabel('unnormalized wavenumber')
+    ax.set_ylabel('unnormalized power')
+    if title:
+        ax.set_title(title)

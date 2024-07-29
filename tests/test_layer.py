@@ -432,6 +432,22 @@ class TestLayer:
         vector_norm = jnp.linalg.norm(layer[(1,0)].reshape(layer[(1,0)].shape[:1+D] + (-1,)), axis=1+D)
         assert jnp.allclose(normed_layer[(0,0)][2*channels:], vector_norm)
 
+    def testGetComponent(self):
+        N = 5
+        D = 2
+        channels = 2
+        timesteps = 4
+        key = random.PRNGKey(0)
+        key, subkey1 = random.split(key, 2)
+        layer = geom.Layer(
+            {
+                (0,0): random.normal(subkey1, shape=(channels*channels,) + (N,)*D),
+            },
+            D,
+        )
+        assert jnp.allclose(layer.get_component(0, future_steps=timesteps), layer[(0,0)].reshape((-1,timesteps) + (N,)*D)[0])
+        assert jnp.allclose(layer.get_component(1, future_steps=timesteps), layer[(0,0)].reshape((-1,timesteps) + (N,)*D)[1])
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Test BatchLayer
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

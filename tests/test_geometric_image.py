@@ -1074,6 +1074,8 @@ class TestGeometricImage:
             3,
         )
 
+        # TODO: add tests for using comparator image
+
     def testAveragePool(self):
         image1 = geom.GeometricImage(
             jnp.array([

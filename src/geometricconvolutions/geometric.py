@@ -16,6 +16,8 @@ See the file `LICENSE` for more details.
 - Need to implement bin-down and bin-up operators.
 """
 
+from typing import Self, Union
+
 import itertools as it
 import numpy as np #removing this
 import jax.numpy as jnp
@@ -944,37 +946,52 @@ def norm(idx_shift, data, keepdims=False):
     return jnp.linalg.norm(data.reshape(data.shape[:idx_shift] + (-1,)), axis=idx_shift, keepdims=keepdims)
 
 @partial(jax.jit, static_argnums=[0,2,3])
-def max_pool(D, image_data, patch_len, use_norm=True):
+def max_pool(D, image_data, patch_len, use_norm=True, comparator_image=None):
     """
-    Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined
-    by the norm of the pixel when use_norm is True. Note that for scalars, this will be the absolute value of 
-    the pixel. If you want to use the max instead, set use_norm to False (requires scalar images).
+    Perform a max pooling operation where the length of the side of each patch is patch_len. Max is 
+    determined by the value of comparator_image if present, then the norm of image_data if use_norm
+    is true, then finally the image_data otherwise.
     args:
         D (int): the dimension of the space
-        image_data (jnp.array): the image data
+        image_data (jnp.array): the image data, currently shape (N,)*D + (D,)*k
         patch_len (int): the side length of the patches, must evenly divide all spatial dims
+        use_norm (bool): if true, use the norm (over the tensor) of the image as the comparator image
+        comparator_image (jnp.array): scalar image whose argmax is used to determine what value to use.
     """
     spatial_dims, k = parse_shape(image_data.shape, D)
-    assert use_norm or (k == 0)
+    assert (comparator_image is not None) or use_norm or (k == 0)
 
+    # TODO: use the batch dimension of dilated_patches correctly
     patches = jax.lax.conv_general_dilated_patches(
         image_data.reshape((1,) + spatial_dims + (-1,)).astype('float32'), # NHWDC
         filter_shape=(patch_len,)*D, # filter_shape
         window_strides=(patch_len,)*D,
         padding=((0,0),)*D, # padding
-        dimension_numbers=('NHWDC', 'OIHWD', 'NCHWD') if D==3 else ('NHWC', 'OIHW', 'NCHW')
-    )[0] # no batch
+        dimension_numbers=('NHWDC', 'OIHWD', 'NCHWD') if D==3 else ('NHWC', 'OIHW', 'NCHW'),
+    )[0] # no batch. Out shape (batch,channels,spatial)
 
     new_spatial_dims = patches.shape[1:]
-    patches = patches.reshape((D**k,patch_len**D,-1))
+    patches = patches.reshape((D**k,patch_len**D,-1)) # (tensor,patch,num_patches)
 
-    # out_axes = 0 so the spatial dims are transposed to the front
-    if use_norm:
-        vmap_max = vmap(lambda patch: patch[:,jnp.argmax(jnp.linalg.norm(patch, axis=0))], in_axes=2)
+    if comparator_image is not None:
+        assert comparator_image.shape == spatial_dims
+        comparator_patches = jax.lax.conv_general_dilated_patches(
+            comparator_image.reshape((1,) + spatial_dims + (-1,)).astype('float32'), # NHWDC
+            filter_shape=(patch_len,)*D, # filter_shape
+            window_strides=(patch_len,)*D,
+            padding=((0,0),)*D, # padding
+            dimension_numbers=('NHWDC', 'OIHWD', 'NCHWD') if D==3 else ('NHWC', 'OIHW', 'NCHW'),
+        )[0]
+        comparator_patches = comparator_patches.reshape((patch_len**D,-1))
+    elif use_norm:
+        comparator_patches = jnp.linalg.norm(patches, axis=0)
     else:
-        vmap_max = vmap(lambda patch: jnp.max(patch), in_axes=2)
+        assert len(patches) == 1 # can only use image as your comparator if its a scalar image
+        comparator_patches = patches[0]
 
-    return vmap_max(patches).reshape(new_spatial_dims + (D,)*k)
+    idxs = jnp.argmax(comparator_patches, axis=0) # (num_patches,)
+    vmap_max = vmap(lambda patch, idx: patch[:,idx], in_axes=(2,0))
+    return vmap_max(patches, idxs).reshape(new_spatial_dims + (D,)*k)
 
 @partial(jit, static_argnums=[0,2])
 def average_pool(D, image_data, patch_len):
@@ -1434,7 +1451,7 @@ class GeometricImage:
         if self.k == 2 and self.D == 3:
             print(f'GeometricImage::plot: Cannot plot D=3, k=2 geometric images.')
             return
-        
+
         ax = utils.setup_plot() if ax is None else ax
         
         # This was breaking earlier with jax arrays, not sure why. I really don't want plotting to break,
@@ -1447,8 +1464,8 @@ class GeometricImage:
         pixels = np.array(list(self.pixels()))
 
         if self.k == 0:
-            vmin = np.percentile(pixels,  2.5) if vmin is None else vmin
-            vmax = np.percentile(pixels, 97.5) if vmax is None else vmax
+            vmin = np.min(pixels) if vmin is None else vmin
+            vmax = np.max(pixels) if vmax is None else vmax
             utils.plot_scalars(
                 ax, 
                 self.spatial_dims, 
@@ -1594,10 +1611,10 @@ class Layer:
         #copy dict, but image_block is immutable jnp array
         self.data = { key: image_block for key, image_block in data.items() } 
 
-    def copy(self):
+    def copy(self: Self) -> Self:
         return self.__class__(self.data, self.D, self.is_torus)
 
-    def empty(self):
+    def empty(self: Self) -> Self:
         return self.__class__({}, self.D, self.is_torus)
     
     @classmethod
@@ -1732,7 +1749,7 @@ class Layer:
         """
         return self * (1.0/other)
 
-    def concat(self, other, axis=0):
+    def concat(self: Self, other: Self, axis: int = 0) -> Self:
         """
         Concatenate the layers along a specified axis.
         args:
@@ -1752,7 +1769,7 @@ class Layer:
 
         return new_layer
 
-    def to_images(self):
+    def to_images(self: Self) -> list[GeometricImage]:
         # Should only be used in Layer of vmapped BatchLayer
         images = []
         for image_block in self.values():
@@ -1822,6 +1839,41 @@ class Layer:
             out_layer.append(0, 0, norm(self.D + 1, image_block)) # norm is even parity
 
         return out_layer
+
+    def get_component(
+        self: Self, 
+        component: int, 
+        future_steps: int = 1, 
+        as_layer: bool = True,
+    ) -> Union[Self, jnp.ndarray]:
+        """
+        Given a layer with data with shape (channels*future_steps,spatial,tensor), combine all
+        fields into a single block of data (future_steps,spatial,channels*tensor) then pick the
+        ith channel in the last axis, where i = component. For example, if the layer has density (scalar),
+        pressure (scalar), and velocity (vector) then i=0 -> density, i=1 -> pressure, i=2 -> velocity 1,
+        and i=3 -> velocity 2. This assumes D=2.
+        args:
+            component (int): which component to select
+            future_steps (int): the number of future timesteps of this layer, defaults to 1
+            as_layer (bool): if true, return as a new layer with a scalar feature, otherwise just the data
+        """
+        # explicitly call Layer's version, even if calling from vmapped BatchLayer
+        spatial_dims = Layer.get_spatial_dims(self) 
+
+        data = None
+        for (k,_), img in self.items():
+            exp_data = img.reshape((-1,future_steps) + spatial_dims + (self.D,)*k) # (c,time,spatial,tensor)
+            exp_data = jnp.moveaxis(exp_data, 0, 1+self.D) # (time,spatial,c,tensor)
+            exp_data = exp_data.reshape((future_steps,) + spatial_dims + (-1,)) # (time,spatial,c*tensor)
+
+            data = exp_data if data is None else jnp.concatenate([data, exp_data], axis=-1)
+
+        component_data = data[...,component].reshape((future_steps,) + spatial_dims + (-1,))
+        component_data = jnp.moveaxis(component_data, -1, 0).reshape((-1,) + spatial_dims)
+        if as_layer:
+            return self.__class__({ (0,0): component_data }, self.D, self.is_torus)
+        else:
+            return component_data
     
     def device_replicate(self, sharding):
         """
@@ -1926,6 +1978,18 @@ class BatchLayer(Layer):
     def get_one(self, idx=0):
         return self.get_subset(jnp.array([idx]))
     
+    def get_one_layer(self: Self, idx: int = 0) -> Layer:
+        """
+        Similar to get_one, but instead get a single index of a BatchLayer as a Layer
+        args:
+            idx (int): the index along the batch to get as a Layer.
+        """
+        return Layer(
+            { k: image_block[idx] for k, image_block in self.items() },
+            self.D,
+            self.is_torus,
+        )
+    
     def times_group_element(self, gg, precision=None):
         return self._times_group_element(gg, precision)
 
@@ -1953,6 +2017,18 @@ class BatchLayer(Layer):
     @jax.vmap
     def norm(self):
         return super(BatchLayer, self).norm()
+
+    def get_component(
+        self: Self, 
+        component: int, 
+        future_steps: int = 1, 
+        as_layer: bool = True,
+    ) -> Union[Self, jnp.ndarray]:
+        return self._get_component(component, future_steps, as_layer)
+
+    @partial(jax.vmap, in_axes=(0,None,None,None))
+    def _get_component(self: Self, component: int, future_steps: int, as_layer: bool) -> Union[Self, jnp.ndarray]:
+        return super(BatchLayer, self).get_component(component, future_steps, as_layer)
     
     def device_put(self, sharding, num_devices):
         """

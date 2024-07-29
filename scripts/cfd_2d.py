@@ -139,22 +139,54 @@ def get_data(
 
     return train_X, train_Y, val_X, val_Y, test_X, test_Y, test_rollout_X, test_rollout_Y
 
-def plot_layer(test_layer, actual_layer, save_loc, future_steps):
-    # scale the images so that they range from -1 to 1
-    data = jnp.concatenate([test_layer[(1,0)][0,...,0].reshape(-1), actual_layer[(1,0)][0,...,0].reshape(-1)])
-    max_val = jnp.max(jnp.abs(data))
-    test_layer = test_layer / max_val
-    actual_layer = actual_layer / max_val
+def plot_layer(
+    test_layer: geom.BatchLayer, 
+    actual_layer: geom.BatchLayer, 
+    save_loc: str, 
+    future_steps: int, 
+    component: int = 0, 
+    show_power: bool = False, 
+    title: str = '',
+):
+    test_images = test_layer.get_component(component, future_steps).get_one_layer().to_images()
+    actual_images = actual_layer.get_component(component, future_steps).get_one_layer().to_images()
 
-    test_images = [geom.GeometricImage(img, 0, test_layer.D, test_layer.is_torus) for img in test_layer[(1,0)][0,...,0]]
-    actual_images = [geom.GeometricImage(img, 0, test_layer.D, test_layer.is_torus) for img in actual_layer[(1,0)][0,...,0]]
+    nrows = 4 if show_power else 3
 
     # figsize is 8 per col, 6 per row, (cols,rows)
-    fig, axes = plt.subplots(nrows=3, ncols=future_steps, figsize=(8*future_steps,6*3))
-    for col in range(future_steps):
-        utils.plot_image(test_images[col], ax=axes[0,col], title=f'{col}', colorbar=True)
-        utils.plot_image(actual_images[col], ax=axes[1,col], title=f'{col}', colorbar=True)
-        utils.plot_image((actual_images[col] - test_images[col]).norm(), ax=axes[2,col], title=f'{col}', colorbar=True)
+    fig, axes = plt.subplots(nrows=nrows, ncols=future_steps, figsize=(8*future_steps,6*nrows))
+    for col, (test_image, actual_image) in enumerate(zip(test_images, actual_images)):
+        test_image.plot(axes[0,col], title=f'test {title} {col}', colorbar=True)
+        actual_image.plot(axes[1,col], title=f'actual {title} {col}', colorbar=True)
+        diff = (actual_image - test_image).norm()
+        diff.plot(axes[2,col], title=f'diff {title} {col} (mse: {jnp.mean(diff.data)})', colorbar=True)
+
+        if show_power:
+            utils.plot_power(
+                [test_image.data[None,None], actual_image.data[None,None]],
+                ['test', 'actual'], 
+                axes[3,col],
+            )
+
+    plt.savefig(save_loc)
+    plt.close(fig)
+
+def plot_timestep_power(
+    layers: list[geom.BatchLayer], 
+    labels: list[str], 
+    save_loc: str, 
+    future_steps: int, 
+    component: int = 0, 
+    title: str = '',
+):
+    fig, axes = plt.subplots(nrows=1, ncols=future_steps, figsize=(8*future_steps,6*1))
+    for i, ax in enumerate(axes):
+        utils.plot_power(
+            [layer.get_component(component, future_steps, as_layer=False)[:,i:i+1] for layer in layers],
+            labels,
+            ax,
+            title=f'{title} {i}',
+        )
 
     plt.savefig(save_loc)
     plt.close(fig)
@@ -169,27 +201,24 @@ def map_and_loss(
     net=None, 
     has_aux=False, 
     future_steps=1,
-    return_map_only=False,
 ):
-    assert net is not None
+    out_layer = ml.autoregressive_map(
+        params, 
+        layer_x, 
+        key, 
+        train, 
+        layer_x[(1,0)].shape[1], # past_steps
+        future_steps, 
+        aux_data=aux_data, 
+        net=net,
+        has_aux=has_aux,
+    )
 
-    past_steps = layer_x[(1,0)].shape[1]
-    out_layer = layer_y.empty()
-    for _ in range(future_steps):
-        key, subkey = random.split(key)
-        if has_aux:
-            learned_x, aux_data = net(params, layer_x, subkey, train, batch_stats=aux_data)
-        else:
-            learned_x = net(params, layer_x, subkey, train)
+    loss = ml.timestep_smse_loss(out_layer, layer_y, future_steps)
+    loss = loss[0] if future_steps == 1 else loss
 
-        layer_x, out_layer = ml.autoregressive_step(layer_x, learned_x, out_layer, past_steps)
+    return (loss, aux_data) if has_aux else loss
 
-    loss = ml.smse_loss(out_layer, layer_y)
-    if return_map_only:
-        return out_layer
-    else:
-        return (loss, aux_data) if has_aux else loss
-    
 def train_and_eval(
     data, 
     key, 
@@ -204,6 +233,7 @@ def train_and_eval(
     noise_stdev=None,
     has_aux=False,
     verbose=1,
+    plot_component=0,
 ):
     train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y = data
 
@@ -274,42 +304,47 @@ def train_and_eval(
     )
     print(f'Test Loss: {test_loss}')
 
-    key, subkey = random.split(key)
-    test_rollout_loss = ml.map_loss_in_batches(
-        partial(map_and_loss, net=net, has_aux=has_aux, future_steps=5), 
+    rollout_layer = ml.map_in_batches(
+        partial(
+            ml.autoregressive_map,
+            past_steps=test_rollout_X[(1,0)].shape[1],
+            future_steps=5, 
+            net=net,
+            has_aux=has_aux,
+        ),
         params, 
         test_rollout_X, 
-        test_rollout_Y, 
         batch_size, 
         subkey, 
         False,
         has_aux=has_aux,
         aux_data=batch_stats,
+        merge_layer=True,
     )
-    print(f'Test Rollout Loss: {test_rollout_loss}')
+    test_rollout_loss = ml.timestep_smse_loss(rollout_layer, test_rollout_Y, 5)
+    print(f'Test Rollout Loss: {test_rollout_loss}, Sum: {jnp.sum(test_rollout_loss)}')
 
     if images_dir is not None:
-        key, subkey = random.split(key)
-        rollout_layer = map_and_loss(
-            params, 
-            test_rollout_X.get_one(), 
-            test_rollout_Y.get_one(), 
-            subkey, 
-            False, # train
-            batch_stats,
-            net, 
-            has_aux, 
-            future_steps=5, 
-            return_map_only=True,
-        )
+        components = ['density', 'pressure', 'velocity_x', 'velocity_y']
         plot_layer(
             rollout_layer.get_one(), 
             test_rollout_Y.get_one(), 
-            f'{images_dir}/{model_name}_L{train_X.L}_e{epochs}_rollout.png',
-            5,
+            f'{images_dir}{model_name}_L{train_X.L}_e{epochs}_rollout.png',
+            future_steps=5,
+            component=plot_component,
+            show_power=True,
+            title=f'{components[plot_component]}',
+        )
+        plot_timestep_power(
+            [rollout_layer, test_rollout_Y], 
+            ['test', 'actual'],
+            f'{images_dir}{model_name}_L{train_X.L}_e{epochs}_{components[0]}_power_spectrum.png',
+            future_steps=5,
+            component=plot_component,
+            title=f'{components[plot_component]}'
         )
 
-    return train_loss[-1], val_loss[-1], test_loss, test_rollout_loss
+    return train_loss[-1], val_loss[-1], test_loss, jnp.sum(test_rollout_loss)
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
@@ -319,6 +354,7 @@ def handleArgs(argv):
     parser.add_argument('-n_train', help='number of training trajectories', type=int, default=100)
     parser.add_argument('-n_val', help='number of validation trajectories, defaults to batch', type=int, default=None)
     parser.add_argument('-n_test', help='number of testing trajectories, defaults to batch', type=int, default=None)
+    parser.add_argument('-t', '--n_trials', help='number of trials to run', type=int, default=1)
     parser.add_argument('-seed', help='the random number seed', type=int, default=None)
     parser.add_argument('-s', '--save', help='file name to save the params', type=str, default=None)
     parser.add_argument('-l', '--load', help='file name to load params from', type=str, default=None)
@@ -329,26 +365,18 @@ def handleArgs(argv):
         default=None,
     )
     parser.add_argument('-v', '--verbose', help='verbose argument passed to trainer', type=int, default=1)
-
-    args = parser.parse_args()
-
-    return (
-        args.data,
-        args.epochs,
-        args.batch,
-        args.n_train,
-        args.n_val,
-        args.n_test,
-        args.seed,
-        args.save,
-        args.load,
-        args.images_dir,
-        args.verbose,
+    parser.add_argument(
+        '--normalize', 
+        help='normalize input data, equivariantly', 
+        action=argparse.BooleanOptionalAction,
+        default=True,
     )
+    parser.add_argument('--plot_component', help='which component to plot, one of 0-3', type=int, default=0, choices=[0,1,2,3])
+
+    return parser.parse_args()
 
 #Main
 args = handleArgs(sys.argv)
-data_path, epochs, batch_size, n_train, n_val, n_test, seed, save_file, load_file, images_dir, verbose = args
 
 D = 2
 N = 128
@@ -357,15 +385,13 @@ output_depth = ( ((0,0),2), ((1,0),1) )
 
 past_steps = 4 # how many steps to look back to predict the next step
 rollout_steps = 5
-key = random.PRNGKey(time.time_ns()) if (seed is None) else random.PRNGKey(seed)
+key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
 
 # an attempt to reduce recompilation, but I don't think it actually is working
-if n_test is None:
-    n_test = batch_size
-if n_val is None:
-    n_val = batch_size
+n_test = args.batch if args.n_test is None else args.n_test
+n_val = args.batch if args.n_val is None else args.n_val
 
-data = get_data(D, data_path, n_train, n_val, n_test, past_steps, rollout_steps)
+data = get_data(D, args.data, args.n_train, n_val, n_test, past_steps, rollout_steps, args.normalize)
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
@@ -373,15 +399,82 @@ upsample_filters = geom.get_invariant_filters(Ms=[2], ks=[0,1,2], parities=[0,1]
 
 train_and_eval = partial(
     train_and_eval, 
-    batch_size=batch_size, 
-    epochs=epochs, 
-    save_params=save_file, 
-    load_params=load_file,
-    images_dir=images_dir,
-    verbose=verbose,
+    batch_size=args.batch, 
+    epochs=args.epochs, 
+    save_params=args.save, 
+    load_params=args.load,
+    images_dir=args.images_dir,
+    verbose=args.verbose,
+    plot_component=args.plot_component,
 )
 
 model_list = [
+    (
+        'dil_resnet64',
+        partial(
+            train_and_eval, 
+            net=partial(models.dil_resnet, output_keys=output_keys, output_depth=output_depth, depth=64),
+            # lr=2e-4,
+        ),
+    ),
+    (
+        'dil_resnet_equiv48',
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.dil_resnet, 
+                equivariant=True, 
+                conv_filters=conv_filters,
+                output_keys=output_keys,
+                output_depth=output_depth,
+                depth=48,
+                activation_f=ml.VN_NONLINEAR,
+            ),
+            lr=5e-4,
+        ),
+    ),
+    (
+        'resnet',
+        partial(
+            train_and_eval, 
+            net=partial(models.resnet, output_keys=output_keys, output_depth=output_depth, depth=128),
+            lr=1e-3,
+        ),   
+    ),
+    # (
+    #     'resnet_equiv_100', 
+    #     partial(
+    #         train_and_eval, 
+    #         net=partial(
+    #             models.resnet, 
+    #             output_keys=output_keys, 
+    #             output_depth=output_depth,
+    #             equivariant=True, 
+    #             conv_filters=conv_filters,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             use_group_norm=False,
+    #             depth=100,
+    #         ),
+    #         lr=7e-4,
+    #     ),
+    # ),
+    (
+        'resnet_equiv_groupnorm_100', 
+        partial(
+            train_and_eval, 
+            net=partial(
+                models.resnet, 
+                output_keys=output_keys, 
+                output_depth=output_depth,
+                equivariant=True, 
+                conv_filters=conv_filters,
+                activation_f=ml.VN_NONLINEAR,
+                use_group_norm=True,
+                depth=100,
+            ),
+            lr=7e-4,
+        ),
+    ),
     (
         'unetBase',
         partial(
@@ -394,25 +487,26 @@ model_list = [
             lr=8e-4,
         ),
     ),
+    # (
+    #     'unetBase_equiv',
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unetBase, 
+    #             output_keys=output_keys,
+    #             output_depth=output_depth,
+    #             depth=64,
+    #             equivariant=True,
+    #             conv_filters=conv_filters,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             use_group_norm=False,
+    #             upsample_filters=upsample_filters,
+    #         ),
+    #         lr=3e-4, 
+    #     ),
+    # ),
     (
-        'unetBase_equiv64', # works best
-        partial(
-            train_and_eval,
-            net=partial(
-                models.unetBase, 
-                output_keys=output_keys,
-                output_depth=output_depth,
-                equivariant=True,
-                conv_filters=conv_filters,
-                activation_f=ml.VN_NONLINEAR,
-                use_group_norm=False,
-                upsample_filters=upsample_filters,
-            ),
-            lr=3e-4, 
-        ),
-    ),
-    (
-        'unetBase_equiv48', # works best
+        'unetBase_equiv48',
         partial(
             train_and_eval,
             net=partial(
@@ -426,7 +520,7 @@ model_list = [
                 use_group_norm=False,
                 upsample_filters=upsample_filters,
             ),
-            lr=5e-4, 
+            lr=4e-4, # 4e-4 to 6e-4 works, larger sometimes explodes
         ),
     ),
 ]
@@ -439,9 +533,9 @@ key, subkey = random.split(key)
 #     model_list,
 #     subkey,
 #     'lr',
-#     [4e-4, 5e-4, 6e-4],
+#     [2e-3, 5e-3, 1e-2],
 #     benchmark_type=ml.BENCHMARK_MODEL,
-#     num_trials=3,
+#     num_trials=args.n_trials,
 #     num_results=4,
 # )
 
@@ -453,7 +547,7 @@ results = ml.benchmark(
     '',
     [0],
     benchmark_type=ml.BENCHMARK_NONE,
-    num_trials=3,
+    num_trials=args.n_trials,
     num_results=4,
 )
 

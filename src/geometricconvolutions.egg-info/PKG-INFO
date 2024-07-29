@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: geometricconvolutions
-Version: 0.0.1
+Version: 0.1.1
 Summary: Package for building Convolutional Neural Networks on images of tensors.
 Home-page: https://github.com/WilsonGregory/GeometricConvolutions
 Author: Wilson Gregory, David Hogg

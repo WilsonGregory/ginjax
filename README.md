@@ -18,7 +18,8 @@ See the paper for more details: https://arxiv.org/abs/2305.12585
 
 ## Installation
 
-- Install this repo as an editable install using pip.
+- Install using pip: `pip install geometricconvolutions`.
+- Alternatively, you can install this repo as an editable install using pip.
   - Clone the repository `git clone https://github.com/WilsonGregory/GeometricConvolutions.git`
   - Navigate to the GeometricConvolutions directory `cd GeometricConvolutions`
   - Locally install the package `pip install -e .` (may have to use pip3 if your system has both python2 and python3 installed)

@@ -180,7 +180,6 @@ def unetBase(
             if use_group_norm:
                 layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=mold_params)
             layer, params = handle_activation(activation_f, params, layer, mold_params)
-            
 
     # now we do the upsampling and concatenation
     for upsample in reversed(range(num_downsamples)):
@@ -213,7 +212,6 @@ def unetBase(
             if use_group_norm:
                 layer, params = ml.group_norm(params, layer, 1, equivariant=equivariant, mold_params=mold_params)
             layer, params = handle_activation(activation_f, params, layer, mold_params)
-            
 
     layer, params = ml.batch_conv_layer(
         params,

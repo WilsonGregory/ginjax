@@ -18,13 +18,6 @@ import geometricconvolutions.geometric as geom
 
 LayerKey = NewType('LayerKey', tuple[int, int])
 ParamsTree = NewType('ParamsTree', Any) # currently Any
-MapLossT = NewType(
-    'MapLossT',
-    Union[
-        Callable[[Any, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool, Any], tuple[Array, Any]],
-        Callable[[Any, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool], Array],
-    ],
-)
 
 ## Constants
 
@@ -141,7 +134,7 @@ def get_filter_block_from_invariants(
     target_keys: tuple[LayerKey], 
     out_depth: tuple[tuple[LayerKey, int]], 
     mold_params: bool,
-) -> tuple[dict[LayerKey, dict[LayerKey, jnp.ndarray]], ParamsTree]:
+) -> tuple[dict[LayerKey, dict[LayerKey, Array]], ParamsTree]:
     """
     For each (k,parity) of the input_layer and each (k,parity) of the target_keys, construct filters from
     the available invariant_filters to build all possible connections between those two layers.
@@ -196,7 +189,7 @@ def get_filter_block(
     target_keys: tuple[LayerKey], 
     out_depth: tuple[tuple[LayerKey, int]], 
     mold_params: bool = False,
-) -> tuple[dict[LayerKey, dict[LayerKey, jnp.ndarray]], ParamsTree]:
+) -> tuple[dict[LayerKey, dict[LayerKey, Array]], ParamsTree]:
     """
     For each (k,parity) of the input_layer and each (k,parity) of the target_keys, construct filters 
     to build all possible connections between those two layers. The filters are shape 
@@ -415,7 +408,7 @@ def batch_conv_contract(
     return layer
 
 @functools.partial(jit, static_argnums=1)
-def activation_layer(layer: geom.Layer, activation_function: Callable[[jnp.ndarray], jnp.ndarray]) -> geom.Layer:
+def activation_layer(layer: geom.Layer, activation_function: Callable[[ArrayLike], Array]) -> geom.Layer:
     scalar_layer = contract_to_scalars(layer)
     for (k,parity), image_block in scalar_layer.items(): # k will 0
         layer[(k,parity)] = activation_function(image_block)
@@ -440,7 +433,7 @@ def batch_leaky_relu_layer(layer: geom.BatchLayer, negative_slope: float = 0.01)
 def sigmoid_layer(layer: geom.Layer) -> geom.Layer:
     return activation_layer(layer, jax.nn.sigmoid)
 
-def kink(x: jnp.ndarray, outer_slope: float = 1, inner_slope: float = 0) -> jnp.ndarray:
+def kink(x: ArrayLike, outer_slope: float = 1, inner_slope: float = 0) -> Array:
     """
     An attempt to make a ReLU that is an odd function (i.e., kink(-x) = -kink(x)). Between -1 and 1, 
     kink scales the function by inner_slope, and outside that scales it by outer_slope.
@@ -451,7 +444,7 @@ def kink(x: jnp.ndarray, outer_slope: float = 1, inner_slope: float = 0) -> jnp.
     """
     return jnp.where((x<=-0.5) | (x>=0.5), outer_slope*x, inner_slope*x)
 
-def batch_scalar_activation(layer: geom.Layer, activation_function: Callable[[jnp.ndarray], jnp.ndarray]) -> geom.Layer:
+def batch_scalar_activation(layer: geom.Layer, activation_function: Callable[[ArrayLike], Array]) -> geom.Layer:
     """
     Given a layer, apply the nonlinear activation function to each scalar image_block. If the layer has
     odd parity, then the activation should be an odd function.
@@ -466,7 +459,7 @@ def batch_scalar_activation(layer: geom.Layer, activation_function: Callable[[jn
 def norm_nonlinear(
     params: ParamsTree, 
     layer: geom.BatchLayer, 
-    scalar_activation: Callable[[jnp.ndarray], jnp.ndarray] = jax.nn.sigmoid, 
+    scalar_activation: Callable[[ArrayLike], Array] = jax.nn.sigmoid, 
     mold_params: bool = False,
 ) -> tuple[geom.BatchLayer, ParamsTree]:
     """
@@ -497,7 +490,7 @@ def VN_nonlinear(
     params: ParamsTree, 
     layer: geom.BatchLayer, 
     depth: Optional[int] = None, 
-    scalar_activation: Callable[[jnp.ndarray], jnp.ndarray] = jax.nn.relu, 
+    scalar_activation: Callable[[ArrayLike], Array] = jax.nn.relu, 
     eps: float = 1e-5, 
     mold_params: bool = False,
 ) -> tuple[geom.BatchLayer, ParamsTree]:
@@ -546,7 +539,7 @@ def vector_dots_nonlinear(
     params: ParamsTree, 
     layer: geom.BatchLayer, 
     depth: Optional[int] = None, 
-    scalar_activation: Callable[[jnp.ndarray], jnp.ndarray] = jax.nn.relu, 
+    scalar_activation: Callable[[ArrayLike], Array] = jax.nn.relu, 
     mold_params: bool = False,
 ) -> tuple[geom.BatchLayer, ParamsTree]:
     """
@@ -727,7 +720,7 @@ def paramed_contractions(
     target_k: int, 
     depth: int, 
     mold_params: bool = False, 
-    contraction_maps: Optional[dict[int, jnp.ndarray]] = None,
+    contraction_maps: Optional[dict[int, ArrayLike]] = None,
 ) -> tuple[geom.Layer, ParamsTree]:
     params_idx, this_params = get_layer_params(params, mold_params, PARAMED_CONTRACTIONS)
     D = input_layer.D
@@ -851,10 +844,10 @@ def batch_channel_collapse(params, input_layer, depth=1, mold_params=False):
 @functools.partial(jax.jit, static_argnums=3)
 def equiv_dense_layer(
     params: ParamsTree, 
-    input: jnp.ndarray, 
-    basis: jnp.ndarray, 
+    input: ArrayLike, 
+    basis: ArrayLike, 
     mold_params: bool = False,
-) -> tuple[jnp.ndarray, ParamsTree]:
+) -> tuple[Array, ParamsTree]:
     """
     A dense layer with a specific basis of linear maps, rather than any possible linear map. This
     allows you to pass an equivariant basis so the whole layer is equivariant.
@@ -877,10 +870,10 @@ def equiv_dense_layer(
 
 def batch_equiv_dense_layer(
     params: ParamsTree, 
-    input: jnp.ndarray, 
-    basis: jnp.ndarray, 
+    input: ArrayLike, 
+    basis: ArrayLike, 
     mold_params: bool = False,
-) -> tuple[jnp.ndarray, ParamsTree]:
+) -> tuple[Array, ParamsTree]:
     vmap_equiv_dense_layer = vmap(equiv_dense_layer, in_axes=(None,0,None,None), out_axes=(0, None))
     return vmap_equiv_dense_layer(params, input, basis, mold_params)
 
@@ -949,7 +942,7 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
 
     return out_layer, params, running_mean, running_var
 
-def _group_norm_K1(D: int, image_block: jnp.ndarray, groups: int, method: str = 'eigh', eps: float = 1e-5) -> jnp.ndarray:
+def _group_norm_K1(D: int, image_block: ArrayLike, groups: int, method: str = 'eigh', eps: float = 1e-5) -> Array:
     """
     Perform the layer norm whitening on a vector image block. This is somewhat based on the Clifford
     Layers Batch norm, link below. However, this differs in that we use eigh rather than cholesky because
@@ -1163,7 +1156,7 @@ def batch_average_pool(input_layer: geom.BatchLayer, patch_len: int) -> geom.Bat
     return vmap(average_pool_layer, in_axes=(0, None))(input_layer, patch_len)
 
 @jit
-def basis_average_layer(input_layer: geom.BatchLayer, basis: jnp.ndarray) -> jnp.ndarray:
+def basis_average_layer(input_layer: geom.BatchLayer, basis: ArrayLike) -> Array:
     """
     Experimental layer that finds an average over each basis element to get a coefficient for that basis
     element.
@@ -1184,7 +1177,7 @@ def basis_average_layer(input_layer: geom.BatchLayer, basis: jnp.ndarray) -> jnp
     coeffs = jnp.sum(vmap_basis_prod(input_layer[(1,0)], basis), axis=1) # (num_coeffs * D,)
     return coeffs.reshape((D,int(num_coeffs/D))).transpose() # (num_coeffs/D,D)
 
-def batch_basis_average_layer(input_layer: geom.BatchLayer, basis: jnp.ndarray) -> jnp.ndarray:
+def batch_basis_average_layer(input_layer: geom.BatchLayer, basis: ArrayLike) -> Array:
     return vmap(basis_average_layer, in_axes=(0,None))(input_layer, basis) # (L, num_coeffs, D)
 
 ## Params

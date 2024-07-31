@@ -4,14 +4,20 @@ from collections import defaultdict
 import numpy as np
 import math
 import time
+from typing import Optional, Any, Union, NewType, Callable, Sequence
+from typing_extensions import Self
 
-from jax import jit, random, value_and_grad, vmap, checkpoint
+from jax import jit, random, value_and_grad, vmap, checkpoint, Array
 import jax
 import jax.numpy as jnp
 import jax.debug
+from jax.typing import ArrayLike
 import optax
 
 import geometricconvolutions.geometric as geom
+
+LayerKey = NewType('LayerKey', tuple[int, int])
+ParamsTree = NewType('ParamsTree', Any) # currently Any
 
 ## Constants
 
@@ -48,18 +54,18 @@ def add_to_layer(layer, k, image):
 
 @functools.partial(jit, static_argnums=[3,4,5,6,7,8,9])
 def conv_layer(
-    params, #non-static
-    conv_filters, #non-static
-    input_layer, #non-static
-    target_key=None, 
-    max_k=None,
-    mold_params=False,
+    params: ParamsTree, #non-static
+    conv_filters: geom.Layer, #non-static
+    input_layer: geom.Layer, #non-static
+    target_key: Optional[LayerKey] = None, 
+    max_k: Optional[int] = None,
+    mold_params: bool = False,
     # Convolve kwargs that are passed directly along
-    stride=None, 
-    padding=None,
-    lhs_dilation=None, 
-    rhs_dilation=None,
-):
+    stride: Optional[tuple[int]] = None, 
+    padding: Optional[tuple[int]] = None,
+    lhs_dilation: Optional[tuple[int]] = None, 
+    rhs_dilation: Optional[tuple[int]] = None,
+) -> tuple[geom.Layer, ParamsTree]:
     """
     conv_layer takes a layer of conv filters and a layer of images and convolves them all together, taking
     parameterized sums of the images prior to convolution to control memory explosion. This is an old
@@ -121,7 +127,14 @@ def conv_layer(
     return out_layer, params
 
 @functools.partial(jax.jit, static_argnums=[3,4,5])
-def get_filter_block_from_invariants(params, input_layer, invariant_filters, target_keys, out_depth, mold_params):
+def get_filter_block_from_invariants(
+    params: ParamsTree, 
+    input_layer: geom.BatchLayer, 
+    invariant_filters: geom.Layer, 
+    target_keys: tuple[LayerKey], 
+    out_depth: tuple[tuple[LayerKey, int]], 
+    mold_params: bool,
+) -> tuple[dict[LayerKey, dict[LayerKey, Array]], ParamsTree]:
     """
     For each (k,parity) of the input_layer and each (k,parity) of the target_keys, construct filters from
     the available invariant_filters to build all possible connections between those two layers.
@@ -169,7 +182,14 @@ def get_filter_block_from_invariants(params, input_layer, invariant_filters, tar
     return filter_layer, params
 
 @functools.partial(jit, static_argnums=[2,3,4,5])
-def get_filter_block(params, input_layer, M, target_keys, out_depth, mold_params=False):
+def get_filter_block(
+    params: ParamsTree, 
+    input_layer: geom.BatchLayer, 
+    M: int, 
+    target_keys: tuple[LayerKey], 
+    out_depth: tuple[tuple[LayerKey, int]], 
+    mold_params: bool = False,
+) -> tuple[dict[LayerKey, dict[LayerKey, Array]], ParamsTree]:
     """
     For each (k,parity) of the input_layer and each (k,parity) of the target_keys, construct filters 
     to build all possible connections between those two layers. The filters are shape 
@@ -211,19 +231,19 @@ def get_filter_block(params, input_layer, M, target_keys, out_depth, mold_params
     return filter_layer, params
 
 def batch_conv_layer(
-    params, 
-    input_layer,
-    filter_info, 
-    depth,
-    target_keys,
-    bias=None,
-    mold_params=False,
+    params: ParamsTree, 
+    input_layer: geom.BatchLayer,
+    filter_info: Union[geom.Layer, dict[str, Any]], 
+    depth: Union[int, tuple[tuple[LayerKey, int]]],
+    target_keys: tuple[LayerKey],
+    bias: Optional[bool] = None,
+    mold_params: bool = False,
     # Convolve kwargs that are passed directly along
-    stride=None, 
-    padding=None,
-    lhs_dilation=None, 
-    rhs_dilation=None,
-):
+    stride: Optional[tuple[int]] = None, 
+    padding: Optional[tuple[int]] = None,
+    lhs_dilation: Optional[tuple[int]] = None, 
+    rhs_dilation: Optional[tuple[int]] = None,
+) -> tuple[geom.BatchLayer, ParamsTree]:
     """
     Wrapper for batch_conv_contract that constructs the filter_block from either invariant filters or 
     free parameters, i.e. regular convolution with fully learned filters. 
@@ -297,7 +317,12 @@ def batch_conv_layer(
 
     return layer, params
 
-def add_bias(this_params, layer, mean_bias=True, mold_params=False):
+def add_bias(
+    this_params: ParamsTree, 
+    layer: geom.BatchLayer, 
+    mean_bias: bool = True, 
+    mold_params: bool = False
+) -> tuple[geom.BatchLayer, ParamsTree]:
     """
     Per-channel bias. To maintain equivariance, we add a scale of the mean to each layer.
     args:
@@ -328,15 +353,15 @@ def add_bias(this_params, layer, mean_bias=True, mold_params=False):
 
 @functools.partial(jit, static_argnums=[2,3,4,5,6])
 def batch_conv_contract(
-    input_layer,
-    conv_filters, 
-    target_keys, 
+    input_layer: geom.BatchLayer,
+    conv_filters: geom.Layer, 
+    target_keys: tuple[LayerKey], 
     # Convolve kwargs that are passed directly along
-    stride=None, 
-    padding=None,
-    lhs_dilation=None, 
-    rhs_dilation=None,
-):
+    stride: Optional[tuple[int]] = None, 
+    padding: Optional[tuple[int]] = None,
+    lhs_dilation: Optional[tuple[int]] = None, 
+    rhs_dilation: Optional[tuple[int]] = None,
+) -> geom.BatchLayer:
     """
     Per the theory, a linear map from kp -> k'p' can be characterized by a convolution with a
     (k+k')(pp') tensor filter, followed by k contractions. 
@@ -383,7 +408,7 @@ def batch_conv_contract(
     return layer
 
 @functools.partial(jit, static_argnums=1)
-def activation_layer(layer, activation_function):
+def activation_layer(layer: geom.Layer, activation_function: Callable[[ArrayLike], Array]) -> geom.Layer:
     scalar_layer = contract_to_scalars(layer)
     for (k,parity), image_block in scalar_layer.items(): # k will 0
         layer[(k,parity)] = activation_function(image_block)
@@ -391,24 +416,24 @@ def activation_layer(layer, activation_function):
     return layer
 
 @jit
-def relu_layer(layer):
+def relu_layer(layer: geom.Layer) -> geom.Layer:
     return activation_layer(layer, jax.nn.relu)
 
-def batch_relu_layer(layer):
+def batch_relu_layer(layer: geom.BatchLayer) -> geom.BatchLayer:
     return vmap(relu_layer)(layer)
 
 @functools.partial(jit, static_argnums=1)
-def leaky_relu_layer(layer, negative_slope=0.01):
+def leaky_relu_layer(layer: geom.Layer, negative_slope: float = 0.01) -> geom.Layer:
     return activation_layer(layer, functools.partial(jax.nn.leaky_relu, negative_slope=negative_slope))
 
-def batch_leaky_relu_layer(layer, negative_slope=0.01):
+def batch_leaky_relu_layer(layer: geom.BatchLayer, negative_slope: float = 0.01) -> geom.BatchLayer:
     return vmap(leaky_relu_layer, in_axes=(0, None))(layer, negative_slope)
 
 @jit
-def sigmoid_layer(layer):
+def sigmoid_layer(layer: geom.Layer) -> geom.Layer:
     return activation_layer(layer, jax.nn.sigmoid)
 
-def kink(x, outer_slope=1, inner_slope=0):
+def kink(x: ArrayLike, outer_slope: float = 1, inner_slope: float = 0) -> Array:
     """
     An attempt to make a ReLU that is an odd function (i.e., kink(-x) = -kink(x)). Between -1 and 1, 
     kink scales the function by inner_slope, and outside that scales it by outer_slope.
@@ -419,7 +444,7 @@ def kink(x, outer_slope=1, inner_slope=0):
     """
     return jnp.where((x<=-0.5) | (x>=0.5), outer_slope*x, inner_slope*x)
 
-def batch_scalar_activation(layer, activation_function):
+def batch_scalar_activation(layer: geom.Layer, activation_function: Callable[[ArrayLike], Array]) -> geom.Layer:
     """
     Given a layer, apply the nonlinear activation function to each scalar image_block. If the layer has
     odd parity, then the activation should be an odd function.
@@ -431,7 +456,12 @@ def batch_scalar_activation(layer, activation_function):
 
     return out_layer
 
-def norm_nonlinear(params, layer, scalar_activation=jax.nn.sigmoid, mold_params=False):
+def norm_nonlinear(
+    params: ParamsTree, 
+    layer: geom.BatchLayer, 
+    scalar_activation: Callable[[ArrayLike], Array] = jax.nn.sigmoid, 
+    mold_params: bool = False,
+) -> tuple[geom.BatchLayer, ParamsTree]:
     """
     This nonlinearity has so far been unsuccessful.
     """
@@ -456,7 +486,14 @@ def norm_nonlinear(params, layer, scalar_activation=jax.nn.sigmoid, mold_params=
     return out_layer, params
 
 @functools.partial(jax.jit, static_argnums=[2,3,4,5])
-def VN_nonlinear(params, layer, depth=None, scalar_activation=jax.nn.relu, eps=1e-5, mold_params=False):
+def VN_nonlinear(
+    params: ParamsTree, 
+    layer: geom.BatchLayer, 
+    depth: Optional[int] = None, 
+    scalar_activation: Callable[[ArrayLike], Array] = jax.nn.relu, 
+    eps: float = 1e-5, 
+    mold_params: bool = False,
+) -> tuple[geom.BatchLayer, ParamsTree]:
     """
     The vector nonlinearity in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
     Basically use the channels of a vector to get a direction vector and a value vector. Use the 
@@ -498,7 +535,13 @@ def VN_nonlinear(params, layer, depth=None, scalar_activation=jax.nn.relu, eps=1
 
     return out_layer, params
 
-def vector_dots_nonlinear(params, layer, depth=None, scalar_activation=jax.nn.relu, mold_params=False):
+def vector_dots_nonlinear(
+    params: ParamsTree, 
+    layer: geom.BatchLayer, 
+    depth: Optional[int] = None, 
+    scalar_activation: Callable[[ArrayLike], Array] = jax.nn.relu, 
+    mold_params: bool = False,
+) -> tuple[geom.BatchLayer, ParamsTree]:
     """
     The vector nonlinearity based on scalars are universal: https://arxiv.org/abs/2106.06610
     We get a map from in_c vectors to depth vectors by taking the dot products of the channel of vectors,
@@ -547,48 +590,7 @@ def vector_dots_nonlinear(params, layer, depth=None, scalar_activation=jax.nn.re
 
     return out_layer, params
 
-@functools.partial(jit, static_argnums=[1,3,4])
-def polynomial_layer(params, param_idx, layer, D, poly_degree):
-    """
-    Construct a polynomial layer for a given degree. Calculate the full polynomial up to that degree of all the images.
-    For example, if poly_degree=3, calculate the linear, quadratic, and cubic terms.
-    args:
-        params (jnp.array): parameters
-        param_idx (int): index of current location in params
-        images (list of GeometricImages): the images to make the polynomial function
-        poly_degree (int): the maximum degree of the polynomial 
-        bias (bool): whether to include a constant bias image
-    """
-    print('WARNING: polynomial_layer does not work with current layer architecture')
-    prods_by_degree = defaultdict(dict)
-    out_layer = {}
-
-    vmap_sums = vmap(geom.linear_combination, in_axes=(None, 0))
-    vmap_mul = vmap(geom.mul, in_axes=(None, 0, 0))
-
-    prods_by_degree[1] = layer
-    for degree in range(2, poly_degree + 1):
-        prev_images_dict = prods_by_degree[degree - 1]
-
-        for prods_group in prev_images_dict.values(): #for each similarly shaped image group in the rolling prods
-            for mult_block in layer.values(): #multiply by each mult_block in the images
-
-                param_shape = (len(mult_block), len(prods_group))
-                num_params = np.multiply.reduce(param_shape)
-                group_sums = vmap_sums(
-                    prods_group, 
-                    params[param_idx:(param_idx + num_params)].reshape(param_shape),
-                )
-                param_idx += num_params
-                prod = vmap_mul(D, group_sums, mult_block)
-                _, prod_k = geom.parse_shape(prod.shape[1:], D)
-
-                prods_by_degree[degree] = add_to_layer(prods_by_degree[degree], prod_k, prod)
-                out_layer = add_to_layer(out_layer, prod_k, prod)
-
-    return out_layer, param_idx
-
-def order_cap_layer(layer, max_k):
+def order_cap_layer(layer: geom.Layer, max_k: int) -> geom.Layer:
     """
     For each image with tensor order k larger than max_k, do all possible contractions to reduce it to order k, or k-1
     if necessary because the difference is odd.
@@ -614,7 +616,7 @@ def order_cap_layer(layer, max_k):
 
     return out_layer
 
-def contract_to_scalars(input_layer):
+def contract_to_scalars(input_layer: geom.Layer) -> geom.Layer:
     suitable_images = input_layer.empty()
     for (k,parity), image_block in input_layer.items():
         if ((k % 2) == 0):
@@ -622,7 +624,12 @@ def contract_to_scalars(input_layer):
 
     return all_contractions(0, suitable_images)
 
-def cascading_contractions(params, input_layer, target_k, mold_params=False):
+def cascading_contractions(
+    params: ParamsTree, 
+    input_layer: geom.Layer, 
+    target_k: int, 
+    mold_params: bool = False
+) -> tuple[geom.Layer, ParamsTree]:
     """
     Starting with the highest k, sum all the images into a single image, perform all possible contractions,
     then add it to the layer below.
@@ -667,7 +674,12 @@ def cascading_contractions(params, input_layer, target_k, mold_params=False):
 
     return out_layer, params
 
-def batch_cascading_contractions(params, input_layer, target_k, mold_params=False):
+def batch_cascading_contractions(
+    params: ParamsTree, 
+    input_layer: geom.BatchLayer, 
+    target_k: int, 
+    mold_params: bool = False,
+) -> tuple[geom.BatchLayer, ParamsTree]:
     return vmap(cascading_contractions, in_axes=(None, 0, None, None), out_axes=(0, None))(
         params,
         input_layer,
@@ -675,7 +687,7 @@ def batch_cascading_contractions(params, input_layer, target_k, mold_params=Fals
         mold_params,
     )
 
-def all_contractions(target_k, input_layer):
+def all_contractions(target_k: int, input_layer: geom.Layer) -> geom.Layer:
     out_layer = input_layer.empty()
     for (k,parity), image_block in input_layer.items():
         idx_shift = 1 + input_layer.D # layer plus N x N x ... x N (D times)
@@ -698,11 +710,18 @@ def all_contractions(target_k, input_layer):
 
     return out_layer
 
-def batch_all_contractions(target_k, input_layer):
+def batch_all_contractions(target_k: int, input_layer: geom.BatchLayer) -> geom.BatchLayer:
     return vmap(all_contractions, in_axes=(None, 0))(target_k, input_layer)
 
 @functools.partial(jit, static_argnums=[2,3,4])
-def paramed_contractions(params, input_layer, target_k, depth, mold_params=False, contraction_maps=None):
+def paramed_contractions(
+    params: ParamsTree, 
+    input_layer: geom.Layer, 
+    target_k: int, 
+    depth: int, 
+    mold_params: bool = False, 
+    contraction_maps: Optional[dict[int, ArrayLike]] = None,
+) -> tuple[geom.Layer, ParamsTree]:
     params_idx, this_params = get_layer_params(params, mold_params, PARAMED_CONTRACTIONS)
     D = input_layer.D
 
@@ -760,7 +779,13 @@ def paramed_contractions(params, input_layer, target_k, depth, mold_params=False
 
     return out_layer, params
 
-def batch_paramed_contractions(params, input_layer, target_k, depth, mold_params=False):
+def batch_paramed_contractions(
+    params: ParamsTree, 
+    input_layer: geom.BatchLayer, 
+    target_k: int, 
+    depth: int, 
+    mold_params: bool = False,
+) -> tuple[geom.BatchLayer, ParamsTree]:
     vmap_paramed_contractions = vmap(
         paramed_contractions, 
         in_axes=(None, 0, None, None, None, None),
@@ -780,7 +805,12 @@ def batch_paramed_contractions(params, input_layer, target_k, depth, mold_params
     return vmap_paramed_contractions(params, input_layer, target_k, depth, mold_params, contraction_maps)
 
 @functools.partial(jit, static_argnums=[2,3])
-def channel_collapse(params, input_layer, depth=1, mold_params=False):
+def channel_collapse(
+    params: ParamsTree, 
+    input_layer: geom.Layer, 
+    depth: int = 1, 
+    mold_params: bool = False,
+) -> tuple[geom.Layer, ParamsTree]:
     """
     Combine multiple channels into depth number of channels. Often the final step before exiting a GI-Net.
     In some ways this is akin to a fully connected layer, where each channel image is an input.
@@ -812,7 +842,12 @@ def batch_channel_collapse(params, input_layer, depth=1, mold_params=False):
     return vmap_channel_collapse(params, input_layer, depth, mold_params)
 
 @functools.partial(jax.jit, static_argnums=3)
-def equiv_dense_layer(params, input, basis, mold_params=False):
+def equiv_dense_layer(
+    params: ParamsTree, 
+    input: ArrayLike, 
+    basis: ArrayLike, 
+    mold_params: bool = False,
+) -> tuple[Array, ParamsTree]:
     """
     A dense layer with a specific basis of linear maps, rather than any possible linear map. This
     allows you to pass an equivariant basis so the whole layer is equivariant.
@@ -833,7 +868,12 @@ def equiv_dense_layer(params, input, basis, mold_params=False):
 
     return output, params
 
-def batch_equiv_dense_layer(params, input, basis, mold_params=False):
+def batch_equiv_dense_layer(
+    params: ParamsTree, 
+    input: ArrayLike, 
+    basis: ArrayLike, 
+    mold_params: bool = False,
+) -> tuple[Array, ParamsTree]:
     vmap_equiv_dense_layer = vmap(equiv_dense_layer, in_axes=(None,0,None,None), out_axes=(0, None))
     return vmap_equiv_dense_layer(params, input, basis, mold_params)
 
@@ -902,7 +942,7 @@ def batch_norm(params, batch_layer, train, running_mean, running_var, momentum=0
 
     return out_layer, params, running_mean, running_var
 
-def _group_norm_K1(D, image_block, groups, method='eigh', eps=1e-5):
+def _group_norm_K1(D: int, image_block: ArrayLike, groups: int, method: str = 'eigh', eps: float = 1e-5) -> Array:
     """
     Perform the layer norm whitening on a vector image block. This is somewhat based on the Clifford
     Layers Batch norm, link below. However, this differs in that we use eigh rather than cholesky because
@@ -959,7 +999,14 @@ def _group_norm_K1(D, image_block, groups, method='eigh', eps=1e-5):
     return whitened_data.reshape(image_block.shape)
 
 functools.partial(jax.jit, static_argnums=[2,3,4])
-def group_norm(params, layer, groups, eps=1e-5, equivariant=True, mold_params=False):
+def group_norm(
+    params: ParamsTree, 
+    layer: geom.BatchLayer, 
+    groups: int, 
+    eps: float = 1e-5, 
+    equivariant: bool = True, 
+    mold_params: bool = False,
+) -> tuple[geom.BatchLayer, ParamsTree]:
     """
     Implementation of group_norm. When num_groups=num_channels, this is equivalent to instance_norm. When
     num_groups=1, this is equivalent to layer_norm. This function takes in a BatchLayer, not a Layer.
@@ -1009,14 +1056,19 @@ def group_norm(params, layer, groups, eps=1e-5, equivariant=True, mold_params=Fa
     return out_layer, params
 
 @functools.partial(jit, static_argnums=[2,3])
-def layer_norm(params, input_layer, eps=1e-05, mold_params=False):
+def layer_norm(
+    params: ParamsTree, 
+    input_layer: geom.BatchLayer, 
+    eps: float = 1e-05, 
+    mold_params: bool = False
+) -> tuple[geom.BatchLayer, ParamsTree]:
     """
     Implementation of layer norm based on group_norm.
     """
     return group_norm(params, input_layer, 1, eps, mold_params)
 
 @functools.partial(jax.jit, static_argnums=[1,2])
-def batch_max_pool(input_layer, patch_len, use_norm=True):
+def batch_max_pool(input_layer: geom.BatchLayer, patch_len: int, use_norm: bool = True) -> geom.BatchLayer:
     """
     Max pool layer on a BatchLayer. Patch len must divide evenly every spatial_dim, and use_norm can
     only be used with (pseudo-)scalars, and it breaks equivariance for pseudoscalars.
@@ -1037,7 +1089,12 @@ def batch_max_pool(input_layer, patch_len, use_norm=True):
     return out_layer
 
 @functools.partial(jax.jit, static_argnums=[2,3])
-def batch_VN_max_pool(params, layer, patch_len, mold_params=False):
+def batch_VN_max_pool(
+    params: ParamsTree, 
+    layer: geom.BatchLayer, 
+    patch_len: int, 
+    mold_params: bool = False,
+) -> tuple[geom.BatchLayer, ParamsTree]:
     """
     The max pool in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
     Basically use the channels of a vector to get a direction vector. Then the vector that is most
@@ -1087,7 +1144,7 @@ def batch_VN_max_pool(params, layer, patch_len, mold_params=False):
     return out_layer, params
 
 @functools.partial(jit, static_argnums=1)
-def average_pool_layer(input_layer, patch_len):
+def average_pool_layer(input_layer: geom.Layer, patch_len: int) -> geom.Layer:
     out_layer = input_layer.empty()
     vmap_avg_pool = vmap(geom.average_pool, in_axes=(None, 0, None))
     for (k,parity), image_block in input_layer.items():
@@ -1095,14 +1152,11 @@ def average_pool_layer(input_layer, patch_len):
 
     return out_layer
 
-def batch_average_pool(input_layer, patch_len):
+def batch_average_pool(input_layer: geom.BatchLayer, patch_len: int) -> geom.BatchLayer:
     return vmap(average_pool_layer, in_axes=(0, None))(input_layer, patch_len)
 
-def unpool_layer(input_layer, patch_len):
-    return [image.unpool(patch_len) for image in input_layer]
-
 @jit
-def basis_average_layer(input_layer, basis):
+def basis_average_layer(input_layer: geom.BatchLayer, basis: ArrayLike) -> Array:
     """
     Experimental layer that finds an average over each basis element to get a coefficient for that basis
     element.
@@ -1123,12 +1177,12 @@ def basis_average_layer(input_layer, basis):
     coeffs = jnp.sum(vmap_basis_prod(input_layer[(1,0)], basis), axis=1) # (num_coeffs * D,)
     return coeffs.reshape((D,int(num_coeffs/D))).transpose() # (num_coeffs/D,D)
 
-def batch_basis_average_layer(input_layer, basis):
+def batch_basis_average_layer(input_layer: geom.BatchLayer, basis: ArrayLike) -> Array:
     return vmap(basis_average_layer, in_axes=(0,None))(input_layer, basis) # (L, num_coeffs, D)
 
 ## Params
 
-def get_layer_params(params, mold_params, layer_name):
+def get_layer_params(params: ParamsTree, mold_params: bool, layer_name: str) -> tuple[tuple[int, str], ParamsTree]:
     """
     Given a network params tree, create a key, value (empty defaultdict) for the next layer if
     mold_params is true, or return the next key and value from the tree if mold_params is False
@@ -1146,7 +1200,12 @@ def get_layer_params(params, mold_params, layer_name):
 
     return params_key_idx, this_params
 
-def update_params(params, params_idx, layer_params, mold_params):
+def update_params(
+    params: ParamsTree, 
+    params_idx: tuple[int, str], 
+    layer_params: ParamsTree, 
+    mold_params: bool,
+) -> ParamsTree:
     """
     If mold_params is true, save the layer_params at the slot params_idx, building up the
     params tree. If mold_params is false, we are consuming layers so pop that set of params
@@ -1165,7 +1224,7 @@ def update_params(params, params_idx, layer_params, mold_params):
 
     return params
 
-def print_params(params, leading_tabs=''):
+def print_params(params: ParamsTree, leading_tabs: str = '') -> None:
     """
     Print the params tree in a structured fashion.
     """
@@ -1178,7 +1237,7 @@ def print_params(params, leading_tabs=''):
             print(f'{leading_tabs}{k}: {v.shape}')
     print(leading_tabs + '}')
 
-def count_params(params):
+def count_params(params: ParamsTree) -> int:
     """
     Count the total number of params in the params tree
     args:
@@ -1190,7 +1249,13 @@ def count_params(params):
 
     return num_params
 
-def init_params(net_func, input_layer, rand_key, return_func=False, override_initializers={}):
+def init_params(
+    net_func: Callable[[ParamsTree, geom.BatchLayer, ArrayLike, bool, bool], ParamsTree], 
+    input_layer: geom.BatchLayer,
+    rand_key: ArrayLike, 
+    return_func: bool = False, 
+    override_initializers: dict[str, Callable[[ArrayLike, Any], Any]] = {},
+) -> ParamsTree:
     """
     Use this function to construct and initialize the tree of params used by the neural network function. The
     first argument should be a function that takes (params, input_layer, rand_key, train, return_params) as 
@@ -1232,7 +1297,11 @@ def init_params(net_func, input_layer, rand_key, return_func=False, override_ini
         rand_key, subkey = random.split(rand_key)
         return recursive_init_params(params, subkey, initializers)
 
-def recursive_init_params(params, rand_key, initializers):
+def recursive_init_params(
+    params: ParamsTree, 
+    rand_key: ArrayLike, 
+    initializers: dict[str, Callable[[ArrayLike, Any], Any]], 
+) -> ParamsTree:
     """
     Given a tree of params, initialize all the params according to the initializers. No longer recursive.
     args:
@@ -1246,7 +1315,7 @@ def recursive_init_params(params, rand_key, initializers):
 
     return out_tree
 
-def batch_norm_init(rand_key, tree):
+def batch_norm_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
     out_params = {}
     for key, inner_tree in tree.items():
         out_params[key] = { SCALE: jnp.ones(inner_tree[SCALE].shape) }
@@ -1256,7 +1325,7 @@ def batch_norm_init(rand_key, tree):
 
     return out_params
 
-def group_norm_init(rand_key, tree):
+def group_norm_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
     out_params = {}
     if BIAS in tree:
         out_params[BIAS] = {}
@@ -1270,7 +1339,7 @@ def group_norm_init(rand_key, tree):
 
     return out_params
 
-def channel_collapse_init(rand_key, tree):
+def channel_collapse_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
     out_params = {}
     for key, params_block in tree.items():
         rand_key, subkey = random.split(rand_key)
@@ -1279,7 +1348,7 @@ def channel_collapse_init(rand_key, tree):
 
     return out_params
 
-def conv_init(rand_key, tree, D):
+def conv_init(rand_key: ArrayLike, tree: ParamsTree, D: int) -> ParamsTree:
     assert (CONV_FREE in tree) or (CONV_FIXED in tree)
     out_params = {}
     filter_type = CONV_FREE if CONV_FREE in tree else CONV_FIXED
@@ -1304,7 +1373,7 @@ def conv_init(rand_key, tree, D):
 
     return out_params
 
-def conv_old_init(rand_key, tree):
+def conv_old_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
     # Keep this how it was originally initialized so old code still works the same.
     out_params = {}
     for key, d in tree.items():
@@ -1315,7 +1384,7 @@ def conv_old_init(rand_key, tree):
 
     return out_params
 
-def cascading_contractions_init(rand_key, tree):
+def cascading_contractions_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
     out_params = {}
     for key, d in tree.items():
         out_params[key] = {}
@@ -1325,7 +1394,7 @@ def cascading_contractions_init(rand_key, tree):
 
     return out_params
 
-def paramed_contractions_init(rand_key, tree):
+def paramed_contractions_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
     out_params = {}
     for key, param_block in tree.items():
         _, channels, maps = param_block.shape
@@ -1335,7 +1404,7 @@ def paramed_contractions_init(rand_key, tree):
 
     return out_params
 
-def equiv_dense_init(rand_key, tree):
+def equiv_dense_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
     out_params = {}
     for key, param_block in tree.items():
         rand_key, subkey = random.split(rand_key)
@@ -1344,7 +1413,7 @@ def equiv_dense_init(rand_key, tree):
 
     return out_params
 
-def VN_nonlinear_init(rand_key, tree):
+def VN_nonlinear_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
     out_params = {}
     for key, param_block in tree.items():
         rand_key, subkey = random.split(rand_key)
@@ -1353,7 +1422,7 @@ def VN_nonlinear_init(rand_key, tree):
 
     return out_params
 
-def norm_nonlinear_init(rand_key, tree):
+def norm_nonlinear_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
     out_params = {}
     for key, param_block_dict in tree.items():
         param_block = param_block_dict['bias']
@@ -1363,7 +1432,7 @@ def norm_nonlinear_init(rand_key, tree):
 
     return out_params
 
-def vector_dots_init(rand_key, tree):
+def vector_dots_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
     out_params = {}
     for key, param_block_dict in tree.items():
         out_params[key] = {}
@@ -1378,7 +1447,7 @@ def vector_dots_init(rand_key, tree):
 
     return out_params
 
-def VN_max_pool_init(rand_key, tree):
+def VN_max_pool_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
     out_params = {}
     for key, params in tree.items():
         out_params[key] = {}
@@ -1395,7 +1464,7 @@ def VN_max_pool_init(rand_key, tree):
 
 ## Losses
 
-def rmse_loss(x, y):
+def rmse_loss(x: ArrayLike, y: ArrayLike) -> Array:
     """
     Root Mean Squared Error Loss.
     args:
@@ -1404,10 +1473,10 @@ def rmse_loss(x, y):
     """
     return jnp.sqrt(mse_loss(x, y))
 
-def mse_loss(x, y):
+def mse_loss(x: ArrayLike, y: ArrayLike) -> Array:
     return jnp.mean((x - y) ** 2)
 
-def timestep_smse_loss(layer_x, layer_y, n_steps):
+def timestep_smse_loss(layer_x: geom.BatchLayer, layer_y: geom.BatchLayer, n_steps: int) -> Array:
     """
     Returns loss for each timestep. Loss is summed over the channels, and mean over spatial dimensions
     and the batch.
@@ -1427,7 +1496,7 @@ def timestep_smse_loss(layer_x, layer_y, n_steps):
 
     return loss_per_step
 
-def smse_loss(layer_x, layer_y):
+def smse_loss(layer_x: geom.Layer, layer_y: geom.Layer) -> Array:
     """
     Sum of mean squared error loss. The sum is over the channels, the mean is over the spatial dimensions and
     the batch.
@@ -1438,13 +1507,13 @@ def smse_loss(layer_x, layer_y):
     spatial_size = np.multiply.reduce(layer_x.get_spatial_dims())
     return jnp.mean(jnp.sum((layer_x.to_vector() - layer_y.to_vector())**2/spatial_size, axis=1))
 
-def l2_loss(x, y):
+def l2_loss(x: ArrayLike, y: ArrayLike) -> Array:
     return jnp.sqrt(l2_squared_loss(x, y))
 
-def l2_squared_loss(x, y):
+def l2_squared_loss(x: ArrayLike, y: ArrayLike) -> Array:
     return jnp.sum((x - y) ** 2)
 
-def normalized_smse_loss(layer_x, layer_y, eps=1e-5):
+def normalized_smse_loss(layer_x: geom.BatchLayer, layer_y: geom.BatchLayer, eps: float = 1e-5) -> Array:
     """
     Pointwise normalized loss. We find the norm of each channel at each spatial point of the true value
     and divide the tensor by that norm. Then we take the l2 loss, mean over the spatial dimensions, sum 
@@ -1466,7 +1535,12 @@ def normalized_smse_loss(layer_x, layer_y, eps=1e-5):
 
 ## Data and Batching operations
 
-def get_batch_layer(layers, batch_size, rand_key, devices=None):
+def get_batch_layer(
+    layers: Union[Sequence[geom.BatchLayer], geom.BatchLayer], 
+    batch_size: int, 
+    rand_key: ArrayLike, 
+    devices: Optional[list[jax.Device]] = None,
+) -> Union[list[list[geom.BatchLayer]], list[geom.BatchLayer]]:
     """
     Given a set of layers, construct random batches of those layers. The most common use case is for
     layers to be a tuple (X,Y) so that the batches have the inputs and outputs. In this case, it will return
@@ -1499,17 +1573,20 @@ def get_batch_layer(layers, batch_size, rand_key, devices=None):
     return batches if (len(batches) > 1) else batches[0]
 
 def map_loss_in_batches(
-    map_and_loss, 
-    params, 
-    layer_X, 
-    layer_Y, 
-    batch_size, 
-    rand_key, 
-    train, 
-    has_aux=False, 
-    aux_data=None,
-    devices=None,
-):
+    map_and_loss: Union[
+        Callable[[Any, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool, Any], tuple[Array, Any]],
+        Callable[[Any, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool], Array],
+    ], 
+    params: ParamsTree, 
+    layer_X: geom.BatchLayer, 
+    layer_Y: geom.BatchLayer, 
+    batch_size: int, 
+    rand_key: ArrayLike, 
+    train: bool, 
+    has_aux: bool = False, 
+    aux_data: Optional[Any] = None,
+    devices: Optional[list[jax.Device]] = None,
+) -> Array:
     """
     Runs map_and_loss for the entire layer_X, layer_Y, splitting into batches if the layer is larger than
     the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
@@ -1562,17 +1639,20 @@ def map_loss_in_batches(
     return total_loss / len(X_batches)
 
 def map_in_batches(
-    map_f, 
-    params, 
-    layer_X, 
-    batch_size, 
-    rand_key, 
-    train, 
-    has_aux=False, 
-    aux_data=None,
-    devices=None,
-    merge_layer=False,
-):
+    map_f: Union[
+        Callable[[ParamsTree, geom.BatchLayer, ArrayLike, bool, Any], tuple[Any, Any]],
+        Callable[[ParamsTree, geom.BatchLayer, ArrayLike, bool], Any],
+    ], 
+    params: ParamsTree, 
+    layer_X: geom.BatchLayer, 
+    batch_size: int, 
+    rand_key: ArrayLike, 
+    train: bool, 
+    has_aux: bool = False, 
+    aux_data: Optional[Any] = None,
+    devices: Optional[list[jax.Device]] = None,
+    merge_layer: bool = False,
+) -> Union[geom.BatchLayer, Any]:
     """
     Runs map_f for the entire layer_X, splitting into batches if the layer is larger than
     the batch_size. This is helpful to run a whole validation/test set through map_f when you need
@@ -1630,7 +1710,7 @@ def map_in_batches(
     else:
         return results
 
-def add_noise(layer, stdev, rand_key):
+def add_noise(layer: geom.Layer, stdev: float, rand_key: ArrayLike) -> geom.Layer:
     """
     Add mean 0, stdev standard deviation Gaussian noise to the data X.
     args:
@@ -1645,7 +1725,14 @@ def add_noise(layer, stdev, rand_key):
 
     return noisy_layer
 
-def autoregressive_step(input, one_step, output, past_steps, constant_fields={}, future_steps=1):
+def autoregressive_step(
+    input: geom.BatchLayer, 
+    one_step: geom.BatchLayer, 
+    output: geom.BatchLayer, 
+    past_steps: int, 
+    constant_fields: dict[LayerKey, ArrayLike] = {}, 
+    future_steps: int = 1,
+) -> tuple[geom.BatchLayer, geom.BatchLayer]:
     """
     Given the input layer, the next step of the model, and the output, update the input
     and output to be fed into the model next. Batch Layers should have shape (batch,channels,spatial,tensor).
@@ -1691,16 +1778,19 @@ def autoregressive_step(input, one_step, output, past_steps, constant_fields={},
     return new_input, new_output
 
 def autoregressive_map(
-    params, 
-    layer_x, 
-    key, 
-    train, 
-    past_steps,
-    future_steps,
-    aux_data=None, 
-    net=None, 
-    has_aux=False, 
-):
+    params: ParamsTree, 
+    layer_x: geom.BatchLayer, 
+    key: ArrayLike, 
+    train: bool, 
+    past_steps: int,
+    future_steps: int,
+    aux_data: Any = None, 
+    net: Optional[Union[
+        Callable[[Any, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool, Any], tuple[Array, Any]],
+        Callable[[Any, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool], Array],
+    ]] = None, 
+    has_aux: bool = False, 
+) -> geom.BatchLayer:
     """
     Given a network, perform an autoregressive step (future_steps) times, and return the output
     steps in a single layer.
@@ -1732,15 +1822,22 @@ def autoregressive_map(
 ### Train
 
 class StopCondition:
-    def __init__(self, verbose=0) -> None:
+    def __init__(self: Self, verbose: int = 0) -> Self:
         assert verbose in {0, 1, 2}
         self.best_params = None
         self.verbose = verbose
 
-    def stop(self, params, current_epoch, train_loss, val_loss, epoch_time):
+    def stop(
+        self: Self, 
+        params: ParamsTree, 
+        current_epoch: int, 
+        train_loss: float, 
+        val_loss: float,
+        epoch_time: int,
+    ) -> None:
         pass
 
-    def log_status(self, epoch, train_loss, val_loss, epoch_time):
+    def log_status(self: Self, epoch: int, train_loss: float, val_loss: float, epoch_time: int) -> None:
         if (train_loss is not None):
             if (val_loss is not None):
                 print(
@@ -1752,11 +1849,18 @@ class StopCondition:
 class EpochStop(StopCondition):
     # Stop when enough epochs have passed.
 
-    def __init__(self, epochs, verbose=0) -> None:
+    def __init__(self: Self, epochs: int, verbose: int = 0) -> Self:
         super(EpochStop, self).__init__(verbose=verbose)
         self.epochs = epochs
 
-    def stop(self, params, current_epoch, train_loss, val_loss, epoch_time) -> bool:
+    def stop(
+        self: Self, 
+        params: ParamsTree, 
+        current_epoch: int, 
+        train_loss: float, 
+        val_loss: float, 
+        epoch_time: int,
+    ) -> bool:
         self.best_params = params
 
         if (
@@ -1770,14 +1874,21 @@ class EpochStop(StopCondition):
 class TrainLoss(StopCondition):
     # Stop when the training error stops improving after patience number of epochs.
 
-    def __init__(self, patience=0, min_delta=0, verbose=0) -> None:
+    def __init__(self: Self, patience: int = 0, min_delta: float = 0, verbose: int = 0) -> Self:
         super(TrainLoss, self).__init__(verbose=verbose)
         self.patience = patience
         self.min_delta = min_delta
         self.best_train_loss = jnp.inf
         self.epochs_since_best = 0
 
-    def stop(self, params, current_epoch, train_loss, val_loss, epoch_time) -> bool:
+    def stop(
+        self: Self, 
+        params: ParamsTree, 
+        current_epoch: int, 
+        train_loss: Optional[float], 
+        val_loss: Optional[float], 
+        epoch_time: int,
+    ) -> bool:
         if (train_loss is None):
             return False
         
@@ -1796,14 +1907,21 @@ class TrainLoss(StopCondition):
 class ValLoss(StopCondition):
      # Stop when the validation error stops improving after patience number of epochs.
 
-    def __init__(self, patience=0, min_delta=0, verbose=0) -> None:
+    def __init__(self: Self, patience: int = 0, min_delta: float = 0, verbose: int = 0) -> Self:
         super(ValLoss, self).__init__(verbose=verbose)
         self.patience = patience
         self.min_delta = min_delta
         self.best_val_loss = jnp.inf
         self.epochs_since_best = 0
 
-    def stop(self, params, current_epoch, train_loss, val_loss, epoch_time) -> bool:
+    def stop(
+        self: Self, 
+        params: ParamsTree, 
+        current_epoch: int, 
+        train_loss: Optional[float], 
+        val_loss: Optional[float], 
+        epoch_time: int,
+    ) -> bool:
         if (val_loss is None):
             return False
         
@@ -1820,7 +1938,7 @@ class ValLoss(StopCondition):
         return self.epochs_since_best > self.patience
 
 @jit
-def grads_mean(grads):
+def grads_mean(grads: Union[dict, ArrayLike]) -> dict:
     """
     Recursively take the mean over the first axis of every jnp.array in the tree of gradients.
     args:
@@ -1837,23 +1955,26 @@ def grads_mean(grads):
     return out_grads
 
 def train(
-    X, 
-    Y, 
-    map_and_loss,
-    params, 
-    rand_key, 
-    stop_condition,
-    batch_size=16, 
-    optimizer=None,
-    validation_X=None,
-    validation_Y=None,
-    noise_stdev=None, 
-    save_params=None,
-    has_aux=False,
-    aux_data=None,
-    checkpoint_kwargs=None,
-    devices=None,
-):
+    X: geom.BatchLayer, 
+    Y: geom.BatchLayer, 
+    map_and_loss: Union[
+        Callable[[ParamsTree, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool, Any], tuple[Array, Any]],
+        Callable[[ParamsTree, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool], Array],
+    ],
+    params: ParamsTree, 
+    rand_key: ArrayLike, 
+    stop_condition: StopCondition,
+    batch_size: int = 16, 
+    optimizer: Optional[optax.GradientTransformation] = None,
+    validation_X: Optional[geom.BatchLayer] = None,
+    validation_Y: Optional[geom.BatchLayer] = None,
+    noise_stdev: Optional[float] = None, 
+    save_params: Optional[str] = None,
+    has_aux: bool = False,
+    aux_data: Optional[Any] = None,
+    checkpoint_kwargs: Optional[dict[str, Any]] = None,
+    devices: Optional[list[jax.Device]] = None,
+) -> Union[tuple[ParamsTree, Any, Array, Array], tuple[ParamsTree, Array, Array]]:
     """
     Method to train the model. It uses stochastic gradient descent (SGD) with the optimizer to learn the
     parameters the minimize the map_and_loss function. The params are returned. This function automatically
@@ -1991,15 +2112,15 @@ BENCHMARK_MODEL = 'benchmark_model'
 BENCHMARK_NONE = 'benchmark_none'
 
 def benchmark(
-    get_data,
-    models,
-    rand_key, 
-    benchmark,
-    benchmark_range,
-    benchmark_type=BENCHMARK_DATA,
-    num_trials=1,
-    num_results=1,
-):
+    get_data: Callable[[Any], geom.BatchLayer],
+    models: list[tuple[str, Callable[[geom.BatchLayer, ArrayLike, str], Any]]],
+    rand_key: ArrayLike, 
+    benchmark: str,
+    benchmark_range: Sequence,
+    benchmark_type: str = BENCHMARK_DATA,
+    num_trials: int = 1,
+    num_results: int = 1,
+) -> np.ndarray:
     """
     Method to benchmark multiple models as a particular benchmark over the specified range.
     args:

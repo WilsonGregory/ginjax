@@ -414,7 +414,7 @@ model_list = [
         partial(
             train_and_eval, 
             net=partial(models.dil_resnet, output_keys=output_keys, output_depth=output_depth, depth=64),
-            # lr=2e-4,
+            lr=1e-3,
         ),
     ),
     (
@@ -430,7 +430,7 @@ model_list = [
                 depth=48,
                 activation_f=ml.VN_NONLINEAR,
             ),
-            lr=5e-4,
+            lr=1e-3,
         ),
     ),
     (
@@ -533,7 +533,7 @@ key, subkey = random.split(key)
 #     model_list,
 #     subkey,
 #     'lr',
-#     [2e-3, 5e-3, 1e-2],
+#     [3e-4, 5e-4, 7e-4, 1e-3],
 #     benchmark_type=ml.BENCHMARK_MODEL,
 #     num_trials=args.n_trials,
 #     num_results=4,

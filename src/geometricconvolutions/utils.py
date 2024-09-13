@@ -303,7 +303,15 @@ def power(img):
 
     return k,P,N
 
-def plot_power(fields, labels, ax, title=''):
+def plot_power(
+    fields, 
+    labels, 
+    ax, 
+    title='', 
+    xlabel='unnormalized wavenumber', 
+    ylabel='unnormalized power',
+    hide_ticks=False,
+):
 
     ks, Ps = [], []
     for field in fields:
@@ -311,11 +319,17 @@ def plot_power(fields, labels, ax, title=''):
         ks.append(k)
         Ps.append(P)
 
-    for k, P, l in zip(ks, Ps, labels):
+    used_labels = labels if labels else ['']*len(ks)
+    for k, P, l in zip(ks, Ps, used_labels):
         ax.loglog(k, P, label=l, alpha=0.7)
 
-    ax.legend()
-    ax.set_xlabel('unnormalized wavenumber')
-    ax.set_ylabel('unnormalized power')
+    if labels:
+        ax.legend(fontsize=36)
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
     if title:
         ax.set_title(title)
+        
+    if hide_ticks:
+        ax.tick_params(axis='both', which='both', bottom=False, left=False, labelbottom=False, labelleft=False)

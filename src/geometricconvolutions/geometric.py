@@ -973,7 +973,7 @@ def max_pool(
         )[0]
         comparator_patches = comparator_patches.reshape((patch_len**D,-1))
     elif use_norm:
-        comparator_patches = jnp.linalg.norm(patches, axis=0)
+        comparator_patches = jnp.linalg.norm(patches, axis=0) # (patch,num_patches)
     else:
         assert len(patches) == 1 # can only use image as your comparator if its a scalar image
         comparator_patches = patches[0]

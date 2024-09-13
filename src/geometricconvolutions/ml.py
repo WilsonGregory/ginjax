@@ -1476,7 +1476,7 @@ def rmse_loss(x: ArrayLike, y: ArrayLike) -> Array:
 def mse_loss(x: ArrayLike, y: ArrayLike) -> Array:
     return jnp.mean((x - y) ** 2)
 
-def timestep_smse_loss(layer_x: geom.BatchLayer, layer_y: geom.BatchLayer, n_steps: int) -> Array:
+def timestep_smse_loss(layer_x: geom.BatchLayer, layer_y: geom.BatchLayer, n_steps: int, reduce: str = 'mean') -> Array:
     """
     Returns loss for each timestep. Loss is summed over the channels, and mean over spatial dimensions
     and the batch.
@@ -1484,17 +1484,22 @@ def timestep_smse_loss(layer_x: geom.BatchLayer, layer_y: geom.BatchLayer, n_ste
         layer_x (BatchLayer): predicted data
         layer_y (BatchLayer): target data
         n_steps (int): number of timesteps, all channels should be a multiple of this
+        reduce (str): how to reduce over the batch, one of mean or max, defaults to mean
     """
+    assert reduce == 'mean' or reduce == 'max'
     spatial_size = np.multiply.reduce(layer_x.get_spatial_dims())
-    loss_per_step = jnp.zeros(n_steps)
-    for image_a, image_b in zip(layer_x.values(), layer_y.values()):
-        batch = len(image_a)
+    batch = layer_x.get_L()
+    loss_per_step = jnp.zeros((batch,n_steps))
+    for image_a, image_b in zip(layer_x.values(), layer_y.values()): # loop over image types
         image_a = image_a.reshape((batch,-1,n_steps) + image_a.shape[2:])
         image_b = image_b.reshape((batch,-1,n_steps) + image_b.shape[2:])
         loss = jnp.sum((image_a - image_b)**2, axis=(1,) + tuple(range(3,image_a.ndim))) / spatial_size
-        loss_per_step = loss_per_step + jnp.mean(loss, axis=0)
+        loss_per_step = loss_per_step + loss
 
-    return loss_per_step
+    if reduce == 'mean':
+        return jnp.mean(loss_per_step, axis=0)
+    elif reduce == 'max':
+        return loss_per_step[jnp.argmax(jnp.sum(loss_per_step, axis=1))]
 
 def smse_loss(layer_x: geom.Layer, layer_y: geom.Layer) -> Array:
     """
@@ -1782,9 +1787,9 @@ def autoregressive_map(
     layer_x: geom.BatchLayer, 
     key: ArrayLike, 
     train: bool, 
-    past_steps: int,
-    future_steps: int,
     aux_data: Any = None, 
+    past_steps: int = 1,
+    future_steps: int = 1,
     net: Optional[Union[
         Callable[[Any, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool, Any], tuple[Array, Any]],
         Callable[[Any, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool], Array],
@@ -1799,8 +1804,8 @@ def autoregressive_map(
         layer_x (Layer): the input layer to map
         key (rand key):
         train (bool): whether it is in training mode or test mode
-        past_steps (int): the number of past steps input to the autoregressive map
-        future_steps (int): how many times to loop through the autoregression
+        past_steps (int): the number of past steps input to the autoregressive map, default 1
+        future_steps (int): how many times to loop through the autoregression, default 1
         aux_data (): auxilliary data to pass to the network
         net (func): the network that performs one step of the autoregression
         has_aux (bool): whether net returns an aux_data, defaults to False
@@ -1817,7 +1822,7 @@ def autoregressive_map(
 
         layer_x, out_layer = autoregressive_step(layer_x, learned_x, out_layer, past_steps)
 
-    return out_layer
+    return (out_layer, aux_data) if has_aux else out_layer
 
 ### Train
 

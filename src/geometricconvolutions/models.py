@@ -121,6 +121,7 @@ def unetBase(
     """
     num_downsamples = 4
     num_conv = 2
+    bias=True
 
     if mold_params is None:
         mold_params = return_params
@@ -152,7 +153,7 @@ def unetBase(
             filter_info,
             depth,
             target_keys,
-            bias=True,
+            bias=bias,
             mold_params=mold_params,
         )
         if use_group_norm:
@@ -174,7 +175,7 @@ def unetBase(
                 filter_info,
                 depth*(2**downsample),
                 target_keys,
-                bias=True,
+                bias=bias,
                 mold_params=mold_params,
             )
             if use_group_norm:
@@ -193,7 +194,7 @@ def unetBase(
             target_keys,
             padding=((1,1),)*layer.D,
             lhs_dilation=(2,)*layer.D, # do the transposed convolution
-            bias=True,
+            bias=bias,
             mold_params=mold_params,
         )
         # concat the upsampled layer and the residual
@@ -206,7 +207,7 @@ def unetBase(
                 filter_info,
                 depth*(2**upsample),
                 target_keys,
-                bias=True,
+                bias=bias,
                 mold_params=mold_params,
             )
             if use_group_norm:
@@ -219,13 +220,13 @@ def unetBase(
         filter_info,
         output_depth,
         output_keys,
-        bias=True,
+        bias=bias,
         mold_params=mold_params,
     )
 
     return (layer, params) if return_params else layer
 
-@functools.partial(jax.jit, static_argnums=[3,5,6,7,8,11])
+@functools.partial(jax.jit, static_argnums=[3,5,6,7,8,9,12,13])
 def unet2015(
     params, 
     layer, 
@@ -233,11 +234,13 @@ def unet2015(
     train, 
     batch_stats=None,
     output_keys=None,
+    output_depth=1,
     depth=64, 
     activation_f=jax.nn.gelu,
     equivariant=False,
     conv_filters=None, 
     upsample_filters=None, # 2x2 filters
+    use_batch_norm=True,
     return_params=False,
 ):
     """
@@ -255,11 +258,15 @@ def unet2015(
         output_keys (tuple of tuples of ints): the output key types of the model. For the Shallow Water
             experiments, should be ((0,0),(1,0)) for the pressure/velocity form and ((0,0),(0,1)) for 
             the pressure/vorticity form.
+        output_depth (int or tuple): output depth for each output key. If an int, then the depth is 
+            that int for each key. Defaults to 1, cannot be None. Needs to be hashable, so the structure
+            is ( (key,depth), (key,depth)) where key itself is a tuple like (0,0)
         depth (int): the depth of the layers, defaults to 64
         activaton_f (function): the function that we pass to batch_scalar_activation
         equivariant (bool): whether to use the equivariant version of the model, defaults to False
         conv_filters (Layer): the conv filters used for the equivariant version
         upsample_filters (Layer): the conv filters used for the upsample layer of the equivariant version
+        use_batch_norm (bool): whether to use the batch norm, defaults to True. If equivariant, then this is False
         return_params (bool): whether we are mapping the params, or applying them
     """
     num_downsamples = 4
@@ -277,7 +284,7 @@ def unet2015(
         filter_info = { 'type': ml.CONV_FREE, 'M': 3 }
         filter_info_upsample = { 'type': ml.CONV_FREE, 'M': 2 }
         target_keys = ((0,0),)
-        if batch_stats is None:
+        if (batch_stats is None) and use_batch_norm:
             batch_stats = defaultdict(lambda: { 'mean': None, 'var': None })
 
         # convert to channels of a scalar layer
@@ -346,7 +353,7 @@ def unet2015(
         params, 
         layer,
         filter_info,
-        1, # depth
+        output_depth,
         output_keys,
         mold_params=return_params,
     )

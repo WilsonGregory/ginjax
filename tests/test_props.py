@@ -9,6 +9,7 @@ import jax.numpy as jnp
 from jax import random, vmap
 import jax.lax
 
+
 class TestPropositions:
     # Class to test various propositions, mostly about the GeometricImage
 
@@ -16,23 +17,35 @@ class TestPropositions:
         # Test that the order of the two parameters of contraction does not matter
         key = random.PRNGKey(0)
         key, subkey = random.split(key)
-        img1 = geom.GeometricImage(random.normal(subkey, shape=(3,3,2,2)), 0, 2)
-        assert img1.contract(0,1) == img1.contract(1,0)
+        img1 = geom.GeometricImage(random.normal(subkey, shape=(3, 3, 2, 2)), 0, 2)
+        assert img1.contract(0, 1) == img1.contract(1, 0)
 
         key, subkey = random.split(key)
-        img2 = geom.GeometricImage(random.normal(subkey, shape=(3,3,2,2,2)), 0, 2)
-        assert img2.contract(0,1) == img2.contract(1,0)
-        assert img2.contract(0,2) == img2.contract(2,0)
-        assert img2.contract(1,2) == img2.contract(2,1)
+        img2 = geom.GeometricImage(random.normal(subkey, shape=(3, 3, 2, 2, 2)), 0, 2)
+        assert img2.contract(0, 1) == img2.contract(1, 0)
+        assert img2.contract(0, 2) == img2.contract(2, 0)
+        assert img2.contract(1, 2) == img2.contract(2, 1)
 
     def testSerialContractionInvariance(self):
         # Test that order of contractions performed in series does not matter
         key = random.PRNGKey(0)
-        img1 = geom.GeometricImage(random.normal(key, shape=(3,3,2,2,2,2,2)), 0, 2)
-        assert jnp.allclose(img1.multicontract(((0,1),(2,3))).data, img1.multicontract(((2,3),(0,1))).data)
-        assert jnp.allclose(img1.multicontract(((0,1),(3,4))).data, img1.multicontract(((3,4),(0,1))).data)
-        assert jnp.allclose(img1.multicontract(((1,2),(3,4))).data, img1.multicontract(((3,4),(1,2))).data)
-        assert jnp.allclose(img1.multicontract(((1,4),(2,3))).data, img1.multicontract(((1,4),(2,3))).data)
+        img1 = geom.GeometricImage(random.normal(key, shape=(3, 3, 2, 2, 2, 2, 2)), 0, 2)
+        assert jnp.allclose(
+            img1.multicontract(((0, 1), (2, 3))).data,
+            img1.multicontract(((2, 3), (0, 1))).data,
+        )
+        assert jnp.allclose(
+            img1.multicontract(((0, 1), (3, 4))).data,
+            img1.multicontract(((3, 4), (0, 1))).data,
+        )
+        assert jnp.allclose(
+            img1.multicontract(((1, 2), (3, 4))).data,
+            img1.multicontract(((3, 4), (1, 2))).data,
+        )
+        assert jnp.allclose(
+            img1.multicontract(((1, 4), (2, 3))).data,
+            img1.multicontract(((1, 4), (2, 3))).data,
+        )
 
     def testContractSwappableIndices(self):
         # Test that convolving with a k=2, parity=0 invariant filter means that we can contract on either
@@ -44,7 +57,7 @@ class TestPropositions:
         operators = geom.make_all_operators(D)
         conv_filters = geom.get_unique_invariant_filters(N, 2, 0, D, operators)
 
-        img1 = geom.GeometricImage(random.normal(key, shape=((N,)*D + (D,)*img_k)), 0, D)
+        img1 = geom.GeometricImage(random.normal(key, shape=((N,) * D + (D,) * img_k)), 0, D)
         for conv_filter in conv_filters:
             convolved_img = img1.convolve_with(conv_filter)
             for i in range(img_k):
@@ -53,10 +66,9 @@ class TestPropositions:
         for conv_filter1 in conv_filters:
             for conv_filter2 in conv_filters:
                 prod_img = img1.convolve_with(conv_filter1) * img1.convolve_with(conv_filter2)
-                for i in [0,1,2,5,6,7]:
+                for i in [0, 1, 2, 5, 6, 7]:
                     assert prod_img.contract(i, 3) == prod_img.contract(i, 4)
                     assert prod_img.contract(i, 8) == prod_img.contract(i, 9)
-
 
     def testConvolutionLinearity(self):
         """
@@ -64,17 +76,19 @@ class TestPropositions:
         """
         key = random.PRNGKey(0)
         key, subkey = random.split(key)
-        image1 = geom.GeometricImage(random.uniform(subkey, shape=(3,3,2)), 0, 2)
+        image1 = geom.GeometricImage(random.uniform(subkey, shape=(3, 3, 2)), 0, 2)
 
         key, subkey = random.split(key)
-        image2 = geom.GeometricImage(random.uniform(subkey, shape=(3,3,2)), 0, 2)
+        image2 = geom.GeometricImage(random.uniform(subkey, shape=(3, 3, 2)), 0, 2)
 
         key, subkey = random.split(key)
-        c1 = geom.GeometricFilter(random.uniform(subkey, shape=(3,3,2)), 0, 2)
+        c1 = geom.GeometricFilter(random.uniform(subkey, shape=(3, 3, 2)), 0, 2)
 
         alpha, beta = random.uniform(subkey, shape=(2,))
 
-        B1 = image1.convolve_with(c1).times_scalar(alpha) + image2.convolve_with(c1).times_scalar(beta)
+        B1 = image1.convolve_with(c1).times_scalar(alpha) + image2.convolve_with(c1).times_scalar(
+            beta
+        )
         B2 = (image1.times_scalar(alpha) + image2.times_scalar(beta)).convolve_with(c1)
 
         assert B1.shape() == B2.shape()
@@ -85,13 +99,13 @@ class TestPropositions:
         # Test that performing two contractions is the same (under transposition) no matter the order
         key = random.PRNGKey(time.time_ns())
         key, subkey = random.split(key)
-        img1 = geom.GeometricImage(random.normal(subkey, shape=(3,3,2)), 0, 2)
+        img1 = geom.GeometricImage(random.normal(subkey, shape=(3, 3, 2)), 0, 2)
 
         key, subkey = random.split(key)
-        c1 = geom.GeometricFilter(random.normal(subkey, shape=(3,3,2)), 1, 2)
+        c1 = geom.GeometricFilter(random.normal(subkey, shape=(3, 3, 2)), 1, 2)
 
         key, subkey = random.split(key)
-        c2 = geom.GeometricFilter(random.normal(subkey, shape=(3,3,2,2)), 0, 2)
+        c2 = geom.GeometricFilter(random.normal(subkey, shape=(3, 3, 2, 2)), 0, 2)
 
         B1 = img1.convolve_with(c1).convolve_with(c2)
         B2 = img1.convolve_with(c2).convolve_with(c1)
@@ -99,19 +113,19 @@ class TestPropositions:
         assert B1.D == B2.D
         assert B1.spatial_dims == B2.spatial_dims
         assert B1.parity == B2.parity
-        assert B1.transpose([0,2,3,1]) == B2
+        assert B1.transpose([0, 2, 3, 1]) == B2
 
     def testOuterProductCommutativity(self):
         # Test that the tensor product is commutative under transposition, including if there are convolves in there.
         key = random.PRNGKey(time.time_ns())
         key, subkey = random.split(key)
-        img1 = geom.GeometricImage(random.normal(subkey, shape=(3,3,2)), 0, 2)
+        img1 = geom.GeometricImage(random.normal(subkey, shape=(3, 3, 2)), 0, 2)
 
         key, subkey = random.split(key)
-        c1 = geom.GeometricFilter(random.normal(subkey, shape=(3,3,2)), 1, 2)
+        c1 = geom.GeometricFilter(random.normal(subkey, shape=(3, 3, 2)), 1, 2)
 
         key, subkey = random.split(key)
-        c2 = geom.GeometricFilter(random.normal(subkey, shape=(3,3,2,2)), 0, 2)
+        c2 = geom.GeometricFilter(random.normal(subkey, shape=(3, 3, 2, 2)), 0, 2)
 
         B1 = img1.convolve_with(c1) * img1.convolve_with(c2)
         B2 = img1.convolve_with(c2) * img1.convolve_with(c1)
@@ -119,17 +133,21 @@ class TestPropositions:
         assert B1.D == B2.D
         assert B1.spatial_dims == B2.spatial_dims
         assert B1.parity == B2.parity
-        assert B1.transpose([2,3,4,0,1]) == B2
+        assert B1.transpose([2, 3, 4, 0, 1]) == B2
 
     def testOuterProductFilterInvariance(self):
         # Test that the outer product of two invariant filters is also invariant
         D = 2
         group_operators = geom.make_all_operators(D)
-        all_filters = geom.get_invariant_filters([3], [0,1,2], [0,1], D, group_operators, return_type='list')
+        all_filters = geom.get_invariant_filters(
+            [3], [0, 1, 2], [0, 1], D, group_operators, return_type="list"
+        )
         for g in group_operators:
             for c1 in all_filters:
                 for c2 in all_filters:
-                    assert (c1 * c2).times_group_element(g, precision=jax.lax.Precision.HIGH) == (c1 * c2)
+                    assert (c1 * c2).times_group_element(g, precision=jax.lax.Precision.HIGH) == (
+                        c1 * c2
+                    )
 
     def testKroneckerAdd(self):
         # Test that multiplying by the kronecker delta symbol, then contracting on those new indices
@@ -141,25 +159,25 @@ class TestPropositions:
 
         key = random.PRNGKey(time.time_ns())
         key, subkey = random.split(key)
-        img1 = geom.GeometricImage(random.normal(subkey, shape=((N,)*D + (D,)*k)), 0, D)
+        img1 = geom.GeometricImage(random.normal(subkey, shape=((N,) * D + (D,) * k)), 0, D)
         kron_delta_img = geom.KroneckerDeltaSymbol.get_image(N, D, kron_delta_k)
 
         expanded_img1 = img1 * kron_delta_img
         assert expanded_img1.k == k + kron_delta_k
-        assert jnp.allclose(expanded_img1.contract(3,4).data, (img1*D).data)
+        assert jnp.allclose(expanded_img1.contract(3, 4).data, (img1 * D).data)
 
-         #Multiplying by K-D then contracting on exactly one K-D index returns the original, up to a transpose of axes
-        assert jnp.allclose(expanded_img1.contract(0,3).transpose((2,0,1)).data, (img1).data)
+        # Multiplying by K-D then contracting on exactly one K-D index returns the original, up to a transpose of axes
+        assert jnp.allclose(expanded_img1.contract(0, 3).transpose((2, 0, 1)).data, (img1).data)
 
         D = 3
         key, subkey = random.split(key)
-        img2 = geom.GeometricImage(random.normal(subkey, shape=((N,)*D + (D,)*k)), 0, D)
+        img2 = geom.GeometricImage(random.normal(subkey, shape=((N,) * D + (D,) * k)), 0, D)
         kron_delta_img = geom.KroneckerDeltaSymbol.get_image(N, D, kron_delta_k)
 
         expanded_img2 = img2 * kron_delta_img
         assert expanded_img2.k == k + kron_delta_k
 
-        assert expanded_img2.contract(3,4) == (img2*D)
+        assert expanded_img2.contract(3, 4) == (img2 * D)
 
     def testInvariantFilter(self):
         # For every invariant filter of order k, there exists an invariant filter of order k+2 where contracting on
@@ -169,21 +187,34 @@ class TestPropositions:
         group_operators = geom.make_all_operators(D)
         max_k = 5
 
-        conv_filters_dict = geom.get_invariant_filters([N], range(max_k+1), [0,1], D, group_operators, scale='one', return_type='dict')
+        conv_filters_dict = geom.get_invariant_filters(
+            [N],
+            range(max_k + 1),
+            [0, 1],
+            D,
+            group_operators,
+            scale="one",
+            return_type="dict",
+        )
         for k in range(max_k - 1):
-            for parity in [0,1]:
+            for parity in [0, 1]:
                 for conv_filter in conv_filters_dict[(D, N, k, parity)]:
                     found_match = False
-                    for upper_conv_filter in conv_filters_dict[(D, N, k+2, parity)]:
-                        for i,j in it.combinations(range(k+2),2):
-                            contracted_filter = upper_conv_filter.contract(i,j)
-                            datablock = jnp.stack([conv_filter.data.flatten(), contracted_filter.data.flatten()])
+                    for upper_conv_filter in conv_filters_dict[(D, N, k + 2, parity)]:
+                        for i, j in it.combinations(range(k + 2), 2):
+                            contracted_filter = upper_conv_filter.contract(i, j)
+                            datablock = jnp.stack(
+                                [
+                                    conv_filter.data.flatten(),
+                                    contracted_filter.data.flatten(),
+                                ]
+                            )
                             s = jnp.linalg.svd(datablock, compute_uv=False)
-                            if (jnp.sum(s > geom.TINY) != 1): #they're the same
+                            if jnp.sum(s > geom.TINY) != 1:  # they're the same
                                 found_match = True
                                 break
-                        
-                        if (found_match):
+
+                        if found_match:
                             break
 
                     assert found_match
@@ -196,67 +227,75 @@ class TestPropositions:
 
         key = random.PRNGKey(time.time_ns())
         key, subkey = random.split(key)
-        img1 = geom.GeometricImage(random.normal(subkey, shape=((N,)*D + (D,)*k)), 0, D)
+        img1 = geom.GeometricImage(random.normal(subkey, shape=((N,) * D + (D,) * k)), 0, D)
 
         key, subkey = random.split(key)
-        c1 = geom.GeometricFilter(random.normal(subkey, shape=(3,3,2)), 0, 2)
+        c1 = geom.GeometricFilter(random.normal(subkey, shape=(3, 3, 2)), 0, 2)
 
         key, subkey = random.split(key)
-        c2 = geom.GeometricFilter(random.normal(subkey, shape=(3,3,2,2)), 0, 2)
+        c2 = geom.GeometricFilter(random.normal(subkey, shape=(3, 3, 2, 2)), 0, 2)
 
         for c in [c1, c2]:
-            for i,j in it.combinations(range(k), 2):
-                assert img1.contract(i,j).convolve_with(c) == img1.convolve_with(c).contract(i,j)
+            for i, j in it.combinations(range(k), 2):
+                assert img1.contract(i, j).convolve_with(c) == img1.convolve_with(c).contract(i, j)
 
     def testDiagEquivalence(self):
         # test that the tensor product and contraction is indeed the diag operator
         N = 3
         D = 2
         k = 1
-        
+
         key = random.PRNGKey(time.time_ns())
-        data = random.normal(key, shape=(N,)*D + (D,)*k)
-        flattened_data = data.reshape((N**D,) + (D,)*k)
+        data = random.normal(key, shape=(N,) * D + (D,) * k)
+        flattened_data = data.reshape((N**D,) + (D,) * k)
 
         kd_3 = geom.KroneckerDeltaSymbol.get(D, 3)
         assert jnp.allclose(
             vmap(jnp.diag)(flattened_data),
-            vmap(lambda vec: geom.multicontract(jnp.tensordot(vec, kd_3, axes=0), ((0,1),)))(flattened_data)
+            vmap(lambda vec: geom.multicontract(jnp.tensordot(vec, kd_3, axes=0), ((0, 1),)))(
+                flattened_data
+            ),
         )
 
         D = 3
-        data = random.normal(key, shape=(N,)*D + (D,)*k)
-        flattened_data = data.reshape((N**D,) + (D,)*k)
+        data = random.normal(key, shape=(N,) * D + (D,) * k)
+        flattened_data = data.reshape((N**D,) + (D,) * k)
 
         kd_3 = geom.KroneckerDeltaSymbol.get(D, 3)
         assert jnp.allclose(
             vmap(jnp.diag)(flattened_data),
-            vmap(lambda vec: geom.multicontract(jnp.tensordot(vec, kd_3, axes=0), ((0,1),)))(flattened_data)
+            vmap(lambda vec: geom.multicontract(jnp.tensordot(vec, kd_3, axes=0), ((0, 1),)))(
+                flattened_data
+            ),
         )
 
     def testFrobeniusNormEquivariance(self):
         key = random.PRNGKey(0)
-        for D in [2,3]:
+        for D in [2, 3]:
             operators = geom.make_all_operators(D)
-            for parity in [0,1]:
-                for k in [0,1,2,3]:
+            for parity in [0, 1]:
+                for k in [0, 1, 2, 3]:
                     key, subkey = random.split(key)
-                    tensor = random.normal(subkey, shape=((1,)*D + (D,)*k))
+                    tensor = random.normal(subkey, shape=((1,) * D + (D,) * k))
 
                     # assert that norm is equivariant
                     for gg in operators:
                         assert jnp.allclose(
                             jnp.linalg.norm(tensor),
                             jnp.linalg.norm(
-                                geom.times_group_element(D, tensor, parity, gg, jax.lax.Precision.HIGHEST),
+                                geom.times_group_element(
+                                    D, tensor, parity, gg, jax.lax.Precision.HIGHEST
+                                ),
                             ),
                         )
 
                     # assert that norm is equivalent to prod, followed by the specific contraction
-                    idxs = tuple((i,j) for i,j in zip(range(k), range(k,2*k)))
+                    idxs = tuple((i, j) for i, j in zip(range(k), range(k, 2 * k)))
                     assert jnp.allclose(
                         jnp.linalg.norm(tensor),
-                        jnp.sqrt(geom.multicontract(geom.mul(D, tensor, tensor), idxs, idx_shift=D)[0,0]),
+                        jnp.sqrt(
+                            geom.multicontract(geom.mul(D, tensor, tensor), idxs, idx_shift=D)[0, 0]
+                        ),
                     )
 
     def testNormEquivariance(self):
@@ -264,12 +303,14 @@ class TestPropositions:
         key = random.PRNGKey(0)
         N = 5
         prec = jax.lax.Precision.HIGHEST
-        for D in [2,3]:
+        for D in [2, 3]:
             operators = geom.make_all_operators(D)
-            for parity in [0,1]:
-                for k in [0,1,2,3]:
+            for parity in [0, 1]:
+                for k in [0, 1, 2, 3]:
                     key, subkey = random.split(key)
-                    image = geom.GeometricImage(random.normal(subkey, shape=(N,)*D + (D,)*k), parity, D)
+                    image = geom.GeometricImage(
+                        random.normal(subkey, shape=(N,) * D + (D,) * k), parity, D
+                    )
 
                     # assert that norm is equivariant
                     for gg in operators:
@@ -285,42 +326,46 @@ class TestPropositions:
         channels = 3
 
         vmap_times_gg = jax.vmap(
-            jax.vmap(geom.times_group_element, in_axes=(None, 0, None, None, None)), 
+            jax.vmap(geom.times_group_element, in_axes=(None, 0, None, None, None)),
             in_axes=(None, 0, None, None, None),
         )
 
         prec = jax.lax.Precision.HIGHEST
-        for D in [2,3]:
+        for D in [2, 3]:
             operators = geom.make_all_operators(D)
-            for parity in [0,1]:
-                for k in [0,1,2,3]:
+            for parity in [0, 1]:
+                for k in [0, 1, 2, 3]:
                     key, subkey = random.split(key)
                     layer = geom.BatchLayer(
-                        { (k,parity): random.normal(subkey, shape=(batch,channels) + (N,)*D + (D,)*k) }, 
+                        {
+                            (k, parity): random.normal(
+                                subkey, shape=(batch, channels) + (N,) * D + (D,) * k
+                            )
+                        },
                         D,
                     )
 
                     # assert that norm is equivariant
                     for gg in operators:
-                        first = vmap_times_gg(D, geom.norm(D+2, layer[(k,parity)]), 0, gg, prec)
-                        second = geom.norm(D+2, layer.times_group_element(gg, prec)[(k,parity)])
+                        first = vmap_times_gg(D, geom.norm(D + 2, layer[(k, parity)]), 0, gg, prec)
+                        second = geom.norm(D + 2, layer.times_group_element(gg, prec)[(k, parity)])
                         assert jnp.allclose(first, second)
 
     def testMaxPoolEquivariance(self):
         N = 6
         key = random.PRNGKey(0)
-        for D in [2,3]:
+        for D in [2, 3]:
             operators = geom.make_all_operators(D)
-            for parity in [0,1]:
-                for k in [0,1,2,3]:
+            for parity in [0, 1]:
+                for k in [0, 1, 2, 3]:
                     key, subkey = random.split(key)
-                    image = random.normal(subkey, shape=((N,)*D + (D,)*k))
+                    image = random.normal(subkey, shape=((N,) * D + (D,) * k))
 
                     # assert that norm is equivariant
                     for gg in operators:
                         first = geom.times_group_element(D, geom.max_pool(D, image, 2), parity, gg)
                         second = geom.max_pool(D, geom.times_group_element(D, image, parity, gg), 2)
-                        assert jnp.allclose(first, second), f'{jnp.max(jnp.abs(first - second))}'
+                        assert jnp.allclose(first, second), f"{jnp.max(jnp.abs(first - second))}"
 
     def testLayerNormEquivariance(self):
         N = 3
@@ -328,27 +373,45 @@ class TestPropositions:
         channels = 2
         prec = jax.lax.Precision.HIGHEST
         key = random.PRNGKey(time.time_ns())
-        for D in [2,3]:
-            fixed_params = { ml.GROUP_NORM: { ml.BIAS: {}, ml.SCALE: {} } }
+        for D in [2, 3]:
+            fixed_params = {ml.GROUP_NORM: {ml.BIAS: {}, ml.SCALE: {}}}
             layer = geom.BatchLayer({}, D)
-            for parity in [0,1]:
-                for k in [0,1]:
+            for parity in [0, 1]:
+                for k in [0, 1]:
                     key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
-                    layer.append(k, parity, random.normal(subkey1, shape=((batch,channels) + (N,)*D + (D,)*k)))
-                    fixed_params[ml.GROUP_NORM][ml.SCALE][(k,parity)] = random.normal(subkey2, shape=(1,channels) + (1,)*layer.D + (1,)*k)
-                    fixed_params[ml.GROUP_NORM][ml.BIAS][(k,parity)] = random.normal(subkey3, shape=(1,channels) + (1,)*layer.D + (1,)*k)
+                    layer.append(
+                        k,
+                        parity,
+                        random.normal(subkey1, shape=((batch, channels) + (N,) * D + (D,) * k)),
+                    )
+                    fixed_params[ml.GROUP_NORM][ml.SCALE][(k, parity)] = random.normal(
+                        subkey2, shape=(1, channels) + (1,) * layer.D + (1,) * k
+                    )
+                    fixed_params[ml.GROUP_NORM][ml.BIAS][(k, parity)] = random.normal(
+                        subkey3, shape=(1, channels) + (1,) * layer.D + (1,) * k
+                    )
 
             operators = geom.make_all_operators(D)
 
             # assert that layer norm (group_norm with groups=1) is equivariant
             for gg in operators:
-                params = { k:v for k,v in fixed_params.items() }
-                layer1 = ml.group_norm(params, layer, 1, equivariant=True, eps=0)[0].times_group_element(gg, precision=prec)
-                params = { k:v for k,v in fixed_params.items() }
-                layer2 = ml.group_norm(params, layer.times_group_element(gg, precision=prec), 1, eps=0, equivariant=True)[0]
+                params = {k: v for k, v in fixed_params.items()}
+                layer1 = ml.group_norm(params, layer, 1, equivariant=True, eps=0)[
+                    0
+                ].times_group_element(gg, precision=prec)
+                params = {k: v for k, v in fixed_params.items()}
+                layer2 = ml.group_norm(
+                    params,
+                    layer.times_group_element(gg, precision=prec),
+                    1,
+                    eps=0,
+                    equivariant=True,
+                )[0]
 
                 for image_block1, image_block2 in zip(layer1.values(), layer2.values()):
-                    assert jnp.allclose(image_block1, image_block2, atol=1e-2, rtol=1e-2), f'{jnp.max(image_block1 - image_block2)}'
+                    assert jnp.allclose(
+                        image_block1, image_block2, atol=1e-2, rtol=1e-2
+                    ), f"{jnp.max(image_block1 - image_block2)}"
 
     def testLayerNormWhitening(self):
         """
@@ -358,20 +421,22 @@ class TestPropositions:
         batch = 3
         channels = 2
         key = random.PRNGKey(time.time_ns())
-        for D in [2,3]:
+        for D in [2, 3]:
             key, subkey = random.split(key)
-            image_block = random.normal(subkey, shape=(batch,channels) + (N,)*D + (D,))
+            image_block = random.normal(subkey, shape=(batch, channels) + (N,) * D + (D,))
 
             whitened_data = ml._group_norm_K1(D, image_block, 1, eps=0)
 
             # mean centered
-            mean = jnp.mean(whitened_data, axis=tuple(range(1,whitened_data.ndim)))
-            assert jnp.allclose(mean, jnp.zeros(mean.shape), atol=1e-3, rtol=1e-3) 
+            mean = jnp.mean(whitened_data, axis=tuple(range(1, whitened_data.ndim)))
+            assert jnp.allclose(mean, jnp.zeros(mean.shape), atol=1e-3, rtol=1e-3)
 
             # identity covariance
-            cov = jax.vmap(lambda data: jnp.cov(data, rowvar=False, bias=True))(whitened_data.reshape((batch,-1,D)))
-            eye = jnp.tensordot(jnp.ones(batch), jnp.eye(D), axes=0) # (batch, D, D)
-            assert jnp.allclose(cov, eye, atol=1e-2, rtol=1e-2), f'{cov}'
+            cov = jax.vmap(lambda data: jnp.cov(data, rowvar=False, bias=True))(
+                whitened_data.reshape((batch, -1, D))
+            )
+            eye = jnp.tensordot(jnp.ones(batch), jnp.eye(D), axes=0)  # (batch, D, D)
+            assert jnp.allclose(cov, eye, atol=1e-2, rtol=1e-2), f"{cov}"
 
     def testVNNonlinearEquivariance(self):
         D = 2
@@ -383,20 +448,26 @@ class TestPropositions:
         key = random.PRNGKey(0)
         key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
         layer = geom.BatchLayer(
-            { 
-                (0,0): random.normal(subkey1, shape=(batch,in_c) + (N,)*D),
-                (1,0): random.normal(subkey2, shape=(batch,in_c) + (N,)*D + (D,)),
+            {
+                (0, 0): random.normal(subkey1, shape=(batch, in_c) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(batch, in_c) + (N,) * D + (D,)),
             },
             D,
         )
 
-        params = { ml.VN_NONLINEAR: { 
-            'W': random.normal(subkey3, shape=(out_c,1,in_c) + (1,)*D + (1,)),
-            'U': random.normal(subkey4, shape=(out_c,1,in_c) + (1,)*D + (1,)),
-        }}
+        params = {
+            ml.VN_NONLINEAR: {
+                "W": random.normal(subkey3, shape=(out_c, 1, in_c) + (1,) * D + (1,)),
+                "U": random.normal(subkey4, shape=(out_c, 1, in_c) + (1,) * D + (1,)),
+            }
+        }
 
         # test that it is equivariant
         for gg in geom.make_all_operators(D):
-            first = ml.VN_nonlinear(dict(params), layer, out_c, eps=0)[0].times_group_element(gg, prec)
-            second = ml.VN_nonlinear(dict(params), layer.times_group_element(gg, prec), out_c, eps=0)[0]
+            first = ml.VN_nonlinear(dict(params), layer, out_c, eps=0)[0].times_group_element(
+                gg, prec
+            )
+            second = ml.VN_nonlinear(
+                dict(params), layer.times_group_element(gg, prec), out_c, eps=0
+            )[0]
             assert first == second

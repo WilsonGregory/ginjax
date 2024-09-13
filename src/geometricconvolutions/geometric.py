@@ -21,7 +21,7 @@ from typing import Union, Sequence, Optional, Generator, Any, Callable
 from typing_extensions import Self
 
 import itertools as it
-import numpy as np #removing this
+import numpy as np  # removing this
 from functools import partial, reduce
 import matplotlib.pyplot as plt
 
@@ -34,11 +34,12 @@ from jax.tree_util import register_pytree_node_class
 
 import geometricconvolutions.utils as utils
 
-TINY = 1.e-5
-LETTERS = 'abcdefghijklmnopqrstuvwxyxABCDEFGHIJKLMNOPQRSTUVWXYZ'
+TINY = 1.0e-5
+LETTERS = "abcdefghijklmnopqrstuvwxyxABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 # ------------------------------------------------------------------------------
 # PART 1: Make and test a complete group
+
 
 def permutation_matrix_from_sequence(seq: Sequence[int]) -> np.ndarray:
     """
@@ -47,10 +48,11 @@ def permutation_matrix_from_sequence(seq: Sequence[int]) -> np.ndarray:
     D = len(seq)
     permutation_matrix = []
     for num in seq:
-        row = [0]*D
+        row = [0] * D
         row[num] = 1
         permutation_matrix.append(row)
     return np.array(permutation_matrix)
+
 
 def make_all_operators(D: int) -> list[np.ndarray]:
     """
@@ -61,18 +63,31 @@ def make_all_operators(D: int) -> list[np.ndarray]:
     """
 
     # permutation matrices, one for each permutation of length D
-    permutation_matrices = [permutation_matrix_from_sequence(seq) for seq in it.permutations(range(D))]
+    permutation_matrices = [
+        permutation_matrix_from_sequence(seq) for seq in it.permutations(range(D))
+    ]
     # possible entries, e.g. for D=2: (1,1), (-1,1), (1,-1), (-1,-1)
-    possible_entries = [np.diag(prod) for prod in it.product([1,-1], repeat=D)]
+    possible_entries = [np.diag(prod) for prod in it.product([1, -1], repeat=D)]
 
-    #combine all the permutation matrices with the possible entries, then flatten to a single array of operators
-    return list(it.chain(*list(map(lambda matrix: [matrix @ prod for prod in possible_entries], permutation_matrices))))
+    # combine all the permutation matrices with the possible entries, then flatten to a single array of operators
+    return list(
+        it.chain(
+            *list(
+                map(
+                    lambda matrix: [matrix @ prod for prod in possible_entries],
+                    permutation_matrices,
+                )
+            )
+        )
+    )
+
 
 # ------------------------------------------------------------------------------
 # PART 2: Define the Kronecker Delta and Levi Civita symbols to be used in Levi Civita contractions
 
+
 class KroneckerDeltaSymbol:
-    #we only want to create each dimension of levi civita symbol once, so we cache them in this dictionary
+    # we only want to create each dimension of levi civita symbol once, so we cache them in this dictionary
     symbol_dict = {}
 
     @classmethod
@@ -85,17 +100,22 @@ class KroneckerDeltaSymbol:
         """
         assert D > 1
         assert k > 1
-        if (D,k) not in cls.symbol_dict:
+        if (D, k) not in cls.symbol_dict:
             arr = np.zeros((k * (D,)), dtype=int)
             for i in range(D):
-                arr[(i,)*k] = 1
-            cls.symbol_dict[(D,k)] = arr
+                arr[(i,) * k] = 1
+            cls.symbol_dict[(D, k)] = arr
 
-        return cls.symbol_dict[(D,k)]
+        return cls.symbol_dict[(D, k)]
 
     @classmethod
     def get_image(cls, N: int, D: int, k: int) -> GeometricImage:
-        return GeometricImage(jnp.stack([cls.get(D,k) for _ in range(N**D)]).reshape(((N,)*D + (D,)*k)), 0, D)
+        return GeometricImage(
+            jnp.stack([cls.get(D, k) for _ in range(N**D)]).reshape(((N,) * D + (D,) * k)),
+            0,
+            D,
+        )
+
 
 def permutation_parity(pi: Sequence[int]) -> int:
     """
@@ -103,7 +123,7 @@ def permutation_parity(pi: Sequence[int]) -> int:
     Slightly modified to return 1 for even permutations, -1 for odd permutations, and 0 for repeated digits
     Permutations of length n must consist of numbers {0, 1, ..., n-1}
     """
-    if (len(np.unique(pi)) != len(pi)):
+    if len(np.unique(pi)) != len(pi):
         return 0
 
     n = len(pi)
@@ -119,11 +139,12 @@ def permutation_parity(pi: Sequence[int]) -> int:
                 a[i] = 1
 
     # code originally returned 1 for odd permutations (we want -1) and 0 for even permutations (we want 1)
-    return -2*((n - c) % 2)+1
+    return -2 * ((n - c) % 2) + 1
+
 
 class LeviCivitaSymbol:
 
-    #we only want to create each dimension of levi civita symbol once, so we cache them in this dictionary
+    # we only want to create each dimension of levi civita symbol once, so we cache them in this dictionary
     symbol_dict = {}
 
     @classmethod
@@ -142,29 +163,34 @@ class LeviCivitaSymbol:
 
         return cls.symbol_dict[D]
 
+
 # ------------------------------------------------------------------------------
 # PART 3: Use group averaging to find unique invariant filters.
 
 basis_cache = {}
 
+
 def get_basis(key: str, shape: tuple[int]) -> jnp.ndarray:
     """
     Return a basis for the given shape. Bases are cached so we only have to calculate them once. The
     result will be a jnp.array of shape (len, shape) where len is the shape all multiplied together.
-    args: 
+    args:
         key (string): basis cache key for this basis, will be combined with the shape
         shape (tuple of ints): the shape of the basis
     """
-    actual_key = key + ':' + str(shape)
+    actual_key = key + ":" + str(shape)
     if actual_key not in basis_cache:
         size = np.multiply.reduce(shape)
         basis_cache[actual_key] = jnp.eye(size).reshape((size,) + shape)
 
     return basis_cache[actual_key]
 
-def get_operators_on_coeffs(D: int, operators: Sequence[np.ndarray], library: jnp.ndarray) -> jnp.ndarray:
+
+def get_operators_on_coeffs(
+    D: int, operators: Sequence[np.ndarray], library: jnp.ndarray
+) -> jnp.ndarray:
     """
-    Given the operators of a group and a library of vector image basis functions, find the action of 
+    Given the operators of a group and a library of vector image basis functions, find the action of
     the group on the coefficients of the library of basis functions.
     args:
         D (int): dimension of the space
@@ -173,27 +199,32 @@ def get_operators_on_coeffs(D: int, operators: Sequence[np.ndarray], library: jn
     returns: list of jnp.array, each is shape (num_coeffs*D, num_coeffs*D)
     """
     num_coeffs = library.shape[1]
-    library_N = int(jnp.power(library.shape[0], 1./D)) # N is the 1/D th root.
-    library_pinv = jnp.linalg.pinv(library) # library is (N**D, num_coeffs), pinv is (num_coeffs, N**D)
+    library_N = int(jnp.power(library.shape[0], 1.0 / D))  # N is the 1/D th root.
+    library_pinv = jnp.linalg.pinv(
+        library
+    )  # library is (N**D, num_coeffs), pinv is (num_coeffs, N**D)
 
     def action(basis_element, gg):
-        vec_img = library @ basis_element.reshape((num_coeffs, D)) # (N**D, D)
-        vec_img = vec_img.reshape((library_N,)*D + (D,)) 
+        vec_img = library @ basis_element.reshape((num_coeffs, D))  # (N**D, D)
+        vec_img = vec_img.reshape((library_N,) * D + (D,))
 
-        rotated_img = times_group_element(D, vec_img, 0, gg, jax.lax.Precision.HIGHEST).reshape((library_N**D,D))
-        rotated_coeffs = library_pinv @ rotated_img # (num_coeffs, D)
-        # this numerical method is a little messy, but in actuality the rotation matrix on the 
+        rotated_img = times_group_element(D, vec_img, 0, gg, jax.lax.Precision.HIGHEST).reshape(
+            (library_N**D, D)
+        )
+        rotated_coeffs = library_pinv @ rotated_img  # (num_coeffs, D)
+        # this numerical method is a little messy, but in actuality the rotation matrix on the
         # coefficients will all be either 1s or -1s. Thus we aggressively round them off.
-        return (jnp.round(rotated_coeffs, decimals=2) + 0.).reshape(-1)
+        return (jnp.round(rotated_coeffs, decimals=2) + 0.0).reshape(-1)
 
-    vmap_action = vmap(action, in_axes=(0,None))
+    vmap_action = vmap(action, in_axes=(0, None))
     # the output vector of action is a column of the operator, so we take the transpose
     return [vmap_action(jnp.eye(num_coeffs * D), gg).transpose() for gg in operators]
+
 
 def get_operators_on_layer(operators: Sequence[np.ndarray], layer: Layer) -> jnp.ndarray:
     """
     Given the operators of a group and a Layer, find the action of the group on the vectorized version
-    of the layer. That is, the output `gg_out` is such that: 
+    of the layer. That is, the output `gg_out` is such that:
     gg_out @ layer.to_vector() == layer.times_group_element(gg)
     args:
         operators (list of jnp.arrays): group operators, each is shape (D, D)
@@ -204,16 +235,19 @@ def get_operators_on_layer(operators: Sequence[np.ndarray], layer: Layer) -> jnp
     layer_basis = vmap(lambda e: layer.__class__.from_vector(e, layer))(jnp.eye(basis_len))
 
     vmap_times_gg = vmap(
-        lambda gg, e: e.times_group_element(gg, jax.lax.Precision.HIGHEST).to_vector(), 
-        in_axes=(None,0),
+        lambda gg, e: e.times_group_element(gg, jax.lax.Precision.HIGHEST).to_vector(),
+        in_axes=(None, 0),
     )
 
     # the output of the vmap is a column of the operator, so we take the transpose
     return [vmap_times_gg(gg, layer_basis).transpose() for gg in operators]
 
-def get_equivariant_map_to_coeffs(layer: Layer, operators: Sequence[np.ndarray], library: jnp.ndarray) -> jnp.ndarray:
+
+def get_equivariant_map_to_coeffs(
+    layer: Layer, operators: Sequence[np.ndarray], library: jnp.ndarray
+) -> jnp.ndarray:
     """
-    Find the linear maps from a layer of the specified shape to the coefficients of a basis of 
+    Find the linear maps from a layer of the specified shape to the coefficients of a basis of
     vector images given by library that is equivariant to the operators of some group.
     args:
         layer (Layer): a layer of any shape, but must be a Layer and not a BatchLayer
@@ -231,15 +265,18 @@ def get_equivariant_map_to_coeffs(layer: Layer, operators: Sequence[np.ndarray],
     operators_on_coeffs = jnp.stack(get_operators_on_coeffs(layer.D, operators, library))
 
     # Now get a basis of the linear maps, and do the group averaging
-    lin_map_basis = get_basis('equivariant_linear_map', (num_coeffs * layer.D, basis_len))
+    lin_map_basis = get_basis("equivariant_linear_map", (num_coeffs * layer.D, basis_len))
     conjugate = vmap(
-        vmap(lambda gg_coeffs, gg_layer, basis_elem: gg_coeffs.T @ basis_elem @ gg_layer, in_axes=(0,0,None)), 
-        in_axes=(None,None,0),
+        vmap(
+            lambda gg_coeffs, gg_layer, basis_elem: gg_coeffs.T @ basis_elem @ gg_layer,
+            in_axes=(0, 0, None),
+        ),
+        in_axes=(None, None, 0),
     )
 
     # before sum, (N**D * num_coeffs * D, group_size, num_coeffs*D, basis_len)
-    maps_matrix = jnp.sum(conjugate(operators_on_coeffs, operators_on_layer, lin_map_basis), axis=1) 
-    maps_matrix = maps_matrix.reshape((len(maps_matrix),-1))
+    maps_matrix = jnp.sum(conjugate(operators_on_coeffs, operators_on_layer, lin_map_basis), axis=1)
+    maps_matrix = maps_matrix.reshape((len(maps_matrix), -1))
 
     # do the SVD
     _, s, v = jnp.linalg.svd(maps_matrix)
@@ -249,13 +286,14 @@ def get_equivariant_map_to_coeffs(layer: Layer, operators: Sequence[np.ndarray],
 
     return v[sbig].reshape((len(v[sbig]), num_coeffs * layer.D, basis_len))
 
+
 def get_unique_invariant_filters(
-    M: int, 
-    k: int, 
-    parity: int, 
-    D: int, 
-    operators: Sequence[np.ndarray], 
-    scale: str = 'normalize',
+    M: int,
+    k: int,
+    parity: int,
+    D: int,
+    operators: Sequence[np.ndarray],
+    scale: str = "normalize",
 ) -> list[GeometricFilter]:
     """
     Use group averaging to generate all the unique invariant filters
@@ -268,15 +306,17 @@ def get_unique_invariant_filters(
         scale (string): option for scaling the values of the filters, 'normalize' (default) to make amplitudes of each
         tensor +/- 1. 'one' to set them all to 1.
     """
-    assert scale == 'normalize' or scale == 'one'
+    assert scale == "normalize" or scale == "one"
 
     # make the seed filters
-    shape = (M,)*D + (D,)*k
+    shape = (M,) * D + (D,) * k
     operators = jnp.stack(operators)
 
-    basis = get_basis('image', shape) # (N**D * D**k, (N,)*D, (D,)*k)
+    basis = get_basis("image", shape)  # (N**D * D**k, (N,)*D, (D,)*k)
     # not a true vmap because we can't vmap over the operators, but equivalent (if slower)
-    vmap_times_group = lambda ff, precision: jnp.stack([times_group_element(D, ff, parity, gg, precision) for gg in operators])
+    vmap_times_group = lambda ff, precision: jnp.stack(
+        [times_group_element(D, ff, parity, gg, precision) for gg in operators]
+    )
     # vmap over the elements of the basis
     group_average = vmap(lambda ff: jnp.sum(vmap_times_group(ff, jax.lax.Precision.HIGH), axis=0))
     filter_matrix = group_average(basis).reshape(len(basis), -1)
@@ -291,14 +331,16 @@ def get_unique_invariant_filters(
     amps = v[sbig] / jnp.max(jnp.abs(v[sbig]), axis=1, keepdims=True)
     # make sure the amps are positive, generally
     signs = jnp.sign(jnp.sum(amps, axis=1, keepdims=True))
-    signs = jnp.where(signs == 0, jnp.ones(signs.shape), signs) #if signs is 0, just want to multiply by 1
+    signs = jnp.where(
+        signs == 0, jnp.ones(signs.shape), signs
+    )  # if signs is 0, just want to multiply by 1
     amps *= signs
     # make sure that the zeros are zeros.
-    amps = jnp.round(amps, decimals=5) + 0.
+    amps = jnp.round(amps, decimals=5) + 0.0
 
     # order them
     filters = [GeometricFilter(aa.reshape(shape), parity, D) for aa in amps]
-    if (scale == 'normalize'):
+    if scale == "normalize":
         filters = [ff.normalize() for ff in filters]
 
     norms = [ff.bigness() for ff in filters]
@@ -310,14 +352,15 @@ def get_unique_invariant_filters(
 
     return filters
 
+
 def get_invariant_filters(
-    Ms: Sequence[int], 
-    ks: Sequence[int], 
-    parities: Sequence[int], 
-    D: int, 
-    operators: Sequence[np.ndarray], 
-    scale: str = 'normalize', 
-    return_type: str = 'layer', 
+    Ms: Sequence[int],
+    ks: Sequence[int],
+    parities: Sequence[int],
+    D: int,
+    operators: Sequence[np.ndarray],
+    scale: str = "normalize",
+    return_type: str = "layer",
     return_maxn: bool = False,
 ):
     """
@@ -338,15 +381,15 @@ def get_invariant_filters(
         maxn: a dictionary that tracks the longest number of filters per key, for a particular D,M combo. Not returned
             if return_list=True
     """
-    assert scale == 'normalize' or scale == 'one'
-    assert return_type in { 'dict', 'list', 'layer' }
+    assert scale == "normalize" or scale == "one"
+    assert return_type in {"dict", "list", "layer"}
 
     allfilters = {}
     maxn = {}
-    for M in Ms: #filter side length
+    for M in Ms:  # filter side length
         maxn[(D, M)] = 0
-        for k in ks: #tensor order
-            for parity in parities: #parity
+        for k in ks:  # tensor order
+            for parity in parities:  # parity
                 key = (D, M, k, parity)
                 allfilters[key] = get_unique_invariant_filters(M, k, parity, D, operators, scale)
                 n = len(allfilters[key])
@@ -354,9 +397,9 @@ def get_invariant_filters(
                     maxn[(D, M)] = n
 
     allfilters_list = list(it.chain(*list(allfilters.values())))
-    if return_type == 'list':
+    if return_type == "list":
         allfilters = allfilters_list
-    elif return_type == 'layer':
+    elif return_type == "layer":
         allfilters = Layer.from_images(allfilters_list)
     # else, allfilters is the default structure
 
@@ -365,26 +408,31 @@ def get_invariant_filters(
     else:
         return allfilters
 
+
 def get_invariant_image(
-    N: int, 
-    D: int, 
-    k: int, 
-    parity: int = 0, 
-    is_torus: bool = True, 
+    N: int,
+    D: int,
+    k: int,
+    parity: int = 0,
+    is_torus: bool = True,
     data_only: bool = True,
 ) -> Union[jnp.ndarray, GeometricImage]:
     """
     Get the G_{N,D} invariant image
     """
     # is this assertion true for odd parity?
-    assert (k % 2) == 0, 'get_invariant_image: There only exists even tensor order invariant images'
+    assert (k % 2) == 0, "get_invariant_image: There only exists even tensor order invariant images"
     if parity != 0:
-        raise Exception('get_invariant_image: Odd parity currently not implemented')
-    
-    images = [GeometricImage.fill(N, parity, D, KroneckerDeltaSymbol.get(D, 2), is_torus) for _ in range(k // 2)]
-    image = reduce(lambda a,b: a * b, images, GeometricImage.fill(N, parity, D, 1, is_torus))
+        raise Exception("get_invariant_image: Odd parity currently not implemented")
+
+    images = [
+        GeometricImage.fill(N, parity, D, KroneckerDeltaSymbol.get(D, 2), is_torus)
+        for _ in range(k // 2)
+    ]
+    image = reduce(lambda a, b: a * b, images, GeometricImage.fill(N, parity, D, 1, is_torus))
 
     return image.data if data_only else image
+
 
 def get_contraction_map(D: int, k: int, indices: tuple[tuple[int]]) -> jnp.ndarray:
     """
@@ -395,16 +443,18 @@ def get_contraction_map(D: int, k: int, indices: tuple[tuple[int]]) -> jnp.ndarr
         k (int): order of the tensor
         indices (tuple of tuple of int pairs): the indices of one multicontraction
     """
-    basis = get_basis('tensor', (D,)*k)
+    basis = get_basis("tensor", (D,) * k)
 
     out = vmap(multicontract, in_axes=(0, None))(basis, indices).reshape((len(basis), -1))
     return jnp.transpose(out)
 
+
 # ------------------------------------------------------------------------------
 # PART 4: Functional Programming GeometricImages
-# This section contains pure functions of geometric images that allows easier use of JAX fundamentals 
+# This section contains pure functions of geometric images that allows easier use of JAX fundamentals
 # such as vmaps, loops, jit, and so on. All functions in this section take in images as their jnp.array data
 # only, and return them as that as well.
+
 
 def parse_shape(shape: tuple[int], D: int) -> tuple[tuple[int], int]:
     """
@@ -413,9 +463,10 @@ def parse_shape(shape: tuple[int], D: int) -> tuple[tuple[int], int]:
         shape (shape tuple): the shape of the data of a single geoemtric image
         D (int): dimension of the image
     """
-    assert isinstance(shape, tuple), f'parse_shape: Shape must be a tuple, but it is {type(shape)}'
-    assert len(shape) >= D, f'parse_shape: Shape {shape} is shorter than D={D}'
+    assert isinstance(shape, tuple), f"parse_shape: Shape must be a tuple, but it is {type(shape)}"
+    assert len(shape) >= D, f"parse_shape: Shape {shape} is shorter than D={D}"
     return shape[:D], len(shape) - D
+
 
 def hash(D: int, image: jnp.ndarray, indices: jnp.ndarray) -> tuple[jnp.ndarray]:
     """
@@ -425,54 +476,56 @@ def hash(D: int, image: jnp.ndarray, indices: jnp.ndarray) -> tuple[jnp.ndarray]
         image (jnp.array): image data
         indices (jnp.array): array of indices, shape (num_idx, D) to apply the remainder to
     """
-    spatial_dims = jnp.array(parse_shape(image.shape, D)[0]).reshape((1,D))
+    spatial_dims = jnp.array(parse_shape(image.shape, D)[0]).reshape((1, D))
     return tuple(jnp.remainder(indices, spatial_dims).transpose().astype(int))
 
+
 def get_torus_expanded(
-    D: int, 
-    image: jnp.ndarray, 
-    is_torus: tuple[bool], 
-    filter_spatial_dims: tuple[int], 
+    D: int,
+    image: jnp.ndarray,
+    is_torus: tuple[bool],
+    filter_spatial_dims: tuple[int],
     rhs_dilation: tuple[int],
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        """
-        For a particular filter, expand the image so that we no longer have to do convolutions on the torus, we are
-        just doing convolutions on the expanded image and will get the same result. Return a new GeometricImage
-        args:
-            D (int): dimension of the image
-            image (jnp.array): image data
-            is_torus (tuple of bool): d-length tuple of bools specifying which spatial dimensions are toroidal
-            filter_spatial_dims (tuple of ints): the spatial dimensions of the filter
-            rhs_dilation (tuple of int): dilation to apply to each filter dimension D
-        """
-        spatial_dims, img_k = parse_shape(image.shape, D)
-        # assert all the filter side lengths are odd
-        assert reduce(lambda carry, M: carry and (M % 2 == 1), filter_spatial_dims, True)
+    """
+    For a particular filter, expand the image so that we no longer have to do convolutions on the torus, we are
+    just doing convolutions on the expanded image and will get the same result. Return a new GeometricImage
+    args:
+        D (int): dimension of the image
+        image (jnp.array): image data
+        is_torus (tuple of bool): d-length tuple of bools specifying which spatial dimensions are toroidal
+        filter_spatial_dims (tuple of ints): the spatial dimensions of the filter
+        rhs_dilation (tuple of int): dilation to apply to each filter dimension D
+    """
+    spatial_dims, img_k = parse_shape(image.shape, D)
+    # assert all the filter side lengths are odd
+    assert reduce(lambda carry, M: carry and (M % 2 == 1), filter_spatial_dims, True)
 
-        # for each torus dimension, calculate the torus padding
-        padding_f = lambda M, dilation, torus: (((M - 1) // 2) * dilation) if torus else 0
-        zipped_dims = zip(filter_spatial_dims, rhs_dilation, is_torus)
-        torus_padding = tuple(padding_f(M, dilation, torus) for M, dilation, torus in zipped_dims)
+    # for each torus dimension, calculate the torus padding
+    padding_f = lambda M, dilation, torus: (((M - 1) // 2) * dilation) if torus else 0
+    zipped_dims = zip(filter_spatial_dims, rhs_dilation, is_torus)
+    torus_padding = tuple(padding_f(M, dilation, torus) for M, dilation, torus in zipped_dims)
 
-        # calculate indices for torus padding, then use hash to select the appropriate pixels
-        ranges = list(jnp.arange(-pad, N+pad) for N, pad in zip(spatial_dims, torus_padding))
-        mesh = jnp.stack(jnp.meshgrid(*ranges, indexing='ij'), axis=-1)
-        new_spatial_dims = mesh.shape[:D]
-        indices = mesh.reshape((np.multiply.reduce(new_spatial_dims),D))
-        expanded_image = image[hash(D, image, indices)].reshape(new_spatial_dims + (D,)*img_k)
+    # calculate indices for torus padding, then use hash to select the appropriate pixels
+    ranges = list(jnp.arange(-pad, N + pad) for N, pad in zip(spatial_dims, torus_padding))
+    mesh = jnp.stack(jnp.meshgrid(*ranges, indexing="ij"), axis=-1)
+    new_spatial_dims = mesh.shape[:D]
+    indices = mesh.reshape((np.multiply.reduce(new_spatial_dims), D))
+    expanded_image = image[hash(D, image, indices)].reshape(new_spatial_dims + (D,) * img_k)
 
-        # zero_pad where we don't torus pad
-        zero_padding = get_same_padding(
-            filter_spatial_dims, 
-            rhs_dilation, 
-            tuple(not torus for torus in is_torus), 
-        )
+    # zero_pad where we don't torus pad
+    zero_padding = get_same_padding(
+        filter_spatial_dims,
+        rhs_dilation,
+        tuple(not torus for torus in is_torus),
+    )
 
-        return expanded_image, zero_padding
+    return expanded_image, zero_padding
+
 
 def get_same_padding(
-    filter_spatial_dims: tuple[int], 
-    rhs_dilation: tuple[int], 
+    filter_spatial_dims: tuple[int],
+    rhs_dilation: tuple[int],
     pad_dims: Optional[tuple[bool]] = None,
 ) -> tuple[tuple[int]]:
     """
@@ -482,17 +535,18 @@ def get_same_padding(
         rhs_dilation (tuple of ints): rhs (filter) dilation, length D tuple
         pad_dims (tuple of bool): which dimensions to pad, defaults to None which is all dimensions
     """
-    pad_dims = (True,)*len(filter_spatial_dims) if pad_dims is None else pad_dims
-    padding_f = lambda M, dilation, pad: (((M - 1) // 2) * dilation,) * 2 if pad else (0,0)
-    zipped_dims = zip(filter_spatial_dims,rhs_dilation, pad_dims)
-    return tuple(padding_f(M,dilation,pad) for M,dilation,pad in zipped_dims)
+    pad_dims = (True,) * len(filter_spatial_dims) if pad_dims is None else pad_dims
+    padding_f = lambda M, dilation, pad: ((((M - 1) // 2) * dilation,) * 2 if pad else (0, 0))
+    zipped_dims = zip(filter_spatial_dims, rhs_dilation, pad_dims)
+    return tuple(padding_f(M, dilation, pad) for M, dilation, pad in zipped_dims)
+
 
 def pre_tensor_product_expand(
-    D: int, 
-    image_a: jnp.ndarray, 
-    image_b: jnp.ndarray, 
-    a_offset: int = 0, 
-    b_offset: int = 0, 
+    D: int,
+    image_a: jnp.ndarray,
+    image_b: jnp.ndarray,
+    a_offset: int = 0,
+    b_offset: int = 0,
     dtype: Optional[jnp.dtype] = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
@@ -507,24 +561,28 @@ def pre_tensor_product_expand(
     _, img_a_k = parse_shape(image_a.shape[a_offset:], D)
     _, img_b_k = parse_shape(image_b.shape[b_offset:], D)
 
-    if (img_b_k > 0):
+    if img_b_k > 0:
         image_a_expanded = jnp.tensordot(
             image_a,
-            jnp.ones((D,)*img_b_k),
+            jnp.ones((D,) * img_b_k),
             axes=0,
         )
     else:
         image_a_expanded = image_a
 
-    if (img_a_k > 0):
-        break1 = img_a_k + b_offset + D #after outer product, end of image_b N^D axes
+    if img_a_k > 0:
+        break1 = img_a_k + b_offset + D  # after outer product, end of image_b N^D axes
         # we want to expand the ones in the middle (D^ki), so add them on the front, then move to middle
 
         # (b_offset,b_spatial,b_tensor) -> (a_tensor,b_offset,b_spatial,b_tensor)
-        image_b_expanded = jnp.tensordot(jnp.ones((D,)*img_a_k), image_b, axes=0)
+        image_b_expanded = jnp.tensordot(jnp.ones((D,) * img_a_k), image_b, axes=0)
 
         # (a_tensor,b_offset,b_spatial,b_tensor) -> (b_offset,b_spatial,a_tensor,b_tensor)
-        idxs = tuple(range(img_a_k, break1)) + tuple(range(img_a_k)) + tuple(range(break1, break1 + img_b_k))
+        idxs = (
+            tuple(range(img_a_k, break1))
+            + tuple(range(img_a_k))
+            + tuple(range(break1, break1 + img_b_k))
+        )
         image_b_expanded = image_b_expanded.transpose(idxs)
     else:
         image_b_expanded = image_b
@@ -534,6 +592,7 @@ def pre_tensor_product_expand(
         image_b_expanded = image_b_expanded.astype(dtype)
 
     return image_a_expanded, image_b_expanded
+
 
 def conv_contract_image_expand(D: int, image: jnp.ndarray, filter_k: int) -> jnp.ndarray:
     """
@@ -545,12 +604,19 @@ def conv_contract_image_expand(D: int, image: jnp.ndarray, filter_k: int) -> jnp
         filter_k (int): the filter tensor order
     """
     _, img_k = parse_shape(image.shape[2:], D)
-    k_prime = filter_k - img_k # not to be confused with Coach Prime
+    k_prime = filter_k - img_k  # not to be confused with Coach Prime
     assert k_prime >= 0
 
-    return jnp.tensordot(image, jnp.ones((D,)*k_prime), axes=0)
+    return jnp.tensordot(image, jnp.ones((D,) * k_prime), axes=0)
 
-def mul(D: int, image_a: jnp.ndarray, image_b: jnp.ndarray, a_offset: int = 0, b_offset: int = 0) -> jnp.ndarray:
+
+def mul(
+    D: int,
+    image_a: jnp.ndarray,
+    image_b: jnp.ndarray,
+    a_offset: int = 0,
+    b_offset: int = 0,
+) -> jnp.ndarray:
     """
     Multiplication operator between two images, implemented as a tensor product of the pixels.
     args:
@@ -561,17 +627,18 @@ def mul(D: int, image_a: jnp.ndarray, image_b: jnp.ndarray, a_offset: int = 0, b
         b_offset (int): number of axes before the spatial axes (batch, channels, etc.), default 0
     """
     image_a_data, image_b_data = pre_tensor_product_expand(D, image_a, image_b, a_offset, b_offset)
-    return image_a_data * image_b_data #now that shapes match, do elementwise multiplication
+    return image_a_data * image_b_data  # now that shapes match, do elementwise multiplication
 
-@partial(jit, static_argnums=[0,3,4,5,6,7,8])
+
+@partial(jit, static_argnums=[0, 3, 4, 5, 6, 7, 8])
 def convolve(
     D: int,
     image: jnp.ndarray,
-    filter_image: jnp.ndarray, 
+    filter_image: jnp.ndarray,
     is_torus: Union[tuple[bool], bool],
-    stride: Optional[tuple[int]] = None, 
+    stride: Optional[tuple[int]] = None,
     padding: Optional[tuple[int]] = None,
-    lhs_dilation: Optional[tuple[int]] = None, 
+    lhs_dilation: Optional[tuple[int]] = None,
     rhs_dilation: Optional[tuple[int]] = None,
     tensor_expand: bool = True,
 ) -> jnp.ndarray:
@@ -595,7 +662,7 @@ def convolve(
         filter_image (jnp.array): the convolution filter, shape (out_c,in_c,spatial,tensor)
         is_torus (bool or tuple of bool): what dimensions of the image are toroidal
         stride (tuple of ints): convolution stride, defaults to (1,)*self.D
-        padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs): 
+        padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs):
             defaults to 'TORUS' if image.is_torus, else 'SAME'
         lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
         rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
@@ -604,102 +671,114 @@ def convolve(
     returns: (jnp.array) convolved_image, shape (batch,out_c,spatial,tensor)
     """
     assert (D == 2) or (D == 3)
-    assert (isinstance(is_torus, tuple) and len(is_torus) == D) or isinstance(is_torus, bool), 'geom::convolve' \
-        f' is_torus must be bool or tuple of bools, but got {is_torus}'
-    assert image.shape[1] == filter_image.shape[1], f'Second axis (in_channels) for image and filter_image ' \
-        f'must equal, but got image {image.shape} and filter {filter_image.shape}'
-    dtype = 'float32'
+    assert (isinstance(is_torus, tuple) and len(is_torus) == D) or isinstance(is_torus, bool), (
+        "geom::convolve" f" is_torus must be bool or tuple of bools, but got {is_torus}"
+    )
+    assert image.shape[1] == filter_image.shape[1], (
+        f"Second axis (in_channels) for image and filter_image "
+        f"must equal, but got image {image.shape} and filter {filter_image.shape}"
+    )
+    dtype = "float32"
 
     if isinstance(is_torus, bool):
-        is_torus = (is_torus,)*D
+        is_torus = (is_torus,) * D
 
     filter_spatial_dims, _ = parse_shape(filter_image.shape[2:], D)
-    out_c, in_c = filter_image.shape[:2] #in_c and out_c are in_channels and out_channels respectively
+    out_c, in_c = filter_image.shape[
+        :2
+    ]  # in_c and out_c are in_channels and out_channels respectively
     batch = len(image)
 
     assert not (
-        reduce(lambda carry, N: carry or (N % 2 == 0), filter_spatial_dims, False) and 
-        (padding == 'TORUS' or padding == 'SAME' or padding is None)
-    ), f'convolve: Filters with even sidelengths {filter_spatial_dims} require literal padding, not {padding}'
+        reduce(lambda carry, N: carry or (N % 2 == 0), filter_spatial_dims, False)
+        and (padding == "TORUS" or padding == "SAME" or padding is None)
+    ), f"convolve: Filters with even sidelengths {filter_spatial_dims} require literal padding, not {padding}"
 
     if rhs_dilation is None:
-        rhs_dilation = (1,)*D
+        rhs_dilation = (1,) * D
 
     if stride is None:
-        stride = (1,)*D
+        stride = (1,) * D
 
-    if padding is None: #if unspecified, infer from is_torus
-        padding = 'TORUS' if len(list(filter(lambda x: x, is_torus))) else 'SAME'
+    if padding is None:  # if unspecified, infer from is_torus
+        padding = "TORUS" if len(list(filter(lambda x: x, is_torus))) else "SAME"
 
     if (lhs_dilation is not None) and isinstance(padding, str):
         print(
-            'WARNING convolve: lhs_dilation (transposed convolution) should specify padding exactly, ' \
-            'see https://arxiv.org/pdf/1603.07285.pdf for the appropriate cases.'
+            "WARNING convolve: lhs_dilation (transposed convolution) should specify padding exactly, "
+            "see https://arxiv.org/pdf/1603.07285.pdf for the appropriate cases."
         )
 
-    if padding == 'TORUS':
-        in_axes, out_axes = (None,0,None,None,None), (0,None)
+    if padding == "TORUS":
+        in_axes, out_axes = (None, 0, None, None, None), (0, None)
         vmap_torus_expand = vmap(vmap(get_torus_expanded, in_axes, out_axes), in_axes, out_axes)
-        image, padding_literal = vmap_torus_expand(D, image, is_torus, filter_spatial_dims, rhs_dilation)
-    elif padding == 'VALID':
-        padding_literal = ((0,0),)*D
-    elif padding == 'SAME':
+        image, padding_literal = vmap_torus_expand(
+            D, image, is_torus, filter_spatial_dims, rhs_dilation
+        )
+    elif padding == "VALID":
+        padding_literal = ((0, 0),) * D
+    elif padding == "SAME":
         padding_literal = get_same_padding(filter_spatial_dims, rhs_dilation)
     else:
         padding_literal = padding
 
     if tensor_expand:
         img_expanded, filter_expanded = pre_tensor_product_expand(
-            D, 
+            D,
             image,
-            filter_image, 
-            a_offset=2, 
-            b_offset=2, 
+            filter_image,
+            a_offset=2,
+            b_offset=2,
             dtype=dtype,
         )
     else:
         img_expanded, filter_expanded = image, filter_image
 
     _, output_k = parse_shape(filter_expanded.shape[2:], D)
-    channel_length = D**output_k 
+    channel_length = D**output_k
     image_spatial_dims, _ = parse_shape(img_expanded.shape[2:], D)
 
     # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
     # (batch,in_c,spatial,tensor) -> (batch,spatial,tensor,in_c)
-    img_formatted = jnp.moveaxis(img_expanded, 1, -1) 
+    img_formatted = jnp.moveaxis(img_expanded, 1, -1)
     # (batch,spatial,tensor,in_c) -> (batch,spatial,tensor*in_c)
-    img_formatted = img_formatted.reshape((batch,) + image_spatial_dims + (channel_length*in_c,))
+    img_formatted = img_formatted.reshape((batch,) + image_spatial_dims + (channel_length * in_c,))
 
     # convert filter to HWIO (or HWDIO)
     # (out_c,in_c,spatial,tensor) -> (spatial,in_c,tensor,out_c)
-    transpose_idxs = tuple(range(2,2+D)) + (1,) + tuple(range(2+D,filter_expanded.ndim)) + (0,)
+    transpose_idxs = (
+        tuple(range(2, 2 + D)) + (1,) + tuple(range(2 + D, filter_expanded.ndim)) + (0,)
+    )
     filter_formatted = filter_expanded.transpose(transpose_idxs)
     # (spatial,in_c,out_c,tensor) -> (spatial,in_c,tensor*out_c)
-    filter_formatted = filter_formatted.reshape(filter_spatial_dims + (in_c,out_c*channel_length))
+    filter_formatted = filter_formatted.reshape(
+        filter_spatial_dims + (in_c, out_c * channel_length)
+    )
 
     convolved_array = jax.lax.conv_general_dilated(
-        img_formatted, #lhs
-        filter_formatted, #rhs
+        img_formatted,  # lhs
+        filter_formatted,  # rhs
         stride,
         padding_literal,
         lhs_dilation=lhs_dilation,
         rhs_dilation=rhs_dilation,
-        dimension_numbers=(('NHWC','HWIO','NHWC') if D == 2 else ('NHWDC','HWDIO','NHWDC')),
-        feature_group_count=channel_length, #each tensor component is treated separately
+        dimension_numbers=(("NHWC", "HWIO", "NHWC") if D == 2 else ("NHWDC", "HWDIO", "NHWDC")),
+        feature_group_count=channel_length,  # each tensor component is treated separately
     )
-    out_shape = convolved_array.shape[:-1] + (D,)*output_k + (out_c,)
-    return jnp.moveaxis(convolved_array.reshape(out_shape), -1, 1) # move out_c to 2nd axis
+    out_shape = convolved_array.shape[:-1] + (D,) * output_k + (out_c,)
+    return jnp.moveaxis(convolved_array.reshape(out_shape), -1, 1)  # move out_c to 2nd axis
 
-@partial(jit, static_argnums=[0,3,4,5,6,7])
+
+@partial(jit, static_argnums=[0, 3, 4, 5, 6, 7])
 def convolve_contract(
     D: int,
     image: jnp.ndarray,
-    filter_image: jnp.ndarray, 
+    filter_image: jnp.ndarray,
     is_torus: Union[bool, tuple[bool]],
-    stride: Optional[tuple[int]] = None, 
+    stride: Optional[tuple[int]] = None,
     padding: Optional[tuple[int]] = None,
-    lhs_dilation: Optional[tuple[int]] = None, 
-    rhs_dilation: Optional[tuple[int]] = None, 
+    lhs_dilation: Optional[tuple[int]] = None,
+    rhs_dilation: Optional[tuple[int]] = None,
 ) -> jnp.ndarray:
     """
     Given an input k image and a k+k' filter, take the tensor convolution that contract k times with one index
@@ -711,17 +790,17 @@ def convolve_contract(
         filter_image (jnp.array): filter data, shape (out_c,in_c,spatial,tensor)
     returns: (jnp.array) output of shape (batch,out_c,spatial,tensor)
     """
-    dtype='float32'
+    dtype = "float32"
     _, img_k = parse_shape(image.shape[2:], D)
     _, filter_k = parse_shape(filter_image.shape[2:], D)
     img_expanded = conv_contract_image_expand(D, image, filter_k).astype(dtype)
     convolved_img = convolve(
-        D, 
-        img_expanded, 
-        filter_image, 
-        is_torus, 
-        stride, 
-        padding, 
+        D,
+        img_expanded,
+        filter_image,
+        is_torus,
+        stride,
+        padding,
         lhs_dilation,
         rhs_dilation,
         tensor_expand=False,
@@ -729,9 +808,10 @@ def convolve_contract(
     # then sum along first img_k tensor axes, this is the contraction
     return jnp.sum(convolved_img, axis=range(2 + D, 2 + D + img_k))
 
+
 def get_contraction_indices(
-    initial_k: int, 
-    final_k: int, 
+    initial_k: int,
+    final_k: int,
     swappable_idxs: tuple[tuple[tuple[int]]] = (),
 ) -> list[tuple[tuple[int]]]:
     """
@@ -740,9 +820,9 @@ def get_contraction_indices(
     list that is returned will be ((0,1), (2,3)), another will be ((1,4), (0,2)), etc.
 
     Note that contracting (0,1) is the same as contracting (1,0). Also, contracting ((0,1),(2,3)) is the same as
-    contracting ((2,3),(0,1)). In both of those cases, they won't be returned. There is also the optional 
+    contracting ((2,3),(0,1)). In both of those cases, they won't be returned. There is also the optional
     argument swappable_idxs to specify indices that can be swapped without changing the contraction. Suppose
-    we have A * c1 where c1 is a k=2, parity=0 invariant conv_filter. In that case, we can contract on either of 
+    we have A * c1 where c1 is a k=2, parity=0 invariant conv_filter. In that case, we can contract on either of
     its indices and it won't change the result because transposing the axes is a group operation.
     args:
         initial_k (int): the starting number of indices that we have
@@ -753,19 +833,23 @@ def get_contraction_indices(
     assert initial_k >= final_k
     assert final_k >= 0
 
-    tuple_pairs = it.combinations(it.combinations(range(initial_k),2),(initial_k - final_k) // 2)
+    tuple_pairs = it.combinations(it.combinations(range(initial_k), 2), (initial_k - final_k) // 2)
     rows = np.array([np.array(pair).reshape((initial_k - final_k,)) for pair in tuple_pairs])
     unique_rows = np.array([True if len(np.unique(row)) == len(row) else False for row in rows])
-    unique_pairs = rows[unique_rows] #remove rows which have an index multiple times
+    unique_pairs = rows[unique_rows]  # remove rows which have an index multiple times
 
     # replace every element of the second term of the swappable pair with the first term
-    for a,b in swappable_idxs:
+    for a, b in swappable_idxs:
         unique_pairs[np.where(np.isin(unique_pairs, b))] = a
 
     # convert back to lists
-    sorted_tuples = [sorted(sorted([x,y]) for x,y in zip(row[0::2], row[1::2])) for row in unique_pairs]
-    sorted_rows = np.array([np.array(pair).reshape((initial_k - final_k,)) for pair in sorted_tuples])
-    unique_sorted_rows = np.unique(sorted_rows, axis=0) #after sorting remove redundant rows
+    sorted_tuples = [
+        sorted(sorted([x, y]) for x, y in zip(row[0::2], row[1::2])) for row in unique_pairs
+    ]
+    sorted_rows = np.array(
+        [np.array(pair).reshape((initial_k - final_k,)) for pair in sorted_tuples]
+    )
+    unique_sorted_rows = np.unique(sorted_rows, axis=0)  # after sorting remove redundant rows
 
     # restore by elements of the swappable pairs to being in the sequences
     for pair in swappable_idxs:
@@ -773,11 +857,14 @@ def get_contraction_indices(
             locs = np.isin(row, pair)
             if len(np.where(locs)[0]) > 0:
                 row[np.max(np.where(locs))] = pair[1]
-                row[np.min(np.where(locs))] = pair[0] #if there is only 1, it will get set to pair 0
+                row[np.min(np.where(locs))] = pair[
+                    0
+                ]  # if there is only 1, it will get set to pair 0
 
-    return [tuple((x,y) for x,y in zip(idxs[0::2], idxs[1::2])) for idxs in unique_sorted_rows]
+    return [tuple((x, y) for x, y in zip(idxs[0::2], idxs[1::2])) for idxs in unique_sorted_rows]
 
-@partial(jit, static_argnums=[1,2])
+
+@partial(jit, static_argnums=[1, 2])
 def multicontract(data: jnp.ndarray, indices: tuple[tuple[int]], idx_shift: int = 0) -> jnp.ndarray:
     """
     Perform the Kronecker Delta contraction on the data. Must have at least 2 dimensions, and because we implement with
@@ -785,28 +872,34 @@ def multicontract(data: jnp.ndarray, indices: tuple[tuple[int]], idx_shift: int 
     args:
         data (np.array-like): data to perform the contraction on
         indices (tuple of tuples of ints): index pairs to perform the contractions on
-        idx_shift (int): indices are the tensor indices, so if data has spatial indices or channel/batch 
+        idx_shift (int): indices are the tensor indices, so if data has spatial indices or channel/batch
             indices in the beginning we shift over by idx_shift
     """
     dimensions = len(data.shape)
     assert dimensions + len(indices) < 52
     assert dimensions >= 2
-    #all indices must be unique, indices must be greater than 0 and less than dimensions
+    # all indices must be unique, indices must be greater than 0 and less than dimensions
 
     einstr = list(LETTERS[:dimensions])
     for i, (idx1, idx2) in enumerate(indices):
-        einstr[idx1 + idx_shift] = einstr[idx2 + idx_shift] = LETTERS[-(i+1)]
-    
-    return jnp.einsum(''.join(einstr), data)
+        einstr[idx1 + idx_shift] = einstr[idx2 + idx_shift] = LETTERS[-(i + 1)]
 
-def apply_contraction_map(D: int, image_data: jnp.ndarray, contract_map: jnp.ndarray, final_k: int) -> jnp.ndarray:
+    return jnp.einsum("".join(einstr), data)
+
+
+def apply_contraction_map(
+    D: int, image_data: jnp.ndarray, contract_map: jnp.ndarray, final_k: int
+) -> jnp.ndarray:
     """
     Contract the image_data using the contraction map.
     """
     spatial_dims, k = parse_shape(image_data.shape, D)
     spatial_size = np.multiply.reduce(spatial_dims)
-    vmap_mult = vmap(lambda image,map: map @ image, in_axes=(0, None))
-    return vmap_mult(image_data.reshape((spatial_size, (D**k))), contract_map).reshape(spatial_dims + (D,)*final_k)
+    vmap_mult = vmap(lambda image, map: map @ image, in_axes=(0, None))
+    return vmap_mult(image_data.reshape((spatial_size, (D**k))), contract_map).reshape(
+        spatial_dims + (D,) * final_k
+    )
+
 
 @jit
 def linear_combination(images: jnp.ndarray, params: jnp.ndarray) -> jnp.ndarray:
@@ -818,71 +911,74 @@ def linear_combination(images: jnp.ndarray, params: jnp.ndarray) -> jnp.ndarray:
     """
     return jnp.sum(vmap(lambda image, param: image * param)(images, params), axis=0)
 
-def get_rotated_keys(D: int, data: jnp.ndarray, gg: np.ndarray) -> np.ndarray:
-        """
-        Get the rotated keys of data when it will be rotated by gg. Note that we rotate the key vector indices
-        by the inverse of gg per the definition (this is done by key_array @ gg, rather than gg @ key_array).
-        When the spatial_dims are not square, this gets a little tricky.
-        The gg needs to be a concrete (numpy) array, not a traced jax array.
-        args:
-            D (int): dimension of image
-            data (jnp.array): data array to be rotated
-            gg (jnp array-like): group operation
-        """
-        spatial_dims, _ = parse_shape(data.shape, D)
-        rotated_spatial_dims = tuple(np.abs(gg @ np.array(spatial_dims)))
 
-        # When spatial_dims is nonsquare, we have to subtract one version, then add the rotated version.
-        centering_coords = (np.array(rotated_spatial_dims).reshape((1,D)) - 1) / 2
-        rotated_centering_coords = np.abs(gg @ centering_coords.reshape((D,1))).reshape((1,D))
-        # rotated keys will need to have the rotated_spatial_dims numbers
-        key_array = np.array([key for key in it.product(*list(range(N) for N in rotated_spatial_dims))])
-        shifted_key_array = key_array - centering_coords
-        return np.rint((shifted_key_array @ gg) + rotated_centering_coords).astype(int)
+def get_rotated_keys(D: int, data: jnp.ndarray, gg: np.ndarray) -> np.ndarray:
+    """
+    Get the rotated keys of data when it will be rotated by gg. Note that we rotate the key vector indices
+    by the inverse of gg per the definition (this is done by key_array @ gg, rather than gg @ key_array).
+    When the spatial_dims are not square, this gets a little tricky.
+    The gg needs to be a concrete (numpy) array, not a traced jax array.
+    args:
+        D (int): dimension of image
+        data (jnp.array): data array to be rotated
+        gg (jnp array-like): group operation
+    """
+    spatial_dims, _ = parse_shape(data.shape, D)
+    rotated_spatial_dims = tuple(np.abs(gg @ np.array(spatial_dims)))
+
+    # When spatial_dims is nonsquare, we have to subtract one version, then add the rotated version.
+    centering_coords = (np.array(rotated_spatial_dims).reshape((1, D)) - 1) / 2
+    rotated_centering_coords = np.abs(gg @ centering_coords.reshape((D, 1))).reshape((1, D))
+    # rotated keys will need to have the rotated_spatial_dims numbers
+    key_array = np.array([key for key in it.product(*list(range(N) for N in rotated_spatial_dims))])
+    shifted_key_array = key_array - centering_coords
+    return np.rint((shifted_key_array @ gg) + rotated_centering_coords).astype(int)
+
 
 def times_group_element(
-    D: int, 
-    data: jnp.ndarray, 
-    parity: int, 
-    gg: np.ndarray, 
+    D: int,
+    data: jnp.ndarray,
+    parity: int,
+    gg: np.ndarray,
     precision: Optional[jax.lax.Precision] = None,
 ) -> jnp.ndarray:
-        """
-        Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the location of the
-        pixels, then apply the action to the pixels themselves.
-        args:
-            D (int): dimension of the data
-            data (jnp.array): data block of image data to rotate
-            parity (int): parity of the data, 0 for even parity, 1 for odd parity
-            gg (group operation matrix): a DxD matrix that rotates the tensor. Note that you cannot vmap
-                by this argument because it needs to deal with concrete values
-            precision (jax.lax.Precision): eisnum precision, normally uses lower precision, use 
-                jax.lax.Precision.HIGH for testing equality in unit tests
-        """
-        spatial_dims, k = parse_shape(data.shape, D)
-        sign, _ = jnp.linalg.slogdet(gg)
-        parity_flip = sign ** parity #if parity=1, the flip operators don't flip the tensors
+    """
+    Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the location of the
+    pixels, then apply the action to the pixels themselves.
+    args:
+        D (int): dimension of the data
+        data (jnp.array): data block of image data to rotate
+        parity (int): parity of the data, 0 for even parity, 1 for odd parity
+        gg (group operation matrix): a DxD matrix that rotates the tensor. Note that you cannot vmap
+            by this argument because it needs to deal with concrete values
+        precision (jax.lax.Precision): eisnum precision, normally uses lower precision, use
+            jax.lax.Precision.HIGH for testing equality in unit tests
+    """
+    spatial_dims, k = parse_shape(data.shape, D)
+    sign, _ = jnp.linalg.slogdet(gg)
+    parity_flip = sign**parity  # if parity=1, the flip operators don't flip the tensors
 
-        rotated_spatial_dims = tuple(np.abs(gg @ np.array(spatial_dims)))
-        rotated_keys = get_rotated_keys(D, data, gg)
-        rotated_pixels = data[hash(D, data, rotated_keys)].reshape(rotated_spatial_dims + (D,)*k)
+    rotated_spatial_dims = tuple(np.abs(gg @ np.array(spatial_dims)))
+    rotated_keys = get_rotated_keys(D, data, gg)
+    rotated_pixels = data[hash(D, data, rotated_keys)].reshape(rotated_spatial_dims + (D,) * k)
 
-        if k == 0:
-            newdata = 1. * rotated_pixels * parity_flip
-        else:
-            # applying the rotation to tensors is essentially multiplying each index, which we can think of as a
-            # vector, by the group action. The image pixels have already been rotated.
-            einstr = LETTERS[:len(data.shape)] + ','
-            einstr += ",".join([LETTERS[i+13] + LETTERS[i + D] for i in range(k)])
-            tensor_inputs = (rotated_pixels, ) + k * (gg, )
-            newdata = jnp.einsum(einstr, *tensor_inputs, precision=precision) * (parity_flip)
+    if k == 0:
+        newdata = 1.0 * rotated_pixels * parity_flip
+    else:
+        # applying the rotation to tensors is essentially multiplying each index, which we can think of as a
+        # vector, by the group action. The image pixels have already been rotated.
+        einstr = LETTERS[: len(data.shape)] + ","
+        einstr += ",".join([LETTERS[i + 13] + LETTERS[i + D] for i in range(k)])
+        tensor_inputs = (rotated_pixels,) + k * (gg,)
+        newdata = jnp.einsum(einstr, *tensor_inputs, precision=precision) * (parity_flip)
 
-        return newdata
+    return newdata
+
 
 def tensor_times_gg(
-    tensor: jnp.ndarray, 
-    parity: int, 
-    gg: np.ndarray, 
+    tensor: jnp.ndarray,
+    parity: int,
+    gg: np.ndarray,
     precision: Optional[jax.lax.Precision] = None,
 ) -> jnp.ndarray:
     """
@@ -893,21 +989,21 @@ def tensor_times_gg(
         parity (int): parity of the data, 0 for even parity, 1 for odd parity
         gg (group operation matrix): a DxD matrix that rotates the tensor. Note that you cannot vmap
             by this argument because it needs to deal with concrete values
-        precision (jax.lax.Precision): eisnum precision, normally uses lower precision, use 
+        precision (jax.lax.Precision): eisnum precision, normally uses lower precision, use
             jax.lax.Precision.HIGH for testing equality in unit tests
     """
     k = len(tensor.shape)
     sign, _ = jnp.linalg.slogdet(gg)
-    parity_flip = sign ** parity #if parity=1, the flip operators don't flip the tensors
+    parity_flip = sign**parity  # if parity=1, the flip operators don't flip the tensors
 
     if k == 0:
-        newdata = 1. * tensor * parity_flip
+        newdata = 1.0 * tensor * parity_flip
     else:
         # applying the rotation to tensors is essentially multiplying each index, which we can think of as a
         # vector, by the group action. The image pixels have already been rotated.
-        einstr = LETTERS[:k] + ','
-        einstr += ",".join([LETTERS[i+13] + LETTERS[i] for i in range(k)])
-        tensor_inputs = (tensor, ) + k * (gg, )
+        einstr = LETTERS[:k] + ","
+        einstr += ",".join([LETTERS[i + 13] + LETTERS[i] for i in range(k)])
+        tensor_inputs = (tensor,) + k * (gg,)
         newdata = jnp.einsum(einstr, *tensor_inputs, precision=precision) * (parity_flip)
 
     return newdata
@@ -922,22 +1018,27 @@ def norm(idx_shift: int, data: jnp.ndarray, keepdims: bool = False) -> jnp.ndarr
         data (jnp.array): image data, shape (N,)*D + (D,)*k
         keepdims (bool): passed to jnp.linalg.norm, defaults to False
     """
-    assert idx_shift <= data.ndim, f'norm: idx shift must be at most ndim, but {idx_shift} > {data.ndim}'
-    if data.ndim == idx_shift: # in this case, reshape creates an axis, so we need to collapse it
+    assert (
+        idx_shift <= data.ndim
+    ), f"norm: idx shift must be at most ndim, but {idx_shift} > {data.ndim}"
+    if data.ndim == idx_shift:  # in this case, reshape creates an axis, so we need to collapse it
         keepdims = False
-        
-    return jnp.linalg.norm(data.reshape(data.shape[:idx_shift] + (-1,)), axis=idx_shift, keepdims=keepdims)
 
-@partial(jax.jit, static_argnums=[0,2,3])
+    return jnp.linalg.norm(
+        data.reshape(data.shape[:idx_shift] + (-1,)), axis=idx_shift, keepdims=keepdims
+    )
+
+
+@partial(jax.jit, static_argnums=[0, 2, 3])
 def max_pool(
-    D: int, 
-    image_data: jnp.ndarray, 
-    patch_len: int, 
-    use_norm: bool = True, 
+    D: int,
+    image_data: jnp.ndarray,
+    patch_len: int,
+    use_norm: bool = True,
     comparator_image: Optional[jnp.ndarray] = None,
 ) -> jnp.ndarray:
     """
-    Perform a max pooling operation where the length of the side of each patch is patch_len. Max is 
+    Perform a max pooling operation where the length of the side of each patch is patch_len. Max is
     determined by the value of comparator_image if present, then the norm of image_data if use_norm
     is true, then finally the image_data otherwise.
     args:
@@ -952,57 +1053,69 @@ def max_pool(
 
     # TODO: use the batch dimension of dilated_patches correctly
     patches = jax.lax.conv_general_dilated_patches(
-        image_data.reshape((1,) + spatial_dims + (-1,)).astype('float32'), # NHWDC
-        filter_shape=(patch_len,)*D, # filter_shape
-        window_strides=(patch_len,)*D,
-        padding=((0,0),)*D, # padding
-        dimension_numbers=('NHWDC', 'OIHWD', 'NCHWD') if D==3 else ('NHWC', 'OIHW', 'NCHW'),
-    )[0] # no batch. Out shape (batch,channels,spatial)
+        image_data.reshape((1,) + spatial_dims + (-1,)).astype("float32"),  # NHWDC
+        filter_shape=(patch_len,) * D,  # filter_shape
+        window_strides=(patch_len,) * D,
+        padding=((0, 0),) * D,  # padding
+        dimension_numbers=(("NHWDC", "OIHWD", "NCHWD") if D == 3 else ("NHWC", "OIHW", "NCHW")),
+    )[
+        0
+    ]  # no batch. Out shape (batch,channels,spatial)
 
     new_spatial_dims = patches.shape[1:]
-    patches = patches.reshape((D**k,patch_len**D,-1)) # (tensor,patch,num_patches)
+    patches = patches.reshape((D**k, patch_len**D, -1))  # (tensor,patch,num_patches)
 
     if comparator_image is not None:
         assert comparator_image.shape == spatial_dims
         comparator_patches = jax.lax.conv_general_dilated_patches(
-            comparator_image.reshape((1,) + spatial_dims + (-1,)).astype('float32'), # NHWDC
-            filter_shape=(patch_len,)*D, # filter_shape
-            window_strides=(patch_len,)*D,
-            padding=((0,0),)*D, # padding
-            dimension_numbers=('NHWDC', 'OIHWD', 'NCHWD') if D==3 else ('NHWC', 'OIHW', 'NCHW'),
+            comparator_image.reshape((1,) + spatial_dims + (-1,)).astype("float32"),  # NHWDC
+            filter_shape=(patch_len,) * D,  # filter_shape
+            window_strides=(patch_len,) * D,
+            padding=((0, 0),) * D,  # padding
+            dimension_numbers=(("NHWDC", "OIHWD", "NCHWD") if D == 3 else ("NHWC", "OIHW", "NCHW")),
         )[0]
-        comparator_patches = comparator_patches.reshape((patch_len**D,-1))
+        comparator_patches = comparator_patches.reshape((patch_len**D, -1))
     elif use_norm:
-        comparator_patches = jnp.linalg.norm(patches, axis=0) # (patch,num_patches)
+        comparator_patches = jnp.linalg.norm(patches, axis=0)  # (patch,num_patches)
     else:
-        assert len(patches) == 1 # can only use image as your comparator if its a scalar image
+        assert len(patches) == 1  # can only use image as your comparator if its a scalar image
         comparator_patches = patches[0]
 
-    idxs = jnp.argmax(comparator_patches, axis=0) # (num_patches,)
-    vmap_max = vmap(lambda patch, idx: patch[:,idx], in_axes=(2,0))
-    return vmap_max(patches, idxs).reshape(new_spatial_dims + (D,)*k)
+    idxs = jnp.argmax(comparator_patches, axis=0)  # (num_patches,)
+    vmap_max = vmap(lambda patch, idx: patch[:, idx], in_axes=(2, 0))
+    return vmap_max(patches, idxs).reshape(new_spatial_dims + (D,) * k)
 
-@partial(jit, static_argnums=[0,2])
+
+@partial(jit, static_argnums=[0, 2])
 def average_pool(D: int, image_data: jnp.ndarray, patch_len: int) -> jnp.ndarray:
-        """
-        Perform a average pooling operation where the length of the side of each patch is patch_len. This is 
-        equivalent to doing a convolution where each element of the filter is 1 over the number of pixels in the 
-        filter, the stride length is patch_len, and the padding is 'VALID'.
-        args:
-            D (int): dimension of data
-            image_data (jnp.array): image data, shape (h,w,tensor) or (h,w,d,tensor)
-            patch_len (int): the side length of the patches, must evenly divide the sidelength
-        """
-        spatial_dims,_ = parse_shape(image_data.shape, D)
-        assert reduce(lambda carry, N: carry and (N % patch_len == 0), spatial_dims, True)
-        # convolve expects (out_c,in_c,h,w)
-        filter_data = (1/(patch_len ** D)) * jnp.ones((1,1) + (patch_len,)*D)
+    """
+    Perform a average pooling operation where the length of the side of each patch is patch_len. This is
+    equivalent to doing a convolution where each element of the filter is 1 over the number of pixels in the
+    filter, the stride length is patch_len, and the padding is 'VALID'.
+    args:
+        D (int): dimension of data
+        image_data (jnp.array): image data, shape (h,w,tensor) or (h,w,d,tensor)
+        patch_len (int): the side length of the patches, must evenly divide the sidelength
+    """
+    spatial_dims, _ = parse_shape(image_data.shape, D)
+    assert reduce(lambda carry, N: carry and (N % patch_len == 0), spatial_dims, True)
+    # convolve expects (out_c,in_c,h,w)
+    filter_data = (1 / (patch_len**D)) * jnp.ones((1, 1) + (patch_len,) * D)
 
-        # reshape to (1,h,w,tensor) because convolve expects (c,h,w,tensor)
-        return convolve(D, image_data[None,None], filter_data, False, stride=(patch_len,)*D, padding='VALID')[0,0]
+    # reshape to (1,h,w,tensor) because convolve expects (c,h,w,tensor)
+    return convolve(
+        D,
+        image_data[None, None],
+        filter_data,
+        False,
+        stride=(patch_len,) * D,
+        padding="VALID",
+    )[0, 0]
+
 
 # ------------------------------------------------------------------------------
 # PART 5: Define geometric (k-tensor, torus) images.
+
 
 def tensor_name(k: int, parity: int) -> str:
     nn = "tensor"
@@ -1014,11 +1127,12 @@ def tensor_name(k: int, parity: int) -> str:
         nn = "pseudo" + nn
     if k > 1:
         if parity == 0:
-            nn = r'${}_{}-$'.format(k, '{(+)}') + nn
+            nn = r"${}_{}-$".format(k, "{(+)}") + nn
         else:
-            nn = r'${}_{}-$'.format(k, '{(-)}') + nn
+            nn = r"${}_{}-$".format(k, "{(-)}") + nn
 
     return nn
+
 
 @register_pytree_node_class
 class GeometricImage:
@@ -1026,7 +1140,14 @@ class GeometricImage:
     # Constructors
 
     @classmethod
-    def zeros(cls, N: int, k: int, parity: int, D: int, is_torus: Union[bool, tuple[bool]]=True) -> Self:
+    def zeros(
+        cls,
+        N: int,
+        k: int,
+        parity: int,
+        D: int,
+        is_torus: Union[bool, tuple[bool]] = True,
+    ) -> Self:
         """
         Class method zeros to construct a geometric image of zeros
         args:
@@ -1036,17 +1157,17 @@ class GeometricImage:
             D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
             is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
         """
-        spatial_dims = N if isinstance(N, tuple) else (N,)*D
+        spatial_dims = N if isinstance(N, tuple) else (N,) * D
         assert len(spatial_dims) == D
-        return cls(jnp.zeros(spatial_dims + (D,)*k), parity, D, is_torus)
+        return cls(jnp.zeros(spatial_dims + (D,) * k), parity, D, is_torus)
 
     @classmethod
     def fill(
-        cls, 
-        N: int, 
-        parity: int, 
-        D: int, 
-        fill: Union[jnp.ndarray, int, float], 
+        cls,
+        N: int,
+        parity: int,
+        D: int,
+        fill: Union[jnp.ndarray, int, float],
         is_torus: Union[bool, tuple[bool]] = True,
     ) -> Self:
         """
@@ -1058,37 +1179,52 @@ class GeometricImage:
             fill (jnp.ndarray or number): tensor to fill the image with
             is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
         """
-        spatial_dims = N if isinstance(N, tuple) else (N,)*D
+        spatial_dims = N if isinstance(N, tuple) else (N,) * D
         assert len(spatial_dims) == D
 
-        k = len(fill.shape) if (isinstance(fill, jnp.ndarray) or isinstance(fill, np.ndarray)) else 0
-        data = jnp.stack([fill for _ in range(np.multiply.reduce(spatial_dims))]).reshape(spatial_dims + (D,)*k)
+        k = (
+            len(fill.shape)
+            if (isinstance(fill, jnp.ndarray) or isinstance(fill, np.ndarray))
+            else 0
+        )
+        data = jnp.stack([fill for _ in range(np.multiply.reduce(spatial_dims))]).reshape(
+            spatial_dims + (D,) * k
+        )
         return cls(data, parity, D, is_torus)
 
-    def __init__(self: Self, data: jnp.ndarray, parity: int, D: int, is_torus: Union[bool, tuple[bool]] = True) -> Self:
+    def __init__(
+        self: Self,
+        data: jnp.ndarray,
+        parity: int,
+        D: int,
+        is_torus: Union[bool, tuple[bool]] = True,
+    ) -> Self:
         """
         Construct the GeometricImage. It will be (N^D x D^k), so if N=100, D=2, k=1, then it's (100 x 100 x 2)
         args:
             data (array-like):
             parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
             D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
-            is_torus (bool or tuple of bools): whether the datablock is a torus, used for convolutions. 
+            is_torus (bool or tuple of bools): whether the datablock is a torus, used for convolutions.
                 Takes either a tuple of bools of length D specifying whether each dimension is toroidal,
                 or simply True or False which sets all dimensions to that value. Defaults to True.
         """
         self.D = D
         self.spatial_dims, self.k = parse_shape(data.shape, D)
-        assert data.shape[D:] == self.k * (self.D, ), \
-        "GeometricImage: each pixel must be D cross D, k times"
+        assert data.shape[D:] == self.k * (
+            self.D,
+        ), "GeometricImage: each pixel must be D cross D, k times"
         self.parity = parity % 2
 
         assert (isinstance(is_torus, tuple) and (len(is_torus) == D)) or isinstance(is_torus, bool)
         if isinstance(is_torus, bool):
-            is_torus = (is_torus,)*D
+            is_torus = (is_torus,) * D
 
         self.is_torus = is_torus
 
-        self.data = jnp.copy(data) #TODO: don't need to copy if data is already an immutable jnp array
+        self.data = jnp.copy(
+            data
+        )  # TODO: don't need to copy if data is already an immutable jnp array
 
     def copy(self: Self) -> Self:
         return self.__class__(self.data, self.parity, self.D, self.is_torus)
@@ -1131,24 +1267,30 @@ class GeometricImage:
         args:
             plus_Ns (tuple of ints): d-length tuple, N to add to each spatial dim
         """
-        plus_Ns = (0,)*self.D if (plus_Ns is None) else plus_Ns
+        plus_Ns = (0,) * self.D if (plus_Ns is None) else plus_Ns
         return tuple(N + plus_N for N, plus_N in zip(self.spatial_dims, plus_Ns))
 
     def pixel_shape(self: Self) -> tuple[int]:
         """
         Return the shape of the data block that is the ktensor, aka the pixel of the image.
         """
-        return self.k*(self.D,)
+        return self.k * (self.D,)
 
     def pixel_size(self: Self) -> int:
         """
         Get the size of the pixel shape, i.e. (D,D,D) = D**3
         """
-        return self.D ** self.k
+        return self.D**self.k
 
     def __str__(self: Self) -> str:
         return "<{} object in D={} with spatial_dims={}, k={}, parity={}, is_torus={}>".format(
-            self.__class__, self.D, self.spatial_dims, self.k, self.parity, self.is_torus)
+            self.__class__,
+            self.D,
+            self.spatial_dims,
+            self.k,
+            self.parity,
+            self.is_torus,
+        )
 
     def keys(self: Self) -> Sequence[Sequence[int]]:
         """
@@ -1181,13 +1323,13 @@ class GeometricImage:
         Equality operator, must have same shape, parity, and data within the TINY=1e-5 tolerance.
         """
         return (
-            self.D == other.D and
-            self.spatial_dims == other.spatial_dims and
-            self.k == other.k and
-            self.parity == other.parity and
-            self.is_torus == other.is_torus and
-            self.data.shape == other.data.shape and
-            jnp.allclose(self.data, other.data, rtol=TINY, atol=TINY)
+            self.D == other.D
+            and self.spatial_dims == other.spatial_dims
+            and self.k == other.k
+            and self.parity == other.parity
+            and self.is_torus == other.is_torus
+            and self.data.shape == other.data.shape
+            and jnp.allclose(self.data, other.data, rtol=TINY, atol=TINY)
         )
 
     def __add__(self: Self, other: Self) -> Self:
@@ -1225,17 +1367,17 @@ class GeometricImage:
         args:
             other (GeometricImage or number): scalar or image to multiply by
         """
-        if (isinstance(other, GeometricImage)):
+        if isinstance(other, GeometricImage):
             assert self.D == other.D
             assert self.spatial_dims == other.spatial_dims
             assert self.is_torus == other.is_torus
             return self.__class__(
-                mul(self.D, self.data, other.data), 
-                self.parity + other.parity, 
-                self.D, 
+                mul(self.D, self.data, other.data),
+                self.parity + other.parity,
+                self.D,
                 self.is_torus,
             )
-        else: #its an integer or a float, or something that can we can multiply a Jax array by (like a DeviceArray)
+        else:  # its an integer or a float, or something that can we can multiply a Jax array by (like a DeviceArray)
             return self.__class__(self.data * other, self.parity, self.D, self.is_torus)
 
     def __rmul__(self: Self, other: Union[Self, float, int]) -> Self:
@@ -1252,25 +1394,29 @@ class GeometricImage:
             axes_permutation (iterable of indices): new axes order
         """
         idx_shift = len(self.image_shape())
-        new_indices = tuple(tuple(range(idx_shift)) + tuple(axis + idx_shift for axis in axes_permutation))
-        return self.__class__(jnp.transpose(self.data, new_indices), self.parity, self.D, self.is_torus)
+        new_indices = tuple(
+            tuple(range(idx_shift)) + tuple(axis + idx_shift for axis in axes_permutation)
+        )
+        return self.__class__(
+            jnp.transpose(self.data, new_indices), self.parity, self.D, self.is_torus
+        )
 
-    @partial(jit, static_argnums=[2,3,4,5])
+    @partial(jit, static_argnums=[2, 3, 4, 5])
     def convolve_with(
-        self: Self, 
-        filter_image: Self, 
-        stride: Optional[tuple[int]] = None, 
+        self: Self,
+        filter_image: Self,
+        stride: Optional[tuple[int]] = None,
         padding: Optional[tuple[int]] = None,
-        lhs_dilation: Optional[tuple[int]] = None, 
-        rhs_dilation: Optional[tuple[int]] = None, 
+        lhs_dilation: Optional[tuple[int]] = None,
+        rhs_dilation: Optional[tuple[int]] = None,
     ) -> Self:
         """
         See convolve for a description of this function.
         """
         convolved_array = convolve(
-            self.D, 
-            self.data[None,None],  # add batch, in_channels axes
-            filter_image.data[None,None], # add out_channels, in_channels axes
+            self.D,
+            self.data[None, None],  # add batch, in_channels axes
+            filter_image.data[None, None],  # add out_channels, in_channels axes
             self.is_torus,
             stride,
             padding,
@@ -1278,24 +1424,24 @@ class GeometricImage:
             rhs_dilation,
         )
         return self.__class__(
-            convolved_array[0,0], # ignore batch, out_channels axes
-            self.parity + filter_image.parity, 
-            self.D, 
+            convolved_array[0, 0],  # ignore batch, out_channels axes
+            self.parity + filter_image.parity,
+            self.D,
             self.is_torus,
         )
 
-    @partial(jit, static_argnums=[1,2])
+    @partial(jit, static_argnums=[1, 2])
     def max_pool(self: Self, patch_len: int, use_norm: bool = True) -> Self:
         """
          Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined
-        by the norm of the pixel when use_norm is True. Note that for scalars, this will be the absolute value of 
+        by the norm of the pixel when use_norm is True. Note that for scalars, this will be the absolute value of
         the pixel. If you want to use the max instead, set use_norm to False (requires scalar images).
         args:
             patch_len (int): the side length of the patches, must evenly divide all spatial dims
         """
         return self.__class__(
-            max_pool(self.D, self.data, patch_len, use_norm), 
-            self.parity, 
+            max_pool(self.D, self.data, patch_len, use_norm),
+            self.parity,
             self.D,
             self.is_torus,
         )
@@ -1303,8 +1449,8 @@ class GeometricImage:
     @partial(jit, static_argnums=1)
     def average_pool(self: Self, patch_len: int) -> Self:
         """
-        Perform a average pooling operation where the length of the side of each patch is patch_len. This is 
-        equivalent to doing a convolution where each element of the filter is 1 over the number of pixels in the 
+        Perform a average pooling operation where the length of the side of each patch is patch_len. This is
+        equivalent to doing a convolution where each element of the filter is 1 over the number of pixels in the
         filter, the stride length is patch_len, and the padding is 'VALID'.
         args:
             patch_len (int): the side length of the patches, must evenly divide self.N
@@ -1323,8 +1469,12 @@ class GeometricImage:
         args:
             patch_len (int): side length of the patch of our unpooled images
         """
-        grow_filter = GeometricImage(jnp.ones((patch_len,)*self.D), 0, self.D)
-        return self.convolve_with(grow_filter, padding=((patch_len-1,)*2,)*self.D, lhs_dilation=(patch_len,)*self.D)
+        grow_filter = GeometricImage(jnp.ones((patch_len,) * self.D), 0, self.D)
+        return self.convolve_with(
+            grow_filter,
+            padding=((patch_len - 1,) * 2,) * self.D,
+            lhs_dilation=(patch_len,) * self.D,
+        )
 
     def times_scalar(self: Self, scalar: float) -> Self:
         """
@@ -1348,15 +1498,17 @@ class GeometricImage:
         """
         max_norm = jnp.max(self.norm().data)
         if max_norm > TINY:
-            return self.times_scalar(1. / max_norm)
+            return self.times_scalar(1.0 / max_norm)
         else:
-            return self.times_scalar(1.)
+            return self.times_scalar(1.0)
 
     def activation_function(self: Self, function: Callable[[jnp.ndarray], jnp.ndarray]) -> Self:
-        assert self.k == 0, "Activation functions only implemented for k=0 tensors due to equivariance"
+        assert (
+            self.k == 0
+        ), "Activation functions only implemented for k=0 tensors due to equivariance"
         return self.__class__(function(self.data), self.parity, self.D, self.is_torus)
 
-    @partial(jit, static_argnums=[1,2])
+    @partial(jit, static_argnums=[1, 2])
     def contract(self: Self, i: int, j: int) -> Self:
         """
         Use einsum to perform a kronecker contraction on two dimensions of the tensor
@@ -1366,7 +1518,12 @@ class GeometricImage:
         """
         assert self.k >= 2
         idx_shift = len(self.image_shape())
-        return self.__class__(multicontract(self.data, ((i,j),), idx_shift), self.parity, self.D, self.is_torus)
+        return self.__class__(
+            multicontract(self.data, ((i, j),), idx_shift),
+            self.parity,
+            self.D,
+            self.is_torus,
+        )
 
     @partial(jit, static_argnums=1)
     def multicontract(self: Self, indices: tuple[tuple[int]]) -> Self:
@@ -1377,7 +1534,12 @@ class GeometricImage:
         """
         assert self.k >= 2
         idx_shift = len(self.image_shape())
-        return self.__class__(multicontract(self.data, indices, idx_shift), self.parity, self.D, self.is_torus)
+        return self.__class__(
+            multicontract(self.data, indices, idx_shift),
+            self.parity,
+            self.D,
+            self.is_torus,
+        )
 
     def levi_civita_contract(self: Self, indices: tuple[tuple[int]]) -> Self:
         """
@@ -1386,7 +1548,9 @@ class GeometricImage:
         args:
             indices (int, or tuple, or list): indices of tensor to perform contractions on
         """
-        assert self.k >= (self.D - 1) # so we have enough indices to work on since we perform D-1 contractions
+        assert self.k >= (
+            self.D - 1
+        )  # so we have enough indices to work on since we perform D-1 contractions
         if self.D == 2 and not (isinstance(indices, tuple) or isinstance(indices, list)):
             indices = (indices,)
         assert len(indices) == self.D - 1
@@ -1394,10 +1558,15 @@ class GeometricImage:
         levi_civita = LeviCivitaSymbol.get(self.D)
         outer = jnp.tensordot(self.data, levi_civita, axes=0)
 
-        #make contraction index pairs with one of specified indices, and index (in order) from the levi_civita symbol
+        # make contraction index pairs with one of specified indices, and index (in order) from the levi_civita symbol
         idx_shift = len(self.image_shape())
-        zipped_indices = tuple((i+idx_shift,j+idx_shift) for i,j in zip(indices, range(self.k, self.k + len(indices))))
-        return self.__class__(multicontract(outer, zipped_indices), self.parity + 1, self.D, self.is_torus)
+        zipped_indices = tuple(
+            (i + idx_shift, j + idx_shift)
+            for i, j in zip(indices, range(self.k, self.k + len(indices)))
+        )
+        return self.__class__(
+            multicontract(outer, zipped_indices), self.parity + 1, self.D, self.is_torus
+        )
 
     def get_rotated_keys(self: Self, gg: np.ndarray) -> np.ndarray:
         """
@@ -1407,7 +1576,9 @@ class GeometricImage:
         """
         return get_rotated_keys(self.D, self.data, gg)
 
-    def times_group_element(self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision] = None) -> Self:
+    def times_group_element(
+        self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision] = None
+    ) -> Self:
         """
         Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the location of the
         pixels, then apply the action to the pixels themselves.
@@ -1419,37 +1590,41 @@ class GeometricImage:
         assert gg.shape == (self.D, self.D)
 
         return self.__class__(
-            times_group_element(self.D, self.data, self.parity, gg, precision=precision), 
-            self.parity, 
-            self.D, 
+            times_group_element(self.D, self.data, self.parity, gg, precision=precision),
+            self.parity,
+            self.D,
             self.is_torus,
         )
 
     def plot(
-        self: Self, 
-        ax: Optional[plt.Axes] = None, 
-        title: str = '', 
-        boxes: bool = False, 
-        fill: bool = True, 
-        symbols: bool = False, 
-        vmin: Optional[float] = None, 
-        vmax: Optional[float] = None, 
+        self: Self,
+        ax: Optional[plt.Axes] = None,
+        title: str = "",
+        boxes: bool = False,
+        fill: bool = True,
+        symbols: bool = False,
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
         colorbar: bool = False,
         vector_scaling: float = 0.5,
     ) -> None:
         # plot functions should fail gracefully
         if self.D != 2 and self.D != 3:
-            print(f'GeometricImage::plot: Can only plot dimension 2 or 3 images, but got D={self.D}')
+            print(
+                f"GeometricImage::plot: Can only plot dimension 2 or 3 images, but got D={self.D}"
+            )
             return
         if self.k > 2:
-            print(f'GeometricImage::plot: Can only plot tensor order 0,1, or 2 images, but got k={self.k}')
+            print(
+                f"GeometricImage::plot: Can only plot tensor order 0,1, or 2 images, but got k={self.k}"
+            )
             return
         if self.k == 2 and self.D == 3:
-            print(f'GeometricImage::plot: Cannot plot D=3, k=2 geometric images.')
+            print(f"GeometricImage::plot: Cannot plot D=3, k=2 geometric images.")
             return
 
         ax = utils.setup_plot() if ax is None else ax
-        
+
         # This was breaking earlier with jax arrays, not sure why. I really don't want plotting to break,
         # so I am will swap to numpy arrays just in case.
         xs, ys, *zs = np.array(self.key_array()).T
@@ -1463,47 +1638,49 @@ class GeometricImage:
             vmin = np.min(pixels) if vmin is None else vmin
             vmax = np.max(pixels) if vmax is None else vmax
             utils.plot_scalars(
-                ax, 
-                self.spatial_dims, 
-                xs, 
-                ys, 
-                pixels, 
-                boxes=boxes, 
-                fill=fill, 
+                ax,
+                self.spatial_dims,
+                xs,
+                ys,
+                pixels,
+                boxes=boxes,
+                fill=fill,
                 symbols=symbols,
                 vmin=vmin,
                 vmax=vmax,
                 colorbar=colorbar,
             )
         elif self.k == 1:
-            vmin = 0. if vmin is None else vmin
-            vmax = 2. if vmax is None else vmax
+            vmin = 0.0 if vmin is None else vmin
+            vmax = 2.0 if vmax is None else vmax
             utils.plot_vectors(
-                ax, 
-                xs, 
-                ys, 
-                pixels, 
-                boxes=boxes, 
-                fill=fill, 
-                vmin=vmin, 
-                vmax=vmax, 
+                ax,
+                xs,
+                ys,
+                pixels,
+                boxes=boxes,
+                fill=fill,
+                vmin=vmin,
+                vmax=vmax,
                 scaling=vector_scaling,
             )
-        else: # self.k == 2
+        else:  # self.k == 2
             utils.plot_tensors(ax, xs, ys, pixels, boxes=boxes)
 
         utils.finish_plot(ax, title, xs, ys, self.D)
 
-    def tree_flatten(self: Self) -> tuple[tuple[jnp.ndarray], dict[str, Union[int, Union[bool, tuple[bool]]]]]:
+    def tree_flatten(
+        self: Self,
+    ) -> tuple[tuple[jnp.ndarray], dict[str, Union[int, Union[bool, tuple[bool]]]]]:
         """
         Helper function to define GeometricImage as a pytree so jax.jit handles it correctly. Children and aux_data
         must contain all the variables that are passed in __init__()
         """
         children = (self.data,)  # arrays / dynamic values
         aux_data = {
-            'D': self.D,
-            'parity': self.parity,
-            'is_torus': self.is_torus,
+            "D": self.D,
+            "parity": self.parity,
+            "is_torus": self.is_torus,
         }  # static values
         return (children, aux_data)
 
@@ -1514,34 +1691,49 @@ class GeometricImage:
         """
         return cls(*children, **aux_data)
 
+
 # ------------------------------------------------------------------------------
 # PART 3: Define a geometric (k-tensor) filter.
+
 
 @register_pytree_node_class
 class GeometricFilter(GeometricImage):
 
-    def __init__(self: Self, data: jnp.ndarray, parity: int, D: int, is_torus: Union[bool, tuple[bool]] = True) -> Self:
+    def __init__(
+        self: Self,
+        data: jnp.ndarray,
+        parity: int,
+        D: int,
+        is_torus: Union[bool, tuple[bool]] = True,
+    ) -> Self:
         super(GeometricFilter, self).__init__(data, parity, D, is_torus)
-        assert self.spatial_dims == (self.spatial_dims[0],)*self.D, \
-        "GeometricFilter: Filters must be square." # I could remove  this requirement in the future
+        assert (
+            self.spatial_dims == (self.spatial_dims[0],) * self.D
+        ), "GeometricFilter: Filters must be square."  # I could remove  this requirement in the future
 
     @classmethod
     def from_image(cls, geometric_image: GeometricImage) -> Self:
         """
         Constructor that copies a GeometricImage and returns a GeometricFilter
         """
-        return cls(geometric_image.data, geometric_image.parity, geometric_image.D, geometric_image.is_torus)
+        return cls(
+            geometric_image.data,
+            geometric_image.parity,
+            geometric_image.D,
+            geometric_image.is_torus,
+        )
 
     def __str__(self: Self) -> str:
         return "<geometric filter object in D={} with spatial_dims={}, k={}, parity={}, and is_torus={}>".format(
-            self.D, self.spatial_dims, self.k, self.parity, self.is_torus)
+            self.D, self.spatial_dims, self.k, self.parity, self.is_torus
+        )
 
     def bigness(self: Self) -> float:
         """
         Gives an idea of size for a filter, sparser filters are smaller while less sparse filters are larger
         """
         norms = self.norm().data
-        numerator = 0.
+        numerator = 0.0
         for key in self.key_array():
             numerator += jnp.linalg.norm(key * norms[tuple(key)], ord=2)
 
@@ -1565,32 +1757,37 @@ class GeometricFilter(GeometricImage):
         return self
 
     def plot(
-        self: Self, 
-        ax: Optional[plt.Axes] = None, 
-        title: str = '', 
-        boxes: bool = True, 
-        fill: bool = True, 
-        symbols: bool = True, 
-        vmin: Optional[float] = None, 
-        vmax: Optional[float] = None, 
+        self: Self,
+        ax: Optional[plt.Axes] = None,
+        title: str = "",
+        boxes: bool = True,
+        fill: bool = True,
+        symbols: bool = True,
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
         colorbar: bool = False,
         vector_scaling: float = 0.33,
     ) -> None:
         if self.k == 0:
-            vmin = -3. if vmin is None else vmin
-            vmax = 3. if vmax is None else vmax
+            vmin = -3.0 if vmin is None else vmin
+            vmax = 3.0 if vmax is None else vmax
         else:
-            vmin = 0. if vmin is None else vmin
-            vmax = 3. if vmax is None else vmax
+            vmin = 0.0 if vmin is None else vmin
+            vmax = 3.0 if vmax is None else vmax
 
-        super(GeometricFilter, self).plot(ax, title, boxes, fill, symbols, vmin, vmax, colorbar, vector_scaling)
+        super(GeometricFilter, self).plot(
+            ax, title, boxes, fill, symbols, vmin, vmax, colorbar, vector_scaling
+        )
+
 
 @register_pytree_node_class
 class Layer:
 
     # Constructors
 
-    def __init__(self: Self, data: jnp.ndarray, D: int, is_torus: Union[bool, tuple[bool]] = True) -> Self:
+    def __init__(
+        self: Self, data: jnp.ndarray, D: int, is_torus: Union[bool, tuple[bool]] = True
+    ) -> Self:
         """
         Construct a layer
         args:
@@ -1601,30 +1798,30 @@ class Layer:
         self.D = D
         assert (isinstance(is_torus, tuple) and (len(is_torus) == D)) or isinstance(is_torus, bool)
         if isinstance(is_torus, bool):
-            is_torus = (is_torus,)*D
+            is_torus = (is_torus,) * D
 
         self.is_torus = is_torus
-        #copy dict, but image_block is immutable jnp array
-        self.data = { key: image_block for key, image_block in data.items() } 
+        # copy dict, but image_block is immutable jnp array
+        self.data = {key: image_block for key, image_block in data.items()}
 
     def copy(self: Self) -> Self:
         return self.__class__(self.data, self.D, self.is_torus)
 
     def empty(self: Self) -> Self:
         return self.__class__({}, self.D, self.is_torus)
-    
+
     @classmethod
     def from_images(cls, images: list[GeometricImage]) -> Self:
         # We assume that all images have the same D and is_torus
         if len(images) == 0:
-            return None 
-        
+            return None
+
         out_layer = cls({}, images[0].D, images[0].is_torus)
         for image in images:
             out_layer.append(image.k, image.parity, image.data.reshape((1,) + image.data.shape))
 
         return out_layer
-    
+
     @classmethod
     def from_vector(cls, vector: jnp.ndarray, layer: Self) -> Self:
         """
@@ -1635,21 +1832,21 @@ class Layer:
         """
         idx = 0
         out_layer = layer.empty()
-        for (k,parity), img in layer.items():
-            out_layer.append(k, parity, vector[idx:(idx+img.size)].reshape(img.shape))
+        for (k, parity), img in layer.items():
+            out_layer.append(k, parity, vector[idx : (idx + img.size)].reshape(img.shape))
             idx += img.size
 
         return out_layer
 
     def __str__(self: Self) -> str:
-        layer_repr = f'{self.__class__} D: {self.D}, is_torus: {self.is_torus}\n'
+        layer_repr = f"{self.__class__} D: {self.D}, is_torus: {self.is_torus}\n"
         for k, image_block in self.items():
-            layer_repr += f'\t{k}: {image_block.shape}\n'
+            layer_repr += f"\t{k}: {image_block.shape}\n"
 
         return layer_repr
-    
+
     def size(self: Self) -> int:
-        return reduce(lambda size,img: size + img.size, self.values(), 0)
+        return reduce(lambda size, img: size + img.size, self.values(), 0)
 
     def get_spatial_dims(self: Self) -> tuple[int]:
         """
@@ -1658,44 +1855,44 @@ class Layer:
         """
         if len(self.values()) == 0:
             return None
-        
-        return next(iter(self.values())).shape[1:1+self.D]
+
+        return next(iter(self.values())).shape[1 : 1 + self.D]
 
     # Functions that map directly to calling the function on data
 
     def keys(self: Self) -> Generator[tuple[int, int]]:
         return self.data.keys()
-    
+
     def values(self: Self) -> Generator[jnp.ndarray]:
         return self.data.values()
-    
+
     def items(self: Self) -> Generator[tuple[tuple[int, int], jnp.ndarray]]:
         return self.data.items()
-    
+
     def __getitem__(self: Self, idx: tuple[int, int]) -> jnp.ndarray:
         return self.data[idx]
 
     def __setitem__(self: Self, idx: tuple[int, int], val: jnp.ndarray) -> jnp.ndarray:
         self.data[idx] = val
         return self.data[idx]
-    
+
     def __contains__(self: Self, idx: tuple[int, int]) -> bool:
         return idx in self.data
 
     def __eq__(self: Self, other: Self, rtol: float = TINY, atol: float = TINY) -> bool:
         if (
-            (self.D != other.D) or
-            (self.is_torus != other.is_torus) or
-            (self.keys() != other.keys())
+            (self.D != other.D)
+            or (self.is_torus != other.is_torus)
+            or (self.keys() != other.keys())
         ):
             return False
-        
+
         for key in self.keys():
             if not jnp.allclose(self[key], other[key], rtol, atol):
                 return False
-            
+
         return True
-    
+
     # Other functions
 
     def append(self: Self, k: int, parity: int, image_block: jnp.ndarray, axis: int = 0) -> Self:
@@ -1705,13 +1902,15 @@ class Layer:
         """
         parity = parity % 2
         # will this work for BatchLayer?
-        if k > 0: #very light shape checking, other problematic cases should be caught in concatenate
-            assert image_block.shape[-k:] == (self.D,)*k
+        if (
+            k > 0
+        ):  # very light shape checking, other problematic cases should be caught in concatenate
+            assert image_block.shape[-k:] == (self.D,) * k
 
-        if ((k,parity) in self):
-            self[(k,parity)] = jnp.concatenate((self[(k,parity)], image_block), axis=axis)
+        if (k, parity) in self:
+            self[(k, parity)] = jnp.concatenate((self[(k, parity)], image_block), axis=axis)
         else:
-            self[(k,parity)] = image_block
+            self[(k, parity)] = image_block
 
         return self
 
@@ -1719,14 +1918,18 @@ class Layer:
         """
         Addition operator for Layers, must have the same types of layers, adds them together
         """
-        assert type(self) == type(other), \
-            f'{self.__class__}::__add__: Types of layers being added must match, had {type(self)} and {type(other)}'
-        assert self.D == other.D, \
-            f'{self.__class__}::__add__: Dimension of layers must match, had {self.D} and {other.D}'
-        assert self.is_torus == other.is_torus, \
-            f'{self.__class__}::__add__: is_torus of layers must match, had {self.is_torus} and {other.is_torus}'
-        assert self.keys() == other.keys(), \
-            f'{self.__class__}::__add__: Must have same types of images, had {self.keys()} and {other.keys()}'
+        assert type(self) == type(
+            other
+        ), f"{self.__class__}::__add__: Types of layers being added must match, had {type(self)} and {type(other)}"
+        assert (
+            self.D == other.D
+        ), f"{self.__class__}::__add__: Dimension of layers must match, had {self.D} and {other.D}"
+        assert (
+            self.is_torus == other.is_torus
+        ), f"{self.__class__}::__add__: is_torus of layers must match, had {self.is_torus} and {other.is_torus}"
+        assert (
+            self.keys() == other.keys()
+        ), f"{self.__class__}::__add__: Must have same types of images, had {self.keys()} and {other.keys()}"
 
         return self.__class__.from_vector(self.to_vector() + other.to_vector(), self)
 
@@ -1734,16 +1937,17 @@ class Layer:
         """
         Multiplication operator for a layer and a scalar
         """
-        assert not isinstance(other, Layer), \
-            f'Layer multiplication is only implemented for numbers, got {type(other)}.'
-        
+        assert not isinstance(
+            other, Layer
+        ), f"Layer multiplication is only implemented for numbers, got {type(other)}."
+
         return self.__class__.from_vector(self.to_vector() * other, self)
 
     def __truediv__(self: Self, other: float) -> Self:
         """
         True division (a/b) for a layer and a scalar.
         """
-        return self * (1.0/other)
+        return self * (1.0 / other)
 
     def concat(self: Self, other: Self, axis: int = 0) -> Self:
         """
@@ -1752,15 +1956,18 @@ class Layer:
             other (Layer): a layer with the same dimension and qualities as this one
             axis (int): the axis along with the concatenate the other layer
         """
-        assert type(self) == type(other), \
-            f'{self.__class__}::concat: Types of layers being added must match, had {type(self)} and {type(other)}'
-        assert self.D == other.D, \
-            f'{self.__class__}::concat: Dimension of layers must match, had {self.D} and {other.D}'
-        assert self.is_torus == other.is_torus, \
-            f'{self.__class__}::concat: is_torus of layers must match, had {self.is_torus} and {other.is_torus}'
+        assert type(self) == type(
+            other
+        ), f"{self.__class__}::concat: Types of layers being added must match, had {type(self)} and {type(other)}"
+        assert (
+            self.D == other.D
+        ), f"{self.__class__}::concat: Dimension of layers must match, had {self.D} and {other.D}"
+        assert (
+            self.is_torus == other.is_torus
+        ), f"{self.__class__}::concat: is_torus of layers must match, had {self.is_torus} and {other.is_torus}"
 
         new_layer = self.copy()
-        for (k,parity), image_block in other.items():
+        for (k, parity), image_block in other.items():
             new_layer.append(k, parity, image_block, axis)
 
         return new_layer
@@ -1770,7 +1977,9 @@ class Layer:
         images = []
         for image_block in self.values():
             for image in image_block:
-                images.append(GeometricImage(image, 0, self.D, self.is_torus)) # for now, assume 0 parity
+                images.append(
+                    GeometricImage(image, 0, self.D, self.is_torus)
+                )  # for now, assume 0 parity
 
         return images
 
@@ -1778,7 +1987,11 @@ class Layer:
         """
         Vectorize a layer in the natural way
         """
-        return reduce(lambda x,y: jnp.concatenate([x, y.reshape(-1)]), self.values(), jnp.zeros(0))
+        return reduce(
+            lambda x, y: jnp.concatenate([x, y.reshape(-1)]),
+            self.values(),
+            jnp.zeros(0),
+        )
 
     def to_scalar_layer(self: Self) -> Self:
         """
@@ -1787,34 +2000,46 @@ class Layer:
         # convert to channels of a scalar layer
         out_layer = self.empty()
         for (k, _), image in self.items():
-            transpose_idxs = (0,) + tuple(range(1+self.D,1+self.D+k)) + tuple(range(1,1+self.D))
-            out_layer.append(0, 0, image.transpose(transpose_idxs).reshape((-1,) + image.shape[1:1+self.D]))
+            transpose_idxs = (
+                (0,) + tuple(range(1 + self.D, 1 + self.D + k)) + tuple(range(1, 1 + self.D))
+            )
+            out_layer.append(
+                0,
+                0,
+                image.transpose(transpose_idxs).reshape((-1,) + image.shape[1 : 1 + self.D]),
+            )
 
         return out_layer
-    
+
     def from_scalar_layer(self: Self, layout: dict[tuple[int, int], int]) -> Self:
         """
         Convert a scalar layer back to a layer with the specified layout
         args:
             layout (dict): dictionary of keys (k,parity) and values num_channels for the output layer
         """
-        assert list(self.keys()) == [(0,0)]
-        spatial_dims = self[(0,0)].shape[1:]
+        assert list(self.keys()) == [(0, 0)]
+        spatial_dims = self[(0, 0)].shape[1:]
 
         out_layer = self.empty()
         idx = 0
-        for (k,parity), num_channels in layout.items():
-            length = num_channels*(self.D**k)
+        for (k, parity), num_channels in layout.items():
+            length = num_channels * (self.D**k)
             # reshape, it is (num_channels*(D**k), spatial_dims) -> (num_channels, (D,)*k, spatial_dims)
-            reshaped_data = self[(0,0)][idx:idx+length].reshape((num_channels,)+(self.D,)*k + spatial_dims)
+            reshaped_data = self[(0, 0)][idx : idx + length].reshape(
+                (num_channels,) + (self.D,) * k + spatial_dims
+            )
             # tranpose (num_channels, (D,)*k, spatial_dims) -> (num_channels, spatial_dims, (D,)*k)
-            transposed_data = reshaped_data.transpose((0,) + tuple(range(1+k,1+k+self.D)) + tuple(range(1,1+k)))
+            transposed_data = reshaped_data.transpose(
+                (0,) + tuple(range(1 + k, 1 + k + self.D)) + tuple(range(1, 1 + k))
+            )
             out_layer.append(k, parity, transposed_data)
             idx += length
 
         return out_layer
-    
-    def times_group_element(self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision] = None) -> Self:
+
+    def times_group_element(
+        self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision] = None
+    ) -> Self:
         """
         Apply a group element of O(2) or O(3) to the layer. First apply the action to the location of the
         pixels, then apply the action to the pixels themselves.
@@ -1824,7 +2049,7 @@ class Layer:
         """
         vmap_rotate = vmap(times_group_element, in_axes=(None, 0, None, None, None))
         out_layer = self.empty()
-        for (k,parity), image_block in self.items():
+        for (k, parity), image_block in self.items():
             out_layer.append(k, parity, vmap_rotate(self.D, image_block, parity, gg, precision))
 
         return out_layer
@@ -1832,14 +2057,14 @@ class Layer:
     def norm(self: Self) -> Self:
         out_layer = self.empty()
         for image_block in self.values():
-            out_layer.append(0, 0, norm(self.D + 1, image_block)) # norm is even parity
+            out_layer.append(0, 0, norm(self.D + 1, image_block))  # norm is even parity
 
         return out_layer
 
     def get_component(
-        self: Self, 
-        component: int, 
-        future_steps: int = 1, 
+        self: Self,
+        component: int,
+        future_steps: int = 1,
         as_layer: bool = True,
     ) -> Union[Self, jnp.ndarray]:
         """
@@ -1854,23 +2079,27 @@ class Layer:
             as_layer (bool): if true, return as a new layer with a scalar feature, otherwise just the data
         """
         # explicitly call Layer's version, even if calling from vmapped BatchLayer
-        spatial_dims = Layer.get_spatial_dims(self) 
+        spatial_dims = Layer.get_spatial_dims(self)
 
         data = None
-        for (k,_), img in self.items():
-            exp_data = img.reshape((-1,future_steps) + spatial_dims + (self.D,)*k) # (c,time,spatial,tensor)
-            exp_data = jnp.moveaxis(exp_data, 0, 1+self.D) # (time,spatial,c,tensor)
-            exp_data = exp_data.reshape((future_steps,) + spatial_dims + (-1,)) # (time,spatial,c*tensor)
+        for (k, _), img in self.items():
+            exp_data = img.reshape(
+                (-1, future_steps) + spatial_dims + (self.D,) * k
+            )  # (c,time,spatial,tensor)
+            exp_data = jnp.moveaxis(exp_data, 0, 1 + self.D)  # (time,spatial,c,tensor)
+            exp_data = exp_data.reshape(
+                (future_steps,) + spatial_dims + (-1,)
+            )  # (time,spatial,c*tensor)
 
             data = exp_data if data is None else jnp.concatenate([data, exp_data], axis=-1)
 
-        component_data = data[...,component].reshape((future_steps,) + spatial_dims + (-1,))
+        component_data = data[..., component].reshape((future_steps,) + spatial_dims + (-1,))
         component_data = jnp.moveaxis(component_data, -1, 0).reshape((-1,) + spatial_dims)
         if as_layer:
-            return self.__class__({ (0,0): component_data }, self.D, self.is_torus)
+            return self.__class__({(0, 0): component_data}, self.D, self.is_torus)
         else:
             return component_data
-    
+
     def device_replicate(self: Self, sharding: jax.sharding.PositionalSharding) -> Self:
         """
         Put the BatchLayer on particular devices according to the sharding and num_devices
@@ -1878,18 +2107,20 @@ class Layer:
             sharding (jax sharding): jax positional sharding to be reshaped
             num_devices (int): number of gpus to split the batches over
         """
-        return self.__class__(jax.device_put(self.data, sharding.replicate()), self.D, self.is_torus)
+        return self.__class__(
+            jax.device_put(self.data, sharding.replicate()), self.D, self.is_torus
+        )
 
-    #JAX helpers
+    # JAX helpers
     def tree_flatten(self):
         """
-        Helper function to define GeometricImage as a pytree so jax.jit handles it correctly. Children 
+        Helper function to define GeometricImage as a pytree so jax.jit handles it correctly. Children
         and aux_data must contain all the variables that are passed in __init__()
         """
         children = (self.data,)  # arrays / dynamic values
         aux_data = {
-            'D': self.D,
-            'is_torus': self.is_torus,
+            "D": self.D,
+            "is_torus": self.is_torus,
         }  # static values
         return (children, aux_data)
 
@@ -1900,13 +2131,16 @@ class Layer:
         """
         return cls(*children, **aux_data)
 
+
 @register_pytree_node_class
 class BatchLayer(Layer):
     # I may want to only have Layer, and find out a better way of tracking this
 
     # Constructors
 
-    def __init__(self: Self, data: jnp.ndarray, D: int, is_torus: Union[bool, tuple[bool]] = True) -> Self:
+    def __init__(
+        self: Self, data: jnp.ndarray, D: int, is_torus: Union[bool, tuple[bool]] = True
+    ) -> Self:
         """
         Construct a layer
         args:
@@ -1918,26 +2152,26 @@ class BatchLayer(Layer):
         super(BatchLayer, self).__init__(data, D, is_torus)
 
         self.L = None
-        for image_block in data.values(): #if empty, this won't get set
+        for image_block in data.values():  # if empty, this won't get set
             if isinstance(image_block, jnp.ndarray):
-                self.L = len(image_block) #shape (batch, channels, (N,)*D, (D,)*k)
+                self.L = len(image_block)  # shape (batch, channels, (N,)*D, (D,)*k)
             break
 
     @classmethod
     def from_images(cls, images: list[GeometricImage]) -> Self:
         # We assume that all images have the same D and is_torus
         if len(images) == 0:
-            return None 
-        
+            return None
+
         out_layer = cls({}, images[0].D, images[0].is_torus)
         for image in images:
-            out_layer.append(image.k, image.parity, image.data.reshape((1,1) + image.data.shape))
+            out_layer.append(image.k, image.parity, image.data.reshape((1, 1) + image.data.shape))
 
         batch_image_block = list(out_layer.values())[0]
         out_layer.L = batch_image_block.shape[0]
 
         return out_layer
-    
+
     def get_spatial_dims(self: Self) -> tuple[int]:
         """
         Get the spatial dims. Use this function with caution, if the BatchLayer is being vmapped, then
@@ -1945,8 +2179,8 @@ class BatchLayer(Layer):
         """
         if len(self.values()) == 0:
             return None
-        
-        return next(iter(self.values())).shape[2:2+self.D]
+
+        return next(iter(self.values())).shape[2 : 2 + self.D]
 
     def get_L(self: Self) -> int:
         """
@@ -1954,7 +2188,7 @@ class BatchLayer(Layer):
         """
         if len(self.values()) == 0:
             return 0
-        
+
         return len(next(iter(self.values())))
 
     def get_subset(self: Self, idxs: jnp.ndarray) -> Self:
@@ -1963,17 +2197,19 @@ class BatchLayer(Layer):
         args:
             idxs (jnp.array): array of indices to select the subset
         """
-        assert isinstance(idxs, jnp.ndarray), 'BatchLayer::get_subset arg idxs must be a jax array'
-        assert len(idxs.shape), 'BatchLayer::get_subset arg idxs must be a jax array, e.g. jnp.array([0])'
+        assert isinstance(idxs, jnp.ndarray), "BatchLayer::get_subset arg idxs must be a jax array"
+        assert len(
+            idxs.shape
+        ), "BatchLayer::get_subset arg idxs must be a jax array, e.g. jnp.array([0])"
         return self.__class__(
-            { k: image_block[idxs] for k, image_block in self.items() },
+            {k: image_block[idxs] for k, image_block in self.items()},
             self.D,
             self.is_torus,
         )
-    
+
     def get_one(self: Self, idx: int = 0) -> Self:
         return self.get_subset(jnp.array([idx]))
-    
+
     def get_one_layer(self: Self, idx: int = 0) -> Layer:
         """
         Similar to get_one, but instead get a single index of a BatchLayer as a Layer
@@ -1981,12 +2217,14 @@ class BatchLayer(Layer):
             idx (int): the index along the batch to get as a Layer.
         """
         return Layer(
-            { k: image_block[idx] for k, image_block in self.items() },
+            {k: image_block[idx] for k, image_block in self.items()},
             self.D,
             self.is_torus,
         )
-    
-    def times_group_element(self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision] = None) -> Self:
+
+    def times_group_element(
+        self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision] = None
+    ) -> Self:
         return self._times_group_element(gg, precision)
 
     @partial(jax.vmap, in_axes=(0, None, None))
@@ -1996,15 +2234,15 @@ class BatchLayer(Layer):
     @jax.vmap
     def to_vector(self: Self) -> jnp.ndarray:
         return super(BatchLayer, self).to_vector()
-    
+
     @jax.vmap
     def to_scalar_layer(self: Self) -> Self:
         return super(BatchLayer, self).to_scalar_layer()
-    
+
     @partial(jax.vmap, in_axes=(0, None))
     def from_scalar_layer(self: Self, layout: Self) -> Self:
         return super(BatchLayer, self).from_scalar_layer(layout)
-    
+
     @classmethod
     @partial(jax.vmap, in_axes=(None, 0, 0))
     def from_vector(cls, vector: jnp.ndarray, layer: Self) -> Self:
@@ -2015,17 +2253,19 @@ class BatchLayer(Layer):
         return super(BatchLayer, self).norm()
 
     def get_component(
-        self: Self, 
-        component: int, 
-        future_steps: int = 1, 
+        self: Self,
+        component: int,
+        future_steps: int = 1,
         as_layer: bool = True,
     ) -> Union[Self, jnp.ndarray]:
         return self._get_component(component, future_steps, as_layer)
 
-    @partial(jax.vmap, in_axes=(0,None,None,None))
-    def _get_component(self: Self, component: int, future_steps: int, as_layer: bool) -> Union[Self, jnp.ndarray]:
+    @partial(jax.vmap, in_axes=(0, None, None, None))
+    def _get_component(
+        self: Self, component: int, future_steps: int, as_layer: bool
+    ) -> Union[Self, jnp.ndarray]:
         return super(BatchLayer, self).get_component(component, future_steps, as_layer)
-    
+
     def device_put(self: Self, sharding: jax.sharding.PositionalSharding, num_devices: int) -> Self:
         """
         Put the BatchLayer on particular devices according to the sharding and num_devices
@@ -2033,11 +2273,13 @@ class BatchLayer(Layer):
             sharding (jax sharding): jax positional sharding to be reshaped
             num_devices (int): number of gpus to split the batches over
         """
-        assert (self.get_L() % num_devices) == 0 #number of batches must device evenly into number of devices
+        assert (
+            self.get_L() % num_devices
+        ) == 0  # number of batches must device evenly into number of devices
 
         new_data = {}
         for key, image_block in self.items():
-            sharding_shape = (num_devices,) + (1,)*len(image_block.shape[1:])
+            sharding_shape = (num_devices,) + (1,) * len(image_block.shape[1:])
             new_data[key] = jax.device_put(image_block, sharding.reshape(sharding_shape))
 
         return self.__class__(new_data, self.D, self.is_torus)
@@ -2049,13 +2291,19 @@ class BatchLayer(Layer):
         args:
             devices (list): list of gpus or cpu that we are using
         """
-        assert self.get_L() % len(devices) == 0, f'BatchLayer::reshape_pmap: length of devices must evenly '\
-        f'divide the total batch size, but got batch_size: {self.get_L()}, devices: {devices}'
+        assert self.get_L() % len(devices) == 0, (
+            f"BatchLayer::reshape_pmap: length of devices must evenly "
+            f"divide the total batch size, but got batch_size: {self.get_L()}, devices: {devices}"
+        )
 
         num_devices = len(devices)
 
         out_layer = self.empty()
-        for (k,parity), image in self.items():
-            out_layer.append(k, parity, image.reshape((num_devices, self.get_L() // num_devices) + image.shape[1:]))
+        for (k, parity), image in self.items():
+            out_layer.append(
+                k,
+                parity,
+                image.reshape((num_devices, self.get_L() // num_devices) + image.shape[1:]),
+            )
 
         return out_layer

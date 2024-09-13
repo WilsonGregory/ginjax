@@ -16,42 +16,64 @@ import geometricconvolutions.ml as ml
 import geometricconvolutions.data as gc_data
 import geometricconvolutions.models as models
 
+
 def read_one_seed(data_dir: str, data_class: str, seed: str) -> tuple:
-    target_file = f'{data_dir}/{data_class}/{seed}/all_data_with_lats.npy'
+    target_file = f"{data_dir}/{data_class}/{seed}/all_data_with_lats.npy"
 
     # net-cdf load keeps on breaking, so we try to save it as a .npy
-    if len(list(filter(lambda f: f == 'all_data_with_lats.npy', os.listdir(f'{data_dir}/{data_class}/{seed}/')))) > 0:
+    if (
+        len(
+            list(
+                filter(
+                    lambda f: f == "all_data_with_lats.npy",
+                    os.listdir(f"{data_dir}/{data_class}/{seed}/"),
+                )
+            )
+        )
+        > 0
+    ):
         dataset = jnp.load(target_file, allow_pickle=True).item()
-        u = jax.device_put(dataset['u'], jax.devices('cpu')[0]) # velocity in x direction
-        v = jax.device_put(dataset['v'], jax.devices('cpu')[0]) # velocity in y direction
-        pres = jax.device_put(dataset['pres'], jax.devices('cpu')[0]) # pressure scalar
-        vor = jax.device_put(dataset['vor'], jax.devices('cpu')[0]) #vorticity pseudoscalar
-        lats = jax.device_put(dataset['lats'], jax.devices('cpu')[0]) # latitude degrees
+        u = jax.device_put(dataset["u"], jax.devices("cpu")[0])  # velocity in x direction
+        v = jax.device_put(dataset["v"], jax.devices("cpu")[0])  # velocity in y direction
+        pres = jax.device_put(dataset["pres"], jax.devices("cpu")[0])  # pressure scalar
+        vor = jax.device_put(dataset["vor"], jax.devices("cpu")[0])  # vorticity pseudoscalar
+        lats = jax.device_put(dataset["lats"], jax.devices("cpu")[0])  # latitude degrees
     else:
-        datals = os.path.join(data_dir, data_class, seed, 'run*', 'output.nc')
-        dataset = xr.open_mfdataset(datals, concat_dim="b", combine="nested", parallel=True) # dict
-        u = jax.device_put(jnp.array(dataset['u'].to_numpy()), jax.devices('cpu')[0]) # velocity in x direction
-        v = jax.device_put(jnp.array(dataset['v'].to_numpy()), jax.devices('cpu')[0]) # velocity in y direction
-        pres = jax.device_put(jnp.array(dataset['pres'].to_numpy()), jax.devices('cpu')[0]) # pressure scalar
-        vor = jax.device_put(jnp.array( dataset['vor'].to_numpy()), jax.devices('cpu')[0]) #vorticity pseudoscalar
-        lats = jax.device_put(jnp.array(dataset['lat'].to_numpy()), jax.devices('cpu')[0]) # latitude degrees
+        datals = os.path.join(data_dir, data_class, seed, "run*", "output.nc")
+        dataset = xr.open_mfdataset(datals, concat_dim="b", combine="nested", parallel=True)  # dict
+        u = jax.device_put(
+            jnp.array(dataset["u"].to_numpy()), jax.devices("cpu")[0]
+        )  # velocity in x direction
+        v = jax.device_put(
+            jnp.array(dataset["v"].to_numpy()), jax.devices("cpu")[0]
+        )  # velocity in y direction
+        pres = jax.device_put(
+            jnp.array(dataset["pres"].to_numpy()), jax.devices("cpu")[0]
+        )  # pressure scalar
+        vor = jax.device_put(
+            jnp.array(dataset["vor"].to_numpy()), jax.devices("cpu")[0]
+        )  # vorticity pseudoscalar
+        lats = jax.device_put(
+            jnp.array(dataset["lat"].to_numpy()), jax.devices("cpu")[0]
+        )  # latitude degrees
 
-        jnp.save(target_file, { 'u': u, 'v': v, 'pres': pres, 'vor': vor, 'lats': lats })
+        jnp.save(target_file, {"u": u, "v": v, "pres": pres, "vor": vor, "lats": lats})
 
-    uv = jnp.stack([u[:,:,0,...],v[:,:,0,...]], axis=-1)
-    return uv, pres, vor[:,:,0,...], lats
+    uv = jnp.stack([u[:, :, 0, ...], v[:, :, 0, ...]], axis=-1)
+    return uv, pres, vor[:, :, 0, ...], lats
+
 
 def get_data_layers(
-    data_dir: str, 
-    num_trajectories: int, 
-    data_class: str, 
+    data_dir: str,
+    num_trajectories: int,
+    data_class: str,
     pres_vor_form: bool,
     past_steps: int,
     future_steps: int,
     skip_initial: int = 4,
     subsample: int = 1,
-    is_torus: bool = (False,True),
-    normstats: dict = None
+    is_torus: bool = (False, True),
+    normstats: dict = None,
 ) -> tuple:
     """
     Given a specified dataset, load the data into layers where the layer_X has a channel per image in the
@@ -69,13 +91,13 @@ def get_data_layers(
         is_torus (tuple of bools): whether to create the layers on the torus, defaults to (False,True)
         normstats (dict): means and std to normalize the pressure and vorticity
     """
-    all_seeds = sorted(os.listdir(f'{data_dir}/{data_class}/'))
+    all_seeds = sorted(os.listdir(f"{data_dir}/{data_class}/"))
 
-    spatial_dims = (96,192)
+    spatial_dims = (96, 192)
     D = 2
-    all_uv = jnp.zeros((0,88) + spatial_dims + (D,))
-    all_pres = jnp.zeros((0,88) + spatial_dims)
-    all_vor = jnp.zeros((0,88) + spatial_dims)
+    all_uv = jnp.zeros((0, 88) + spatial_dims + (D,))
+    all_pres = jnp.zeros((0, 88) + spatial_dims)
+    all_vor = jnp.zeros((0, 88) + spatial_dims)
     for seed in all_seeds:
         uv, pres, vor, _ = read_one_seed(data_dir, data_class, seed)
 
@@ -88,15 +110,15 @@ def get_data_layers(
 
     if len(all_uv) < num_trajectories:
         print(
-            f'WARNING get_data_layers: wanted {num_trajectories} {data_class} trajectories, ' \
-            f'but only found {len(all_uv)}',
+            f"WARNING get_data_layers: wanted {num_trajectories} {data_class} trajectories, "
+            f"but only found {len(all_uv)}",
         )
         num_trajectories = len(all_uv)
 
-    if (normstats is not None):
-        all_pres = (all_pres - normstats['pres']['mean']) / normstats['pres']['std'] 
+    if normstats is not None:
+        all_pres = (all_pres - normstats["pres"]["mean"]) / normstats["pres"]["std"]
         # all_vor = (all_vor - normstats['vor']['mean']) / normstats['vor']['std']
-        all_vor = all_vor / normstats['vor']['std'] # can only scale to maintain equivariance
+        all_vor = all_vor / normstats["vor"]["std"]  # can only scale to maintain equivariance
 
     all_uv = all_uv[:num_trajectories]
     all_pres = all_pres[:num_trajectories]
@@ -104,35 +126,36 @@ def get_data_layers(
 
     if pres_vor_form:
         layer_X, layer_Y = gc_data.times_series_to_layers(
-            D, 
-            { (0,0): all_pres, (0,1): all_vor, (1,0): all_uv }, 
+            D,
+            {(0, 0): all_pres, (0, 1): all_vor, (1, 0): all_uv},
             {},
-            is_torus, 
-            past_steps, 
+            is_torus,
+            past_steps,
             future_steps,
             skip_initial,
             subsample,
         )
-        del layer_X.data[(0,1)] # remove vorticity from input      
+        del layer_X.data[(0, 1)]  # remove vorticity from input
     else:
         layer_X, layer_Y = gc_data.times_series_to_layers(
-            D, 
-            { (0,0): all_pres, (1,0): all_uv }, 
+            D,
+            {(0, 0): all_pres, (1, 0): all_uv},
             {},
-            is_torus, 
-            past_steps, 
+            is_torus,
+            past_steps,
             future_steps,
             skip_initial,
             subsample,
         )
-    
+
     return layer_X, layer_Y
 
+
 def get_data(
-    data_dir: str, 
-    num_train_traj: int, 
-    num_val_traj: int, 
-    num_test_traj: int, 
+    data_dir: str,
+    num_train_traj: int,
+    num_val_traj: int,
+    num_test_traj: int,
     past_steps: int,
     rollout_steps: int,
     center_data: int = 0,
@@ -152,59 +175,83 @@ def get_data(
         pres_vor_form (bool): use pressure/vorticity form instead, defaults to False
         subsample (int): timesteps are 6 simulation hours, can subsample for longer timesteps
     """
-    if center_data==1:
-        normstats = jnp.load(os.path.join(data_dir, 'normstats_single.npy'), allow_pickle=True).item()
-    elif center_data==2:
+    if center_data == 1:
+        normstats = jnp.load(
+            os.path.join(data_dir, "normstats_single.npy"), allow_pickle=True
+        ).item()
+    elif center_data == 2:
         # dictionary, each is shape (1,1,96,192) because its a per pixel adjustment
-        normstats = jnp.load(os.path.join(data_dir, 'normstats_per_pixel.npy'), allow_pickle=True).item()
+        normstats = jnp.load(
+            os.path.join(data_dir, "normstats_per_pixel.npy"), allow_pickle=True
+        ).item()
     else:
         normstats = None
 
     train_X, train_Y = get_data_layers(
-        data_dir, 
-        num_train_traj, 
-        'train', 
-        pres_vor_form, 
+        data_dir,
+        num_train_traj,
+        "train",
+        pres_vor_form,
         past_steps,
         1,
-        subsample=subsample, 
+        subsample=subsample,
         normstats=normstats,
     )
     val_X, val_Y = get_data_layers(
-        data_dir, 
-        num_val_traj, 
-        'valid', 
-        pres_vor_form, 
+        data_dir,
+        num_val_traj,
+        "valid",
+        pres_vor_form,
         past_steps,
         1,
         subsample=subsample,
         normstats=normstats,
     )
     test_single_X, test_single_Y = get_data_layers(
-        data_dir, 
-        num_test_traj, 
-        'test', 
-        pres_vor_form, 
+        data_dir,
+        num_test_traj,
+        "test",
+        pres_vor_form,
         past_steps,
         1,
         subsample=subsample,
         normstats=normstats,
     )
     test_rollout_X, test_rollout_Y = get_data_layers(
-        data_dir, 
-        num_test_traj, 
-        'test', 
-        pres_vor_form, 
+        data_dir,
+        num_test_traj,
+        "test",
+        pres_vor_form,
         past_steps,
         rollout_steps,
         subsample=subsample,
         normstats=normstats,
     )
-    return train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y
+    return (
+        train_X,
+        train_Y,
+        val_X,
+        val_Y,
+        test_single_X,
+        test_single_Y,
+        test_rollout_X,
+        test_rollout_Y,
+    )
 
-def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, has_aux=False, future_steps=1):
+
+def map_and_loss(
+    params,
+    layer_x,
+    layer_y,
+    key,
+    train,
+    aux_data=None,
+    net=None,
+    has_aux=False,
+    future_steps=1,
+):
     assert net is not None
-    pres_vor_form = (0,1) in layer_y.keys()
+    pres_vor_form = (0, 1) in layer_y.keys()
     curr_layer = layer_x
     out_layer = layer_y.empty()
     for i in range(future_steps):
@@ -216,40 +263,62 @@ def map_and_loss(params, layer_x, layer_y, key, train, aux_data=None, net=None, 
 
         out_layer = out_layer.concat(learned_x, axis=1)
         next_layer = curr_layer.empty()
-        if pres_vor_form: 
+        if pres_vor_form:
             # output is pres/vor, but next step input needs to be pres/velocity, so use the true velocity
-            next_layer.append(0, 0, jnp.concatenate([curr_layer[(0,0)][:,1:], learned_x[(0,0)]], axis=1))
             next_layer.append(
-                1, 
-                0, 
-                jnp.concatenate([curr_layer[(1,0)][:,1:], layer_y[(1,0)][:,i:i+1]], axis=1),
+                0,
+                0,
+                jnp.concatenate([curr_layer[(0, 0)][:, 1:], learned_x[(0, 0)]], axis=1),
+            )
+            next_layer.append(
+                1,
+                0,
+                jnp.concatenate([curr_layer[(1, 0)][:, 1:], layer_y[(1, 0)][:, i : i + 1]], axis=1),
             )
         else:
             for (k, parity), img_block in curr_layer.items():
-                next_layer.append(k, parity, jnp.concatenate([img_block[:,1:], learned_x[(k, parity)]], axis=1))
+                next_layer.append(
+                    k,
+                    parity,
+                    jnp.concatenate([img_block[:, 1:], learned_x[(k, parity)]], axis=1),
+                )
 
         curr_layer = next_layer
 
-    if pres_vor_form: # don't include velocity output
-        layer_y = geom.BatchLayer({ (0,0): layer_y[(0,0)], (0,1): layer_y[(0,1)] }, layer_y.D, layer_y.is_torus)
+    if pres_vor_form:  # don't include velocity output
+        layer_y = geom.BatchLayer(
+            {(0, 0): layer_y[(0, 0)], (0, 1): layer_y[(0, 1)]},
+            layer_y.D,
+            layer_y.is_torus,
+        )
 
     loss = ml.smse_loss(out_layer, layer_y)
     return (loss, aux_data) if has_aux else loss
 
+
 def train_and_eval(
-    data, 
-    key, 
-    model_name, 
-    net, 
+    data,
+    key,
+    model_name,
+    net,
     lr,
-    batch_size, 
-    epochs, 
-    save_params, 
-    images_dir, 
+    batch_size,
+    epochs,
+    save_params,
+    images_dir,
     noise_stdev=None,
     has_aux=False,
 ):
-    train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y, test_rollout_X, test_rollout_Y = data
+    (
+        train_X,
+        train_Y,
+        val_X,
+        val_Y,
+        test_single_X,
+        test_single_Y,
+        test_rollout_X,
+        test_rollout_Y,
+    ) = data
 
     key, subkey = random.split(key)
     params = ml.init_params(
@@ -257,7 +326,7 @@ def train_and_eval(
         train_X.get_one(),
         subkey,
     )
-    print(f'Model params: {ml.count_params(params):,}')
+    print(f"Model params: {ml.count_params(params):,}")
 
     steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
 
@@ -271,7 +340,9 @@ def train_and_eval(
         stop_condition=ml.EpochStop(epochs, verbose=2),
         batch_size=batch_size,
         optimizer=optax.adamw(
-            optax.warmup_cosine_decay_schedule(1e-8, lr, 5*steps_per_epoch, 50*steps_per_epoch, 1e-7),
+            optax.warmup_cosine_decay_schedule(
+                1e-8, lr, 5 * steps_per_epoch, 50 * steps_per_epoch, 1e-7
+            ),
             weight_decay=1e-5,
         ),
         validation_X=val_X,
@@ -288,71 +359,94 @@ def train_and_eval(
 
     if save_params is not None:
         jnp.save(
-            f'{save_params}{model_name}_L{train_X.get_L()}_e{epochs}_params.npy', 
-            { 'params': params, 'batch_stats': None if (batch_stats is None) else dict(batch_stats) },
+            f"{save_params}{model_name}_L{train_X.get_L()}_e{epochs}_params.npy",
+            {
+                "params": params,
+                "batch_stats": None if (batch_stats is None) else dict(batch_stats),
+            },
         )
 
     key, subkey = random.split(key)
     test_loss = ml.map_loss_in_batches(
-        partial(map_and_loss, net=net, has_aux=has_aux), 
-        params, 
-        test_single_X, 
-        test_single_Y, 
-        batch_size, 
-        subkey, 
+        partial(map_and_loss, net=net, has_aux=has_aux),
+        params,
+        test_single_X,
+        test_single_Y,
+        batch_size,
+        subkey,
         False,
         has_aux=has_aux,
         aux_data=batch_stats,
     )
-    print(f'Test Loss: {test_loss}')
+    print(f"Test Loss: {test_loss}")
 
     key, subkey = random.split(key)
     test_rollout_loss = ml.map_loss_in_batches(
         partial(map_and_loss, net=net, has_aux=has_aux, future_steps=5),
-        params, 
-        test_rollout_X, 
-        test_rollout_Y, 
-        batch_size, 
-        subkey, 
+        params,
+        test_rollout_X,
+        test_rollout_Y,
+        batch_size,
+        subkey,
         False,
         has_aux=has_aux,
         aux_data=batch_stats,
     )
-    print(f'Test Rollout Loss: {test_rollout_loss}')
+    print(f"Test Rollout Loss: {test_rollout_loss}")
 
     return train_loss[-1], val_loss[-1], test_loss, test_rollout_loss
 
+
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument('data_dir', help='the directory where the .h5 files are located', type=str)
-    parser.add_argument('-e', '--epochs', help='number of epochs to run', type=int, default=50)
-    parser.add_argument('-lr', help='learning rate', type=float, default=2e-4)
-    parser.add_argument('-batch', help='batch size', type=int, default=16)
-    parser.add_argument('-train_traj', help='number of training trajectories', type=int, default=100)
-    parser.add_argument('-val_traj', help='number of validation trajectories, defaults to batch', type=int, default=None)
-    parser.add_argument('-test_traj', help='number of testing trajectories, defaults to batch', type=int, default=None)
-    parser.add_argument('-seed', help='the random number seed', type=int, default=None)
-    parser.add_argument('-s', '--save', help='file name to save the params', type=str, default=None)
-    parser.add_argument('-l', '--load', help='file name to load params from', type=str, default=None)
+    parser.add_argument("data_dir", help="the directory where the .h5 files are located", type=str)
+    parser.add_argument("-e", "--epochs", help="number of epochs to run", type=int, default=50)
+    parser.add_argument("-lr", help="learning rate", type=float, default=2e-4)
+    parser.add_argument("-batch", help="batch size", type=int, default=16)
     parser.add_argument(
-        '-images_dir', 
-        help='directory to save images, or None to not save',
-        type=str, 
+        "-train_traj", help="number of training trajectories", type=int, default=100
+    )
+    parser.add_argument(
+        "-val_traj",
+        help="number of validation trajectories, defaults to batch",
+        type=int,
         default=None,
     )
     parser.add_argument(
-        '-center_data', 
-        help='normalize the pressure/vorticity fields, 0 for none, 1 for entire data, 2 for pixel-wise', 
+        "-test_traj",
+        help="number of testing trajectories, defaults to batch",
+        type=int,
+        default=None,
+    )
+    parser.add_argument("-seed", help="the random number seed", type=int, default=None)
+    parser.add_argument("-s", "--save", help="file name to save the params", type=str, default=None)
+    parser.add_argument(
+        "-l", "--load", help="file name to load params from", type=str, default=None
+    )
+    parser.add_argument(
+        "-images_dir",
+        help="directory to save images, or None to not save",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "-center_data",
+        help="normalize the pressure/vorticity fields, 0 for none, 1 for entire data, 2 for pixel-wise",
         type=int,
         default=0,
     )
     parser.add_argument(
-        '-pres_vor_form', 
-        help='toggle to use pressure/vorticity form, rather than pressure/velocity form', 
-        action='store_true',
+        "-pres_vor_form",
+        help="toggle to use pressure/vorticity form, rather than pressure/velocity form",
+        action="store_true",
     )
-    parser.add_argument('-subsample', help='how many timesteps per model step, default 1', type=int, default=1)
-    parser.add_argument('-t', '--trials', help='number of trials to run', type=int, default=1)
+    parser.add_argument(
+        "-subsample",
+        help="how many timesteps per model step, default 1",
+        type=int,
+        default=1,
+    )
+    parser.add_argument("-t", "--trials", help="number of trials to run", type=int, default=1)
 
     args = parser.parse_args()
 
@@ -374,19 +468,20 @@ def handleArgs(argv):
         args.trials,
     )
 
-#Main
+
+# Main
 (
-    data_dir, 
-    epochs, 
-    lr, 
-    batch_size, 
-    train_traj, 
-    val_traj, 
-    test_traj, 
-    seed, 
-    save_file, 
-    load_file, 
-    images_dir, 
+    data_dir,
+    epochs,
+    lr,
+    batch_size,
+    train_traj,
+    val_traj,
+    test_traj,
+    seed,
+    save_file,
+    load_file,
+    images_dir,
     center_data,
     pres_vor_form,
     subsample,
@@ -395,7 +490,7 @@ def handleArgs(argv):
 
 D = 2
 N = 128
-past_steps = 2 # how many steps to look back to predict the next step
+past_steps = 2  # how many steps to look back to predict the next step
 rollout_steps = 5
 key = random.PRNGKey(time.time_ns()) if (seed is None) else random.PRNGKey(seed)
 
@@ -406,10 +501,10 @@ if val_traj is None:
     val_traj = batch_size
 
 data = get_data(
-    data_dir, 
-    train_traj, 
-    val_traj, 
-    test_traj, 
+    data_dir,
+    train_traj,
+    val_traj,
+    test_traj,
     past_steps,
     rollout_steps,
     center_data,
@@ -418,63 +513,72 @@ data = get_data(
 )
 
 group_actions = geom.make_all_operators(D)
-conv_filters = geom.get_invariant_filters(Ms=[3], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
-upsample_filters = geom.get_invariant_filters(Ms=[2], ks=[0,1,2], parities=[0,1], D=D, operators=group_actions)
+conv_filters = geom.get_invariant_filters(
+    Ms=[3], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions
+)
+upsample_filters = geom.get_invariant_filters(
+    Ms=[2], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions
+)
 
-output_keys = ((0,0),(0,1)) if pres_vor_form else ((0,0), (1,0))
+output_keys = ((0, 0), (0, 1)) if pres_vor_form else ((0, 0), (1, 0))
 train_and_eval = partial(
-    train_and_eval, 
+    train_and_eval,
     lr=lr,
-    batch_size=batch_size, 
-    epochs=epochs, 
-    save_params=save_file, 
+    batch_size=batch_size,
+    epochs=epochs,
+    save_params=save_file,
     images_dir=images_dir,
 )
 
 models = [
     (
-        'dil_resnet',
+        "dil_resnet",
         partial(
-            train_and_eval, 
-            net=partial(models.dil_resnet, depth=128, activation_f=jax.nn.gelu, output_keys=output_keys),
+            train_and_eval,
+            net=partial(
+                models.dil_resnet,
+                depth=128,
+                activation_f=jax.nn.gelu,
+                output_keys=output_keys,
+            ),
         ),
     ),
     (
-        'dil_resnet_equiv',
+        "dil_resnet_equiv",
         partial(
-            train_and_eval, 
+            train_and_eval,
             net=partial(
-                models.dil_resnet, 
-                depth=64, 
-                activation_f=jax.nn.gelu, 
-                equivariant=True, 
+                models.dil_resnet,
+                depth=64,
+                activation_f=jax.nn.gelu,
+                equivariant=True,
                 conv_filters=conv_filters,
                 output_keys=output_keys,
             ),
         ),
     ),
     (
-        'resnet',
+        "resnet",
         partial(
-            train_and_eval, 
+            train_and_eval,
             net=partial(models.resnet, output_keys=output_keys),
-        ),   
+        ),
     ),
     (
-        'resnet_equiv',
+        "resnet_equiv",
         partial(
-            train_and_eval, 
+            train_and_eval,
             net=partial(
-                models.resnet, 
-                output_keys=output_keys, 
-                equivariant=True, 
+                models.resnet,
+                output_keys=output_keys,
+                equivariant=True,
                 conv_filters=conv_filters,
                 depth=32,
             ),
-        ),  
+        ),
     ),
     (
-        'unet2015',
+        "unet2015",
         partial(
             train_and_eval,
             net=partial(models.unet2015, output_keys=output_keys),
@@ -482,35 +586,35 @@ models = [
         ),
     ),
     (
-        'unet2015_equiv',
+        "unet2015_equiv",
         partial(
             train_and_eval,
             net=partial(
-                models.unet2015, 
+                models.unet2015,
                 equivariant=True,
-                conv_filters=conv_filters, 
+                conv_filters=conv_filters,
                 upsample_filters=upsample_filters,
                 output_keys=output_keys,
-                depth=32, # 64=41M, 48=23M, 32=10M
+                depth=32,  # 64=41M, 48=23M, 32=10M
             ),
         ),
     ),
     (
-        'unetBase',
+        "unetBase",
         partial(
             train_and_eval,
             net=partial(
-                models.unetBase, 
-                output_keys=output_keys, 
+                models.unetBase,
+                output_keys=output_keys,
             ),
         ),
     ),
     (
-        'unetBase_equiv', # might want to try lr=1e-4 for this one
+        "unetBase_equiv",  # might want to try lr=1e-4 for this one
         partial(
             train_and_eval,
             net=partial(
-                models.unetBase, 
+                models.unetBase,
                 output_keys=output_keys,
                 equivariant=True,
                 conv_filters=conv_filters,
@@ -525,7 +629,7 @@ results = ml.benchmark(
     lambda _: data,
     models,
     subkey,
-    '',
+    "",
     [0],
     benchmark_type=ml.BENCHMARK_NONE,
     num_results=4,

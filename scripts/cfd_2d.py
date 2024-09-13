@@ -150,7 +150,7 @@ def plot_layer(
     minimal: bool = False,
 ):
     """
-    Plot all channels of two layers, and the differences between them.
+    Plot all timesteps of a particular component of two layers, and the differences between them.
     args:
         test_layer (BatchLayer): the predicted layer
         actual_layer (BatchLayer): the ground truth layer
@@ -183,11 +183,17 @@ def plot_layer(
             actual_title = ''
             diff_title = ''
             colorbar = False
+            hide_ticks = True
+            xlabel = ''
+            ylabel = ''
         else:
             test_title = f'test {title} {col}'
             actual_title = f'actual {title} {col}'
             diff_title = f'diff {title} {col} (mse: {jnp.mean(diff.data)})'
             colorbar=True
+            hide_ticks = False
+            xlabel = 'unnormalized wavenumber'
+            ylabel = 'unnormalized power'
 
         test_image.plot(axes[0,col], title=test_title, vmin=vmin, vmax=vmax, colorbar=colorbar)
         actual_image.plot(axes[1,col], title=actual_title, vmin=vmin, vmax=vmax, colorbar=colorbar)
@@ -198,9 +204,9 @@ def plot_layer(
                 [test_image.data[None,None], actual_image.data[None,None]],
                 ['test', 'actual'] if col == 0 else None, 
                 axes[3,col],
-                xlabel='',
-                ylabel='',  
-                hide_ticks=True,
+                xlabel=xlabel,
+                ylabel=ylabel,  
+                hide_ticks=hide_ticks,
             )
 
     plt.tight_layout()

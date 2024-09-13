@@ -13,6 +13,7 @@ from jax.sharding import PositionalSharding
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 
+
 def batch_net(params, layer, conv_filters):
     """
     The neural network the works on a BatchLayer. It will convolve with all combinations of the
@@ -28,18 +29,23 @@ def batch_net(params, layer, conv_filters):
 
     out_image_block = None
 
-    for i,j in it.combinations_with_replacement(range(len(conv_filters[(0,0)])), 2):
-        filter_a = conv_filters[(0,0)][i]
-        filter_b = conv_filters[(0,0)][j]
-        convolved_image = batch_convolve(layer.D, layer[(0,0)], filter_a, layer.is_torus, None, None, None, None)
-        res_image = batch_convolve(layer.D, convolved_image, filter_b, layer.is_torus, None, None, None, None)
+    for i, j in it.combinations_with_replacement(range(len(conv_filters[(0, 0)])), 2):
+        filter_a = conv_filters[(0, 0)][i]
+        filter_b = conv_filters[(0, 0)][j]
+        convolved_image = batch_convolve(
+            layer.D, layer[(0, 0)], filter_a, layer.is_torus, None, None, None, None
+        )
+        res_image = batch_convolve(
+            layer.D, convolved_image, filter_b, layer.is_torus, None, None, None, None
+        )
 
-        if (out_image_block is None):
+        if out_image_block is None:
             out_image_block = res_image
         else:
             out_image_block = jnp.concatenate((out_image_block, res_image), axis=1)
 
     return batch_linear_combination(out_image_block, params)
+
 
 def map_and_loss(params, x, y, key, train, conv_filters):
     """
@@ -55,7 +61,8 @@ def map_and_loss(params, x, y, key, train, conv_filters):
         conv_filters (Layer): the convolution filters as a Layer, the version of the function passed
             to ml.train will already have this set using functools.partial
     """
-    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, conv_filters), y[(0,0)]))
+    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, conv_filters), y[(0, 0)]))
+
 
 def target_function(image, conv_filter_a, conv_filter_b):
     """
@@ -67,19 +74,23 @@ def target_function(image, conv_filter_a, conv_filter_b):
     """
     return image.convolve_with(conv_filter_a).convolve_with(conv_filter_b)
 
-#Main
+
+# Main
 key = random.PRNGKey(time.time_ns())
 
 D = 2
-N = 64 #image size
-M = 3  #filter image size
+N = 64  # image size
+M = 3  # filter image size
 num_images = 10
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_unique_invariant_filters(M=M, k=0, parity=0, D=D, operators=group_actions)
 
 key, subkey = random.split(key)
-X_images = [geom.GeometricImage(data, 0, D, True) for data in random.normal(subkey, shape=(num_images, N, N))]
+X_images = [
+    geom.GeometricImage(data, 0, D, True)
+    for data in random.normal(subkey, shape=(num_images, N, N))
+]
 Y_images = [target_function(image, conv_filters[1], conv_filters[2]) for image in X_images]
 
 key, subkey = random.split(key)
@@ -89,10 +100,10 @@ filter_layer = geom.Layer.from_images(conv_filters)
 X_layer = geom.BatchLayer.from_images(X_images)
 Y_layer = geom.BatchLayer.from_images(Y_images)
 
-# This section below demonstrates how to shard across multiple GPUs. 
+# This section below demonstrates how to shard across multiple GPUs.
 # Create a Sharding object to distribute a value across devices:
 num_gpus = len(jax.devices())
-assert (num_images % num_gpus) == 0 # batch size should distribute across the number of gpus evenly
+assert (num_images % num_gpus) == 0  # batch size should distribute across the number of gpus evenly
 sharding = PositionalSharding(mesh_utils.create_device_mesh((num_gpus,)))
 
 X_layer = X_layer.device_put(sharding, num_gpus)
@@ -112,4 +123,3 @@ params, _, _ = ml.train(
 )
 
 print(params)
-

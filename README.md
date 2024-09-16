@@ -53,7 +53,7 @@ image = geom.GeometricImage(data, parity=0, D=2)
 
 We can visualize this image with the plotting tools in utils. You will need to call matplotlib.pypolot.show() to display.
 ```
-utils.plot_image(image)
+image.plot()
 ```
 
 Now we can do various operations on this geometric image
@@ -100,8 +100,13 @@ will be equivariant.
 gg = operators[1] # one operator, a flip over the y-axis
 ff_k0 = invariant_filters[1] # one filter, a non-trivial scalar filter
 print(
-    'Equivariant:',
-    image.times_group_element(gg).convolve_with(ff_k0) == image.convolve_with(ff_k0).times_group_element(gg),
+    "Equivariant:",
+    jnp.allclose(
+        image.times_group_element(gg).convolve_with(ff_k0).data,
+        image.convolve_with(ff_k0).times_group_element(gg).data,
+        rtol=1e-2,
+        atol=1e-2,
+    ),
 )
 ```
 

@@ -199,7 +199,7 @@ def map_loss_in_batches(
     y: geom.BatchLayer,
     batch_size: int,
     rand_key: ArrayLike,
-    sharding: jax.sharding.PositionalSharding,
+    sharding: Optional[jax.sharding.PositionalSharding] = None,
     has_aux: bool = False,
     aux_data: Optional[Any] = None,
 ) -> jax.Array:
@@ -216,12 +216,19 @@ def map_loss_in_batches(
         y (BatchLayer): target output data
         batch_size (int): effective batch_size, must be divisible by number of gpus
         rand_key (jax.random.PRNGKey): rand key
-        sharding (PositionalSharding): sharding over multiple GPUs
+        sharding: sharding over multiple GPUs, if None (default), will use available devices
         has_aux (bool): has auxilliary data, such as batch_stats, defaults to False
         aux_data (any): auxilliary data, such as batch stats. Passed to the function is has_aux is True.
     returns: average loss over the entire layer
     """
     inference_model = eqx.nn.inference_mode(model)
+
+    if sharding is None:
+        devices = jax.devices()
+        num_devices = len(devices)
+        devices = mesh_utils.create_device_mesh((num_devices, 1))
+        sharding = jax.sharding.PositionalSharding(devices)
+
     replicated = sharding.replicate()
     inference_model = eqx.filter_shard(inference_model, replicated)
 
@@ -308,24 +315,22 @@ def train(
     optimizer: optax.GradientTransformation,
     validation_X: Optional[geom.BatchLayer] = None,
     validation_Y: Optional[geom.BatchLayer] = None,
-    save_params: Optional[str] = None,
+    save_model: Optional[str] = None,
     has_aux: bool = False,
     aux_data: Optional[Any] = None,
     devices: Optional[list[jax.Device]] = None,
 ) -> Union[tuple[eqx.Module, Any, jax.Array, jax.Array], tuple[eqx.Module, jax.Array, jax.Array]]:
     """
     Method to train the model. It uses stochastic gradient descent (SGD) with the optimizer to learn the
-    parameters the minimize the map_and_loss function. The params are returned. This function automatically
-    pmaps over the available gpus, so batch_size should be divisible by the number of gpus. If you only want
+    parameters the minimize the map_and_loss function. The model is returned. This function automatically
+    shards over the available gpus, so batch_size should be divisible by the number of gpus. If you only want
     to train on a single GPU, the script should be run with CUDA_VISIBLE_DEVICES=# for whatever gpu number.
-    In order to do collectives across the pmap batches, use axis_name='batch', such as
-    jnp.pmean(x, axis_name='batch').
     args:
         X (BatchLayer): The X input data as a layer by k of (images, channels, (N,)*D, (D,)*k)
         Y (BatchLayer): The Y target data as a layer by k of (images, channels, (N,)*D, (D,)*k)
         map_and_loss (function): function that takes in params, X_batch, Y_batch, rand_key, and train and
             returns the loss. If has_aux is True, then it also takes in aux_data and returns aux_data.
-        params (jnp.array):
+        model: Model pytree
         rand_key (jnp.random key): key for randomness
         stop_condition (StopCondition): when to stop the training process, currently only 1 condition
             at a time
@@ -335,12 +340,13 @@ def train(
             of (images, channels, (N,)*D, (D,)*k)
         validation_Y (BatchLayer): target data for a validation data set as a layer by k
             of (images, channels, (N,)*D, (D,)*k)
-        save_params (str): if string, save params every 10 epochs, defaults to None
+        save_model (str): if string, save model every 10 epochs, defaults to None
         has_aux (bool): Passed to value_and_grad, specifies whether there is auxilliary data returned from
             map_and_loss. If true, this auxilliary data will be passed back in to map_and_loss with the
             name "aux_data". The last aux_data will also be returned from this function.
         aux_data (any): initial aux data passed in to map_and_loss when has_aux is true.
         devices (list): gpu/cpu devices to use, if None (default) then it will use jax.devices()
+    returns: A tuple of best model in inference mode, epoch loss, and val loss
     """
     if isinstance(stop_condition, ml.ValLoss) and not (validation_X and validation_Y):
         raise ValueError("Stop condition is ValLoss, but no validation data provided.")
@@ -395,8 +401,8 @@ def train(
             )
             val_loss = epoch_val_loss
 
-        if save_params and ((epoch % 10) == 0):
-            jnp.save(save_params, stop_condition.best_params)
+        if save_model and ((epoch % 10) == 0):
+            raise NotImplementedError("train::Saving a model is not implemented yet")
 
         epoch_time = time.time() - start_time
 
@@ -408,4 +414,4 @@ def train(
             val_loss,
         )
     else:
-        return stop_condition.best_params, epoch_loss, val_loss
+        return eqx.nn.inference_mode(stop_condition.best_params), epoch_loss, val_loss

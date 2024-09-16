@@ -1,4 +1,5 @@
 # generate gravitational field
+from __future__ import annotations
 import sys
 import argparse
 import time
@@ -15,26 +16,30 @@ import equinox as eqx
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml_eqx as ml_eqx
 import geometricconvolutions.ml as ml
-import geometricconvolutions.utils as utils
 from geometricconvolutions.data import get_gravity_data as get_data
 
 
-def plot_results(layer_x, layer_y, axs, titles, conv_filters):
+def plot_results(
+    model: Model,
+    layer_x: geom.Layer,
+    layer_y: geom.Layer,
+    axs: list[plt.Axes],
+    titles: list[str],
+):
     assert len(axs) == len(titles)
-
-    learned_x = geom.GeometricImage(
-        batch_net(params, layer_x, None, False, conv_filters)[1][0, 0],
-        0,
-        layer_x.D,
-        layer_x.is_torus,
-    )
-    x = geom.GeometricImage(next(iter(layer_x.values()))[0, 0], 0, layer_x.D, layer_x.is_torus)
-    y = geom.GeometricImage(next(iter(layer_y.values()))[0, 0], 0, layer_y.D, layer_y.is_torus)
-
+    learned_x = model(layer_x).to_images()[0]
+    x = layer_x.to_images()[0]
+    y = layer_y.to_images()[0]
     images = [x, y, learned_x, y - learned_x]
-    for image, ax, title in zip(images, axs, titles):
-        utils.plot_image(image, ax=ax)
-        ax.set_title(title, fontsize=24)
+    for i, image, ax, title in zip(range(len(images)), images, axs, titles):
+        if i == 0:
+            vmin = 0.0
+            vmax = 2.0
+        else:
+            vmin = None
+            vmax = None
+
+        image.plot(ax, title, vmin=vmin, vmax=vmax)
 
 
 class Model(eqx.Module):
@@ -79,7 +84,7 @@ class Model(eqx.Module):
         key, subkey = random.split(key)
         self.last_layer = ml_eqx.ConvContract(mid_keys, target_keys, conv_filters, key=subkey)
 
-    def __call__(self: Self, x: geom.Layer):
+    def __call__(self: Self, x: geom.Layer) -> geom.Layer:
         x = self.embedding(x)
 
         out_x = None
@@ -94,23 +99,17 @@ class Model(eqx.Module):
         return self.last_layer(x)
 
 
-def map_and_loss(model, x, y):
+def map_and_loss(model: Model, x: geom.BatchLayer, y: geom.BatchLayer) -> float:
     return ml.smse_loss(jax.vmap(model)(x), y)
 
 
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument("-outfile", help="where to save the image", type=str, default=None)
-    parser.add_argument("-lr", help="learning rate", type=float, default=0.1)
+    parser.add_argument("--images_dir", help="where to save the image", type=str, default=None)
+    parser.add_argument("-lr", help="learning rate", type=float, default=0.01)
     parser.add_argument("-e", "--epochs", help="number of epochs", type=int, default=50)
     parser.add_argument("-batch", help="batch size", type=int, default=1)
     parser.add_argument("-seed", help="the random number seed", type=int, default=None)
-    parser.add_argument(
-        "-s", "--save_file", help="file name to save the params", type=str, default=None
-    )
-    parser.add_argument(
-        "-l", "--load_file", help="file name to load params from", type=str, default=None
-    )
     parser.add_argument(
         "-v",
         "--verbose",
@@ -148,42 +147,38 @@ conv_filters = geom.get_invariant_filters(
     Ms=[3], ks=[0, 1, 2], parities=[0], D=D, operators=group_actions
 )
 
-if args.load_file:
-    model = jnp.load(args.load_file)
-else:
-    key, subkey = random.split(key)
-    model = Model(train_X.get_spatial_dims(), (((0, 0), 1),), conv_filters, 10, key=subkey)
-    print(f"Num params: {sum([x.size for x in jax.tree_util.tree_leaves(model)]):,}")
+key, subkey = random.split(key)
+model = Model(train_X.get_spatial_dims(), (((0, 0), 1),), conv_filters, 10, key=subkey)
+print(f"Num params: {sum([x.size for x in jax.tree_util.tree_leaves(model)]):,}")
 
-    optimizer = optax.adam(
-        optax.exponential_decay(
-            args.lr,
-            transition_steps=int(train_X.get_L() / args.batch),
-            decay_rate=0.995,
-        )
+optimizer = optax.adam(
+    optax.exponential_decay(
+        args.lr,
+        transition_steps=int(train_X.get_L() / args.batch),
+        decay_rate=0.995,
     )
-    key, subkey = random.split(key)
-    model, train_loss, val_loss = ml_eqx.train(
-        train_X,
-        train_Y,
-        map_and_loss,
-        model,
-        subkey,
-        ml.EpochStop(epochs=args.epochs, verbose=args.verbose),
-        batch_size=args.batch,
-        optimizer=optimizer,
-        validation_X=validation_X,
-        validation_Y=validation_Y,
-        save_params=args.save_file,
-    )
+)
+key, subkey = random.split(key)
+model, train_loss, val_loss = ml_eqx.train(
+    train_X,
+    train_Y,
+    map_and_loss,
+    model,
+    subkey,
+    ml.EpochStop(epochs=args.epochs, verbose=args.verbose),
+    batch_size=args.batch,
+    optimizer=optimizer,
+    validation_X=validation_X,
+    validation_Y=validation_Y,
+)
 
-    if args.save_file:
-        jnp.save(args.save_file, model)
 
-print("Full Test loss:", map_and_loss(model, test_X, test_Y))
+key, subkey = random.split(key)
+test_loss = ml_eqx.map_loss_in_batches(map_and_loss, model, test_X, test_Y, args.batch, subkey)
+print("Full Test loss:", test_loss)
 print(f"One Test loss:", map_and_loss(model, test_X.get_one(), test_Y.get_one()))
 
-if args.outfile is not None:
+if args.images_dir is not None:
     plt.rcParams["font.family"] = "serif"
     plt.rcParams["font.serif"] = "STIXGeneral"
     plt.tight_layout()
@@ -191,17 +186,17 @@ if args.outfile is not None:
     titles = ["Input", "Ground Truth", "Prediction", "Difference"]
     fig, axs = plt.subplots(nrows=2, ncols=4, figsize=(24, 12))
     plot_results(
-        train_X.get_one(),
-        train_Y.get_one(),
+        model,
+        train_X.get_one_layer(),
+        train_Y.get_one_layer(),
         axs[0],
         titles,
-        conv_filters,
     )
     plot_results(
-        test_X.get_one(),
-        test_Y.get_one(),
+        model,
+        test_X.get_one_layer(),
+        test_Y.get_one_layer(),
         axs[1],
         titles,
-        conv_filters,
     )
-    plt.savefig(args.outfile)
+    plt.savefig(f"{args.images_dir}gravity_field.png")

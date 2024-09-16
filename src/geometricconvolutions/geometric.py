@@ -2266,16 +2266,15 @@ class BatchLayer(Layer):
     ) -> Union[Self, jnp.ndarray]:
         return super(BatchLayer, self).get_component(component, future_steps, as_layer)
 
-    def device_put(self: Self, sharding: jax.sharding.PositionalSharding, num_devices: int) -> Self:
+    def device_put(self: Self, sharding: jax.sharding.PositionalSharding) -> Self:
         """
-        Put the BatchLayer on particular devices according to the sharding and num_devices
+        Put the BatchLayer on particular devices according to the sharding
         args:
             sharding (jax sharding): jax positional sharding to be reshaped
-            num_devices (int): number of gpus to split the batches over
         """
-        assert (
-            self.get_L() % num_devices
-        ) == 0  # number of batches must device evenly into number of devices
+        num_devices = sharding.shape[0]
+        # number of batches must device evenly into number of devices
+        assert (self.get_L() % num_devices) == 0
 
         new_data = {}
         for key, image_block in self.items():

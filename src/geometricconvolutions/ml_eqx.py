@@ -151,6 +151,16 @@ class ConvContract(eqx.Module):
             return layer
 
 
+def save(filename, model):
+    with open(filename, "wb") as f:
+        eqx.tree_serialise_leaves(f, model)
+
+
+def load(filename, model):
+    with open(filename, "rb") as f:
+        return eqx.tree_deserialise_leaves(f, model)
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~ Training Functions ~~~~~~~~~~~~~~~~~~~~~~
 def get_batch_layer(
     layers: Union[Sequence[geom.BatchLayer], geom.BatchLayer],
@@ -402,7 +412,7 @@ def train(
             val_loss = epoch_val_loss
 
         if save_model and ((epoch % 10) == 0):
-            raise NotImplementedError("train::Saving a model is not implemented yet")
+            save(save_model, model)
 
         epoch_time = time.time() - start_time
 

@@ -111,6 +111,12 @@ def handleArgs(argv):
     parser.add_argument("-batch", help="batch size", type=int, default=1)
     parser.add_argument("-seed", help="the random number seed", type=int, default=None)
     parser.add_argument(
+        "-s", "--save_model", help="folder location to save the model", type=str, default=None
+    )
+    parser.add_argument(
+        "-l", "--load_model", help="folder location to load the model", type=str, default=None
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         help="levels of print statements during training",
@@ -151,27 +157,32 @@ key, subkey = random.split(key)
 model = Model(train_X.get_spatial_dims(), (((0, 0), 1),), conv_filters, 10, key=subkey)
 print(f"Num params: {sum([x.size for x in jax.tree_util.tree_leaves(model)]):,}")
 
-optimizer = optax.adam(
-    optax.exponential_decay(
-        args.lr,
-        transition_steps=int(train_X.get_L() / args.batch),
-        decay_rate=0.995,
+if args.load_model:
+    model = ml_eqx.load(f"{args.load_model}params.eqx", model)
+else:
+    optimizer = optax.adam(
+        optax.exponential_decay(
+            args.lr,
+            transition_steps=int(train_X.get_L() / args.batch),
+            decay_rate=0.995,
+        )
     )
-)
-key, subkey = random.split(key)
-model, train_loss, val_loss = ml_eqx.train(
-    train_X,
-    train_Y,
-    map_and_loss,
-    model,
-    subkey,
-    ml.EpochStop(epochs=args.epochs, verbose=args.verbose),
-    batch_size=args.batch,
-    optimizer=optimizer,
-    validation_X=validation_X,
-    validation_Y=validation_Y,
-)
-
+    key, subkey = random.split(key)
+    model, train_loss, val_loss = ml_eqx.train(
+        train_X,
+        train_Y,
+        map_and_loss,
+        model,
+        subkey,
+        ml.EpochStop(epochs=args.epochs, verbose=args.verbose),
+        batch_size=args.batch,
+        optimizer=optimizer,
+        validation_X=validation_X,
+        validation_Y=validation_Y,
+        save_model=f"{args.save_model}params.eqx" if args.save_model else None,
+    )
+    if args.save_model:
+        ml_eqx.save(f"{args.save_model}params.eqx", model)
 
 key, subkey = random.split(key)
 test_loss = ml_eqx.map_loss_in_batches(map_and_loss, model, test_X, test_Y, args.batch, subkey)

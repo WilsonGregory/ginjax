@@ -17,7 +17,7 @@ See the file `LICENSE` for more details.
 """
 
 from __future__ import annotations
-from typing import Union, Sequence, Optional, Generator, Any, Callable
+from typing import Any, Callable, Generator, NewType, Optional, Sequence, Union
 from typing_extensions import Self
 
 import itertools as it
@@ -36,6 +36,8 @@ import geometricconvolutions.utils as utils
 
 TINY = 1.0e-5
 LETTERS = "abcdefghijklmnopqrstuvwxyxABCDEFGHIJKLMNOPQRSTUVWXYZ"
+LayerKey = NewType("LayerKey", tuple[int, int])
+Signature = NewType("Signature", tuple[tuple[LayerKey, int]])
 
 # ------------------------------------------------------------------------------
 # PART 1: Make and test a complete group
@@ -2099,6 +2101,18 @@ class Layer:
             return self.__class__({(0, 0): component_data}, self.D, self.is_torus)
         else:
             return component_data
+
+    def get_signature(self: Self) -> Signature:
+        """
+        Get a tuple of ( ((k,p),channels), ((k,p),channels), ...). This works for Layers and
+        vmapped BatchLayers.
+        """
+        if self.data == {}:
+            return None
+
+        k, p = next(iter(self.data.keys()))
+        leading_axes = self[k, p].ndim - self.D - k
+        return tuple((k_p, img.shape[leading_axes - 1]) for k_p, img in self.data.items())
 
     def device_replicate(self: Self, sharding: jax.sharding.PositionalSharding) -> Self:
         """

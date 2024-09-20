@@ -1115,9 +1115,6 @@ def _group_norm_K1(
     return whitened_data.reshape(image_block.shape)
 
 
-functools.partial(jax.jit, static_argnums=[2, 3, 4])
-
-
 def group_norm(
     params: ParamsTree,
     layer: geom.BatchLayer,

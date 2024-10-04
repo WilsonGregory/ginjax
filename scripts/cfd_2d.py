@@ -5,11 +5,15 @@ import numpy as np
 from functools import partial
 import matplotlib.pyplot as plt
 import h5py
+from typing import Optional
 
 import jax.numpy as jnp
 import jax
 import jax.random as random
+import jax.experimental.mesh_utils as mesh_utils
+from jaxtyping import ArrayLike
 import optax
+import equinox as eqx
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
@@ -262,12 +266,13 @@ def plot_timestep_power(
 
 
 def map_and_loss(
-    model,
-    layer_x,
-    layer_y,
-    aux_data=None,
-    has_aux=False,
-    future_steps=1,
+    model: eqx.Module,
+    layer_x: geom.BatchLayer,
+    layer_y: geom.BatchLayer,
+    aux_data: Optional[dict] = None,
+    has_aux: bool = False,
+    future_steps: int = 1,
+    return_map: bool = False,
 ):
     batch_model = jax.vmap(model)
     result = ml_eqx.autoregressive_map(
@@ -286,25 +291,35 @@ def map_and_loss(
     loss = ml.timestep_smse_loss(out_layer, layer_y, future_steps)
     loss = loss[0] if future_steps == 1 else loss
 
-    return (loss, aux_data) if has_aux else loss
+    if has_aux or return_map:
+        output = (loss,)
+        if has_aux:
+            output = output + (aux_data,)
+
+        if return_map:
+            output = output + (out_layer,)
+
+        return output
+    else:
+        return loss
 
 
 def train_and_eval(
-    data,
-    key,
-    model_name,
-    model,
-    lr,
-    batch_size,
-    epochs,
-    rollout_steps,
-    save_model,
-    load_model,
-    images_dir,
-    has_aux=False,
-    verbose=1,
-    plot_component=0,
-):
+    data: tuple[geom.BatchLayer],
+    key: ArrayLike,
+    model_name: str,
+    model: eqx.Module,
+    lr: float,
+    batch_size: int,
+    epochs: int,
+    rollout_steps: int,
+    save_model: Optional[str],
+    load_model: Optional[str],
+    images_dir: Optional[str],
+    has_aux: bool = False,
+    verbose: int = 1,
+    plot_component: int = 0,
+) -> tuple[float]:
     (
         train_X,
         train_Y,
@@ -321,6 +336,7 @@ def train_and_eval(
     if load_model is None:
         steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
         key, subkey = random.split(key)
+        # TODO: fix map_and_loss here to use has_aux, aux_data correctly?
         results = ml_eqx.train(
             train_X,
             train_Y,
@@ -354,54 +370,56 @@ def train_and_eval(
 
         key, subkey1, subkey2 = random.split(key)
         train_loss = ml_eqx.map_loss_in_batches(
-            partial(map_and_loss, has_aux=has_aux),
+            map_and_loss,
             model,
             train_X,
             train_Y,
             batch_size,
             subkey1,
+            # map_and_loss kwargs
             has_aux=has_aux,
             aux_data=batch_stats,
         )
         val_loss = ml_eqx.map_loss_in_batches(
-            partial(map_and_loss, has_aux=has_aux),
+            map_and_loss,
             model,
             val_X,
             val_Y,
             batch_size,
             subkey2,
+            # map_and_loss kwargs
             has_aux=has_aux,
             aux_data=batch_stats,
         )
 
     key, subkey = random.split(key)
     test_loss = ml_eqx.map_loss_in_batches(
-        partial(map_and_loss, has_aux=has_aux),
+        map_and_loss,
         model,
         test_single_X,
         test_single_Y,
         batch_size,
         subkey,
+        # map_and_loss kwargs
         has_aux=has_aux,
         aux_data=batch_stats,
     )
     print(f"Test Loss: {test_loss}")
 
-    rollout_layer = ml_eqx.map_in_batches(
-        partial(
-            ml_eqx.autoregressive_map,
-            past_steps=test_rollout_X[(1, 0)].shape[1],
-            future_steps=rollout_steps,
-            has_aux=has_aux,
-        ),
-        jax.vmap(model),
+    key, subkey = random.split(key)
+    test_rollout_loss, rollout_layer = ml_eqx.map_loss_in_batches(
+        map_and_loss,
+        model,
         test_rollout_X,
+        test_rollout_Y,
         batch_size,
-        merge_layer=True,
+        subkey,
+        # map_and_loss kwargs
+        future_steps=rollout_steps,
         has_aux=has_aux,
         aux_data=batch_stats,
+        return_map=True,
     )
-    test_rollout_loss = ml.timestep_smse_loss(rollout_layer, test_rollout_Y, rollout_steps)
     print(f"Test Rollout Loss: {test_rollout_loss}, Sum: {jnp.sum(test_rollout_loss)}")
 
     if images_dir is not None:
@@ -535,20 +553,39 @@ train_and_eval = partial(
     plot_component=args.plot_component,
 )
 
-key, subkey1 = random.split(key)
+key, subkey1, subkey2 = random.split(key, num=3)
 model_list = [
+    (
+        "unetBase",
+        partial(
+            train_and_eval,
+            model=models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=64,
+                use_bias=True,
+                activation_f=jax.nn.gelu,
+                equivariant=False,
+                kernel_size=3,
+                use_group_norm=True,
+                key=subkey1,
+            ),
+            lr=8e-4,
+        ),
+    ),
     (
         "unetBase_equiv48",
         partial(
             train_and_eval,
-            model=models.UNetEquiv(
+            model=models.UNet(
                 D,
                 input_keys,
                 output_keys,
                 depth=48,
                 conv_filters=conv_filters,
                 upsample_filters=upsample_filters,
-                key=subkey1,
+                key=subkey2,
             ),
             lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
         ),

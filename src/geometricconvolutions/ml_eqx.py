@@ -1,5 +1,6 @@
 import time
 import math
+import functools
 from typing import Any, Callable, Optional, Sequence, Union
 from typing_extensions import Self
 
@@ -203,7 +204,7 @@ class GroupNorm(eqx.Module):
         out_x = x.empty()
         for (k, p), image_block in x.items():
             if k == 0:
-                whitened_data = self.vanilla_norm[(k, p)]  # do normal group norm
+                whitened_data = self.vanilla_norm[(k, p)](image_block)  # do normal group norm
             elif k == 1:
                 # save mean vec, allows for un-mean centering (?)
                 mean_vec = jnp.mean(image_block, axis=tuple(range(1, 1 + self.D)), keepdims=True)
@@ -319,6 +320,31 @@ class MaxNormPool(eqx.Module):
         return out_x
 
 
+class LayerWrapper(eqx.Module):
+    modules: dict[ml.LayerKey, Union[eqx.Module, Callable]]
+
+    def __init__(
+        self: Self, module: Union[eqx.Module, Callable], input_keys: tuple[tuple[ml.LayerKey, int]]
+    ):
+        """
+        Perform the module or callable (e.g., activation) on each layer of the input layer. Since
+        we only take input_keys, module should preserve the shape/tensor order and parity.
+        """
+        self.modules = {}
+        for (k, p), _ in input_keys:
+            # I believe this *should* duplicate so they are independent, per the description in
+            # https://docs.kidger.site/equinox/api/nn/shared/. However, it may not. In the scalar
+            # case this should be perfectly fine though.
+            self.modules[(k, p)] = module
+
+    def __call__(self: Self, x: geom.Layer):
+        out_layer = x.__class__({}, x.D, x.is_torus)
+        for (k, p), image in x.items():
+            out_layer.append(k, p, self.modules[(k, p)](image))
+
+        return out_layer
+
+
 def save(filename, model):
     # TODO: save batch stats
     with open(filename, "wb") as f:
@@ -408,8 +434,7 @@ def evaluate(
     x: geom.BatchLayer,
     y: geom.BatchLayer,
     sharding: jax.sharding.PositionalSharding,
-    has_aux: bool = False,
-    aux_data: Optional[Any] = None,
+    map_kwargs: dict[str, Any] = {},
 ) -> jax.Array:
     """
     Runs map_and_loss for the entire layer_X, layer_Y, splitting into batches if the layer is larger than
@@ -429,10 +454,31 @@ def evaluate(
     """
     inference_model = eqx.nn.inference_mode(model)
     replicated = sharding.replicate()
-    inference_model, aux_data = eqx.filter_shard((inference_model, aux_data), replicated)
+    inference_model, map_kwargs = eqx.filter_shard((inference_model, map_kwargs), replicated)
     x, y = x.device_put(sharding), y.device_put(sharding)
-    args = (inference_model, x, y, aux_data) if has_aux else (inference_model, x, y)
-    return map_and_loss(*args)
+    print(map_kwargs)
+    return map_and_loss(inference_model, x, y, **map_kwargs)
+
+
+def loss_reducer(ls):
+    """
+    A reducer for map_loss_in_batches that takes the batch mean of the loss
+    """
+    return jnp.mean(jnp.stack(ls), axis=0)
+
+
+def aux_data_reducer(ls):
+    """
+    A reducer for aux_data like batch stats that just takes the last one
+    """
+    return ls[-1]
+
+
+def layer_reducer(ls):
+    """
+    If map data returns the mapped layers, merge them togther
+    """
+    return functools.reduce(lambda carry, val: carry.concat(val), ls, ls[0].empty())
 
 
 def map_loss_in_batches(
@@ -448,9 +494,9 @@ def map_loss_in_batches(
     y: geom.BatchLayer,
     batch_size: int,
     rand_key: ArrayLike,
+    reducers: Optional[tuple] = None,
     sharding: Optional[jax.sharding.PositionalSharding] = None,
-    has_aux: bool = False,
-    aux_data: Optional[Any] = None,
+    **map_kwargs: Optional[dict[str, Any]],
 ) -> jax.Array:
     """
     Runs map_and_loss for the entire layer_X, layer_Y, splitting into batches if the layer is larger than
@@ -472,6 +518,15 @@ def map_loss_in_batches(
     """
     inference_model = eqx.nn.inference_mode(model)
 
+    if reducers is None:
+        # use the default reducer for loss
+        reducers = [loss_reducer]
+        if "has_aux" in map_kwargs and map_kwargs["has_aux"]:
+            reducers.append(aux_data_reducer)
+
+        if "return_map" in map_kwargs and map_kwargs["return_map"]:
+            reducers.append(layer_reducer)
+
     if sharding is None:
         devices = jax.devices()
         num_devices = len(devices)
@@ -479,19 +534,23 @@ def map_loss_in_batches(
         sharding = jax.sharding.PositionalSharding(devices)
 
     replicated = sharding.replicate()
-    inference_model, aux_data = eqx.filter_shard((inference_model, aux_data), replicated)
+    inference_model, map_kwargs = eqx.filter_shard((inference_model, map_kwargs), replicated)
 
     X_batches, Y_batches = get_batch_layer((x, y), batch_size, rand_key, sharding)
-    total_loss = 0
+    results = [[] for _ in range(len(reducers))]
     for X_batch, Y_batch in zip(X_batches, Y_batches):
-        results = evaluate(
-            inference_model, map_and_loss, X_batch, Y_batch, sharding, has_aux, aux_data
-        )
-        one_loss = results[0] if has_aux else results
+        one_result = evaluate(inference_model, map_and_loss, X_batch, Y_batch, sharding, map_kwargs)
 
-        total_loss = total_loss + one_loss
+        if len(reducers) == 1:
+            results[0].append(one_result)
+        else:
+            for val, result_ls in zip(one_result, results):
+                result_ls.append(val)
 
-    return total_loss / len(X_batches)
+    if len(reducers) == 1:
+        return reducers[0](results[0])
+    else:
+        return tuple(reducer(result_ls) for reducer, result_ls in zip(reducers, results))
 
 
 def map_in_batches(
@@ -525,9 +584,7 @@ def map_in_batches(
     inference_model = eqx.nn.inference_mode(batch_model)
 
     if sharding is None:
-        devices = jax.devices()
-        num_devices = len(devices)
-        devices = mesh_utils.create_device_mesh((num_devices, 1))
+        devices = mesh_utils.create_device_mesh((len(jax.devices()), 1))
         sharding = jax.sharding.PositionalSharding(devices)
 
     replicated = sharding.replicate()
@@ -535,21 +592,16 @@ def map_in_batches(
 
     results = []
     for X_batch in get_batch_layer(x, batch_size, None, sharding):
+        print(X_batch)  # TODO: HERE!
         if has_aux:
-            batch_out, aux_data = map_f(inference_model, X_batch, aux_data)
+            batch_out, aux_data = eqx.filter_jit(map_f)(inference_model, X_batch, aux_data)
         else:
-            batch_out = map_f(inference_model, X_batch)
+            batch_out = eqx.filter_jit(map_f)(inference_model, X_batch)
 
-        results.append(batch_out)
+        results.append(batch_out.device_put(sharding))
 
     if merge_layer:  # if the results is a list of layers, automatically merge those layers
-        out_layer = results[0].empty()
-        for layer in results:
-            for (k, p), image_block in layer.items():
-                # (num_batches, batch_size, channels, spatial, tensor)
-                out_layer.append(k, p, image_block.reshape((-1,) + image_block.shape[2:]))
-
-        return out_layer
+        return functools.reduce(lambda carry, val: carry.concat(val), results, results[0].empty())
     else:
         return results
 
@@ -666,7 +718,7 @@ def train(
     replicated = sharding.replicate()
     model, aux_data = eqx.filter_shard((model, aux_data), replicated)
 
-    opt_state = optimizer.init(model)
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     epoch = 0
     epoch_val_loss = None
     epoch_loss = None
@@ -703,9 +755,9 @@ def train(
                 validation_Y,
                 batch_size,
                 subkey,
-                sharding,
-                has_aux,
-                aux_data,
+                sharding=sharding,
+                has_aux=has_aux,
+                aux_data=aux_data,
             )
             val_loss = epoch_val_loss
 

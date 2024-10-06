@@ -454,7 +454,6 @@ def evaluate(
     replicated = sharding.replicate()
     inference_model, map_kwargs = eqx.filter_shard((inference_model, map_kwargs), replicated)
     x, y = x.device_put(sharding), y.device_put(sharding)
-    print(map_kwargs)
     return map_and_loss(inference_model, x, y, **map_kwargs)
 
 
@@ -551,59 +550,6 @@ def map_loss_in_batches(
         return tuple(reducer(result_ls) for reducer, result_ls in zip(reducers, results))
 
 
-def map_in_batches(
-    map_f: Union[
-        Callable[[eqx.Module, geom.BatchLayer, Any], tuple[Any, Any]],
-        Callable[[eqx.Module, geom.BatchLayer], Any],
-    ],
-    batch_model: eqx.Module,
-    x: geom.BatchLayer,
-    batch_size: int,
-    sharding: Optional[jax.sharding.PositionalSharding] = None,
-    merge_layer: bool = False,
-    has_aux: bool = False,
-    aux_data: Optional[Any] = None,
-) -> geom.BatchLayer:
-    """
-    Runs model for the entire x, splitting into batches if it is larger than the batch_size. This
-    is helpful to run a whole validation/test set through model when you need to split those over
-    batches for memory reasons. Automatically shards over multiple gpus, so the number of gpus
-    must evenly divide batch_size as well as as any remainder of the layer.
-    args:
-        map_f: function with input model and batch layer, and output is some collection of batch layers.
-        batch_model (eqx.Module): model that operates on a batch layer
-        x (BatchLayer): input data
-        batch_size (int): effective batch_size, must be divisible by number of gpus
-        has_aux (bool): has auxilliary data, such as batch_stats, defaults to False
-        aux_data (any): auxilliary data, such as batch stats. Passed to the function is has_aux is True.
-        merge_layer (bool): if the result is a list of layers, automatically merge those layers
-    returns: average loss over the entire layer
-    """
-    inference_model = eqx.nn.inference_mode(batch_model)
-
-    if sharding is None:
-        devices = mesh_utils.create_device_mesh((len(jax.devices()), 1))
-        sharding = jax.sharding.PositionalSharding(devices)
-
-    replicated = sharding.replicate()
-    inference_model, aux_data = eqx.filter_shard((inference_model, aux_data), replicated)
-
-    results = []
-    for X_batch in get_batch_layer(x, batch_size, None, sharding):
-        print(X_batch)  # TODO: HERE!
-        if has_aux:
-            batch_out, aux_data = eqx.filter_jit(map_f)(inference_model, X_batch, aux_data)
-        else:
-            batch_out = eqx.filter_jit(map_f)(inference_model, X_batch)
-
-        results.append(batch_out.device_put(sharding))
-
-    if merge_layer:  # if the results is a list of layers, automatically merge those layers
-        return functools.reduce(lambda carry, val: carry.concat(val), results, results[0].empty())
-    else:
-        return results
-
-
 @eqx.filter_jit(donate="all")
 def train_step(
     map_and_loss: Union[
@@ -619,8 +565,7 @@ def train_step(
     x: geom.BatchLayer,
     y: geom.BatchLayer,
     sharding: jax.sharding.PositionalSharding,
-    has_aux: bool = False,
-    aux_data: Optional[Any] = None,
+    **map_kwargs: dict,
 ) -> tuple[eqx.Module, Any, Union[float, tuple[float, Any]]]:
     """
     Perform one step and gradient update of the model. If has_aux=True, then the return loss_value
@@ -638,22 +583,20 @@ def train_step(
         aux_data (Any): auxilliary data for stateful layers
     returns: model, opt_state, loss_value
     """
+    has_aux = ("has_aux" in map_kwargs) and map_kwargs["has_aux"]
     loss_grad = eqx.filter_value_and_grad(map_and_loss, has_aux=has_aux)
 
     # do sharding for multiple GPUs
     replicated = sharding.replicate()
-    model, opt_state, aux_data = eqx.filter_shard((model, opt_state, aux_data), replicated)
+    model, opt_state, map_kwargs = eqx.filter_shard((model, opt_state, map_kwargs), replicated)
     x, y = x.device_put(sharding), y.device_put(sharding)
 
-    args = (model, x, y, aux_data) if has_aux else (model, x, y)
-    loss_value, grads = loss_grad(*args)
-    if has_aux:
-        loss_value, aux_data = loss_value
+    model_out, grads = loss_grad(model, x, y, **map_kwargs)
 
     updates, opt_state = optim.update(grads, opt_state, model)
     model = eqx.apply_updates(model, updates)
-    model, opt_state, aux_data = eqx.filter_shard((model, opt_state, aux_data), replicated)
-    return model, opt_state, loss_value, aux_data
+    model, opt_state, model_out = eqx.filter_shard((model, opt_state, model_out), replicated)
+    return model, opt_state, model_out
 
 
 def train(
@@ -674,9 +617,8 @@ def train(
     validation_X: Optional[geom.BatchLayer] = None,
     validation_Y: Optional[geom.BatchLayer] = None,
     save_model: Optional[str] = None,
-    has_aux: bool = False,
-    aux_data: Optional[Any] = None,
     devices: Optional[list[jax.Device]] = None,
+    **map_kwargs: dict,
 ) -> Union[tuple[eqx.Module, Any, jax.Array, jax.Array], tuple[eqx.Module, jax.Array, jax.Array]]:
     """
     Method to train the model. It uses stochastic gradient descent (SGD) with the optimizer to learn the
@@ -714,7 +656,8 @@ def train(
     devices = mesh_utils.create_device_mesh((num_devices, 1))
     sharding = jax.sharding.PositionalSharding(devices)
     replicated = sharding.replicate()
-    model, aux_data = eqx.filter_shard((model, aux_data), replicated)
+    model, map_kwargs = eqx.filter_shard((model, map_kwargs), replicated)
+    has_aux = ("has_aux" in map_kwargs) and map_kwargs["has_aux"]
 
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     epoch = 0
@@ -728,7 +671,7 @@ def train(
         epoch_loss = 0
         start_time = time.time()
         for X_batch, Y_batch in zip(X_batches, Y_batches):
-            model, opt_state, loss_value, aux_data = train_step(
+            model, opt_state, model_out = train_step(
                 map_and_loss,
                 model,
                 optimizer,
@@ -736,9 +679,13 @@ def train(
                 X_batch,
                 Y_batch,
                 sharding,
-                has_aux,
-                aux_data,
+                **map_kwargs,
             )
+            if has_aux:
+                map_kwargs["aux_data"], loss_value = model_out
+            else:
+                loss_value = model_out
+
             epoch_loss += jnp.mean(loss_value)
 
         epoch_loss = epoch_loss / len(X_batches)
@@ -754,8 +701,7 @@ def train(
                 batch_size,
                 subkey,
                 sharding=sharding,
-                has_aux=has_aux,
-                aux_data=aux_data,
+                **map_kwargs,
             )
             val_loss = epoch_val_loss
 
@@ -767,7 +713,7 @@ def train(
     if has_aux:
         return (
             stop_condition.best_params,
-            aux_data,
+            map_kwargs["aux_data"] if has_aux else None,
             epoch_loss,
             val_loss,
         )

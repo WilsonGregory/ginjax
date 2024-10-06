@@ -336,11 +336,10 @@ def train_and_eval(
     if load_model is None:
         steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
         key, subkey = random.split(key)
-        # TODO: fix map_and_loss here to use has_aux, aux_data correctly?
         results = ml_eqx.train(
             train_X,
             train_Y,
-            partial(map_and_loss, has_aux=has_aux),
+            map_and_loss,
             model,
             subkey,
             stop_condition=ml.EpochStop(epochs, verbose=verbose),

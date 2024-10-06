@@ -5,7 +5,6 @@ import argparse
 import time
 import matplotlib.pyplot as plt
 from typing_extensions import Self
-from typing import Optional
 
 import jax.numpy as jnp
 import jax.random as random
@@ -100,13 +99,7 @@ class Model(eqx.Module):
         return self.last_layer(x)
 
 
-def map_and_loss(
-    model: Model,
-    x: geom.BatchLayer,
-    y: geom.BatchLayer,
-    aux_data: Optional[dict] = None,
-    has_aux: bool = False,
-) -> float:
+def map_and_loss(model: Model, x: geom.BatchLayer, y: geom.BatchLayer) -> float:
     return ml.smse_loss(jax.vmap(model)(x), y)
 
 

@@ -74,7 +74,6 @@ def make_conv(
             key,
         )
     else:
-        # TODO: need to add a reshaper layer?
         assert len(input_keys) == len(target_keys) == 1
         assert input_keys[0][0] == target_keys[0][0] == (0, 0)
         padding = "SAME" if padding is None else padding

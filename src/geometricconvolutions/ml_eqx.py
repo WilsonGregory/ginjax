@@ -232,51 +232,42 @@ class LayerNorm(GroupNorm):
 
 
 class VectorNeuronNonlinear(eqx.Module):
-    weightsW: dict[ml.LayerKey, jax.Array]
-    weightsU: dict[ml.LayerKey, jax.Array]
+    weights: dict[ml.LayerKey, jax.Array]
 
     eps: float = eqx.field(static=True)
     D: int = eqx.field(static=True)
-    vanilla_activation: Callable = eqx.field(static=True)
+    scalar_activation: Callable = eqx.field(static=True)
 
     def __init__(
         self: Self,
         input_keys: tuple[tuple[geom.LayerKey, int]],
         D: int,
-        depth: Optional[int] = None,
         scalar_activation: Callable[[ArrayLike], jax.Array] = jax.nn.relu,
         eps: float = 1e-5,
         key: ArrayLike = None,
     ) -> Self:
         """
         The vector nonlinearity in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
-        Basically use the channels of a vector to get a direction vector and a value vector. Use the
-        direction vector the split the value vector space in two. In one hemisphere, the value vector
-        is unchanged, while in the other it is projected to the hemispheres boundary.
+        Basically use the channels of a vector to get a direction vector. Use the direction vector
+        to get an inner product with the input vector. The inner product is like the input to a
+        typical nonlinear activation, and it is used to scale the non-orthogonal part of the input
+        vector.
         args:
             input_keys: the input keys to this layer
-            depth (int): out depth, defaults to None which will be set to the number of input channels
             scalar_activation (func): nonlinearity used for scalar
             eps (float): small value to avoid dividing by zero if the k_vec is close to 0, defaults to 1e-5
         """
         self.eps = eps
         self.D = D
+        self.scalar_activation = scalar_activation
 
-        self.weightsW = {}
-        self.weightsU = {}
-        self.vanilla_activation = {}
+        self.weights = {}
         for (k, p), in_c in input_keys:
-            out_c = in_c if depth is None else depth
-            if (k, p) == (0, 0):
-                self.vanilla_activation[(k, p)] = scalar_activation
-            else:  # initialization?
+            if (k, p) != (0, 0):  # initialization?
                 bound = 1.0 / jnp.sqrt(in_c)
-                key, subkey1, subkey2 = random.split(key, num=3)
-                self.weightsW[(k, p)] = random.uniform(
-                    subkey1, shape=(out_c, in_c), minval=-bound, maxval=bound
-                )
-                self.weightsU[(k, p)] = random.uniform(
-                    subkey2, shape=(out_c, in_c), minval=-bound, maxval=bound
+                key, subkey = random.split(key, num=2)
+                self.weights[(k, p)] = random.uniform(
+                    subkey, shape=(in_c, in_c), minval=-bound, maxval=bound
                 )
 
     def __call__(self: Self, x: geom.Layer):
@@ -284,20 +275,27 @@ class VectorNeuronNonlinear(eqx.Module):
         for (k, p), img_block in x.items():
 
             if (k, p) == (0, 0):
-                out_x.append(k, p, self.vanilla_activation[(k, p)](img_block))
+                out_x.append(k, p, self.scalar_activation(img_block))
             else:
                 # -> (out_c,spatial,tensor)
-                q = jnp.einsum("ij,j...->i...", self.weightsW[(k, p)], img_block)
-                k_vec = jnp.einsum("ij,j...->i...", self.weightsU[(k, p)], img_block)
-                k_normed = k_vec / (geom.norm(1 + self.D, k_vec, keepdims=True) + self.eps)
+                k_vec = jnp.einsum("ij,j...->i...", self.weights[(k, p)], img_block)
+                k_vec_normed = k_vec / (geom.norm(1 + self.D, k_vec, keepdims=True) + self.eps)
 
-                q_k_inner_prod = jnp.einsum(
-                    f"...{geom.LETTERS[:k]},...{geom.LETTERS[:k]}->...", q, k_normed
+                inner_prod = jnp.einsum(
+                    f"...{geom.LETTERS[:k]},...{geom.LETTERS[:k]}->...", img_block, k_vec_normed
                 )
-                projected_q = q - jnp.einsum(
-                    f"...,...{geom.LETTERS[:k]}->...{geom.LETTERS[:k]}", q_k_inner_prod, k_normed
+
+                # split the vector into a parallel section and a perpendicular section
+                v_parallel = jnp.einsum(
+                    f"...,...{geom.LETTERS[:k]}->...{geom.LETTERS[:k]}", inner_prod, k_vec_normed
                 )
-                out_x.append(k, p, jnp.where(q_k_inner_prod[..., None] >= 0, q, projected_q))
+                v_perp = img_block - v_parallel
+                h = self.scalar_activation(inner_prod) / (jnp.abs(inner_prod) + self.eps)
+
+                scaled_parallel = jnp.einsum(
+                    f"...,...{geom.LETTERS[:k]}->...{geom.LETTERS[:k]}", h, v_parallel
+                )
+                out_x.append(k, p, scaled_parallel + v_perp)
 
         return out_x
 

@@ -583,6 +583,7 @@ model_list = [
                 input_keys,
                 output_keys,
                 depth=48,
+                activation_f=jax.nn.relu,
                 conv_filters=conv_filters,
                 upsample_filters=upsample_filters,
                 key=subkey2,

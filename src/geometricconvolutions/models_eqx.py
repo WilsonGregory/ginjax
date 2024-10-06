@@ -28,12 +28,12 @@ def handle_activation(
     if equivariant:
         if activation_f is None:
             return lambda x: x
-        elif activation_f == ml.VN_NONLINEAR:
-            return ml_eqx.VectorNeuronNonlinear(input_keys, D, key=key)
         elif isinstance(activation_f, str):
-            return lambda x: ml.batch_scalar_activation(x, ACTIVATION_REGISTRY[activation_f])
+            return ml_eqx.VectorNeuronNonlinear(
+                input_keys, D, ACTIVATION_REGISTRY[activation_f], key=key
+            )
         else:
-            return lambda x: ml.batch_scalar_activation(x, activation_f)
+            return ml_eqx.VectorNeuronNonlinear(input_keys, D, activation_f, key=key)
     else:
         if activation_f is None:
             return ml_eqx.LayerWrapper(eqx.nn.Identity(), input_keys)
@@ -141,7 +141,7 @@ class UNet(eqx.Module):
         num_downsamples: int = 4,
         num_conv: int = 2,
         use_bias: Union[bool, str] = "auto",
-        activation_f: Union[Callable, str] = ml.VN_NONLINEAR,
+        activation_f: Union[Callable, str] = jax.nn.gelu,
         equivariant: bool = True,
         conv_filters: geom.Layer = None,
         upsample_filters: geom.Layer = None,

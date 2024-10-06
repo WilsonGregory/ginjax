@@ -1,5 +1,6 @@
 import time
 import math
+import functools
 from typing import Any, Callable, Optional, Sequence, Union
 from typing_extensions import Self
 
@@ -17,8 +18,8 @@ import geometricconvolutions.ml as ml
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Layers ~~~~~~~~~~~~~~~~~~~~~~
 class ConvContract(eqx.Module):
-    weights: dict[ml.LayerKey, dict[ml.LayerKey, float]]
-    bias: dict[ml.LayerKey, float]
+    weights: dict[ml.LayerKey, dict[ml.LayerKey, jax.Array]]
+    bias: dict[ml.LayerKey, jax.Array]
 
     input_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
     target_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
@@ -151,7 +152,199 @@ class ConvContract(eqx.Module):
             return layer
 
 
+class GroupNorm(eqx.Module):
+    scale: dict[ml.LayerKey, jax.Array]
+    bias: dict[ml.LayerKey, jax.Array]
+    vanilla_norm: dict[ml.LayerKey, eqx.nn.GroupNorm]
+
+    D: int = eqx.field(static=False)
+    groups: int = eqx.field(static=False)
+    eps: float = eqx.field(static=False)
+
+    def __init__(
+        self: Self,
+        input_keys: tuple[tuple[ml.LayerKey, int]],
+        D: int,
+        groups: int,
+        eps: float = 1e-5,
+    ) -> Self:
+        """
+        Implementation of group_norm. When num_groups=num_channels, this is equivalent to instance_norm. When
+        num_groups=1, this is equivalent to layer_norm. This function takes in a BatchLayer, not a Layer.
+        args:
+            input_keys: input key signature
+            D (int): dimension
+            groups (int): the number of channel groups for group_norm
+            eps (float): number to add to variance so we aren't dividing by 0
+            equivariant (bool): defaults to True
+        """
+        self.D = D
+        self.groups = groups
+        self.eps = eps
+
+        self.scale = {}
+        self.bias = {}
+        self.vanilla_norm = {}  # for scalars, can use basic implementation of GroupNorm
+        for (k, p), in_c in input_keys:
+            assert (
+                in_c % groups
+            ) == 0, f"group_norm: Groups must evenly divide channels, but got groups={groups}, channels={in_c}."
+
+            if k == 0:
+                self.vanilla_norm[(k, p)] = eqx.nn.GroupNorm(groups, in_c, eps)
+            elif k == 1:
+                self.scale[(k, p)] = jnp.ones((in_c,) + (1,) * (D + k))
+                self.bias[(k, p)] = jnp.zeros((in_c,) + (1,) * (D + k))
+            elif k > 1:
+                raise NotImplementedError(
+                    f"ml::group_norm: Equivariant group_norm not implemented for k>1, but k={k}",
+                )
+
+    def __call__(self: Self, x: geom.Layer) -> geom.Layer:
+        out_x = x.empty()
+        for (k, p), image_block in x.items():
+            if k == 0:
+                whitened_data = self.vanilla_norm[(k, p)](image_block)  # do normal group norm
+            elif k == 1:
+                # save mean vec, allows for un-mean centering (?)
+                mean_vec = jnp.mean(image_block, axis=tuple(range(1, 1 + self.D)), keepdims=True)
+                assert mean_vec.shape == (len(image_block),) + (1,) * self.D + (self.D,) * k
+                whitened_data = ml._group_norm_K1(
+                    self.D, image_block[None], self.groups, eps=self.eps
+                )
+                whitened_data = whitened_data * self.scale[(k, p)] + self.bias * mean_vec
+            elif k > 1:
+                raise NotImplementedError(
+                    f"ml::group_norm: Equivariant group_norm not implemented for k>1, but k={k}",
+                )
+
+            out_x.append(k, p, whitened_data)
+
+        return out_x
+
+
+class LayerNorm(GroupNorm):
+
+    def __init__(
+        self: Self, input_keys: tuple[tuple[ml.LayerKey, int]], D: int, eps: float = 1e-5
+    ) -> Self:
+        super(LayerNorm, self).__init__(input_keys, D, 1, eps)
+
+
+class VectorNeuronNonlinear(eqx.Module):
+    weights: dict[ml.LayerKey, jax.Array]
+
+    eps: float = eqx.field(static=True)
+    D: int = eqx.field(static=True)
+    scalar_activation: Callable = eqx.field(static=True)
+
+    def __init__(
+        self: Self,
+        input_keys: tuple[tuple[geom.LayerKey, int]],
+        D: int,
+        scalar_activation: Callable[[ArrayLike], jax.Array] = jax.nn.relu,
+        eps: float = 1e-5,
+        key: ArrayLike = None,
+    ) -> Self:
+        """
+        The vector nonlinearity in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
+        Basically use the channels of a vector to get a direction vector. Use the direction vector
+        to get an inner product with the input vector. The inner product is like the input to a
+        typical nonlinear activation, and it is used to scale the non-orthogonal part of the input
+        vector.
+        args:
+            input_keys: the input keys to this layer
+            scalar_activation (func): nonlinearity used for scalar
+            eps (float): small value to avoid dividing by zero if the k_vec is close to 0, defaults to 1e-5
+        """
+        self.eps = eps
+        self.D = D
+        self.scalar_activation = scalar_activation
+
+        self.weights = {}
+        for (k, p), in_c in input_keys:
+            if (k, p) != (0, 0):  # initialization?
+                bound = 1.0 / jnp.sqrt(in_c)
+                key, subkey = random.split(key, num=2)
+                self.weights[(k, p)] = random.uniform(
+                    subkey, shape=(in_c, in_c), minval=-bound, maxval=bound
+                )
+
+    def __call__(self: Self, x: geom.Layer):
+        out_x = x.empty()
+        for (k, p), img_block in x.items():
+
+            if (k, p) == (0, 0):
+                out_x.append(k, p, self.scalar_activation(img_block))
+            else:
+                # -> (out_c,spatial,tensor)
+                k_vec = jnp.einsum("ij,j...->i...", self.weights[(k, p)], img_block)
+                k_vec_normed = k_vec / (geom.norm(1 + self.D, k_vec, keepdims=True) + self.eps)
+
+                inner_prod = jnp.einsum(
+                    f"...{geom.LETTERS[:k]},...{geom.LETTERS[:k]}->...", img_block, k_vec_normed
+                )
+
+                # split the vector into a parallel section and a perpendicular section
+                v_parallel = jnp.einsum(
+                    f"...,...{geom.LETTERS[:k]}->...{geom.LETTERS[:k]}", inner_prod, k_vec_normed
+                )
+                v_perp = img_block - v_parallel
+                h = self.scalar_activation(inner_prod) / (jnp.abs(inner_prod) + self.eps)
+
+                scaled_parallel = jnp.einsum(
+                    f"...,...{geom.LETTERS[:k]}->...{geom.LETTERS[:k]}", h, v_parallel
+                )
+                out_x.append(k, p, scaled_parallel + v_perp)
+
+        return out_x
+
+
+class MaxNormPool(eqx.Module):
+    patch_len: int = eqx.field(static=True)
+    use_norm: bool = eqx.field(static=True)
+
+    def __init__(self: Self, patch_len: int, use_norm: bool = True):
+        self.patch_len = patch_len
+        self.use_norm = use_norm
+
+    def __call__(self: Self, x: geom.Layer):
+        vmap_max_pool = jax.vmap(geom.max_pool, in_axes=(None, 0, None, None))
+
+        out_x = x.empty()
+        for (k, p), image_block in x.items():
+            out_x.append(k, p, vmap_max_pool(x.D, image_block, self.patch_len, self.use_norm))
+
+        return out_x
+
+
+class LayerWrapper(eqx.Module):
+    modules: dict[ml.LayerKey, Union[eqx.Module, Callable]]
+
+    def __init__(
+        self: Self, module: Union[eqx.Module, Callable], input_keys: tuple[tuple[ml.LayerKey, int]]
+    ):
+        """
+        Perform the module or callable (e.g., activation) on each layer of the input layer. Since
+        we only take input_keys, module should preserve the shape/tensor order and parity.
+        """
+        self.modules = {}
+        for (k, p), _ in input_keys:
+            # I believe this *should* duplicate so they are independent, per the description in
+            # https://docs.kidger.site/equinox/api/nn/shared/. However, it may not. In the scalar
+            # case this should be perfectly fine though.
+            self.modules[(k, p)] = module
+
+    def __call__(self: Self, x: geom.Layer):
+        out_layer = x.__class__({}, x.D, x.is_torus)
+        for (k, p), image in x.items():
+            out_layer.append(k, p, self.modules[(k, p)](image))
+
+        return out_layer
+
+
 def save(filename, model):
+    # TODO: save batch stats
     with open(filename, "wb") as f:
         eqx.tree_serialise_leaves(f, model)
 
@@ -162,10 +355,41 @@ def load(filename, model):
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Training Functions ~~~~~~~~~~~~~~~~~~~~~~
+def autoregressive_map(
+    batch_model: eqx.Module,
+    x: geom.BatchLayer,
+    aux_data: Any = None,
+    past_steps: int = 1,
+    future_steps: int = 1,
+    has_aux: bool = False,
+) -> geom.BatchLayer:
+    """
+    Given a model, perform an autoregressive step (future_steps) times, and return the output
+    steps in a single layer.
+    args:
+        batch_model (eqx.Module): model that operates of batches, probably a vmapped version of model.
+        x (BatchLayer): the input layer to map
+        past_steps (int): the number of past steps input to the autoregressive map, default 1
+        future_steps (int): how many times to loop through the autoregression, default 1
+        aux_data (): auxilliary data to pass to the network
+        has_aux (bool): whether net returns an aux_data, defaults to False
+    """
+    out_x = x.empty()  # assume out_layer matches D and is_torus
+    for _ in range(future_steps):
+        if has_aux:
+            learned_x, aux_data = batch_model(x, aux_data)
+        else:
+            learned_x = batch_model(x)
+
+        x, out_x = ml.autoregressive_step(x, learned_x, out_x, past_steps)
+
+    return (out_x, aux_data) if has_aux else out_x
+
+
 def get_batch_layer(
     layers: Union[Sequence[geom.BatchLayer], geom.BatchLayer],
     batch_size: int,
-    rand_key: ArrayLike,
+    rand_key: Optional[ArrayLike],
     sharding: jax.sharding.PositionalSharding,
 ) -> Union[list[list[geom.BatchLayer]], list[geom.BatchLayer]]:
     """
@@ -196,6 +420,64 @@ def get_batch_layer(
 
 
 @eqx.filter_jit
+def evaluate(
+    model: eqx.Module,
+    map_and_loss: Union[
+        Callable[[eqx.Module, geom.BatchLayer, geom.BatchLayer], jax.Array],
+        Callable[
+            [eqx.Module, geom.BatchLayer, geom.BatchLayer, Any],
+            tuple[jax.Array, Any],
+        ],
+    ],
+    x: geom.BatchLayer,
+    y: geom.BatchLayer,
+    sharding: jax.sharding.PositionalSharding,
+    map_kwargs: dict[str, Any] = {},
+) -> jax.Array:
+    """
+    Runs map_and_loss for the entire layer_X, layer_Y, splitting into batches if the layer is larger than
+    the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
+    to split those over batches for memory reasons. Automatically pmaps over multiple gpus, so the number
+    of gpus must evenly divide batch_size as well as as any remainder of the layer.
+    args:
+        map_and_loss (function): function that takes in model, X_batch, Y_batch, and
+            aux_data if has_aux is true, and returns the loss, and aux_data if has_aux is true.
+        model (model PyTree): the model to run through map_and_loss
+        x (BatchLayer): input data
+        y (BatchLayer): target output data
+        sharding: sharding over multiple GPUs, if None (default), will use available devices
+        has_aux (bool): has auxilliary data, such as batch_stats, defaults to False
+        aux_data (any): auxilliary data, such as batch stats. Passed to the function is has_aux is True.
+    returns: average loss over the entire layer
+    """
+    inference_model = eqx.nn.inference_mode(model)
+    replicated = sharding.replicate()
+    inference_model, map_kwargs = eqx.filter_shard((inference_model, map_kwargs), replicated)
+    x, y = x.device_put(sharding), y.device_put(sharding)
+    return map_and_loss(inference_model, x, y, **map_kwargs)
+
+
+def loss_reducer(ls):
+    """
+    A reducer for map_loss_in_batches that takes the batch mean of the loss
+    """
+    return jnp.mean(jnp.stack(ls), axis=0)
+
+
+def aux_data_reducer(ls):
+    """
+    A reducer for aux_data like batch stats that just takes the last one
+    """
+    return ls[-1]
+
+
+def layer_reducer(ls):
+    """
+    If map data returns the mapped layers, merge them togther
+    """
+    return functools.reduce(lambda carry, val: carry.concat(val), ls, ls[0].empty())
+
+
 def map_loss_in_batches(
     map_and_loss: Union[
         Callable[[eqx.Module, geom.BatchLayer, geom.BatchLayer], jax.Array],
@@ -209,9 +491,9 @@ def map_loss_in_batches(
     y: geom.BatchLayer,
     batch_size: int,
     rand_key: ArrayLike,
+    reducers: Optional[tuple] = None,
     sharding: Optional[jax.sharding.PositionalSharding] = None,
-    has_aux: bool = False,
-    aux_data: Optional[Any] = None,
+    **map_kwargs: Optional[dict[str, Any]],
 ) -> jax.Array:
     """
     Runs map_and_loss for the entire layer_X, layer_Y, splitting into batches if the layer is larger than
@@ -233,6 +515,15 @@ def map_loss_in_batches(
     """
     inference_model = eqx.nn.inference_mode(model)
 
+    if reducers is None:
+        # use the default reducer for loss
+        reducers = [loss_reducer]
+        if "has_aux" in map_kwargs and map_kwargs["has_aux"]:
+            reducers.append(aux_data_reducer)
+
+        if "return_map" in map_kwargs and map_kwargs["return_map"]:
+            reducers.append(layer_reducer)
+
     if sharding is None:
         devices = jax.devices()
         num_devices = len(devices)
@@ -240,24 +531,27 @@ def map_loss_in_batches(
         sharding = jax.sharding.PositionalSharding(devices)
 
     replicated = sharding.replicate()
-    inference_model = eqx.filter_shard(inference_model, replicated)
+    inference_model, map_kwargs = eqx.filter_shard((inference_model, map_kwargs), replicated)
 
-    rand_key, subkey = random.split(rand_key)
-    X_batches, Y_batches = get_batch_layer((x, y), batch_size, subkey, sharding)
-    total_loss = None
+    X_batches, Y_batches = get_batch_layer((x, y), batch_size, rand_key, sharding)
+    results = [[] for _ in range(len(reducers))]
     for X_batch, Y_batch in zip(X_batches, Y_batches):
-        if has_aux:
-            one_loss, aux_data = map_and_loss(inference_model, X_batch, Y_batch, aux_data)
+        one_result = evaluate(inference_model, map_and_loss, X_batch, Y_batch, sharding, map_kwargs)
+
+        if len(reducers) == 1:
+            results[0].append(one_result)
         else:
-            one_loss = map_and_loss(inference_model, X_batch, Y_batch)
+            for val, result_ls in zip(one_result, results):
+                result_ls.append(val)
 
-        total_loss = (0 if total_loss is None else total_loss) + one_loss
-
-    return total_loss / len(X_batches)
+    if len(reducers) == 1:
+        return reducers[0](results[0])
+    else:
+        return tuple(reducer(result_ls) for reducer, result_ls in zip(reducers, results))
 
 
 @eqx.filter_jit(donate="all")
-def make_step(
+def train_step(
     map_and_loss: Union[
         Callable[[eqx.Module, geom.BatchLayer, geom.BatchLayer], jax.Array],
         Callable[
@@ -271,8 +565,7 @@ def make_step(
     x: geom.BatchLayer,
     y: geom.BatchLayer,
     sharding: jax.sharding.PositionalSharding,
-    has_aux: bool = False,
-    aux_data: Optional[Any] = None,
+    **map_kwargs: dict,
 ) -> tuple[eqx.Module, Any, Union[float, tuple[float, Any]]]:
     """
     Perform one step and gradient update of the model. If has_aux=True, then the return loss_value
@@ -290,22 +583,20 @@ def make_step(
         aux_data (Any): auxilliary data for stateful layers
     returns: model, opt_state, loss_value
     """
+    has_aux = ("has_aux" in map_kwargs) and map_kwargs["has_aux"]
     loss_grad = eqx.filter_value_and_grad(map_and_loss, has_aux=has_aux)
 
     # do sharding for multiple GPUs
     replicated = sharding.replicate()
-    model, opt_state = eqx.filter_shard((model, opt_state), replicated)
+    model, opt_state, map_kwargs = eqx.filter_shard((model, opt_state, map_kwargs), replicated)
     x, y = x.device_put(sharding), y.device_put(sharding)
 
-    args = (model, x, y, aux_data) if has_aux else (model, x, y)
-    loss_value, grads = loss_grad(*args)
-    if has_aux:
-        loss_value, aux_data = loss_value
+    model_out, grads = loss_grad(model, x, y, **map_kwargs)
 
     updates, opt_state = optim.update(grads, opt_state, model)
     model = eqx.apply_updates(model, updates)
-    model, opt_state = eqx.filter_shard((model, opt_state), replicated)
-    return model, opt_state, loss_value, aux_data
+    model, opt_state, model_out = eqx.filter_shard((model, opt_state, model_out), replicated)
+    return model, opt_state, model_out
 
 
 def train(
@@ -326,9 +617,8 @@ def train(
     validation_X: Optional[geom.BatchLayer] = None,
     validation_Y: Optional[geom.BatchLayer] = None,
     save_model: Optional[str] = None,
-    has_aux: bool = False,
-    aux_data: Optional[Any] = None,
     devices: Optional[list[jax.Device]] = None,
+    **map_kwargs: dict,
 ) -> Union[tuple[eqx.Module, Any, jax.Array, jax.Array], tuple[eqx.Module, jax.Array, jax.Array]]:
     """
     Method to train the model. It uses stochastic gradient descent (SGD) with the optimizer to learn the
@@ -366,9 +656,10 @@ def train(
     devices = mesh_utils.create_device_mesh((num_devices, 1))
     sharding = jax.sharding.PositionalSharding(devices)
     replicated = sharding.replicate()
-    model = eqx.filter_shard(model, replicated)
+    model, map_kwargs = eqx.filter_shard((model, map_kwargs), replicated)
+    has_aux = ("has_aux" in map_kwargs) and map_kwargs["has_aux"]
 
-    opt_state = optimizer.init(model)
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     epoch = 0
     epoch_val_loss = None
     epoch_loss = None
@@ -380,7 +671,7 @@ def train(
         epoch_loss = 0
         start_time = time.time()
         for X_batch, Y_batch in zip(X_batches, Y_batches):
-            model, opt_state, loss_value, aux_data = make_step(
+            model, opt_state, model_out = train_step(
                 map_and_loss,
                 model,
                 optimizer,
@@ -388,9 +679,13 @@ def train(
                 X_batch,
                 Y_batch,
                 sharding,
-                has_aux,
-                aux_data,
+                **map_kwargs,
             )
+            if has_aux:
+                map_kwargs["aux_data"], loss_value = model_out
+            else:
+                loss_value = model_out
+
             epoch_loss += jnp.mean(loss_value)
 
         epoch_loss = epoch_loss / len(X_batches)
@@ -405,9 +700,8 @@ def train(
                 validation_Y,
                 batch_size,
                 subkey,
-                sharding,
-                has_aux,
-                aux_data,
+                sharding=sharding,
+                **map_kwargs,
             )
             val_loss = epoch_val_loss
 
@@ -419,7 +713,7 @@ def train(
     if has_aux:
         return (
             stop_condition.best_params,
-            aux_data,
+            map_kwargs["aux_data"] if has_aux else None,
             epoch_loss,
             val_loss,
         )

@@ -3,6 +3,7 @@ import math
 import functools
 from typing import Any, Callable, Optional, Sequence, Union
 from typing_extensions import Self
+import scipy.special
 
 import jax
 import jax.numpy as jnp
@@ -85,14 +86,44 @@ class ConvContract(eqx.Module):
                 if filter_key not in self.invariant_filters:
                     continue  # relevant when there isn't an N=3, (0,1) filter
 
-                # unsure if it is this or spatial?
-                bound = 1 / jnp.sqrt(in_c * len(self.invariant_filters[filter_key]))
-                self.weights[(in_k, in_p)][(out_k, out_p)] = random.uniform(
-                    subkey1,
-                    shape=(out_c, in_c, len(self.invariant_filters[filter_key])),
-                    minval=-bound,
-                    maxval=bound,
-                )
+                num_filters = len(self.invariant_filters[filter_key])
+                if filter_key == (0, 0):
+                    weight_per_ff = []
+                    # TODO: jax.lax.scan here instead
+                    for conv_filter, tensor_mul in zip(
+                        self.invariant_filters[filter_key],
+                        [1, (1 + 8 / 9), (1 + 2 / 3)],
+                        # [1, 1, 1],
+                    ):
+                        key, subkey = random.split(key)
+
+                        # number of weights that will appear in a single component output.
+                        tensor_mul = scipy.special.comb(jnp.sum(conv_filter), 2, repetition=True)
+                        # tensor_mul = jnp.sum(conv_filter**2, axis=tuple(range(self.D))) * tensor_mul
+                        bound = jnp.sqrt(1 / (in_c * num_filters * tensor_mul))
+
+                        weight_per_ff.append(
+                            random.uniform(subkey, shape=(out_c, in_c), minval=-bound, maxval=bound)
+                        )
+                    self.weights[(in_k, in_p)][(out_k, out_p)] = jnp.stack(weight_per_ff, axis=-1)
+
+                    # # bound = jnp.sqrt(3 / (0.085 * in_c * num_filters)) # tanh multiplier
+                    # bound = jnp.sqrt(3 / (in_c * num_filters))
+                    # key, subkey = random.split(key)
+                    # rand_weights = random.uniform(
+                    #     subkey, shape=(out_c, in_c, num_filters), minval=-bound, maxval=bound
+                    # )
+                    # self.weights[(in_k, in_p)][(out_k, out_p)] = rand_weights
+
+                else:
+                    bound = jnp.sqrt(1 / in_c * num_filters)
+                    # bound = jnp.sqrt(3 / (0.085 * in_c * num_filters))
+                    self.weights[(in_k, in_p)][(out_k, out_p)] = random.uniform(
+                        subkey1,
+                        shape=(out_c, in_c, len(self.invariant_filters[filter_key])),
+                        minval=-bound,
+                        maxval=bound,
+                    )
 
                 if use_bias:
                     # this may get set multiple times, bound could be different but not a huge issue?

@@ -274,7 +274,13 @@ def map_and_loss(
     future_steps: int = 1,
     return_map: bool = False,
 ):
-    batch_model = jax.vmap(model)
+    # don't vmap the aux_data if has_aux=True
+    batch_model = jax.vmap(
+        model,
+        in_axes=(0, None) if has_aux else 0,
+        out_axes=(0, None) if has_aux else 0,
+        axis_name="batch",
+    )
     result = ml_eqx.autoregressive_map(
         batch_model,
         layer_x,
@@ -330,6 +336,7 @@ def train_and_eval(
         test_rollout_X,
         test_rollout_Y,
     ) = data
+    batch_stats = eqx.nn.State(model) if has_aux else None
 
     print(f"Model params: {models.count_params(model):,}")
 
@@ -353,6 +360,7 @@ def train_and_eval(
             validation_X=val_X,
             validation_Y=val_Y,
             has_aux=has_aux,
+            aux_data=batch_stats,
         )
 
         if has_aux:
@@ -552,7 +560,7 @@ train_and_eval = partial(
     plot_component=args.plot_component,
 )
 
-key, subkey1, subkey2 = random.split(key, num=3)
+key, subkey1, subkey2, subkey3, subkey4 = random.split(key, num=5)
 model_list = [
     (
         "unetBase",
@@ -582,12 +590,48 @@ model_list = [
                 input_keys,
                 output_keys,
                 depth=48,
-                activation_f=jax.nn.relu,
+                activation_f=jax.nn.gelu,
                 conv_filters=conv_filters,
                 upsample_filters=upsample_filters,
                 key=subkey2,
             ),
             lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+        ),
+    ),
+    (
+        "unet2015",
+        partial(
+            train_and_eval,
+            model=models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=64,
+                use_bias=False,
+                equivariant=False,
+                kernel_size=3,
+                use_batch_norm=True,
+                key=subkey3,
+            ),
+            lr=8e-4,
+            has_aux=True,
+        ),
+    ),
+    (
+        "unet2015_equiv48",
+        partial(
+            train_and_eval,
+            model=models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=48,
+                use_bias=False,
+                conv_filters=conv_filters,
+                upsample_filters=upsample_filters,
+                key=subkey4,
+            ),
+            lr=3e-4,
         ),
     ),
 ]
@@ -599,8 +643,8 @@ key, subkey = random.split(key)
 #     lambda _: data,
 #     model_list,
 #     subkey,
-#     'lr',
-#     [2e-4, 3e-4, 4e-4],
+#     "lr",
+#     [2e-4, 4e-4, 6e-4],
 #     benchmark_type=ml.BENCHMARK_MODEL,
 #     num_trials=args.n_trials,
 #     num_results=3 + args.rollout_steps,

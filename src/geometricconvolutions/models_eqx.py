@@ -121,7 +121,7 @@ def count_params(model: eqx.Module) -> int:
     )
 
 
-class UNetConv(eqx.Module):
+class ConvBlock(eqx.Module):
     conv: Union[ml_eqx.ConvContract, ml_eqx.LayerWrapper]
     norm: Optional[Union[ml_eqx.GroupNorm, eqx.nn.BatchNorm]]
     nonlinearity: Union[eqx.Module, Callable]
@@ -237,7 +237,7 @@ class UNet(eqx.Module):
             in_keys = input_keys if conv_idx == 0 else mid_keys
             key, subkey = random.split(key)
             self.embedding.append(
-                UNetConv(
+                ConvBlock(
                     self.D,
                     in_keys,
                     mid_keys,
@@ -265,7 +265,7 @@ class UNet(eqx.Module):
 
                 key, subkey = random.split(key)
                 down_layers.append(
-                    UNetConv(
+                    ConvBlock(
                         self.D,
                         in_keys,
                         out_keys,
@@ -325,7 +325,7 @@ class UNet(eqx.Module):
 
                 key, subkey = random.split(key)
                 up_layers.append(
-                    UNetConv(
+                    ConvBlock(
                         self.D,
                         in_keys,
                         out_keys,

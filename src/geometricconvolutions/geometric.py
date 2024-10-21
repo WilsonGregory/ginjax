@@ -352,11 +352,6 @@ def get_unique_invariant_filters(
     # now do k-dependent rectification:
     filters = [ff.rectify() for ff in filters]
 
-    # filters = [
-    #     GeometricFilter(ff.data / jnp.linalg.norm(ff.data.reshape(-1)), ff.parity, ff.D, ff.is_torus)
-    #     for ff in filters
-    # ]
-
     return filters
 
 

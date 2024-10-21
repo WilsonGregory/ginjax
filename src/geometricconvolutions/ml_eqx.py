@@ -87,7 +87,8 @@ class ConvContract(eqx.Module):
                     continue  # relevant when there isn't an N=3, (0,1) filter
 
                 num_filters = len(self.invariant_filters[filter_key])
-                if filter_key == (0, 0):
+                if False and filter_key == (0, 0):
+                    # TODO: Currently unused, a work in progress
                     weight_per_ff = []
                     # TODO: jax.lax.scan here instead
                     for conv_filter, tensor_mul in zip(
@@ -116,8 +117,11 @@ class ConvContract(eqx.Module):
                     # self.weights[(in_k, in_p)][(out_k, out_p)] = rand_weights
 
                 else:
-                    bound = jnp.sqrt(1 / in_c * num_filters)
-                    # bound = jnp.sqrt(3 / (0.085 * in_c * num_filters))
+                    # Works really well, not sure why?
+                    bound_shape = (in_c,) + self.invariant_filters[filter_key].shape[
+                        1 : 1 + self.D + in_k
+                    ]
+                    bound = 1 / jnp.sqrt(math.prod(bound_shape))
                     self.weights[(in_k, in_p)][(out_k, out_p)] = random.uniform(
                         subkey1,
                         shape=(out_c, in_c, len(self.invariant_filters[filter_key])),
@@ -374,6 +378,34 @@ class LayerWrapper(eqx.Module):
         return out_layer
 
 
+class LayerWrapperAux(eqx.Module):
+    modules: dict[ml.LayerKey, Union[eqx.Module, Callable]]
+
+    def __init__(
+        self: Self,
+        module: Union[eqx.Module, Callable],
+        input_keys: tuple[tuple[ml.LayerKey, int]],
+    ):
+        """
+        Perform the module or callable (e.g., activation) on each layer of the input layer. Since
+        we only take input_keys, module should preserve the shape/tensor order and parity.
+        """
+        self.modules = {}
+        for (k, p), _ in input_keys:
+            # I believe this *should* duplicate so they are independent, per the description in
+            # https://docs.kidger.site/equinox/api/nn/shared/. However, it may not. In the scalar
+            # case this should be perfectly fine though.
+            self.modules[(k, p)] = module
+
+    def __call__(self: Self, x: geom.Layer, aux_data: Optional[eqx.nn.State]):
+        out_layer = x.__class__({}, x.D, x.is_torus)
+        for (k, p), image in x.items():
+            out, aux_data = self.modules[(k, p)](image, aux_data)
+            out_layer.append(k, p, out)
+
+        return out_layer, aux_data
+
+
 def save(filename, model):
     # TODO: save batch stats
     with open(filename, "wb") as f:
@@ -485,7 +517,16 @@ def evaluate(
     replicated = sharding.replicate()
     inference_model, map_kwargs = eqx.filter_shard((inference_model, map_kwargs), replicated)
     x, y = x.device_put(sharding), y.device_put(sharding)
-    return map_and_loss(inference_model, x, y, **map_kwargs)
+
+    result = map_and_loss(inference_model, x, y, **map_kwargs)
+    # We don't want to return the batch_stats, just the vals and possibly the map
+    if "has_aux" in map_kwargs and map_kwargs["has_aux"]:
+        if len(result) == 2:
+            return result[0]
+        else:
+            return (result[0],) + result[2:]
+    else:
+        return result
 
 
 def loss_reducer(ls):
@@ -544,14 +585,9 @@ def map_loss_in_batches(
         aux_data (any): auxilliary data, such as batch stats. Passed to the function is has_aux is True.
     returns: average loss over the entire layer
     """
-    inference_model = eqx.nn.inference_mode(model)
-
     if reducers is None:
         # use the default reducer for loss
         reducers = [loss_reducer]
-        if "has_aux" in map_kwargs and map_kwargs["has_aux"]:
-            reducers.append(aux_data_reducer)
-
         if "return_map" in map_kwargs and map_kwargs["return_map"]:
             reducers.append(layer_reducer)
 
@@ -562,12 +598,12 @@ def map_loss_in_batches(
         sharding = jax.sharding.PositionalSharding(devices)
 
     replicated = sharding.replicate()
-    inference_model, map_kwargs = eqx.filter_shard((inference_model, map_kwargs), replicated)
+    model, map_kwargs = eqx.filter_shard((model, map_kwargs), replicated)
 
     X_batches, Y_batches = get_batch_layer((x, y), batch_size, rand_key, sharding)
     results = [[] for _ in range(len(reducers))]
     for X_batch, Y_batch in zip(X_batches, Y_batches):
-        one_result = evaluate(inference_model, map_and_loss, X_batch, Y_batch, sharding, map_kwargs)
+        one_result = evaluate(model, map_and_loss, X_batch, Y_batch, sharding, map_kwargs)
 
         if len(reducers) == 1:
             results[0].append(one_result)
@@ -713,7 +749,7 @@ def train(
                 **map_kwargs,
             )
             if has_aux:
-                map_kwargs["aux_data"], loss_value = model_out
+                loss_value, map_kwargs["aux_data"] = model_out
             else:
                 loss_value = model_out
 

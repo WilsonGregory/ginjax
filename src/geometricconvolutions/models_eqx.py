@@ -121,6 +121,70 @@ def count_params(model: eqx.Module) -> int:
     )
 
 
+class UNetConv(eqx.Module):
+    conv: Union[ml_eqx.ConvContract, ml_eqx.LayerWrapper]
+    norm: Optional[Union[ml_eqx.GroupNorm, eqx.nn.BatchNorm]]
+    nonlinearity: Union[eqx.Module, Callable]
+
+    D: int = eqx.field(static=True)
+    equivariant: bool = eqx.field(static=True)
+    use_batch_norm: bool = eqx.field(static=True)
+    use_group_norm: bool = eqx.field(static=True)
+
+    def __init__(
+        self: Self,
+        D,
+        input_keys: tuple[tuple[ml.LayerKey, int]],
+        output_keys: tuple[tuple[ml.LayerKey, int]],
+        use_bias: Union[bool, str] = "auto",
+        activation_f: Union[Callable, str] = jax.nn.gelu,
+        equivariant: bool = True,
+        conv_filters: geom.Layer = None,
+        kernel_size: Optional[Union[int, Sequence[int]]] = None,
+        use_group_norm: bool = False,
+        use_batch_norm: bool = False,
+        key: ArrayLike = None,
+    ):
+        self.D = D
+        self.equivariant = equivariant
+        self.use_group_norm = use_group_norm
+        self.use_batch_norm = use_batch_norm
+
+        subkey1, subkey2 = random.split(key)
+        self.conv = make_conv(
+            self.D,
+            input_keys,
+            output_keys,
+            use_bias,
+            equivariant,
+            conv_filters,
+            kernel_size,
+            key=subkey1,
+        )
+
+        if use_group_norm:
+            self.norm = ml_eqx.LayerNorm(output_keys, self.D)
+        elif use_batch_norm:
+            self.norm = ml_eqx.LayerWrapperAux(
+                eqx.nn.BatchNorm(output_keys[0][1], axis_name="batch"), output_keys
+            )
+        else:
+            self.norm = None
+
+        self.nonlinearity = handle_activation(
+            activation_f, self.equivariant, output_keys, self.D, subkey2
+        )
+
+    def __call__(self: Self, x: geom.Layer, batch_stats: Optional[eqx.nn.State] = None):
+        x = self.conv(x)
+        if self.use_group_norm:
+            x = self.norm(x)
+        elif self.use_batch_norm:
+            x, batch_stats = self.norm(x, batch_stats)
+
+        return self.nonlinearity(x), batch_stats
+
+
 class UNet(eqx.Module):
     embedding: list[eqx.Module]
     downsample_blocks: list[list[eqx.Module]]
@@ -129,6 +193,7 @@ class UNet(eqx.Module):
 
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
+    use_batch_norm: bool = eqx.field(static=True)
     output_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
 
     def __init__(
@@ -146,6 +211,7 @@ class UNet(eqx.Module):
         upsample_filters: geom.Layer = None,
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = False,
+        use_batch_norm: bool = False,
         key: ArrayLike = None,
     ):
         assert num_conv > 0
@@ -154,6 +220,7 @@ class UNet(eqx.Module):
         if equivariant:
             key_union = {k_p for k_p, _ in input_keys}.union({k_p for k_p, _ in output_keys})
             mid_keys = tuple((k_p, depth) for k_p in key_union)
+            assert not use_batch_norm, "UNet::init Batch Norm cannot be used with equivariant model"
         else:
             mid_keys = (((0, 0), depth),)
             # use these keys along the way, then for the final output use self.output_keys
@@ -162,30 +229,27 @@ class UNet(eqx.Module):
 
         self.D = D
         self.equivariant = equivariant
+        self.use_batch_norm = use_batch_norm
 
         # embedding layers
         self.embedding = []
         for conv_idx in range(num_conv):
             in_keys = input_keys if conv_idx == 0 else mid_keys
-            key, subkey1, subkey2 = random.split(key, num=3)
+            key, subkey = random.split(key)
             self.embedding.append(
-                make_conv(
+                UNetConv(
                     self.D,
                     in_keys,
                     mid_keys,
                     use_bias,
+                    activation_f,
                     equivariant,
                     conv_filters,
                     kernel_size,
-                    key=subkey1,
+                    use_group_norm,
+                    use_batch_norm,
+                    key=subkey,
                 )
-            )
-
-            if use_group_norm:
-                self.embedding.append(ml_eqx.LayerNorm(mid_keys, self.D))
-
-            self.embedding.append(
-                handle_activation(activation_f, self.equivariant, mid_keys, self.D, subkey2)
             )
 
         self.downsample_blocks = []
@@ -199,24 +263,21 @@ class UNet(eqx.Module):
                 else:
                     in_keys = out_keys
 
-                key, subkey1, subkey2 = random.split(key, num=3)
+                key, subkey = random.split(key)
                 down_layers.append(
-                    make_conv(
+                    UNetConv(
                         self.D,
                         in_keys,
                         out_keys,
                         use_bias,
+                        activation_f,
                         equivariant,
                         conv_filters,
                         kernel_size,
-                        key=subkey1,
+                        use_group_norm,
+                        use_batch_norm,
+                        key=subkey,
                     )
-                )
-                if use_group_norm:
-                    down_layers.append(ml_eqx.LayerNorm(out_keys, self.D))
-
-                down_layers.append(
-                    handle_activation(activation_f, self.equivariant, out_keys, self.D, subkey2)
                 )
 
             self.downsample_blocks.append(down_layers)
@@ -262,24 +323,21 @@ class UNet(eqx.Module):
                 else:
                     in_keys = out_keys
 
-                key, subkey1, subkey2 = random.split(key, num=3)
+                key, subkey = random.split(key)
                 up_layers.append(
-                    make_conv(
+                    UNetConv(
                         self.D,
                         in_keys,
                         out_keys,
                         use_bias,
+                        activation_f,
                         equivariant,
                         conv_filters,
                         kernel_size,
-                        key=subkey1,
+                        use_group_norm,
+                        use_batch_norm,
+                        key=subkey,
                     )
-                )
-                if use_group_norm:
-                    up_layers.append(ml_eqx.LayerNorm(out_keys, self.D))
-
-                up_layers.append(
-                    handle_activation(activation_f, self.equivariant, out_keys, self.D, subkey2)
                 )
 
             self.upsample_blocks.append(up_layers)
@@ -297,7 +355,7 @@ class UNet(eqx.Module):
             key=subkey,
         )
 
-    def __call__(self: Self, x: geom.Layer):
+    def __call__(self: Self, x: geom.Layer, batch_stats: Optional[eqx.nn.State] = None):
         if not self.equivariant:
             in_layer = x
             # to_scalar_layer is not working well, so do this
@@ -313,25 +371,31 @@ class UNet(eqx.Module):
             x = geom.BatchLayer({(0, 0): data_arr}, in_layer.D, in_layer.is_torus)
 
         for layer in self.embedding:
-            x = layer(x)
+            x, batch_stats = layer(x, batch_stats)
 
         residual_layers = []
         for block in self.downsample_blocks:
             residual_layers.append(x)
-            for layer in block:
-                x = layer(x)
+            x = block[0](x)  # first one is maxpool
+            for layer in block[1:]:
+                x, batch_stats = layer(x, batch_stats)
 
         for block, residual_idx in zip(self.upsample_blocks, reversed(range(len(residual_layers)))):
             upsample_x = block[0](x)  # first layer in block is the upsample
             x = upsample_x.concat(residual_layers[residual_idx])
             for layer in block[1:]:
-                x = layer(x)
+                x, batch_stats = layer(x, batch_stats)
 
         x = self.decode(x)
         if self.equivariant:
-            return x
+            out_layer = x
         else:
             output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
             out_layer = geom.Layer.from_scalar_layer(x, output_keys)
             # convert back to a vmapped batch layer
-            return geom.BatchLayer(out_layer.data, out_layer.D, out_layer.is_torus)
+            out_layer = geom.BatchLayer(out_layer.data, out_layer.D, out_layer.is_torus)
+
+        if self.use_batch_norm:
+            return out_layer, batch_stats
+        else:
+            return out_layer

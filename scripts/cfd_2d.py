@@ -72,13 +72,14 @@ def get_data(
             velocity[: (n_train + n_val)]
         )  # this one I am not so sure about
 
+    is_torus = True
     start = 0
     stop = n_train
     train_X, train_Y = gc_data.times_series_to_layers(
         D,
         {(0, 0): density[start:stop], (1, 0): velocity[start:stop]},
         {},
-        True,
+        is_torus,
         past_steps,
         1,
     )
@@ -86,7 +87,7 @@ def get_data(
         D,
         {(0, 0): pressure[start:stop]},
         {},
-        True,
+        is_torus,
         past_steps,
         1,
     )
@@ -99,7 +100,7 @@ def get_data(
         D,
         {(0, 0): density[start:stop], (1, 0): velocity[start:stop]},
         {},
-        True,
+        is_torus,
         past_steps,
         1,
     )
@@ -107,7 +108,7 @@ def get_data(
         D,
         {(0, 0): pressure[start:stop]},
         {},
-        True,
+        is_torus,
         past_steps,
         1,
     )
@@ -120,7 +121,7 @@ def get_data(
         D,
         {(0, 0): density[start:stop], (1, 0): velocity[start:stop]},
         {},
-        True,
+        is_torus,
         past_steps,
         1,
     )
@@ -128,7 +129,7 @@ def get_data(
         D,
         {(0, 0): pressure[start:stop]},
         {},
-        True,
+        is_torus,
         past_steps,
         1,
     )
@@ -139,7 +140,7 @@ def get_data(
         D,
         {(0, 0): density[start:stop], (1, 0): velocity[start:stop]},
         {},
-        True,
+        is_torus,
         past_steps,
         rollout_steps,
     )
@@ -147,7 +148,7 @@ def get_data(
         D,
         {(0, 0): pressure[start:stop]},
         {},
-        True,
+        is_torus,
         past_steps,
         rollout_steps,
     )

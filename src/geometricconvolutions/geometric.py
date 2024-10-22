@@ -31,6 +31,7 @@ import jax.nn
 import jax
 from jax import jit, vmap
 from jax.tree_util import register_pytree_node_class
+import equinox as eqx
 
 import geometricconvolutions.utils as utils
 
@@ -632,7 +633,7 @@ def mul(
     return image_a_data * image_b_data  # now that shapes match, do elementwise multiplication
 
 
-@partial(jit, static_argnums=[0, 3, 4, 5, 6, 7, 8])
+@eqx.filter_jit
 def convolve(
     D: int,
     image: jnp.ndarray,
@@ -686,9 +687,7 @@ def convolve(
         is_torus = (is_torus,) * D
 
     filter_spatial_dims, _ = parse_shape(filter_image.shape[2:], D)
-    out_c, in_c = filter_image.shape[
-        :2
-    ]  # in_c and out_c are in_channels and out_channels respectively
+    out_c, in_c = filter_image.shape[:2]
     batch = len(image)
 
     assert not (
@@ -737,26 +736,25 @@ def convolve(
         img_expanded, filter_expanded = image, filter_image
 
     _, output_k = parse_shape(filter_expanded.shape[2:], D)
-    channel_length = D**output_k
-    image_spatial_dims, _ = parse_shape(img_expanded.shape[2:], D)
+    image_spatial_dims, input_k = parse_shape(img_expanded.shape[2:], D)
+    channel_length = D**input_k
 
     # convert the image to NHWC (or NHWDC), treating all the pixel values as channels
-    # (batch,in_c,spatial,tensor) -> (batch,spatial,tensor,in_c)
+    # (batch,in_c,spatial,in_tensor) -> (batch,spatial,in_tensor,in_c)
     img_formatted = jnp.moveaxis(img_expanded, 1, -1)
-    # (batch,spatial,tensor,in_c) -> (batch,spatial,tensor*in_c)
+    # (batch,spatial,in_tensor,in_c) -> (batch,spatial,in_tensor*in_c)
     img_formatted = img_formatted.reshape((batch,) + image_spatial_dims + (channel_length * in_c,))
 
     # convert filter to HWIO (or HWDIO)
-    # (out_c,in_c,spatial,tensor) -> (spatial,in_c,tensor,out_c)
+    # (out_c,in_c,spatial,out_tensor) -> (spatial,in_c,out_tensor,out_c)
     transpose_idxs = (
         tuple(range(2, 2 + D)) + (1,) + tuple(range(2 + D, filter_expanded.ndim)) + (0,)
     )
     filter_formatted = filter_expanded.transpose(transpose_idxs)
-    # (spatial,in_c,out_c,tensor) -> (spatial,in_c,tensor*out_c)
-    filter_formatted = filter_formatted.reshape(
-        filter_spatial_dims + (in_c, out_c * channel_length)
-    )
+    # (spatial,in_c,out_tensor,out_c) -> (spatial,in_c,out_tensor*out_c)
+    filter_formatted = filter_formatted.reshape(filter_spatial_dims + (in_c, D**output_k * out_c))
 
+    # (batch,spatial,out_tensor*out_c)
     convolved_array = jax.lax.conv_general_dilated(
         img_formatted,  # lhs
         filter_formatted,  # rhs
@@ -771,7 +769,7 @@ def convolve(
     return jnp.moveaxis(convolved_array.reshape(out_shape), -1, 1)  # move out_c to 2nd axis
 
 
-@partial(jit, static_argnums=[0, 3, 4, 5, 6, 7])
+@eqx.filter_jit
 def convolve_contract(
     D: int,
     image: jnp.ndarray,
@@ -792,13 +790,10 @@ def convolve_contract(
         filter_image (jnp.array): filter data, shape (out_c,in_c,spatial,tensor)
     returns: (jnp.array) output of shape (batch,out_c,spatial,tensor)
     """
-    dtype = "float32"
     _, img_k = parse_shape(image.shape[2:], D)
-    _, filter_k = parse_shape(filter_image.shape[2:], D)
-    img_expanded = conv_contract_image_expand(D, image, filter_k).astype(dtype)
     convolved_img = convolve(
         D,
-        img_expanded,
+        image,
         filter_image,
         is_torus,
         stride,

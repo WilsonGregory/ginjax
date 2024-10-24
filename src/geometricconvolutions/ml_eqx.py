@@ -31,6 +31,7 @@ class ConvContract(eqx.Module):
     lhs_dilation: Optional[tuple[int]] = eqx.field(static=True)
     rhs_dilation: Optional[tuple[int]] = eqx.field(static=True)
     D: int = eqx.field(static=True)
+    fast_mode: bool = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -77,6 +78,7 @@ class ConvContract(eqx.Module):
 
         self.weights = {}  # presumably some way to jax.lax.scan this?
         self.bias = {}
+        all_filter_spatial_dims = []
         for (in_k, in_p), in_c in self.input_keys:
             self.weights[(in_k, in_p)] = {}
             for (out_k, out_p), out_c in self.target_keys:
@@ -118,9 +120,10 @@ class ConvContract(eqx.Module):
 
                 else:
                     # Works really well, not sure why?
-                    bound_shape = (in_c,) + self.invariant_filters[filter_key].shape[
-                        1 : 1 + self.D + in_k
-                    ]
+                    filter_spatial_dims, _ = geom.parse_shape(
+                        self.invariant_filters[filter_key].shape[1:], self.D
+                    )
+                    bound_shape = (in_c,) + filter_spatial_dims + (self.D,) * in_k
                     bound = 1 / jnp.sqrt(math.prod(bound_shape))
                     self.weights[(in_k, in_p)][(out_k, out_p)] = random.uniform(
                         subkey1,
@@ -128,6 +131,7 @@ class ConvContract(eqx.Module):
                         minval=-bound,
                         maxval=bound,
                     )
+                    all_filter_spatial_dims.append(filter_spatial_dims)
 
                 if use_bias:
                     # this may get set multiple times, bound could be different but not a huge issue?
@@ -138,10 +142,126 @@ class ConvContract(eqx.Module):
                         maxval=bound,
                     )
 
-    def __call__(self: Self, input_layer: geom.Layer):
+        # If all the in_c match, all out_c match, and all the filter dims match, can use fast_mode
+        self.fast_mode = (
+            (len(set([in_c for _, in_c in input_keys])) == 1)
+            and (len(set([out_c for _, out_c in target_keys])) == 1)
+            and (len(set(all_filter_spatial_dims)) == 1)
+        )
+
+    def fast_convolve(
+        self: Self,
+        input_layer: geom.Layer,
+        weights: dict[ml.LayerKey, dict[ml.LayerKey, jax.Array]],
+    ):
+        """
+        Convolve when all filter_spatial_dims, in_c, and out_c match, can do a single convolve
+        instead of multiple between each type. Sadly, only ~20% speedup.
+        """
+        # These must all be equal to call fast_convolve
+        in_c = self.input_keys[0][1]
+        out_c = self.target_keys[0][1]
+
+        one_img = next(iter(input_layer.values()))
+        spatial_dims, _ = geom.parse_shape(one_img.shape[1:], self.D)
+        one_filter = next(iter(self.invariant_filters.values()))
+        filter_spatial_dims, _ = geom.parse_shape(one_filter.shape[1:], self.D)
+
+        image_ravel = jnp.zeros(spatial_dims + (0, in_c))
+        filter_ravel = jnp.zeros((in_c,) + filter_spatial_dims + (0, out_c))
+        for (in_k, in_p), image_block in input_layer.items():
+            # (in_c,spatial,tensor) -> (spatial,-1,in_c)
+            img = jnp.moveaxis(image_block.reshape((in_c,) + spatial_dims + (-1,)), 0, -1)
+            image_ravel = jnp.concatenate([image_ravel, img], axis=-2)
+
+            filter_ravel_in = jnp.zeros(
+                (in_c,) + filter_spatial_dims + (self.D,) * in_k + (0, out_c)
+            )
+            for (out_k, out_p), weight_block in weights[(in_k, in_p)].items():
+                filter_key = (in_k + out_k, (in_p + out_p) % 2)
+
+                # (out_c,in_c,num_filters),(num, spatial, tensor) -> (out_c,in_c,spatial,tensor)
+                filter_block = jnp.einsum(
+                    "ijk,k...->ij...", weight_block, self.invariant_filters[filter_key]
+                )
+                # (out_c,in_c,spatial,tensor) -> (in_c,spatial,in_tensor,-1,out_c)
+                ff = jnp.moveaxis(
+                    filter_block.reshape(
+                        (out_c, in_c) + filter_spatial_dims + (self.D,) * in_k + (-1,)
+                    ),
+                    0,
+                    -1,
+                )
+                filter_ravel_in = jnp.concatenate([filter_ravel_in, ff], axis=-2)
+
+            filter_ravel_in = filter_ravel_in.reshape(
+                (in_c,) + filter_spatial_dims + (-1,) + (out_c,)
+            )
+            filter_ravel = jnp.concatenate([filter_ravel, filter_ravel_in], axis=-2)
+
+        image_ravel = image_ravel.reshape(spatial_dims + (-1,))
+        filter_ravel = jnp.moveaxis(filter_ravel, 0, self.D).reshape(
+            filter_spatial_dims + (in_c, -1)
+        )
+
+        out = geom.convolve_ravel(
+            self.D,
+            image_ravel[None],
+            filter_ravel,
+            input_layer.is_torus,
+            self.stride,
+            self.padding,
+            self.lhs_dilation,
+            self.rhs_dilation,
+        )[0]
+        new_spatial_dims = out.shape[: self.D]
+        # (spatial,tensor_sum*out_c) -> (out_c,spatial,tensor_sum)
+        out = jnp.moveaxis(out.reshape(new_spatial_dims + (-1, out_c)), -1, 0)
+
+        out_k_sum = sum([self.D**out_k for (out_k, _), _ in self.target_keys])
+        idx = 0
+        layer = input_layer.empty()
+        for in_k, in_p in input_layer.keys():
+            length = (self.D**in_k) * out_k_sum
+            # break off all the channels related to this particular in_k
+            out_per_in = out[..., idx : idx + length].reshape(
+                (out_c,) + new_spatial_dims + (self.D,) * in_k + (-1,)
+            )
+
+            out_idx = 0
+            for (out_k, out_p), _ in self.target_keys:
+                out_length = self.D**out_k
+                # separate the different out_k parts for particular in_k
+                img_block = out_per_in[..., out_idx : out_idx + out_length]
+                img_block = img_block.reshape(
+                    (out_c,) + new_spatial_dims + (self.D,) * (in_k + out_k)
+                )
+                contracted_img = jnp.sum(img_block, axis=range(1 + self.D, 1 + self.D + in_k))
+
+                if (out_k, out_p) in layer:  # it already has that key
+                    layer[(out_k, out_p)] = contracted_img + layer[(out_k, out_p)]
+                else:
+                    layer.append(out_k, out_p, contracted_img)
+
+                out_idx += out_length
+
+            idx += length
+
+        return layer
+
+    def individual_convolve(
+        self: Self,
+        input_layer: geom.Layer,
+        weights: dict[ml.LayerKey, dict[ml.LayerKey, jax.Array]],
+    ):
+        """
+        Function to perform convolve_contract on an entire layer by doing the pairwise convolutions
+        individually. This is necessary when filters have unequal sizes, or the in_c or out_c are
+        not all equal. Weights is passed as an argument to make it easier to test this function.
+        """
         layer = input_layer.empty()
         for (in_k, in_p), images_block in input_layer.items():
-            for (out_k, out_p), weight_block in self.weights[(in_k, in_p)].items():
+            for (out_k, out_p), weight_block in weights[(in_k, in_p)].items():
                 filter_key = (in_k + out_k, (in_p + out_p) % 2)
 
                 # (out_c,in_c,num_inv_filters) (num, spatial, tensor) -> (out_c,in_c,spatial,tensor)
@@ -166,6 +286,14 @@ class ConvContract(eqx.Module):
                     layer[(out_k, out_p)] = convolve_contracted_imgs + layer[(out_k, out_p)]
                 else:
                     layer.append(out_k, out_p, convolve_contracted_imgs)
+
+        return layer
+
+    def __call__(self: Self, input_layer: geom.Layer):
+        if self.fast_mode:
+            layer = self.fast_convolve(input_layer, self.weights)
+        else:  # slow mode
+            layer = self.individual_convolve(input_layer, self.weights)
 
         if self.use_bias:
             biased_layer = layer.empty()

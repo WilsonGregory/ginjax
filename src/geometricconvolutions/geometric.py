@@ -509,8 +509,6 @@ def get_torus_expanded(
     torus_padding = tuple(padding_f(M, dilation, torus) for M, dilation, torus in zipped_dims)
 
     # calculate indices for torus padding, then use hash to select the appropriate pixels
-    # print(image.shape)
-    # print(((0, 0),) + torus_padding + ((0, 0),))
     expanded_image = jnp.pad(image, ((0, 0),) + torus_padding + ((0, 0),), mode="wrap")
 
     # zero_pad where we don't torus pad
@@ -730,19 +728,8 @@ def convolve_ravel(
     rhs_dilation: Optional[tuple[int]] = None,
 ) -> jnp.ndarray:
     """
-    Here is how this function works:
-    1. Expand the geom_image to its torus shape, i.e. add filter.m cells all around the perimeter of the image
-    2. Do the tensor product (with 1s) to each image.k, filter.k so that they are both image.k + filter.k tensors.
-    That is if image.k=2, filter.k=1, do (D,D) => (D,D) x (D,) and (D,) => (D,D) x (D,) with tensors of 1s
-    3. Now we shape the inputs to work with jax.lax.conv_general_dilated
-    4. Put image in NHWC (batch, height, width, channel). Thus we vectorize the tensor
-    5. Put filter in HWIO (height, width, input, output). Input is 1, output is the vectorized tensor
-    6. Plug all that stuff in to conv_general_dilated, and feature_group_count is the length of the vectorized
-    tensor, and it is basically saying that each part of the vectorized tensor is treated separately in the filter.
-    It must be the case that channel = input * feature_group_count
-    See: https://jax.readthedocs.io/en/latest/notebooks/convolutions.html#id1 and
-    https://www.tensorflow.org/xla/operation_semantics#conv_convolution
-
+    Raveled verson of convolution. Assumes the channels are all lined up correctly for the tensor
+    convolution. This assumes that the feature_group_count is image in_c // filter in_c.
     args:
         D (int): dimension of the images
         image (jnp.array): image data, shape (batch,spatial,tensor*in_c)
@@ -753,8 +740,6 @@ def convolve_ravel(
             defaults to 'TORUS' if image.is_torus, else 'SAME'
         lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
         rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
-        tensor_expand (bool): expand the tensor of image and filter to do tensor convolution, defaults to True.
-            If there is something more complicated going on (e.g. conv_contract), you can skip this step.
     returns: (jnp.array) convolved_image, shape (batch,out_c,spatial,tensor)
     """
     assert (D == 2) or (D == 3)
@@ -838,10 +823,10 @@ def convolve_contract(
     """
     _, img_k = parse_shape(image.shape[2:], D)
     _, filter_k = parse_shape(filter_image.shape[2:], D)
-    image = conv_contract_image_expand(D, image, filter_k)
+    img_expanded = conv_contract_image_expand(D, image, filter_k).astype("float32")
     convolved_img = convolve(
         D,
-        image,
+        img_expanded,
         filter_image,
         is_torus,
         stride,

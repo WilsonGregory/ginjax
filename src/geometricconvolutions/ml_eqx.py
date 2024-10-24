@@ -32,6 +32,7 @@ class ConvContract(eqx.Module):
     rhs_dilation: Optional[tuple[int]] = eqx.field(static=True)
     D: int = eqx.field(static=True)
     fast_mode: bool = eqx.field(static=True)
+    missing_filter: bool = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -66,6 +67,9 @@ class ConvContract(eqx.Module):
         self.rhs_dilation = rhs_dilation
 
         self.D = invariant_filters.D
+        # if a particular desired convolution for input_keys -> target_keys is missing the needed
+        # filter (possibly because an equivariant one doesn't exist), this is set to true
+        self.missing_filter = False
 
         if isinstance(use_bias, bool):
             use_bias = "auto" if use_bias else use_bias
@@ -86,6 +90,7 @@ class ConvContract(eqx.Module):
 
                 filter_key = (in_k + out_k, (in_p + out_p) % 2)
                 if filter_key not in self.invariant_filters:
+                    self.missing_filter = True
                     continue  # relevant when there isn't an N=3, (0,1) filter
 
                 num_filters = len(self.invariant_filters[filter_key])
@@ -144,7 +149,8 @@ class ConvContract(eqx.Module):
 
         # If all the in_c match, all out_c match, and all the filter dims match, can use fast_mode
         self.fast_mode = (
-            (len(set([in_c for _, in_c in input_keys])) == 1)
+            (not self.missing_filter)
+            and (len(set([in_c for _, in_c in input_keys])) == 1)
             and (len(set([out_c for _, out_c in target_keys])) == 1)
             and (len(set(all_filter_spatial_dims)) == 1)
         )

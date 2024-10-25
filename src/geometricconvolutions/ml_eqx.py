@@ -380,8 +380,8 @@ class GroupNorm(eqx.Module):
                 assert mean_vec.shape == (len(image_block),) + (1,) * self.D + (self.D,) * k
                 whitened_data = ml._group_norm_K1(
                     self.D, image_block[None], self.groups, eps=self.eps
-                )
-                whitened_data = whitened_data * self.scale[(k, p)] + self.bias * mean_vec
+                )[0]
+                whitened_data = whitened_data * self.scale[(k, p)] + self.bias[(k, p)] * mean_vec
             elif k > 1:
                 raise NotImplementedError(
                     f"ml::group_norm: Equivariant group_norm not implemented for k>1, but k={k}",

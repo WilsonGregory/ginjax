@@ -130,6 +130,7 @@ class ConvBlock(eqx.Module):
     equivariant: bool = eqx.field(static=True)
     use_batch_norm: bool = eqx.field(static=True)
     use_group_norm: bool = eqx.field(static=True)
+    preactivation_order: bool = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -143,12 +144,15 @@ class ConvBlock(eqx.Module):
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = False,
         use_batch_norm: bool = False,
+        preactivation_order: bool = False,
         key: ArrayLike = None,
+        **conv_kwargs,
     ):
         self.D = D
         self.equivariant = equivariant
         self.use_group_norm = use_group_norm
         self.use_batch_norm = use_batch_norm
+        self.preactivation_order = preactivation_order
 
         subkey1, subkey2 = random.split(key)
         self.conv = make_conv(
@@ -160,6 +164,7 @@ class ConvBlock(eqx.Module):
             conv_filters,
             kernel_size,
             key=subkey1,
+            **conv_kwargs,
         )
 
         if use_group_norm:
@@ -176,13 +181,24 @@ class ConvBlock(eqx.Module):
         )
 
     def __call__(self: Self, x: geom.Layer, batch_stats: Optional[eqx.nn.State] = None):
-        x = self.conv(x)
-        if self.use_group_norm:
-            x = self.norm(x)
-        elif self.use_batch_norm:
-            x, batch_stats = self.norm(x, batch_stats)
+        if self.preactivation_order:
+            if self.use_group_norm:
+                x = self.norm(x)
+            elif self.use_batch_norm:
+                x, batch_stats = self.norm(x, batch_stats)
 
-        return self.nonlinearity(x), batch_stats
+            x = self.nonlinearity(x)
+            x = self.conv(x)
+        else:
+            x = self.conv(x)
+            if self.use_group_norm:
+                x = self.norm(x)
+            elif self.use_batch_norm:
+                x, batch_stats = self.norm(x, batch_stats)
+
+            x = self.nonlinearity(x)
+
+        return x, batch_stats
 
 
 class UNet(eqx.Module):
@@ -399,3 +415,297 @@ class UNet(eqx.Module):
             return out_layer, batch_stats
         else:
             return out_layer
+
+
+class DilResNet(eqx.Module):
+    encoder: list[ml_eqx.ConvContract]
+    blocks: list[list[ml_eqx.ConvContract]]
+    decoder: list[ml_eqx.ConvContract]
+
+    D: int = eqx.field(static=True)
+    equivariant: bool = eqx.field(static=True)
+    output_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
+
+    def __init__(
+        self: Self,
+        D,
+        input_keys: tuple[tuple[ml.LayerKey, int]],
+        output_keys: tuple[tuple[ml.LayerKey, int]],
+        depth: int,
+        num_blocks: int = 4,
+        use_bias: Union[bool, str] = "auto",
+        activation_f: Union[Callable, str] = jax.nn.relu,
+        equivariant: bool = True,
+        conv_filters: geom.Layer = None,
+        kernel_size: Optional[Union[int, Sequence[int]]] = None,
+        use_group_norm: bool = False,
+        key: ArrayLike = None,
+    ):
+        self.D = D
+        self.equivariant = equivariant
+        self.output_keys = output_keys
+
+        if equivariant:
+            key_union = {k_p for k_p, _ in input_keys}.union({k_p for k_p, _ in output_keys})
+            mid_keys = tuple((k_p, depth) for k_p in key_union)
+        else:
+            mid_keys = (((0, 0), depth),)
+            # use these keys along the way, then for the final output use self.output_keys
+            input_keys = (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
+            output_keys = (((0, 0), sum(out_c * (D**k) for (k, _), out_c in output_keys)),)
+
+        # encoder
+        key, subkey1, subkey2 = random.split(key, num=3)
+        self.encoder = [
+            ConvBlock(
+                D,
+                input_keys,
+                mid_keys,
+                use_bias,
+                activation_f,
+                equivariant,
+                conv_filters,
+                1,
+                key=subkey1,
+            ),
+            ConvBlock(
+                D,
+                mid_keys,
+                mid_keys,
+                use_bias,
+                activation_f,
+                equivariant,
+                conv_filters,
+                1,
+                key=subkey2,
+            ),
+        ]
+
+        self.blocks = []
+        for _ in range(num_blocks):
+            # dCNN block
+            dilation_block = []
+            for dilation in [1, 2, 4, 8, 4, 2, 1]:
+                key, subkey = random.split(key)
+                dilation_block.append(
+                    ConvBlock(
+                        D,
+                        mid_keys,
+                        mid_keys,
+                        use_bias,
+                        activation_f,
+                        equivariant,
+                        conv_filters,
+                        kernel_size,
+                        use_group_norm,
+                        rhs_dilation=(dilation,) * D,
+                        key=subkey,
+                    )
+                )
+
+            self.blocks.append(dilation_block)
+
+        key, subkey1, subkey2 = random.split(key, num=3)
+        self.decoder = [
+            ConvBlock(
+                D,
+                mid_keys,
+                mid_keys,
+                use_bias,
+                activation_f,
+                equivariant,
+                conv_filters,
+                1,
+                key=subkey1,
+            ),
+            ConvBlock(
+                D, mid_keys, output_keys, use_bias, None, equivariant, conv_filters, 1, key=subkey2
+            ),
+        ]
+
+    def __call__(self: Self, x: geom.Layer):
+        if not self.equivariant:
+            in_layer = x
+            # to_scalar_layer is not working well, so do this
+            spatial_dims, _ = geom.parse_shape(x[(0, 0)].shape[1:], x.D)
+            data_arr = jnp.zeros((0,) + spatial_dims)
+            for (k, _), image in in_layer.items():
+                transpose_idxs = (
+                    (0,) + tuple(range(1 + self.D, 1 + self.D + k)) + tuple(range(1, 1 + self.D))
+                )
+                data_arr = jnp.concatenate(
+                    [data_arr, image.transpose(transpose_idxs).reshape((-1,) + spatial_dims)]
+                )
+            x = geom.BatchLayer({(0, 0): data_arr}, in_layer.D, in_layer.is_torus)
+
+        for layer in self.encoder:
+            x, _ = layer(x)
+
+        for dilation_block in self.blocks:
+            residual_x = x.copy()
+
+            for layer in dilation_block:
+                x, _ = layer(x)
+
+            x = x + residual_x
+
+        for layer in self.decoder:
+            x, _ = layer(x)
+
+        if self.equivariant:
+            out_layer = x
+        else:
+            output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
+            out_layer = geom.Layer.from_scalar_layer(x, output_keys)
+            # convert back to a vmapped batch layer
+            out_layer = geom.BatchLayer(out_layer.data, out_layer.D, out_layer.is_torus)
+
+        return out_layer
+
+
+class ResNet(eqx.Module):
+    encoder: list[ml_eqx.ConvContract]
+    blocks: list[list[ml_eqx.ConvContract]]
+    decoder: list[ml_eqx.ConvContract]
+
+    D: int = eqx.field(static=True)
+    equivariant: bool = eqx.field(static=True)
+    output_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
+
+    def __init__(
+        self: Self,
+        D,
+        input_keys: tuple[tuple[ml.LayerKey, int]],
+        output_keys: tuple[tuple[ml.LayerKey, int]],
+        depth: int,
+        num_blocks: int = 8,
+        num_conv: int = 2,
+        use_bias: Union[bool, str] = "auto",
+        activation_f: Union[Callable, str] = jax.nn.gelu,
+        equivariant: bool = True,
+        conv_filters: geom.Layer = None,
+        kernel_size: Optional[Union[int, Sequence[int]]] = None,
+        use_group_norm: bool = True,
+        preactivation_order: bool = True,
+        key: ArrayLike = None,
+    ):
+        self.D = D
+        self.equivariant = equivariant
+        self.output_keys = output_keys
+
+        if equivariant:
+            key_union = {k_p for k_p, _ in input_keys}.union({k_p for k_p, _ in output_keys})
+            mid_keys = tuple((k_p, depth) for k_p in key_union)
+        else:
+            mid_keys = (((0, 0), depth),)
+            # use these keys along the way, then for the final output use self.output_keys
+            input_keys = (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
+            output_keys = (((0, 0), sum(out_c * (D**k) for (k, _), out_c in output_keys)),)
+
+        # encoder
+        key, subkey1, subkey2 = random.split(key, num=3)
+        self.encoder = [
+            ConvBlock(
+                D,
+                input_keys,
+                mid_keys,
+                use_bias,
+                activation_f,
+                equivariant,
+                conv_filters,
+                1,
+                key=subkey1,
+            ),
+            ConvBlock(
+                D,
+                mid_keys,
+                mid_keys,
+                use_bias,
+                activation_f,
+                equivariant,
+                conv_filters,
+                1,
+                key=subkey2,
+            ),
+        ]
+
+        self.blocks = []
+        for _ in range(num_blocks):
+            # dCNN block
+            block = []
+            for _ in range(num_conv):
+                key, subkey = random.split(key)
+                block.append(
+                    ConvBlock(
+                        D,
+                        mid_keys,
+                        mid_keys,
+                        use_bias,
+                        activation_f,
+                        equivariant,
+                        conv_filters,
+                        kernel_size,
+                        use_group_norm,
+                        preactivation_order=preactivation_order,
+                        key=subkey,
+                    )
+                )
+
+            self.blocks.append(block)
+
+        key, subkey1, subkey2 = random.split(key, num=3)
+        self.decoder = [
+            ConvBlock(
+                D,
+                mid_keys,
+                mid_keys,
+                use_bias,
+                activation_f,
+                equivariant,
+                conv_filters,
+                1,
+                key=subkey1,
+            ),
+            ConvBlock(
+                D, mid_keys, output_keys, use_bias, None, equivariant, conv_filters, 1, key=subkey2
+            ),
+        ]
+
+    def __call__(self: Self, x: geom.Layer):
+        if not self.equivariant:
+            in_layer = x
+            # to_scalar_layer is not working well, so do this
+            spatial_dims, _ = geom.parse_shape(x[(0, 0)].shape[1:], x.D)
+            data_arr = jnp.zeros((0,) + spatial_dims)
+            for (k, _), image in in_layer.items():
+                transpose_idxs = (
+                    (0,) + tuple(range(1 + self.D, 1 + self.D + k)) + tuple(range(1, 1 + self.D))
+                )
+                data_arr = jnp.concatenate(
+                    [data_arr, image.transpose(transpose_idxs).reshape((-1,) + spatial_dims)]
+                )
+            x = geom.BatchLayer({(0, 0): data_arr}, in_layer.D, in_layer.is_torus)
+
+        for layer in self.encoder:
+            x, _ = layer(x)
+
+        for block in self.blocks:
+            residual_x = x.copy()
+
+            for layer in block:
+                x, _ = layer(x)
+
+            x = x + residual_x
+
+        for layer in self.decoder:
+            x, _ = layer(x)
+
+        if self.equivariant:
+            out_layer = x
+        else:
+            output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
+            out_layer = geom.Layer.from_scalar_layer(x, output_keys)
+            # convert back to a vmapped batch layer
+            out_layer = geom.BatchLayer(out_layer.data, out_layer.D, out_layer.is_torus)
+
+        return out_layer

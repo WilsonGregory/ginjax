@@ -561,8 +561,70 @@ train_and_eval = partial(
     plot_component=args.plot_component,
 )
 
-key, subkey1, subkey2, subkey3, subkey4 = random.split(key, num=5)
+key, *subkeys = random.split(key, num=9)
 model_list = [
+    (
+        "dil_resnet64",
+        partial(
+            train_and_eval,
+            model=models.DilResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=64,
+                equivariant=False,
+                kernel_size=3,
+                key=subkeys[0],
+            ),
+            lr=2e-3,
+        ),
+    ),
+    (
+        "dil_resnet_equiv48",
+        partial(
+            train_and_eval,
+            model=models.DilResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=48,
+                conv_filters=conv_filters,
+                key=subkeys[1],
+            ),
+            lr=1e-3,
+        ),
+    ),
+    (
+        "resnet",
+        partial(
+            train_and_eval,
+            model=models.ResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=128,
+                equivariant=False,
+                kernel_size=3,
+                key=subkeys[2],
+            ),
+            lr=1e-3,
+        ),
+    ),
+    (
+        "resnet_equiv_groupnorm_100",
+        partial(
+            train_and_eval,
+            model=models.ResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=100,  # very slow at 100
+                conv_filters=conv_filters,
+                key=subkeys[3],
+            ),
+            lr=7e-4,
+        ),
+    ),
     (
         "unetBase",
         partial(
@@ -577,7 +639,7 @@ model_list = [
                 equivariant=False,
                 kernel_size=3,
                 use_group_norm=True,
-                key=subkey1,
+                key=subkeys[4],
             ),
             lr=8e-4,
         ),
@@ -594,7 +656,7 @@ model_list = [
                 activation_f=jax.nn.gelu,
                 conv_filters=conv_filters,
                 upsample_filters=upsample_filters,
-                key=subkey2,
+                key=subkeys[5],
             ),
             lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
         ),
@@ -612,7 +674,7 @@ model_list = [
                 equivariant=False,
                 kernel_size=3,
                 use_batch_norm=True,
-                key=subkey3,
+                key=subkeys[6],
             ),
             lr=8e-4,
             has_aux=True,
@@ -630,7 +692,7 @@ model_list = [
                 use_bias=False,
                 conv_filters=conv_filters,
                 upsample_filters=upsample_filters,
-                key=subkey4,
+                key=subkeys[7],
             ),
             lr=3e-4,
         ),

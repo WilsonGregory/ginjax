@@ -168,10 +168,13 @@ class ConvBlock(eqx.Module):
         )
 
         if use_group_norm:
-            self.norm = ml_eqx.LayerNorm(output_keys, self.D)
+            if self.equivariant:
+                self.norm = ml_eqx.LayerNorm(output_keys, self.D)
+            else:
+                self.norm = ml_eqx.LayerWrapper(eqx.nn.GroupNorm(1, output_keys[0][1]), output_keys)
         elif use_batch_norm:
             self.norm = ml_eqx.LayerWrapperAux(
-                eqx.nn.BatchNorm(output_keys[0][1], axis_name="batch"), output_keys
+                eqx.nn.BatchNorm(output_keys[0][1], axis_name=["batch", "pmap_batch"]), output_keys
             )
         else:
             self.norm = None
@@ -203,8 +206,8 @@ class ConvBlock(eqx.Module):
 
 class UNet(eqx.Module):
     embedding: list[eqx.Module]
-    downsample_blocks: list[list[eqx.Module]]
-    upsample_blocks: list[list[eqx.Module]]
+    downsample_blocks: list[list[Union[ConvBlock, ml_eqx.MaxNormPool]]]
+    upsample_blocks: list[list[Union[ml_eqx.ConvContract, ConvBlock]]]
     decode: ml_eqx.ConvContract
 
     D: int = eqx.field(static=True)
@@ -398,7 +401,7 @@ class UNet(eqx.Module):
 
         for block, residual_idx in zip(self.upsample_blocks, reversed(range(len(residual_layers)))):
             upsample_x = block[0](x)  # first layer in block is the upsample
-            x = upsample_x.concat(residual_layers[residual_idx])
+            x = upsample_x.concat(residual_layers[residual_idx], axis=1 * self.equivariant)
             for layer in block[1:]:
                 x, batch_stats = layer(x, batch_stats)
 

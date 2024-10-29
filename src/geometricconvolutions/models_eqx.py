@@ -79,6 +79,7 @@ def make_conv(
         padding = "SAME" if padding is None else padding
         stride = 1 if stride is None else stride
         rhs_dilation = 1 if rhs_dilation is None else rhs_dilation
+        use_bias = True if use_bias == "auto" else use_bias
         if lhs_dilation is None:
             return ml_eqx.LayerWrapper(
                 eqx.nn.Conv(

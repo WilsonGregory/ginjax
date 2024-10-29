@@ -599,7 +599,7 @@ def evaluate(
     x: geom.BatchLayer,
     y: geom.BatchLayer,
     aux_data: Optional[eqx.nn.State] = None,
-    map_kwargs: dict[str, Any] = {},
+    return_map: bool = False,
 ) -> jax.Array:
     """
     Runs map_and_loss for the entire layer_X, layer_Y, splitting into batches if the layer is larger than
@@ -618,9 +618,9 @@ def evaluate(
     returns: average loss over the entire layer
     """
     inference_model = eqx.nn.inference_mode(model)
-    if "return_map" in map_kwargs and map_kwargs["return_map"]:
+    if return_map:
         compute_loss_pmap = eqx.filter_pmap(
-            lambda model_, x_, y_, aux_data_: map_and_loss(model_, x_, y_, aux_data_, **map_kwargs),
+            map_and_loss,
             axis_name="pmap_batch",
             in_axes=(None, 0, 0, None),
             out_axes=(0, None, 0),
@@ -629,7 +629,7 @@ def evaluate(
         return jnp.mean(loss, axis=0), out_layer.merge_pmap()
     else:
         compute_loss_pmap = eqx.filter_pmap(
-            lambda model_, x_, y_, aux_data_: map_and_loss(model_, x_, y_, aux_data_, **map_kwargs),
+            map_and_loss,
             axis_name="pmap_batch",
             in_axes=(None, 0, 0, None),
             out_axes=(0, None),
@@ -671,7 +671,7 @@ def map_loss_in_batches(
     reducers: Optional[tuple] = None,
     devices: Optional[list[jax.devices]] = None,
     aux_data: Optional[eqx.nn.State] = None,
-    **map_kwargs: Optional[dict[str, Any]],
+    return_map: bool = False,
 ) -> jax.Array:
     """
     Runs map_and_loss for the entire layer_X, layer_Y, splitting into batches if the layer is larger than
@@ -693,13 +693,13 @@ def map_loss_in_batches(
     if reducers is None:
         # use the default reducer for loss
         reducers = [loss_reducer]
-        if "return_map" in map_kwargs and map_kwargs["return_map"]:
+        if return_map:
             reducers.append(layer_reducer)
 
     X_batches, Y_batches = ml.get_batch_layer((x, y), batch_size, rand_key, devices)
     results = [[] for _ in range(len(reducers))]
     for X_batch, Y_batch in zip(X_batches, Y_batches):
-        one_result = evaluate(model, map_and_loss, X_batch, Y_batch, aux_data, map_kwargs)
+        one_result = evaluate(model, map_and_loss, X_batch, Y_batch, aux_data, return_map)
 
         if len(reducers) == 1:
             results[0].append(one_result)
@@ -724,16 +724,15 @@ def train_step(
     x: geom.BatchLayer,
     y: geom.BatchLayer,
     aux_data: Optional[eqx.nn.State] = None,
-    **map_kwargs: dict,
 ):
     # NOTE: do not `jit` over `pmap` see (https://github.com/google/jax/issues/2926)
     loss_grad = eqx.filter_value_and_grad(map_and_loss, has_aux=True)
 
     compute_loss_pmap = eqx.filter_pmap(
-        lambda model_, x_, y_, aux_data_: loss_grad(model_, x_, y_, aux_data_, **map_kwargs),
+        loss_grad,
         axis_name="pmap_batch",
         in_axes=(None, 0, 0, None),
-        out_axes=((0, None), None),
+        out_axes=((0, None), 0),
     )
     (loss, aux_data), grads = compute_loss_pmap(model, x, y, aux_data)
     loss = jnp.mean(loss, axis=0)
@@ -767,7 +766,6 @@ def train(
     save_model: Optional[str] = None,
     devices: Optional[list[jax.Device]] = None,
     aux_data: Optional[eqx.nn.State] = None,
-    **map_kwargs: dict,
 ) -> Union[tuple[eqx.Module, Any, jax.Array, jax.Array], tuple[eqx.Module, jax.Array, jax.Array]]:
     """
     Method to train the model. It uses stochastic gradient descent (SGD) with the optimizer to learn the
@@ -819,7 +817,6 @@ def train(
                 X_batch,
                 Y_batch,
                 aux_data,
-                **map_kwargs,
             )
             epoch_loss += jnp.mean(loss_value)
 
@@ -837,7 +834,6 @@ def train(
                 subkey,
                 devices=devices,
                 aux_data=aux_data,
-                **map_kwargs,
             )
             val_loss = epoch_val_loss
 

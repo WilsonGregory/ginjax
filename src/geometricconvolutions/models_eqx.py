@@ -682,12 +682,10 @@ class ResNet(eqx.Module):
             spatial_dims, _ = geom.parse_shape(x[(0, 0)].shape[1:], x.D)
             data_arr = jnp.zeros((0,) + spatial_dims)
             for (k, _), image in in_layer.items():
-                transpose_idxs = (
-                    (0,) + tuple(range(1 + self.D, 1 + self.D + k)) + tuple(range(1, 1 + self.D))
-                )
-                data_arr = jnp.concatenate(
-                    [data_arr, image.transpose(transpose_idxs).reshape((-1,) + spatial_dims)]
-                )
+                # (in_c,spatial,tensor) -> (in_c,tensor,spatial)
+                image = jnp.moveaxis(image.reshape(image.shape[: self.D + 1] + (-1,)), -1, 1)
+                data_arr = jnp.concatenate([data_arr, image.reshape((-1,) + spatial_dims)])
+
             x = geom.BatchLayer({(0, 0): data_arr}, in_layer.D, in_layer.is_torus)
 
         for layer in self.encoder:

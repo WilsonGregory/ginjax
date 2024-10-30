@@ -818,7 +818,7 @@ def train(
                 Y_batch,
                 aux_data,
             )
-            epoch_loss += jnp.mean(loss_value)
+            epoch_loss += loss_value
 
         epoch_loss = epoch_loss / len(X_batches)
         epoch += 1

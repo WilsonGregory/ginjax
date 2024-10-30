@@ -291,8 +291,6 @@ def map_and_loss(
         layer_x[(1, 0)].shape[1],  # past_steps
         future_steps,
     )
-    print(out_layer)
-    exit()
 
     loss = ml.timestep_smse_loss(out_layer, layer_y, future_steps)
     loss = loss[0] if future_steps == 1 else loss

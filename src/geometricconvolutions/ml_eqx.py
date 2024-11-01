@@ -21,10 +21,10 @@ import geometricconvolutions.ml as ml
 class ConvContract(eqx.Module):
     weights: dict[ml.LayerKey, dict[ml.LayerKey, jax.Array]]
     bias: dict[ml.LayerKey, jax.Array]
+    invariant_filters: geom.Layer
 
     input_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
     target_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
-    invariant_filters: geom.Layer = eqx.field(static=True)
     use_bias: Union[str, bool] = eqx.field(static=True)
     stride: Optional[tuple[int]] = eqx.field(static=True)
     padding: Optional[tuple[int]] = eqx.field(static=True)
@@ -190,7 +190,9 @@ class ConvContract(eqx.Module):
 
                 # (out_c,in_c,num_filters),(num, spatial, tensor) -> (out_c,in_c,spatial,tensor)
                 filter_block = jnp.einsum(
-                    "ijk,k...->ij...", weight_block, self.invariant_filters[filter_key]
+                    "ijk,k...->ij...",
+                    weight_block,
+                    jax.lax.stop_gradient(self.invariant_filters[filter_key]),
                 )
                 # (out_c,in_c,spatial,tensor) -> (in_c,spatial,in_tensor,-1,out_c)
                 ff = jnp.moveaxis(
@@ -274,7 +276,9 @@ class ConvContract(eqx.Module):
 
                 # (out_c,in_c,num_inv_filters) (num, spatial, tensor) -> (out_c,in_c,spatial,tensor)
                 filter_block = jnp.einsum(
-                    "ijk,k...->ij...", weight_block, self.invariant_filters[filter_key]
+                    "ijk,k...->ij...",
+                    weight_block,
+                    jax.lax.stop_gradient(self.invariant_filters[filter_key]),
                 )
 
                 convolve_contracted_imgs = geom.convolve_contract(

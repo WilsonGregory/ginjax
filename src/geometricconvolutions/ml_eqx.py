@@ -477,10 +477,7 @@ class MaxNormPool(eqx.Module):
 
     def __call__(self: Self, x: geom.Layer):
         in_axes = (None, 0, None, None)
-        if self.use_norm:
-            vmap_max_pool = jax.vmap(jax.vmap(geom.max_pool, in_axes=in_axes), in_axes=in_axes)
-        else:  # non-equivariant version doesn't expect the batch dimension
-            vmap_max_pool = jax.vmap(geom.max_pool, in_axes=in_axes)
+        vmap_max_pool = jax.vmap(jax.vmap(geom.max_pool, in_axes=in_axes), in_axes=in_axes)
 
         out_x = x.empty()
         for (k, p), image_block in x.items():
@@ -509,7 +506,8 @@ class LayerWrapper(eqx.Module):
     def __call__(self: Self, x: geom.Layer):
         out_layer = x.__class__({}, x.D, x.is_torus)
         for (k, p), image in x.items():
-            out_layer.append(k, p, self.modules[(k, p)](image))
+            vmap_call = eqx.filter_vmap(self.modules[(k, p)], axis_name="batch")
+            out_layer.append(k, p, vmap_call(image))
 
         return out_layer
 
@@ -536,7 +534,10 @@ class LayerWrapperAux(eqx.Module):
     def __call__(self: Self, x: geom.Layer, aux_data: Optional[eqx.nn.State]):
         out_layer = x.__class__({}, x.D, x.is_torus)
         for (k, p), image in x.items():
-            out, aux_data = self.modules[(k, p)](image, aux_data)
+            vmap_call = eqx.filter_vmap(
+                self.modules[(k, p)], in_axes=(0, None), out_axes=(0, None), axis_name="batch"
+            )
+            out, aux_data = vmap_call(image, aux_data)
             out_layer.append(k, p, out)
 
         return out_layer, aux_data
@@ -725,6 +726,19 @@ def train_step(
     y: geom.BatchLayer,
     aux_data: Optional[eqx.nn.State] = None,
 ):
+    """
+    Perform one step and gradient update of the model. Uses filter_pmap to use multiple gpus.
+    args:
+        map_and_loss (func): map and loss function where the input is a model pytree, x BatchLayer,
+            y BatchLayer, and aux_data, and returns a float loss and aux_data
+        model (equinox model pytree): the model
+        optim (optax optimizer):
+        opt_state:
+        x (BatchLayer): input data
+        y (BatchLayer): target data
+        aux_data (Any): auxilliary data for stateful layers
+    returns: model, opt_state, loss_value
+    """
     # NOTE: do not `jit` over `pmap` see (https://github.com/google/jax/issues/2926)
     loss_grad = eqx.filter_value_and_grad(map_and_loss, has_aux=True)
 

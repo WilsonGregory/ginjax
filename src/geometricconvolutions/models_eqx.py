@@ -175,7 +175,7 @@ class ConvBlock(eqx.Module):
                 self.norm = ml_eqx.LayerWrapper(eqx.nn.GroupNorm(1, output_keys[0][1]), output_keys)
         elif use_batch_norm:
             self.norm = ml_eqx.LayerWrapperAux(
-                eqx.nn.BatchNorm(output_keys[0][1], axis_name=["batch", "pmap_batch"]), output_keys
+                eqx.nn.BatchNorm(output_keys[0][1], axis_name=["pmap_batch", "batch"]), output_keys
             )
         else:
             self.norm = None
@@ -184,7 +184,7 @@ class ConvBlock(eqx.Module):
             activation_f, self.equivariant, output_keys, self.D, subkey2
         )
 
-    def __call__(self: Self, x: geom.Layer, batch_stats: Optional[eqx.nn.State] = None):
+    def __call__(self: Self, x: geom.BatchLayer, batch_stats: Optional[eqx.nn.State] = None):
         if self.preactivation_order:
             if self.use_group_norm:
                 x = self.norm(x)
@@ -375,20 +375,9 @@ class UNet(eqx.Module):
             key=subkey,
         )
 
-    def __call__(self: Self, x: geom.Layer, batch_stats: Optional[eqx.nn.State] = None):
+    def __call__(self: Self, x: geom.BatchLayer, batch_stats: Optional[eqx.nn.State] = None):
         if not self.equivariant:
-            in_layer = x
-            # to_scalar_layer is not working well, so do this
-            spatial_dims, _ = geom.parse_shape(x[(0, 0)].shape[1:], x.D)
-            data_arr = jnp.zeros((0,) + spatial_dims)
-            for (k, _), image in in_layer.items():
-                transpose_idxs = (
-                    (0,) + tuple(range(1 + self.D, 1 + self.D + k)) + tuple(range(1, 1 + self.D))
-                )
-                data_arr = jnp.concatenate(
-                    [data_arr, image.transpose(transpose_idxs).reshape((-1,) + spatial_dims)]
-                )
-            x = geom.BatchLayer({(0, 0): data_arr}, in_layer.D, in_layer.is_torus)
+            x = x.to_scalar_layer()
 
         for layer in self.embedding:
             x, batch_stats = layer(x, batch_stats)
@@ -402,7 +391,7 @@ class UNet(eqx.Module):
 
         for block, residual_idx in zip(self.upsample_blocks, reversed(range(len(residual_layers)))):
             upsample_x = block[0](x)  # first layer in block is the upsample
-            x = upsample_x.concat(residual_layers[residual_idx], axis=1 * self.equivariant)
+            x = upsample_x.concat(residual_layers[residual_idx], axis=1)
             for layer in block[1:]:
                 x, batch_stats = layer(x, batch_stats)
 
@@ -411,9 +400,7 @@ class UNet(eqx.Module):
             out_layer = x
         else:
             output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
-            out_layer = geom.Layer.from_scalar_layer(x, output_keys)
-            # convert back to a vmapped batch layer
-            out_layer = geom.BatchLayer(out_layer.data, out_layer.D, out_layer.is_torus)
+            out_layer = geom.BatchLayer.from_scalar_layer(x, output_keys)
 
         if self.use_batch_norm:
             return out_layer, batch_stats
@@ -527,20 +514,9 @@ class DilResNet(eqx.Module):
             ),
         ]
 
-    def __call__(self: Self, x: geom.Layer):
+    def __call__(self: Self, x: geom.BatchLayer):
         if not self.equivariant:
-            in_layer = x
-            # to_scalar_layer is not working well, so do this
-            spatial_dims, _ = geom.parse_shape(x[(0, 0)].shape[1:], x.D)
-            data_arr = jnp.zeros((0,) + spatial_dims)
-            for (k, _), image in in_layer.items():
-                transpose_idxs = (
-                    (0,) + tuple(range(1 + self.D, 1 + self.D + k)) + tuple(range(1, 1 + self.D))
-                )
-                data_arr = jnp.concatenate(
-                    [data_arr, image.transpose(transpose_idxs).reshape((-1,) + spatial_dims)]
-                )
-            x = geom.BatchLayer({(0, 0): data_arr}, in_layer.D, in_layer.is_torus)
+            x = x.to_scalar_layer()
 
         for layer in self.encoder:
             x, _ = layer(x)
@@ -560,9 +536,7 @@ class DilResNet(eqx.Module):
             out_layer = x
         else:
             output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
-            out_layer = geom.Layer.from_scalar_layer(x, output_keys)
-            # convert back to a vmapped batch layer
-            out_layer = geom.BatchLayer(out_layer.data, out_layer.D, out_layer.is_torus)
+            out_layer = geom.BatchLayer.from_scalar_layer(x, output_keys)
 
         return out_layer
 
@@ -675,18 +649,9 @@ class ResNet(eqx.Module):
             ),
         ]
 
-    def __call__(self: Self, x: geom.Layer):
+    def __call__(self: Self, x: geom.BatchLayer):
         if not self.equivariant:
-            in_layer = x
-            # to_scalar_layer is not working well, so do this
-            spatial_dims, _ = geom.parse_shape(x[(0, 0)].shape[1:], x.D)
-            data_arr = jnp.zeros((0,) + spatial_dims)
-            for (k, _), image in in_layer.items():
-                # (in_c,spatial,tensor) -> (in_c,tensor,spatial)
-                image = jnp.moveaxis(image.reshape(image.shape[: self.D + 1] + (-1,)), -1, 1)
-                data_arr = jnp.concatenate([data_arr, image.reshape((-1,) + spatial_dims)])
-
-            x = geom.BatchLayer({(0, 0): data_arr}, in_layer.D, in_layer.is_torus)
+            x = x.to_scalar_layer()
 
         for layer in self.encoder:
             x, _ = layer(x)
@@ -706,8 +671,6 @@ class ResNet(eqx.Module):
             out_layer = x
         else:
             output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
-            out_layer = geom.Layer.from_scalar_layer(x, output_keys)
-            # convert back to a vmapped batch layer
-            out_layer = geom.BatchLayer(out_layer.data, out_layer.D, out_layer.is_torus)
+            out_layer = geom.BatchLayer.from_scalar_layer(x, output_keys)
 
         return out_layer

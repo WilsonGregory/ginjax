@@ -2317,10 +2317,6 @@ def train(
             else:
                 pmap_loss_val, pmap_grads = pmap_loss_grad(params, X_batch, Y_batch, subkey, True)
 
-            # print_params(pmap_grads)
-            print_params(grads_mean(pmap_grads))
-            exit()
-
             updates, opt_state = optimizer.update(grads_mean(pmap_grads), opt_state, params)
             params = optax.apply_updates(params, updates)
             epoch_loss += jnp.mean(pmap_loss_val)

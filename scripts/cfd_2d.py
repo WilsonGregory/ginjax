@@ -274,16 +274,7 @@ def map_and_loss(
     aux_data: Optional[eqx.nn.State] = None,
     future_steps: int = 1,
     return_map: bool = False,
-    vmap_model: bool = False,
 ):
-    if vmap_model:
-        model = jax.vmap(
-            model,
-            in_axes=(0, None) if (aux_data is not None) else 0,
-            out_axes=(0, None) if (aux_data is not None) else 0,
-            axis_name="batch",
-        )
-
     out_layer, aux_data = ml_eqx.autoregressive_map(
         model,
         layer_x,
@@ -313,7 +304,6 @@ def train_and_eval(
     has_aux: bool = False,
     verbose: int = 1,
     plot_component: int = 0,
-    vmap_model: bool = False,
 ) -> tuple[float]:
     (
         train_X,
@@ -326,7 +316,6 @@ def train_and_eval(
         test_rollout_Y,
     ) = data
     batch_stats = eqx.nn.State(model) if has_aux else None
-    map_and_loss_ = partial(map_and_loss, vmap_model=vmap_model)
 
     print(f"Model params: {models.count_params(model):,}")
 
@@ -336,7 +325,7 @@ def train_and_eval(
         model, batch_stats, train_loss, val_loss = ml_eqx.train(
             train_X,
             train_Y,
-            map_and_loss_,
+            map_and_loss,
             model,
             subkey,
             stop_condition=ml.EpochStop(epochs, verbose=verbose),
@@ -360,7 +349,7 @@ def train_and_eval(
 
         key, subkey1, subkey2 = random.split(key)
         train_loss = ml_eqx.map_loss_in_batches(
-            map_and_loss_,
+            map_and_loss,
             model,
             train_X,
             train_Y,
@@ -369,7 +358,7 @@ def train_and_eval(
             aux_data=batch_stats,
         )
         val_loss = ml_eqx.map_loss_in_batches(
-            map_and_loss_,
+            map_and_loss,
             model,
             val_X,
             val_Y,
@@ -380,7 +369,7 @@ def train_and_eval(
 
     key, subkey = random.split(key)
     test_loss = ml_eqx.map_loss_in_batches(
-        map_and_loss_,
+        map_and_loss,
         model,
         test_single_X,
         test_single_Y,
@@ -392,7 +381,7 @@ def train_and_eval(
 
     key, subkey = random.split(key)
     test_rollout_loss, rollout_layer = ml_eqx.map_loss_in_batches(
-        partial(map_and_loss_, future_steps=rollout_steps, return_map=True),
+        partial(map_and_loss, future_steps=rollout_steps, return_map=True),
         model,
         test_rollout_X,
         test_rollout_Y,
@@ -537,38 +526,37 @@ train_and_eval = partial(
 
 key, *subkeys = random.split(key, num=9)
 model_list = [
-    # (
-    #     "dil_resnet64",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.DilResNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=64,
-    #             equivariant=False,
-    #             kernel_size=3,
-    #             key=subkeys[0],
-    #         ),
-    #         lr=2e-3,
-    #         vmap_model=True,
-    #     ),
-    # ),
-    # (
-    #     "dil_resnet_equiv48",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.DilResNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=48,
-    #             conv_filters=conv_filters,
-    #             key=subkeys[1],
-    #         ),
-    #         lr=1e-3,
-    #     ),
-    # ),
+    (
+        "dil_resnet64",
+        partial(
+            train_and_eval,
+            model=models.DilResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=64,
+                equivariant=False,
+                kernel_size=3,
+                key=subkeys[0],
+            ),
+            lr=2e-3,
+        ),
+    ),
+    (
+        "dil_resnet_equiv48",
+        partial(
+            train_and_eval,
+            model=models.DilResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=48,
+                conv_filters=conv_filters,
+                key=subkeys[1],
+            ),
+            lr=1e-3,
+        ),
+    ),
     (
         "resnet",
         partial(
@@ -583,98 +571,95 @@ model_list = [
                 key=subkeys[2],
             ),
             lr=1e-3,
-            vmap_model=True,
         ),
     ),
-    # (
-    #     "resnet_equiv_groupnorm_100",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.ResNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=100,  # very slow at 100
-    #             conv_filters=conv_filters,
-    #             key=subkeys[3],
-    #         ),
-    #         lr=7e-4,
-    #     ),
-    # ),
-    # (
-    #     "unetBase",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.UNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=64,
-    #             use_bias=True,
-    #             activation_f=jax.nn.gelu,
-    #             equivariant=False,
-    #             kernel_size=3,
-    #             use_group_norm=True,
-    #             key=subkeys[4],
-    #         ),
-    #         lr=8e-4,
-    #         vmap_model=True,
-    #     ),
-    # ),
-    # (
-    #     "unetBase_equiv48",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.UNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=48,
-    #             activation_f=jax.nn.gelu,
-    #             conv_filters=conv_filters,
-    #             upsample_filters=upsample_filters,
-    #             key=subkeys[5],
-    #         ),
-    #         lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-    #     ),
-    # ),
-    # (
-    #     "unet2015",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.UNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=64,
-    #             use_bias=False,
-    #             equivariant=False,
-    #             kernel_size=3,
-    #             use_batch_norm=True,
-    #             key=subkeys[6],
-    #         ),
-    #         lr=8e-4,
-    #         has_aux=True,
-    #         vmap_model=True,
-    #     ),
-    # ),
-    # (
-    #     "unet2015_equiv48",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.UNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=48,
-    #             use_bias=False,
-    #             conv_filters=conv_filters,
-    #             upsample_filters=upsample_filters,
-    #             key=subkeys[7],
-    #         ),
-    #         lr=3e-4,
-    #     ),
-    # ),
+    (
+        "resnet_equiv_groupnorm_100",
+        partial(
+            train_and_eval,
+            model=models.ResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=100,  # very slow at 100
+                conv_filters=conv_filters,
+                key=subkeys[3],
+            ),
+            lr=7e-4,
+        ),
+    ),
+    (
+        "unetBase",
+        partial(
+            train_and_eval,
+            model=models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=64,
+                use_bias=True,
+                activation_f=jax.nn.gelu,
+                equivariant=False,
+                kernel_size=3,
+                use_group_norm=True,
+                key=subkeys[4],
+            ),
+            lr=8e-4,
+        ),
+    ),
+    (
+        "unetBase_equiv48",
+        partial(
+            train_and_eval,
+            model=models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=48,
+                activation_f=jax.nn.gelu,
+                conv_filters=conv_filters,
+                upsample_filters=upsample_filters,
+                key=subkeys[5],
+            ),
+            lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+        ),
+    ),
+    (
+        "unet2015",
+        partial(
+            train_and_eval,
+            model=models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=64,
+                use_bias=False,
+                equivariant=False,
+                kernel_size=3,
+                use_batch_norm=True,
+                key=subkeys[6],
+            ),
+            lr=8e-4,
+            has_aux=True,
+        ),
+    ),
+    (
+        "unet2015_equiv48",
+        partial(
+            train_and_eval,
+            model=models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=48,
+                use_bias=False,
+                conv_filters=conv_filters,
+                upsample_filters=upsample_filters,
+                key=subkeys[7],
+            ),
+            lr=3e-4,
+        ),
+    ),
 ]
 
 key, subkey = random.split(key)

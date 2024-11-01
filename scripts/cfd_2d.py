@@ -266,49 +266,27 @@ def plot_timestep_power(
     plt.close(fig)
 
 
+@eqx.filter_jit
 def map_and_loss(
     model: eqx.Module,
     layer_x: geom.BatchLayer,
     layer_y: geom.BatchLayer,
-    aux_data: Optional[dict] = None,
-    has_aux: bool = False,
+    aux_data: Optional[eqx.nn.State] = None,
     future_steps: int = 1,
     return_map: bool = False,
 ):
-    # don't vmap the aux_data if has_aux=True
-    batch_model = jax.vmap(
+    out_layer, aux_data = ml_eqx.autoregressive_map(
         model,
-        in_axes=(0, None) if has_aux else 0,
-        out_axes=(0, None) if has_aux else 0,
-        axis_name="batch",
-    )
-    result = ml_eqx.autoregressive_map(
-        batch_model,
         layer_x,
         aux_data,
         layer_x[(1, 0)].shape[1],  # past_steps
         future_steps,
-        has_aux=has_aux,
     )
-    if has_aux:
-        out_layer, aux_data = result
-    else:
-        out_layer = result
 
     loss = ml.timestep_smse_loss(out_layer, layer_y, future_steps)
     loss = loss[0] if future_steps == 1 else loss
 
-    if has_aux or return_map:
-        output = (loss,)
-        if has_aux:
-            output = output + (aux_data,)
-
-        if return_map:
-            output = output + (out_layer,)
-
-        return output
-    else:
-        return loss
+    return (loss, aux_data, out_layer) if return_map else (loss, aux_data)
 
 
 def train_and_eval(
@@ -344,7 +322,7 @@ def train_and_eval(
     if load_model is None:
         steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
         key, subkey = random.split(key)
-        results = ml_eqx.train(
+        model, batch_stats, train_loss, val_loss = ml_eqx.train(
             train_X,
             train_Y,
             map_and_loss,
@@ -360,15 +338,8 @@ def train_and_eval(
             ),
             validation_X=val_X,
             validation_Y=val_Y,
-            has_aux=has_aux,
             aux_data=batch_stats,
         )
-
-        if has_aux:
-            model, batch_stats, train_loss, val_loss = results
-        else:
-            model, train_loss, val_loss = results
-            batch_stats = None
 
         if save_model is not None:
             # TODO: need to save batch_stats as well
@@ -384,8 +355,6 @@ def train_and_eval(
             train_Y,
             batch_size,
             subkey1,
-            # map_and_loss kwargs
-            has_aux=has_aux,
             aux_data=batch_stats,
         )
         val_loss = ml_eqx.map_loss_in_batches(
@@ -395,8 +364,6 @@ def train_and_eval(
             val_Y,
             batch_size,
             subkey2,
-            # map_and_loss kwargs
-            has_aux=has_aux,
             aux_data=batch_stats,
         )
 
@@ -408,23 +375,19 @@ def train_and_eval(
         test_single_Y,
         batch_size,
         subkey,
-        # map_and_loss kwargs
-        has_aux=has_aux,
         aux_data=batch_stats,
     )
     print(f"Test Loss: {test_loss}")
 
     key, subkey = random.split(key)
     test_rollout_loss, rollout_layer = ml_eqx.map_loss_in_batches(
-        map_and_loss,
+        partial(map_and_loss, future_steps=rollout_steps, return_map=True),
         model,
         test_rollout_X,
         test_rollout_Y,
         batch_size,
         subkey,
         # map_and_loss kwargs
-        future_steps=rollout_steps,
-        has_aux=has_aux,
         aux_data=batch_stats,
         return_map=True,
     )

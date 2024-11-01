@@ -2348,3 +2348,13 @@ class BatchLayer(Layer):
             )
 
         return out_layer
+
+    def merge_pmap(self: Self) -> Self:
+        """
+        Take the output layer of a pmap and recombine the batch.
+        """
+        out_layer = self.empty()
+        for (k,parity), image_block in self.items():
+            out_layer.append(k, parity, image_block.reshape((-1,) + image_block.shape[2:]))
+
+        return out_layer

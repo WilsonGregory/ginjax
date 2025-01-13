@@ -1660,7 +1660,7 @@ def timestep_smse_loss(
     layer_x: geom.BatchLayer,
     layer_y: geom.BatchLayer,
     n_steps: int,
-    reduce: str = "mean",
+    reduce: Optional[str] = "mean",
 ) -> Array:
     """
     Returns loss for each timestep. Loss is summed over the channels, and mean over spatial dimensions
@@ -1671,7 +1671,7 @@ def timestep_smse_loss(
         n_steps (int): number of timesteps, all channels should be a multiple of this
         reduce (str): how to reduce over the batch, one of mean or max, defaults to mean
     """
-    assert reduce == "mean" or reduce == "max"
+    assert reduce in {"mean", "max", None}
     spatial_size = np.multiply.reduce(layer_x.get_spatial_dims())
     batch = layer_x.get_L()
     loss_per_step = jnp.zeros((batch, n_steps))
@@ -1688,6 +1688,8 @@ def timestep_smse_loss(
         return jnp.mean(loss_per_step, axis=0)
     elif reduce == "max":
         return loss_per_step[jnp.argmax(jnp.sum(loss_per_step, axis=1))]
+    elif reduce is None:
+        return loss_per_step
 
 
 def smse_loss(layer_x: geom.Layer, layer_y: geom.Layer) -> Array:

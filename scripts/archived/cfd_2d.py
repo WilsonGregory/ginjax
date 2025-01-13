@@ -440,9 +440,9 @@ def train_and_eval(
     if images_dir is not None:
         components = ["density", "pressure", "velocity_x", "velocity_y"]
         plot_layer(
-            rollout_layer.get_one(),
-            test_rollout_Y.get_one(),
-            f"{images_dir}{model_name}_L{train_X.L}_e{epochs}_rollout.png",
+            rollout_layer.get_one(378),
+            test_rollout_Y.get_one(378),
+            f"{images_dir}{model_name}_L{train_X.L}_e{epochs}_{components[plot_component]}_rollout.png",
             future_steps=rollout_steps,
             component=plot_component,
             show_power=True,
@@ -567,108 +567,159 @@ train_and_eval = partial(
 )
 
 model_list = [
-    (
-        "dil_resnet64",
-        partial(
-            train_and_eval,
-            net=partial(
-                models.dil_resnet,
-                output_keys=output_keys,
-                output_depth=output_depth,
-                depth=64,
-            ),
-            lr=2e-3,
-        ),
-    ),
-    (
-        "dil_resnet_equiv48",
-        partial(
-            train_and_eval,
-            net=partial(
-                models.dil_resnet,
-                equivariant=True,
-                conv_filters=conv_filters,
-                output_keys=output_keys,
-                output_depth=output_depth,
-                depth=48,
-                activation_f=ml.VN_NONLINEAR,
-            ),
-            lr=1e-3,
-        ),
-    ),
-    (
-        "resnet",
-        partial(
-            train_and_eval,
-            net=partial(
-                models.resnet,
-                output_keys=output_keys,
-                output_depth=output_depth,
-                depth=128,
-            ),
-            lr=1e-3,
-        ),
-    ),
-    (
-        "resnet_equiv_groupnorm_100",
-        partial(
-            train_and_eval,
-            net=partial(
-                models.resnet,
-                output_keys=output_keys,
-                output_depth=output_depth,
-                equivariant=True,
-                conv_filters=conv_filters,
-                activation_f=ml.VN_NONLINEAR,
-                use_group_norm=True,
-                depth=100,
-            ),
-            lr=7e-4,
-        ),
-    ),
-    (
-        "unetBase",
-        partial(
-            train_and_eval,
-            net=partial(
-                models.unetBase,
-                output_keys=output_keys,
-                output_depth=output_depth,
-            ),
-            lr=8e-4,
-        ),
-    ),
-    (
-        "unetBase_equiv48",
-        partial(
-            train_and_eval,
-            net=partial(
-                models.unetBase,
-                output_keys=output_keys,
-                output_depth=output_depth,
-                depth=48,
-                equivariant=True,
-                conv_filters=conv_filters,
-                activation_f=ml.VN_NONLINEAR,
-                use_group_norm=False,
-                upsample_filters=upsample_filters,
-            ),
-            lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-        ),
-    ),
-    (
-        "unet2015",
-        partial(
-            train_and_eval,
-            net=partial(
-                models.unet2015,
-                output_keys=output_keys,
-                output_depth=output_depth,
-            ),
-            lr=8e-4,
-            has_aux=True,
-        ),
-    ),
+    # (
+    #     "dil_resnet64",
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.dil_resnet,
+    #             output_keys=output_keys,
+    #             output_depth=output_depth,
+    #             depth=64,
+    #         ),
+    #         lr=2e-3,
+    #     ),
+    # ),
+    # (
+    #     "dil_resnet_equiv48",
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.dil_resnet,
+    #             equivariant=True,
+    #             conv_filters=conv_filters,
+    #             output_keys=output_keys,
+    #             output_depth=output_depth,
+    #             depth=48,
+    #             activation_f=ml.VN_NONLINEAR,
+    #         ),
+    #         lr=1e-3,
+    #     ),
+    # ),
+    # (
+    #     "dil_resnet_equiv20",
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.dil_resnet,
+    #             equivariant=True,
+    #             conv_filters=conv_filters,
+    #             output_keys=output_keys,
+    #             output_depth=output_depth,
+    #             depth=20,
+    #             activation_f=ml.VN_NONLINEAR,
+    #         ),
+    #         lr=1e-3,
+    #     ),
+    # ),
+    # (
+    #     "resnet",
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.resnet,
+    #             output_keys=output_keys,
+    #             output_depth=output_depth,
+    #             depth=128,
+    #         ),
+    #         lr=1e-3,
+    #     ),
+    # ),
+    # (
+    #     "resnet_equiv_groupnorm_100",
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.resnet,
+    #             output_keys=output_keys,
+    #             output_depth=output_depth,
+    #             equivariant=True,
+    #             conv_filters=conv_filters,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             use_group_norm=True,
+    #             depth=100,
+    #         ),
+    #         lr=7e-4,
+    #     ),
+    # ),
+    # (
+    #     "resnet_equiv_groupnorm_42",
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.resnet,
+    #             output_keys=output_keys,
+    #             output_depth=output_depth,
+    #             equivariant=True,
+    #             conv_filters=conv_filters,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             use_group_norm=True,
+    #             depth=42,
+    #         ),
+    #         lr=7e-4,
+    #     ),
+    # ),
+    # (
+    #     "unetBase",
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unetBase,
+    #             output_keys=output_keys,
+    #             output_depth=output_depth,
+    #         ),
+    #         lr=8e-4,
+    #     ),
+    # ),
+    # (
+    #     "unetBase_equiv48",
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unetBase,
+    #             output_keys=output_keys,
+    #             output_depth=output_depth,
+    #             depth=48,
+    #             equivariant=True,
+    #             conv_filters=conv_filters,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             use_group_norm=False,
+    #             upsample_filters=upsample_filters,
+    #         ),
+    #         lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+    #     ),
+    # ),
+    # (
+    #     "unetBase_equiv20",
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unetBase,
+    #             output_keys=output_keys,
+    #             output_depth=output_depth,
+    #             depth=20,
+    #             equivariant=True,
+    #             conv_filters=conv_filters,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             use_group_norm=False,
+    #             upsample_filters=upsample_filters,
+    #         ),
+    #         lr=6e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+    #     ),
+    # ),
+    # (
+    #     "unet2015",
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unet2015,
+    #             output_keys=output_keys,
+    #             output_depth=output_depth,
+    #         ),
+    #         lr=8e-4,
+    #         has_aux=True,
+    #     ),
+    # ),
     (
         "unet2015_equiv48",
         partial(
@@ -686,17 +737,72 @@ model_list = [
             lr=3e-4,
         ),
     ),
+    # (
+    #     "unet2015_equiv20",
+    #     partial(
+    #         train_and_eval,
+    #         net=partial(
+    #             models.unet2015,
+    #             output_keys=output_keys,
+    #             output_depth=output_depth,
+    #             depth=20,
+    #             equivariant=True,
+    #             activation_f=ml.VN_NONLINEAR,
+    #             conv_filters=conv_filters,
+    #             upsample_filters=upsample_filters,
+    #         ),
+    #         lr=7e-4,  # sometimes explodes for larger values
+    #     ),
+    # ),
 ]
 
 key, subkey = random.split(key)
+
+# resnet_test_rollout = train_and_eval(
+#     data,
+#     subkey,
+#     "resnet_0_t0",
+#     partial(
+#         models.resnet,
+#         output_keys=output_keys,
+#         output_depth=output_depth,
+#         depth=128,
+#     ),
+#     1e-3,
+# )
+# key, subkey = random.split(key)
+# resnet_equiv_test_rollout = train_and_eval(
+#     data,
+#     subkey,
+#     "resnet_equiv_groupnorm_100_0_t0",
+#     partial(
+#         models.resnet,
+#         output_keys=output_keys,
+#         output_depth=output_depth,
+#         equivariant=True,
+#         conv_filters=conv_filters,
+#         activation_f=ml.VN_NONLINEAR,
+#         use_group_norm=True,
+#         depth=100,
+#     ),
+#     7e-4,
+# )
+# diff = jnp.sum(resnet_equiv_test_rollout - resnet_test_rollout, axis=1)
+# print(diff.shape)
+# print(f"max {jnp.argmax(diff)}: {jnp.max(diff)}")
+# print(f"min {jnp.argmin(diff)}: {jnp.min(diff)}")
+# print(f"mean {jnp.mean(diff)}, std {jnp.std(diff)}")
+# print(f"percent where equiv is worse {jnp.sum(diff > 0)/len(diff)}")
+# exit()
+
 
 # # Use this for benchmarking over different learning rates
 # results = ml.benchmark(
 #     lambda _: data,
 #     model_list,
 #     subkey,
-#     'lr',
-#     [2e-4, 3e-4, 4e-4],
+#     "lr",
+#     [4e-4, 6e-4, 7e-4, 8e-4],
 #     benchmark_type=ml.BENCHMARK_MODEL,
 #     num_trials=args.n_trials,
 #     num_results=3 + args.rollout_steps,
@@ -724,71 +830,6 @@ mean_results = jnp.mean(
 )  # includes the sum of rollout. (benchmark_vals,models,outputs)
 std_results = jnp.std(non_rollout_res, axis=0)
 print("Mean", mean_results, sep="\n")
-
-plot_mapping = {
-    "dil_resnet64": ("DilResNet", "blue", "o", "dashed"),
-    "dil_resnet_equiv48": ("DilResNet Equiv", "blue", "o", "solid"),
-    "resnet": ("ResNet", "red", "s", "dashed"),
-    "resnet_equiv_groupnorm_100": ("ResNet Equiv", "red", "s", "solid"),
-    "unetBase": ("UNet LayerNorm", "green", "P", "dashed"),
-    "unetBase_equiv48": ("UNet LayerNorm Equiv", "green", "P", "solid"),
-    "unet2015": ("UNet", "orange", "*", "dashed"),
-    "unet2015_equiv48": ("Unet Equiv", "orange", "*", "solid"),
-}
-
-# print table
-output_types = ["train", "val", "test", f"rollout ({args.rollout_steps} steps)"]
-print("model ", end="")
-for output_type in output_types:
-    print(f"& {output_type} ", end="")
-
-print("\\\\")
-print("\\hline")
-
-for i in range(len(model_list) // 2):
-    for l in range(2):  # models come in a baseline and equiv pair
-        idx = 2 * i + l
-        print(f"{plot_mapping[model_list[idx][0]][0]} ", end="")
-
-        for j, result_type in enumerate(output_types):
-            if jnp.trunc(std_results[0, idx, j] * 1000) / 1000 > 0:
-                stdev = f"$\\pm$ {std_results[0,idx,j]:.3f}"
-            else:
-                stdev = ""
-
-            if jnp.allclose(
-                mean_results[0, idx, j],
-                min(mean_results[0, 2 * i, j], mean_results[0, 2 * i + 1, j]),
-            ):
-                print(f'& \\textbf{"{"}{mean_results[0,idx,j]:.3f} {stdev}{"}"}', end="")
-            else:
-                print(f"& {mean_results[0,idx,j]:.3f} {stdev} ", end="")
-
-        print("\\\\")
-
-    print("\\hline")
-
-print("\n")
-
-if args.images_dir:
-    for i, (model_name, _) in enumerate(model_list):
-        label, color, marker, linestyle = plot_mapping[model_name]
-        plt.plot(
-            jnp.arange(1, 1 + args.rollout_steps),
-            jnp.mean(rollout_res, axis=0)[0, i],
-            label=label,
-            marker=marker,
-            linestyle=linestyle,
-            color=color,
-        )
-
-    plt.legend()
-    plt.title(f"MSE vs. Rollout Step, Mean of {args.n_trials} Trials")
-    plt.xlabel("Rollout Step")
-    plt.ylabel("SMSE")
-    plt.yscale("log")
-    plt.savefig(f"{args.images_dir}/rollout_loss_plot.png")
-    plt.close()
 
 # Old models
 # (

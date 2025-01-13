@@ -1,0 +1,263 @@
+import sys
+import argparse
+import matplotlib.pyplot as plt
+
+import jax.numpy as jnp
+
+import geometricconvolutions.geometric as geom
+import geometricconvolutions.utils as utils
+
+
+def plot_layer(
+    test_layer: geom.BatchLayer,
+    actual_layer: geom.BatchLayer,
+    save_loc: str,
+    future_steps: int,
+    component: int = 0,
+    show_power: bool = False,
+    title: str = "",
+    minimal: bool = False,
+):
+    """
+    Plot all timesteps of a particular component of two layers, and the differences between them.
+    args:
+        test_layer (BatchLayer): the predicted layer
+        actual_layer (BatchLayer): the ground truth layer
+        save_loc (str): file location to save the image
+        future_steps (int): the number future time steps in the layer
+        component (int): index of the component to plot, default to 0
+        show_power (bool): whether to also plot the power spectrum, default to False
+        title (str): additional str to add to title, will be "test {title} {col}"
+            "actual {title} {col}"
+        minimal (bool): if minimal, no titles, colorbars, or axes labels, defaults to False
+    """
+    test_layer_comp = test_layer.get_component(component, future_steps).get_one_layer()
+    actual_layer_comp = actual_layer.get_component(component, future_steps).get_one_layer()
+
+    test_images = test_layer_comp.to_images()
+    actual_images = actual_layer_comp.to_images()
+
+    img_arr = jnp.concatenate([test_layer_comp[(0, 0)], actual_layer_comp[(0, 0)]])
+    vmax = jnp.max(jnp.abs(img_arr))
+    vmin = -1 * vmax
+
+    nrows = 4 if show_power else 3
+
+    # figsize is 6 per col, 6 per row, (cols,rows)
+    fig, axes = plt.subplots(nrows=nrows, ncols=future_steps, figsize=(6 * future_steps, 6 * nrows))
+    for col, (test_image, actual_image) in enumerate(zip(test_images, actual_images)):
+        diff = (actual_image - test_image).norm()
+        if minimal:
+            test_title = ""
+            actual_title = ""
+            diff_title = ""
+            colorbar = False
+            hide_ticks = True
+            xlabel = ""
+            ylabel = ""
+        else:
+            test_title = f"test {title} {col}"
+            actual_title = f"actual {title} {col}"
+            diff_title = f"diff {title} {col} (mse: {jnp.mean(diff.data)})"
+            colorbar = True
+            hide_ticks = False
+            xlabel = "unnormalized wavenumber"
+            ylabel = "unnormalized power"
+
+        test_image.plot(axes[0, col], title=test_title, vmin=vmin, vmax=vmax, colorbar=colorbar)
+        actual_image.plot(axes[1, col], title=actual_title, vmin=vmin, vmax=vmax, colorbar=colorbar)
+        diff.plot(axes[2, col], title=diff_title, vmin=vmin, vmax=vmax, colorbar=colorbar)
+
+        if show_power:
+            utils.plot_power(
+                [test_image.data[None, None], actual_image.data[None, None]],
+                ["test", "actual"] if col == 0 else None,
+                axes[3, col],
+                xlabel=xlabel,
+                ylabel=ylabel,
+                hide_ticks=hide_ticks,
+            )
+
+    plt.tight_layout()
+    plt.savefig(save_loc)
+    plt.close(fig)
+
+
+def plot_timestep_power(
+    layers: list[geom.BatchLayer],
+    labels: list[str],
+    save_loc: str,
+    future_steps: int,
+    component: int = 0,
+    title: str = "",
+):
+    fig, axes = plt.subplots(nrows=1, ncols=future_steps, figsize=(8 * future_steps, 6 * 1))
+    for i, ax in enumerate(axes):
+        utils.plot_power(
+            [
+                layer.get_component(component, future_steps, as_layer=False)[:, i : i + 1]
+                for layer in layers
+            ],
+            labels,
+            ax,
+            title=f"{title} {i}",
+        )
+
+    plt.savefig(save_loc)
+    plt.close(fig)
+
+
+def handleArgs(argv):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-n_train", help="number of training trajectories", type=int, default=100)
+    parser.add_argument(
+        "-n_val",
+        help="number of validation trajectories, defaults to batch",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "-n_test",
+        help="number of testing trajectories, defaults to batch",
+        type=int,
+        default=None,
+    )
+    parser.add_argument("-t", "--n_trials", help="number of trials to run", type=int, default=1)
+    parser.add_argument("-seed", help="the random number seed", type=int, default=None)
+    parser.add_argument("--load_M01", help="file name to load params from", type=str, default=None)
+    parser.add_argument("--load_M10", help="file name to load params from", type=str, default=None)
+    parser.add_argument(
+        "-images_dir",
+        help="directory to save images, or None to not save",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--plot_component",
+        help="which component to plot, one of 0-3",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3],
+    )
+    parser.add_argument(
+        "--rollout_steps",
+        help="number of steps to rollout in test",
+        type=int,
+        default=5,
+    )
+
+    return parser.parse_args()
+
+
+def process_results(results):
+    rollout_res = results[..., 3:]
+    non_rollout_res = jnp.concatenate(
+        [results[..., :3], jnp.sum(rollout_res, axis=-1, keepdims=True)], axis=-1
+    )
+    mean_results = jnp.mean(
+        non_rollout_res, axis=0
+    )  # mean over trials (benchmark_vals,models,outputs)
+    std_results = jnp.std(non_rollout_res, axis=0)  # std over trials
+
+    return mean_results, std_results, rollout_res
+
+
+# Main
+args = handleArgs(sys.argv)
+
+results_M01 = jnp.load(args.load_M01 + "results.npy")
+results_M10 = jnp.load(args.load_M10 + "results.npy")
+
+mean_M01, std_M01, rollout_M01 = process_results(results_M01)
+mean_M10, std_M10, rollout_M10 = process_results(results_M10)
+
+results_order = [
+    "dil_resnet64",
+    "dil_resnet_equiv48",
+    "dil_resnet_equiv20",
+    "resnet",
+    "resnet_equiv_groupnorm_100",
+    "resnet_equiv_groupnorm_42",
+    "unetBase",
+    "unetBase_equiv48",
+    "unetBase_equiv20",
+    "unet2015",
+    "unet2015_equiv48",
+    "unet2015_equiv20",
+]
+
+plot_mapping = {
+    "dil_resnet64": ("DilResNet64", "blue", "o", "dashed"),
+    "dil_resnet_equiv20": ("DilResNet20 (E)", "blue", "o", "dotted"),
+    "dil_resnet_equiv48": ("DilResNet48 (E)", "blue", "o", "solid"),
+    "resnet": ("ResNet128", "red", "s", "dashed"),
+    "resnet_equiv_groupnorm_42": ("ResNet42 (E)", "red", "s", "dotted"),
+    "resnet_equiv_groupnorm_100": ("ResNet100 (E)", "red", "s", "solid"),
+    "unetBase": ("UNet64 Norm", "green", "P", "dashed"),
+    "unetBase_equiv20": ("UNet20 Norm (E)", "green", "P", "dotted"),
+    "unetBase_equiv48": ("UNet48 Norm (E)", "green", "P", "solid"),
+    "unet2015": ("UNet64", "orange", "*", "dashed"),
+    "unet2015_equiv20": ("Unet20 (E)", "orange", "*", "dotted"),
+    "unet2015_equiv48": ("Unet48 (E)", "orange", "*", "solid"),
+}
+display_order = list(plot_mapping.keys())
+
+# print table
+output_types = ["M0.1 1-step", "M0.1 rollout", "M1.0 1-step", "M1.0 rollout"]
+print("model ", end="")
+for output_type in output_types:
+    print(f"& {output_type} ", end="")
+
+print("\\\\")
+print("\\toprule")
+
+block_size = 3  # number of models per block
+for i in range(len(display_order) // block_size):
+    for l in range(block_size):  # models come in a baseline and equiv small, and equiv large
+        idx = block_size * i + l
+        results_idx = results_order.index(display_order[idx])
+        print(f"{plot_mapping[display_order[idx]][0]} ", end="")
+
+        for mean_results, std_results in [(mean_M01, std_M01), (mean_M10, std_M10)]:
+            for j in range(2, 4):  # only want the test and rollout test
+                if jnp.trunc(std_results[0, results_idx, j] * 1000) / 1000 > 0:
+                    stdev = f"$\\pm$ {std_results[0,results_idx,j]:.3f}"
+                else:
+                    stdev = ""
+
+                if jnp.allclose(
+                    mean_results[0, results_idx, j],
+                    jnp.min(mean_results[0, block_size * i : block_size * (i + 1), j]),
+                ):
+                    print(
+                        f'& \\textbf{"{"}{mean_results[0,results_idx,j]:.3f} {stdev}{"}"}', end=""
+                    )
+                else:
+                    print(f"& {mean_results[0,results_idx,j]:.3f} {stdev} ", end="")
+
+        print("\\\\")
+
+    if i < (len(display_order) // block_size) - 1:
+        print("\\midrule")
+
+print("\\bottomrule")
+
+if args.images_dir:
+    for model_name, (label, color, marker, linestyle) in plot_mapping.items():
+        idx = results_order.index(model_name)
+        plt.plot(
+            jnp.arange(1, 1 + args.rollout_steps),
+            jnp.mean(rollout_M01, axis=0)[0, idx],
+            label=label,
+            marker=marker,
+            linestyle=linestyle,
+            color=color,
+        )
+
+    plt.legend()
+    plt.title(f"MSE vs. Rollout Step, Mean of {args.n_trials} Trials")
+    plt.xlabel("Rollout Step")
+    plt.ylabel("SMSE")
+    plt.yscale("log")
+    plt.savefig(f"{args.images_dir}/rollout_loss_plot.png")
+    plt.close()

@@ -171,21 +171,6 @@ results_M10 = jnp.load(args.load_M10 + "results.npy")
 mean_M01, std_M01, rollout_M01 = process_results(results_M01)
 mean_M10, std_M10, rollout_M10 = process_results(results_M10)
 
-results_order = [
-    "dil_resnet64",
-    "dil_resnet_equiv48",
-    "dil_resnet_equiv20",
-    "resnet",
-    "resnet_equiv_groupnorm_100",
-    "resnet_equiv_groupnorm_42",
-    "unetBase",
-    "unetBase_equiv48",
-    "unetBase_equiv20",
-    "unet2015",
-    "unet2015_equiv48",
-    "unet2015_equiv20",
-]
-
 plot_mapping = {
     "dil_resnet64": ("DilResNet64", "blue", "o", "dashed"),
     "dil_resnet_equiv20": ("DilResNet20 (E)", "blue", "o", "dotted"),
@@ -200,7 +185,7 @@ plot_mapping = {
     "unet2015_equiv20": ("Unet20 (E)", "orange", "*", "dotted"),
     "unet2015_equiv48": ("Unet48 (E)", "orange", "*", "solid"),
 }
-display_order = list(plot_mapping.keys())
+model_list = list(plot_mapping.keys())
 
 # print table
 output_types = ["M0.1 1-step", "M0.1 rollout", "M1.0 1-step", "M1.0 rollout"]
@@ -212,39 +197,35 @@ print("\\\\")
 print("\\toprule")
 
 block_size = 3  # number of models per block
-for i in range(len(display_order) // block_size):
+for i in range(len(model_list) // block_size):
     for l in range(block_size):  # models come in a baseline and equiv small, and equiv large
         idx = block_size * i + l
-        results_idx = results_order.index(display_order[idx])
-        print(f"{plot_mapping[display_order[idx]][0]} ", end="")
+        print(f"{plot_mapping[model_list[idx]][0]} ", end="")
 
         for mean_results, std_results in [(mean_M01, std_M01), (mean_M10, std_M10)]:
             for j in range(2, 4):  # only want the test and rollout test
-                if jnp.trunc(std_results[0, results_idx, j] * 1000) / 1000 > 0:
-                    stdev = f"$\\pm$ {std_results[0,results_idx,j]:.3f}"
+                if jnp.trunc(std_results[0, idx, j] * 1000) / 1000 > 0:
+                    stdev = f"$\\pm$ {std_results[0,idx,j]:.3f}"
                 else:
                     stdev = ""
 
                 if jnp.allclose(
-                    mean_results[0, results_idx, j],
+                    mean_results[0, idx, j],
                     jnp.min(mean_results[0, block_size * i : block_size * (i + 1), j]),
                 ):
-                    print(
-                        f'& \\textbf{"{"}{mean_results[0,results_idx,j]:.3f} {stdev}{"}"}', end=""
-                    )
+                    print(f'& \\textbf{"{"}{mean_results[0,idx,j]:.3f} {stdev}{"}"}', end="")
                 else:
-                    print(f"& {mean_results[0,results_idx,j]:.3f} {stdev} ", end="")
+                    print(f"& {mean_results[0,idx,j]:.3f} {stdev} ", end="")
 
         print("\\\\")
 
-    if i < (len(display_order) // block_size) - 1:
+    if i < (len(model_list) // block_size) - 1:
         print("\\midrule")
 
 print("\\bottomrule")
 
 if args.images_dir:
-    for model_name, (label, color, marker, linestyle) in plot_mapping.items():
-        idx = results_order.index(model_name)
+    for idx, (model_name, (label, color, marker, linestyle)) in enumerate(plot_mapping.items()):
         plt.plot(
             jnp.arange(1, 1 + args.rollout_steps),
             jnp.mean(rollout_M01, axis=0)[0, idx],

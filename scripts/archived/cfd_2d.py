@@ -440,8 +440,8 @@ def train_and_eval(
     if images_dir is not None:
         components = ["density", "pressure", "velocity_x", "velocity_y"]
         plot_layer(
-            rollout_layer.get_one(378),
-            test_rollout_Y.get_one(378),
+            rollout_layer.get_one(),
+            test_rollout_Y.get_one(),
             f"{images_dir}{model_name}_L{train_X.L}_e{epochs}_{components[plot_component]}_rollout.png",
             future_steps=rollout_steps,
             component=plot_component,

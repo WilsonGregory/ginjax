@@ -74,15 +74,19 @@ mean_M10, std_M10, rollout_M10 = process_results(results_M10)
 
 plot_mapping = {
     "dil_resnet64": ("DilResNet64", "blue", "o", "dashed"),
+    "dil_resnet64_groupaveraged": ("DilResNet64 (GA)", "blue", "o", "dashdot"),
     "dil_resnet_equiv20": ("DilResNet20 (E)", "blue", "o", "dotted"),
     "dil_resnet_equiv48": ("DilResNet48 (E)", "blue", "o", "solid"),
     "resnet": ("ResNet128", "red", "s", "dashed"),
+    "resnet_groupaveraged": ("ResNet128 (GA)", "red", "s", "dashdot"),
     "resnet_equiv_groupnorm_42": ("ResNet42 (E)", "red", "s", "dotted"),
     "resnet_equiv_groupnorm_100": ("ResNet100 (E)", "red", "s", "solid"),
     "unetBase": ("UNet64 Norm", "green", "P", "dashed"),
+    "unetBase_groupaveraged": ("UNet64 Norm (GA)", "green", "P", "dashdot"),
     "unetBase_equiv20": ("UNet20 Norm (E)", "green", "P", "dotted"),
     "unetBase_equiv48": ("UNet48 Norm (E)", "green", "P", "solid"),
     "unet2015": ("UNet64", "orange", "*", "dashed"),
+    "unet2015_groupaveraged": ("UNet64 (GA)", "orange", "*", "dashdot"),
     "unet2015_equiv20": ("Unet20 (E)", "orange", "*", "dotted"),
     "unet2015_equiv48": ("Unet48 (E)", "orange", "*", "solid"),
 }
@@ -97,7 +101,7 @@ for output_type in output_types:
 print("\\\\")
 print("\\toprule")
 
-block_size = 3  # number of models per block
+block_size = 4  # number of models per block
 for i in range(len(model_list) // block_size):
     for l in range(block_size):  # models come in a baseline and equiv small, and equiv large
         idx = block_size * i + l

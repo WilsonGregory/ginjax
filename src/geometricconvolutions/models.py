@@ -677,14 +677,17 @@ def group_average(
                 **kwargs,
             )
 
-            if return_params:
-                out, out_params = out
+            if isinstance(out, tuple):  # if there are return params, or batch stats
+                # out_remainder will get repeatedly set, so hopefully that isn't a problem
+                out_layer, *out_remainder = out
+            else:
+                out_layer = out
 
-            out_rot = out.times_group_element(gg.T)
+            out_rot = out_layer.times_group_element(gg.T)
             sum_layer = out_rot if sum_layer is None else sum_layer + out_rot
 
         mean_layer = sum_layer / len(group_operators)
-        return (mean_layer, out_params) if return_params else mean_layer
+        return (mean_layer,) + tuple(out_remainder) if isinstance(out, tuple) else mean_layer
 
 
 def unetBase_approx_equiv(

@@ -584,6 +584,20 @@ model_list = [
         ),
     ),
     (
+        "dil_resnet64_groupaveraged",
+        partial(
+            train_and_eval,
+            net=partial(
+                models.group_average,
+                model_f=models.dil_resnet,
+                output_keys=output_keys,
+                output_depth=output_depth,
+                depth=64,
+            ),
+            lr=2e-3,
+        ),
+    ),
+    (
         "dil_resnet_equiv20",
         partial(
             train_and_eval,
@@ -621,6 +635,20 @@ model_list = [
             train_and_eval,
             net=partial(
                 models.resnet,
+                output_keys=output_keys,
+                output_depth=output_depth,
+                depth=128,
+            ),
+            lr=1e-3,
+        ),
+    ),
+    (
+        "resnet_groupaveraged",
+        partial(
+            train_and_eval,
+            net=partial(
+                models.group_average,
+                model_f=models.resnet,
                 output_keys=output_keys,
                 output_depth=output_depth,
                 depth=128,
@@ -675,6 +703,19 @@ model_list = [
         ),
     ),
     (
+        "unetBase_groupaveraged",
+        partial(
+            train_and_eval,
+            net=partial(
+                models.group_average,
+                model_f=models.unetBase,
+                output_keys=output_keys,
+                output_depth=output_depth,
+            ),
+            lr=8e-4,
+        ),
+    ),
+    (
         "unetBase_equiv20",
         partial(
             train_and_eval,
@@ -716,6 +757,20 @@ model_list = [
             train_and_eval,
             net=partial(
                 models.unet2015,
+                output_keys=output_keys,
+                output_depth=output_depth,
+            ),
+            lr=8e-4,
+            has_aux=True,
+        ),
+    ),
+    (
+        "unet2015_groupaveraged",
+        partial(
+            train_and_eval,
+            net=partial(
+                models.group_average,
+                model_f=models.unet2015,
                 output_keys=output_keys,
                 output_depth=output_depth,
             ),

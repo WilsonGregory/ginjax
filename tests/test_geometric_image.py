@@ -648,8 +648,19 @@ class TestGeometricImage:
             convolved_image.data == jnp.array([[-2, 0, 2], [2, 5, 5], [-2, -1, 3]], dtype=float)
         ).all()
 
-        key = random.PRNGKey(0)
-        image2 = geom.GeometricImage(jnp.floor(10 * random.uniform(key, shape=(5, 5))), 0, 2)
+        image2 = geom.GeometricImage(
+            jnp.array(
+                [
+                    [9, 9, 3, 4, 5],
+                    [1, 3, 6, 7, 1],
+                    [9, 0, 6, 5, 8],
+                    [9, 8, 7, 5, 0],
+                    [0, 9, 5, 7, 5],
+                ]
+            ),
+            0,
+            2,
+        )
         convolved_image2 = image2.convolve_with(filter_image)
         assert convolved_image2.D == image2.D
         assert convolved_image2.spatial_dims == image2.spatial_dims
@@ -659,11 +670,11 @@ class TestGeometricImage:
             convolved_image2.data
             == jnp.array(
                 [
-                    [16, 9, 16, 11, 10],
-                    [15, 19, 15, 13, 28],
-                    [17, 19, 15, 16, 17],
-                    [16, 12, 13, 13, 18],
-                    [8, 23, 11, 13, 29],
+                    [18, 12, 26, 17, 15],
+                    [22, 27, 18, 22, 27],
+                    [12, 23, 23, 14, 22],
+                    [22, 20, 21, 24, 21],
+                    [22, 28, 26, 15, 27],
                 ],
                 dtype=float,
             )

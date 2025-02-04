@@ -79,6 +79,7 @@ class TestModels:
         D = 2
         M = 3
         N = 5
+        batch = 3
         in_c = 3
         out_c = 4
         max_k = 2
@@ -103,7 +104,7 @@ class TestModels:
                 key, *subkeys = random.split(key, num=len(input_keys) + 1)
                 layer = geom.Layer(
                     {
-                        (k, p): random.normal(subkeys[i], shape=(in_c,) + (N,) * D + (D,) * k)
+                        (k, p): random.normal(subkeys[i], shape=(batch, in_c) + (N,) * D + (D,) * k)
                         for i, ((k, p), _) in enumerate(input_keys)
                     },
                     D,

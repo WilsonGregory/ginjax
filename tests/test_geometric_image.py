@@ -114,22 +114,8 @@ class TestGeometricImage:
         with pytest.raises(AssertionError):
             geom.GeometricImage(random.uniform(key, shape=(10, 10, 3, 3)), 0, 2)
 
-    def testCopy(self):
-        image1 = geom.GeometricImage.zeros(20, 0, 0, 2, False)
-        image2 = image1.copy()
-
-        assert type(image1) == type(image2)
-        assert (image1.data == image2.data).all()
-        assert image1.parity == image2.parity
-        assert image1.D == image2.D
-        assert image1.k == image2.k
-        assert image1.spatial_dims == image2.spatial_dims
-        assert image1.is_torus == image2.is_torus
-        assert image1 == image2
-
     def testEqual(self):
         img1 = geom.GeometricImage(jnp.ones((10, 10, 2)), 0, 2)
-        assert img1 == img1.copy()
 
         # same
         img2 = geom.GeometricImage(jnp.ones((10, 10, 2)), 0, 2)
@@ -306,7 +292,7 @@ class TestGeometricImage:
         with pytest.raises(AssertionError):  # mismatched D
             image6 * image1
 
-        # Test multiplying by a scalar (it calls times_scalar)
+        # Test multiplying by a scalar
         result = image1 * 5
         assert (result.data == 10).all()
         assert result.parity == image1.parity
@@ -342,7 +328,7 @@ class TestGeometricImage:
         image1 = geom.GeometricImage(jnp.ones((10, 10, 2), dtype=int), 0, 2)
         assert (image1.data == 1).all()
 
-        result = image1.times_scalar(5)
+        result = image1 * 5
         assert (result.data == 5).all()
         assert result.parity == image1.parity
         assert result.D == image1.D
@@ -350,7 +336,7 @@ class TestGeometricImage:
         assert result.spatial_dims == image1.spatial_dims
         assert (image1.data == 1).all()  # original is unchanged
 
-        result2 = image1.times_scalar(3.4)
+        result2 = image1 * 3.4
         assert (result2.data == 3.4).all()
         assert (image1.data == 1).all()
 
@@ -366,30 +352,6 @@ class TestGeometricImage:
         assert (image1[0] == random_vals[0]).all()
         assert (image1[4:, 2:3] == random_vals[4:, 2:3]).all()
         assert image1[4:, 2:3].shape == random_vals[4:, 2:3].shape
-
-    def testActivationFunction(self):
-        img1 = geom.GeometricImage(
-            jnp.array([[-1, 0, 1], [2, -0.3, 4], [8, 3, 1]]).reshape((3, 3)), 0, 2
-        )
-        relu_img = img1.activation_function(jax.nn.relu)
-
-        assert img1.shape() == relu_img.shape()
-        assert img1.parity == relu_img.parity
-        assert jnp.allclose(
-            relu_img.data, jnp.array([[0, 0, 1], [2, 0, 4], [8, 3, 1]]).reshape((3, 3))
-        )
-
-        img2 = geom.GeometricImage.fill(3, 0, 2, jnp.array([-1, 1]))
-        with pytest.raises(
-            AssertionError
-        ):  # activation_function only implemented for k=0 tensors due to equivariance
-            img2.activation_function(jax.nn.relu)
-
-        leaky_relu_img = img1.activation_function(partial(jax.nn.leaky_relu, negative_slope=0.01))
-        assert jnp.allclose(
-            leaky_relu_img.data,
-            jnp.array([[-0.01, 0, 1], [2, -0.003, 4], [8, 3, 1]]).reshape((3, 3)),
-        )
 
     def testContract(self):
         img1 = geom.GeometricImage(jnp.arange(36).reshape((3, 3, 2, 2)), 0, 2)
@@ -866,7 +828,7 @@ class TestGeometricImage:
         # rotate and parity 1, sign is flipped from img1
         img2_flipX = img2.times_group_element(flipX)
         assert img2_flipX.parity == img2.parity
-        assert (img2_flipX.data == img1_flipX.times_scalar(-1).data).all()
+        assert (img2_flipX.data == (img1_flipX * -1).data).all()
 
         img3 = geom.GeometricImage(jnp.arange(18).reshape((3, 3, 2)), 1, 2)
 
@@ -1088,25 +1050,6 @@ class TestGeometricImage:
                 ]
             ),
         )
-
-    def testPixelSize(self):
-        img1 = geom.GeometricImage.zeros(10, 0, 0, 2)
-        assert img1.pixel_size() == 1
-
-        img2 = geom.GeometricImage.zeros(10, 1, 0, 2)
-        assert img2.pixel_size() == 2
-
-        img3 = geom.GeometricImage.zeros(10, 2, 0, 2)
-        assert img3.pixel_size() == 4
-
-        img4 = geom.GeometricImage.zeros(10, 0, 0, 3)
-        assert img1.pixel_size() == 1
-
-        img2 = geom.GeometricImage.zeros(10, 1, 0, 3)
-        assert img2.pixel_size() == 3
-
-        img3 = geom.GeometricImage.zeros(10, 2, 0, 3)
-        assert img3.pixel_size() == 9
 
     def testMaxPoolUseNorm(self):
         image1 = geom.GeometricImage(

@@ -1,52 +1,3 @@
-Metadata-Version: 2.2
-Name: geometricconvolutions
-Version: 0.1.1
-Summary: Package for building Convolutional Neural Networks on images of tensors.
-Home-page: https://github.com/WilsonGregory/GeometricConvolutions
-Author: Wilson Gregory, David Hogg
-Author-email: wilson.g.gregory@gmail.com
-Project-URL: Bug Tracker, https://github.com/WilsonGregory/GeometricConvolutions/issues
-Classifier: Programming Language :: Python :: 3
-Classifier: License :: OSI Approved :: MIT License
-Classifier: Operating System :: OS Independent
-Requires-Python: >=3.7
-Description-Content-Type: text/markdown
-License-File: LICENSE
-Requires-Dist: matplotlib
-Requires-Dist: numpy
-Requires-Dist: jax
-Requires-Dist: cmastro
-Requires-Dist: optax
-Requires-Dist: equinox
-Requires-Dist: imageio
-
-# Geometric Convolutions
-
-This package implements the GeometricImageNet which allows for writing general functions from geometric images to geometric images. Also, with an easy restriction to group invariant CNN filters, we can write CNNs that are equivariant to those groups for geometric images.
-
-See the paper for more details: https://arxiv.org/abs/2305.12585
-
-## Table of Contents
-
-1. [Installation](#installation)
-2. [Quick Start](#quick-start)
-    1. [Basic Features](#quick-start)
-    2. [Learning Scalar Filters](#learning-scalar-filters)
-3. [Features](#features)
-    1. [GeometricImage](#geometricimage)
-    2. [Layer and BatchLayer](#layer-and-batchlayer)
-4. [Authors](#authors)
-5. [License](#license)
-
-## Installation
-
-- Install using pip: `pip install geometricconvolutions`.
-- Alternatively, you can install this repo as an editable install using pip.
-  - Clone the repository `git clone https://github.com/WilsonGregory/GeometricConvolutions.git`
-  - Navigate to the GeometricConvolutions directory `cd GeometricConvolutions`
-  - Locally install the package `pip install -e .` (may have to use pip3 if your system has both python2 and python3 installed)
-  - In order to run JAX on a GPU, you will likely need to follow some additional steps detailed in https://github.com/google/jax#installation. You will probably need to know your CUDA version, which can be found with `nvidia-smi` and/or `nvcc --version`.
-
 ## Quick Start
 
 ### Basic Features
@@ -190,7 +141,7 @@ def target_function(image, conv_filter_a, conv_filter_b):
 Y_images = [target_function(image, conv_filters[1], conv_filters[2]) for image in X_images]
 ```
 
-We now want to define our network and loss function. Machine learning on the GeometricImageNet is done on the BatchLayer object, which is a way of collecting batches of multiple channels of images at possible different tensor orders in a single object. See [Layer and BatchLayer](#layer-and-batchlayer) for more information.
+We now want to define our network and loss function. Machine learning on the GeometricImageNet is done on the BatchLayer object, which is a way of collecting batches of multiple channels of images at possible different tensor orders in a single object.
 
 For this toy example, we will make our task straightforward by making our network a linear combination of all the pairs of convolving by one filter from our set of three, then another filter from our set of three with replacement. In this fashion, our target function will be the 5th of 6 images. Our loss is simply the root mean square error loss (RMSE). The ml.train function expects a map_and_loss function that operates on batch layers, and includes the parameters key and train that we won't use for this model.
 ```
@@ -258,21 +209,3 @@ Epoch 500 Train: 0.0342868
   1.0000725e+00 -9.1719430e-06]
  ```
  and we can see that the 5th parameter is 1 and all others are tiny. Hooray!
-
-## Features
-
-### GeometricImage
-
-The GeometricImage is the main concept of this package. We define a geometric image for dimension D, sidelength N, parity p, and tensor order k. Note that currently, all the sidelengths must be the same. To construct a geometric image, do: `image = GeometricImage(data, parity, D)`. Data is a jnp.array with the shape `((N,)*D + (D,)*k)`.
-
-### Layer and BatchLayer
-
-The Layer and BatchLayer classes allow us to group multiple images together that have the same dimension and sidelength. Layer is a dictionary where the keys are tensor order k, and the values are a image data block where the first index is the channel, then the remaining indices are the normal ones you would find in a geometric image. BatchLayer has the same structure, but the first index of the data image block is the batch, the second is the channel, and then the rest are the geometric image. You can easily construct Layers and BatchLayers from images using the `from_images` function.
-
-## Authors
-- **David W. Hogg** (NYU) (MPIA) (Flatiron)
-- **Soledad Villar** (JHU)
-- **Wilson Gregory** (JHU)
-
-## License
-Copyright 2022 the authors. All **text** (in `.txt` and `.tex` and `.bib` files) is licensed *All rights reserved*. All **code** (everything else) is licensed for use and reuse under the open-source *MIT License*. See the file `LICENSE` for more details of that.

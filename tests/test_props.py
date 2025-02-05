@@ -86,10 +86,8 @@ class TestPropositions:
 
         alpha, beta = random.uniform(subkey, shape=(2,))
 
-        B1 = image1.convolve_with(c1).times_scalar(alpha) + image2.convolve_with(c1).times_scalar(
-            beta
-        )
-        B2 = (image1.times_scalar(alpha) + image2.times_scalar(beta)).convolve_with(c1)
+        B1 = image1.convolve_with(c1) * alpha + image2.convolve_with(c1) * beta
+        B2 = (image1 * alpha + image2 * beta).convolve_with(c1)
 
         assert B1.shape() == B2.shape()
         assert B1.parity == B2.parity

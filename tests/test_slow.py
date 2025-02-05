@@ -23,7 +23,7 @@ def conv_subimage(image, center_key, filter_image, filter_image_keys=None):
 
     key_list = image.hash(filter_image_keys + jnp.array(center_key))  # key list on the torus
     # values, reshaped to the correct shape, which is the filter_image shape, while still having the tensor shape
-    vals = image[key_list].reshape(filter_image.image_shape() + image.pixel_shape())
+    vals = image[key_list].reshape(filter_image.spatial_dims + (image.D,) * image.k)
     return image.__class__(vals, image.parity, image.D)
 
 

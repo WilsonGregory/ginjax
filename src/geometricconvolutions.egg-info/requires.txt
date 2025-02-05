@@ -4,3 +4,4 @@ jax
 optax
 equinox
 imageio
+h5py

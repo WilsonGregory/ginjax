@@ -1,6 +1,7 @@
 matplotlib
 numpy
 jax
-cmastro
 optax
+equinox
 imageio
+h5py

@@ -1,12 +1,9 @@
 import numpy as np
 import pylab as plt
-import matplotlib.cm as cm
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Wedge
-import cmastro
 
 import jax.numpy as jnp
-import jax
 
 # Visualize the filters.
 
@@ -54,7 +51,7 @@ def fill_boxes(ax, xs, ys, ws, vmin, vmax, cmap, zorder=-100, colorbar=False, al
         vmax=vmax,
         cmap=cmap,
         alpha=alpha,
-        zorder=-100,
+        zorder=zorder,
     )
     if colorbar:
         plt.colorbar(plotted_img, ax=ax)
@@ -71,7 +68,7 @@ def plot_scalars(
     symbols=True,
     vmin=-2.0,
     vmax=2.0,
-    cmap="cma:unph",
+    cmap="BrBG",
     colorbar=False,
 ):
     if boxes:
@@ -101,7 +98,7 @@ def plot_vectors(
     fill=True,
     vmin=0.0,
     vmax=2.0,
-    cmap="cma:lacerta_r",
+    cmap="PuRd",
     scaling=0.33,
 ):
     if boxes:
@@ -278,7 +275,7 @@ def plot_one_tensor(ax, x, y, T, zorder=0, scaling=0.33):
     ax.add_collection(p)
 
 
-def plot_tensors(ax, xs, ys, ws, boxes=True, vmin=0.0, vmax=2.0, cmap="cma:hesperia_r"):
+def plot_tensors(ax, xs, ys, ws, boxes=True):
     if boxes:
         plot_boxes(ax, xs, ys)
     for x, y, w in zip(xs, ys, ws):

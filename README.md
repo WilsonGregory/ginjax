@@ -132,110 +132,125 @@ print('contracted image k:', convolved_image.contract(0,1).k)
 ### Learning Scalar Filters
 Now we will have a simple example where we use GeometricConvolutions and JAX to learn scalar filters. See `scalar_example.py` for a python script of the example. First, the imports:
 ```
-import jax.numpy as jnp
-from jax import random, vmap
 import time
-import itertools as it
-import math
 import optax
-from functools import partial
+from typing_extensions import Optional, Self
+
+import jax
+from jax import random
+from jaxtyping import ArrayLike
+import equinox as eqx
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 ```
 
-Now lets define our images X and what filters we are going to use. Our image will be 2D, 64 x 64 scalar images. Our filters will be 3x3 and they will be the invariant scalar filters only. There are 3 of these, and the first one is the identity.
+First, lets define our inputs, `layer_X`. The models we define run on objects of the class `BatchLayer`. This object basically collects all the batches and channels of geometric images at different tensors and parities into a single object. To construct this, we pass a dictionary mapping (tensor_order,tensor_parity) to a block of data with axes (batch,channels,spatial_dimensions,tensor_dimensions). For this example, our images will be 2D, 64 x 64 scalar images.
 ```
 key = random.PRNGKey(time.time_ns())
 
 D = 2
 N = 64 #image size
-M = 3  #filter image size
 num_images = 10
 
-group_actions = geom.make_all_operators(D)
-conv_filters = geom.get_unique_invariant_filters(M=M, k=0, parity=0, D=D, operators=group_actions)
-
 key, subkey = random.split(key)
-X_images = [geom.GeometricImage(data, 0, D, True) for data in random.normal(subkey, shape=(num_images, N, N))]
+layer_X = geom.BatchLayer({(0, 0): random.normal(subkey, shape=(num_images, 1) + (N,) * D)}, D)
+```
+
+Our filters will be 3x3 and they will be the invariant scalar filters only. There are 3 of these, and the first one is the identity. We use `get_invariant_filters` to get a layer of these filters.
+```
+M = 3  #filter image size
+group_actions = geom.make_all_operators(D)
+conv_filters = geom.get_invariant_filters(Ms=[M], ks=[0], parities=[0], D=D, operators=group_actions)
 ```
 
 Now let us define our target function, and then construct our target images Y. The target function will merely be convolving by the filter at index 1, then convolving by the filter at index 2.
 ```
-def target_function(image, conv_filter_a, conv_filter_b):
-    return image.convolve_with(conv_filter_a).convolve_with(conv_filter_b)
+def target_function(layer: geom.BatchLayer, conv_filter_a: jax.Array, conv_filter_b: jax.Array) -> geom.BatchLayer:
+    convolved_data = geom.convolve(
+        layer.D,
+        geom.convolve(layer.D, layer[(0, 0)], conv_filter_a[None, None], layer.is_torus),
+        conv_filter_b[None, None],
+        layer.is_torus,
+    )
+    return geom.BatchLayer({(0, 0): convolved_data}, layer.D, layer.is_torus)
 
-Y_images = [target_function(image, conv_filters[1], conv_filters[2]) for image in X_images]
+layer_y = target_function(layer_X, conv_filters[(0, 0)][1], conv_filters[(0, 0)][2])
 ```
 
-We now want to define our network and loss function. Machine learning on the GeometricImageNet is done on the BatchLayer object, which is a way of collecting batches of multiple channels of images at possible different tensor orders in a single object. See [Layer and BatchLayer](#layer-and-batchlayer) for more information.
-
-For this toy example, we will make our task straightforward by making our network a linear combination of all the pairs of convolving by one filter from our set of three, then another filter from our set of three with replacement. In this fashion, our target function will be the 5th of 6 images. Our loss is simply the root mean square error loss (RMSE). The ml.train function expects a map_and_loss function that operates on batch layers, and includes the parameters key and train that we won't use for this model.
+Now we define our network that will learn this target function. We will just have it apply two convolutions in a row, using the invariant scalar filters. Our loss function will be the mean-squared error. The `ml.train` function expects a `map_and_loss` function that takes as input the model, the input layer, the target layer, and any auxilliary data, which we won't use in this instance.
 ```
-def batch_net(params, layer, conv_filters):
-    channel_convolve = vmap(geom.convolve, in_axes=(None, 0, None, None, None, None, None, None))
-    batch_convolve = vmap(channel_convolve, in_axes=(None, 0, None, None, None, None, None, None))
-    batch_linear_combination = vmap(geom.linear_combination, in_axes=(0, None))
+class SimpleModel(eqx.Module):
+    D: int
+    net: list[ml.ConvContract]
 
-    out_image_block = None
+    def __init__(
+        self: Self,
+        D: int,
+        input_keys: tuple[tuple[ml.LayerKey, int]],
+        output_keys: tuple[tuple[ml.LayerKey, int]],
+        conv_filters: geom.Layer,
+        key: ArrayLike,
+    ):
+        self.D = D
+        key, subkey1, subkey2 = random.split(key, num=3)
+        self.net = [
+            ml.ConvContract(input_keys, output_keys, conv_filters, False, key=subkey1),
+            ml.ConvContract(output_keys, output_keys, conv_filters, False, key=subkey2),
+        ]
 
-    for i,j in it.combinations_with_replacement(range(len(conv_filters[0])), 2):
-        filter_a = conv_filters[0][i]
-        filter_b = conv_filters[0][j]
-        convolved_image = batch_convolve(layer.D, layer[0], filter_a, layer.is_torus, None, None, None, None)
-        res_image = batch_convolve(layer.D, convolved_image, filter_b, layer.is_torus, None, None, None, None)
+    def __call__(self: Self, x: geom.BatchLayer):
+        for layer in self.net:
+            x = layer(x)
 
-        if (out_image_block is None):
-            out_image_block = res_image
-        else:
-            out_image_block = jnp.concatenate((out_image_block, res_image), axis=1)
+        return x
 
-    return batch_linear_combination(out_image_block, params)
-
-def map_and_loss(params, x, y, key, train, conv_filters):
-    return jnp.mean(vmap(ml.rmse_loss)(batch_net(params, x, conv_filters), y[0]))
+def map_and_loss(
+    model: eqx.Module,
+    layer_x: geom.BatchLayer,
+    layer_y: geom.BatchLayer,
+    aux_data: Optional[eqx.nn.State] = None,
+) -> float:
+    return ml.smse_loss(layer_y, model(layer_x)), aux_data
 ```
 
-Now we initialize our params as random normal, then train our model using the `train` function from `ml.py`. Train takes the input data X_layer, the target data Y_layer, a map and loss function that takes arguments (params, x, y, key, train), the params array, a random key for doing the batches, the number of epochs to run, the batch size, and the desired optax optimizer.
-
+Now we initialize our model, train it using the train function with a given optimizer for 500 epochs, and print the resulting weights.
 ```
 key, subkey = random.split(key)
-params = random.normal(subkey, shape=(len(conv_filters) + math.comb(len(conv_filters), 2),))
+model = SimpleModel(D, layer_X.get_signature(), layer_y.get_signature(), conv_filters, subkey)
 
-filter_layer = geom.Layer.from_images(conv_filters)
-X_layer = geom.BatchLayer.from_images(X_images)
-Y_layer = geom.BatchLayer.from_images(Y_images)
-
-params, _, _ = ml.train(
-    X_layer,
-    Y_layer,
-    partial(map_and_loss, conv_filters=filter_layer),
-    params,
-    key,
+key, subkey = random.split(key)
+trained_model, _, _, _ = ml.train(
+    layer_X,
+    layer_y,
+    map_and_loss,
+    model,
+    subkey,
     ml.EpochStop(500, verbose=1),
-    batch_size=num_images,
+    num_images,
     optimizer=optax.adam(optax.exponential_decay(0.1, transition_steps=1, decay_rate=0.99)),
 )
 
-print(params)
+print(trained_model.net[0].weights)
+print(trained_model.net[1].weights)
 ```
 
 This should print something like:
 ```
-Epoch 50 Train: 7.9201660
-Epoch 100 Train: 1.9141825
-Epoch 150 Train: 1.0414978
-Epoch 200 Train: 0.6042308
-Epoch 250 Train: 0.3557778
-Epoch 300 Train: 0.2116257
-Epoch 350 Train: 0.1265045
-Epoch 400 Train: 0.2636956
-Epoch 450 Train: 0.0671248
-Epoch 500 Train: 0.0342868
-[-8.7383251e-06  7.2533490e-05 -8.7593980e-06 -8.9773348e-06
-  1.0000725e+00 -9.1719430e-06]
+Epoch 50 Train: 0.0834250 Epoch time: 0.01208
+Epoch 100 Train: 0.0006962 Epoch time: 0.01121
+Epoch 150 Train: 0.0000310 Epoch time: 0.01187
+Epoch 200 Train: 0.0000040 Epoch time: 0.01143
+Epoch 250 Train: 0.0000011 Epoch time: 0.01129
+Epoch 300 Train: 0.0000005 Epoch time: 0.01115
+Epoch 350 Train: 0.0000003 Epoch time: 0.01112
+Epoch 400 Train: 0.0000002 Epoch time: 0.01215
+Epoch 450 Train: 0.0000002 Epoch time: 0.01202
+Epoch 500 Train: 0.0000002 Epoch time: 0.01207
+{(0, 0): {(0, 0): Array([[[3.7528062e-04, 9.0615535e-01, 1.1971369e-04]]], dtype=float32)}}
+{(0, 0): {(0, 0): Array([[[-2.0696800e-05, -2.1163450e-04,  1.1035721e+00]]], dtype=float32)}}
  ```
- and we can see that the 5th parameter is 1 and all others are tiny. Hooray!
+and we can see that the first convolution is almost 1 for index 1, and the 2ond is almost 1 at index 2, as desired. Hooray!
 
 ## Features
 

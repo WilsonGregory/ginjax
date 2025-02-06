@@ -31,6 +31,7 @@ import jax.nn
 import jax
 from jax import jit, vmap
 from jax.tree_util import register_pytree_node_class
+from jaxtyping import ArrayLike
 import equinox as eqx
 
 import geometricconvolutions.utils as utils
@@ -1039,7 +1040,7 @@ def tensor_times_gg(
     return newdata
 
 
-def norm(idx_shift: int, data: jnp.ndarray, keepdims: bool = False) -> jnp.ndarray:
+def norm(idx_shift: int, data: ArrayLike, keepdims: bool = False) -> jax.Array:
     """
     Perform the frobenius norm on each pixel tensor, returning a scalar image
     args:
@@ -1054,9 +1055,12 @@ def norm(idx_shift: int, data: jnp.ndarray, keepdims: bool = False) -> jnp.ndarr
     if data.ndim == idx_shift:  # in this case, reshape creates an axis, so we need to collapse it
         keepdims = False
 
-    return jnp.linalg.norm(
-        data.reshape(data.shape[:idx_shift] + (-1,)), axis=idx_shift, keepdims=keepdims
-    )
+    normed_data = jnp.linalg.norm(data.reshape(data.shape[:idx_shift] + (-1,)), axis=idx_shift)
+    if keepdims:
+        extra_axes = data.ndim - normed_data.ndim
+        return normed_data.reshape(normed_data.shape + (1,) * extra_axes)
+    else:
+        return normed_data
 
 
 @partial(jax.jit, static_argnums=[0, 2, 3])
@@ -1816,7 +1820,10 @@ class Layer:
     # Constructors
 
     def __init__(
-        self: Self, data: jnp.ndarray, D: int, is_torus: Union[bool, tuple[bool]] = True
+        self: Self,
+        data: dict[tuple[int, int], jax.Array],
+        D: int,
+        is_torus: Union[bool, tuple[bool]] = True,
     ) -> Self:
         """
         Construct a layer
@@ -2133,7 +2140,7 @@ class Layer:
     def get_signature(self: Self) -> Signature:
         """
         Get a tuple of ( ((k,p),channels), ((k,p),channels), ...). This works for Layers and
-        vmapped BatchLayers.
+        BatchLayers.
         """
         if self.data == {}:
             return None
@@ -2181,7 +2188,10 @@ class BatchLayer(Layer):
     # Constructors
 
     def __init__(
-        self: Self, data: jnp.ndarray, D: int, is_torus: Union[bool, tuple[bool]] = True
+        self: Self,
+        data: dict[tuple[int, int], jax.Array],
+        D: int,
+        is_torus: Union[bool, tuple[bool]] = True,
     ) -> Self:
         """
         Construct a layer
@@ -2354,7 +2364,7 @@ class BatchLayer(Layer):
         Take the output layer of a pmap and recombine the batch.
         """
         out_layer = self.empty()
-        for (k,parity), image_block in self.items():
+        for (k, parity), image_block in self.items():
             out_layer.append(k, parity, image_block.reshape((-1,) + image_block.shape[2:]))
 
         return out_layer

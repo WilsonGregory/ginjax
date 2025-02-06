@@ -1,1054 +1,567 @@
-import itertools as it
-import functools
-from collections import defaultdict
-import numpy as np
-import math
 import time
-from typing import Optional, Any, Union, NewType, Callable, Sequence
+import math
+import functools
+from typing import Any, Callable, NewType, Optional, Sequence, Union
 from typing_extensions import Self
+import scipy.special
+import numpy as np
 
-from jax import jit, random, value_and_grad, vmap, checkpoint, Array
 import jax
 import jax.numpy as jnp
-import jax.debug
+import jax.random as random
 from jax.typing import ArrayLike
+import equinox as eqx
 import optax
 
 import geometricconvolutions.geometric as geom
 
 LayerKey = NewType("LayerKey", tuple[int, int])
-ParamsTree = NewType("ParamsTree", Any)  # currently Any
-
-## Constants
-
-CONV_OLD = "conv_old"
-CONV = "conv"
-CHANNEL_COLLAPSE = "collapse"
-CASCADING_CONTRACTIONS = "cascading_contractions"
-PARAMED_CONTRACTIONS = "paramed_contractions"
-BATCH_NORM = "batch_norm"
-GROUP_NORM = "group_norm"
-EQUIV_DENSE = "equiv_dense"
-VN_NONLINEAR = "vector_neuron_nonlinear"
-VN_MAX_POOL = "vector_neuron_max_pool"
-VECTOR_DOTS_NONLINEAR = "vector_dots_nonlinear"
-NORM_NONLINEAR = "norm_nonlinear"
-
-SCALE = "scale"
-BIAS = "bias"
-SUM = "sum"
-
-CONV_FREE = "free"
-CONV_FIXED = "fixed"
-
-## GeometricImageNet Layers
 
 
-# Old, consider removing
-def add_to_layer(layer, k, image):
-    if k in layer:
-        layer[k] = jnp.concatenate((layer[k], image))
-    else:
-        layer[k] = image
+# ~~~~~~~~~~~~~~~~~~~~~~ Layers ~~~~~~~~~~~~~~~~~~~~~~
+class ConvContract(eqx.Module):
+    weights: dict[LayerKey, dict[LayerKey, jax.Array]]
+    bias: dict[LayerKey, jax.Array]
+    invariant_filters: geom.Layer
 
-    return layer
+    input_keys: tuple[tuple[LayerKey, int]] = eqx.field(static=True)
+    target_keys: tuple[tuple[LayerKey, int]] = eqx.field(static=True)
+    use_bias: Union[str, bool] = eqx.field(static=True)
+    stride: Optional[tuple[int]] = eqx.field(static=True)
+    padding: Optional[tuple[int]] = eqx.field(static=True)
+    lhs_dilation: Optional[tuple[int]] = eqx.field(static=True)
+    rhs_dilation: Optional[tuple[int]] = eqx.field(static=True)
+    D: int = eqx.field(static=True)
+    fast_mode: bool = eqx.field(static=True)
+    missing_filter: bool = eqx.field(static=True)
 
+    def __init__(
+        self: Self,
+        input_keys: tuple[tuple[LayerKey, int]],
+        target_keys: tuple[tuple[LayerKey, int]],
+        invariant_filters: geom.Layer,
+        use_bias: Union[str, bool] = "auto",
+        stride: Optional[tuple[int]] = None,
+        padding: Optional[tuple[int]] = None,
+        lhs_dilation: Optional[tuple[int]] = None,
+        rhs_dilation: Optional[tuple[int]] = None,
+        key: Optional[ArrayLike] = None,
+    ):
+        """
+        Equivariant tensor convolution then contraction.
+        args:
+            input_keys: A mapping of (k,p) to an integer representing the input channels
+            target_keys: A mapping of (k,p) to an integer representing the output channels
+            invariant_filters: A Layer of the invariant filters to build the convolution filters
+            use_bias: One of 'auto', 'mean', or 'scalar', or True for 'auto' or False for no bias.
+                Mean uses a mean scale for every type, scalar uses a regular bias for scalars only
+                and auto does regular bias for scalars and mean for non-scalars. Defaults to auto.
+            For the rest of arguments, see convolve
+        """
+        self.input_keys = input_keys
+        self.target_keys = target_keys
+        self.invariant_filters = invariant_filters
+        self.use_bias = use_bias
+        self.stride = stride
+        self.padding = padding
+        self.lhs_dilation = lhs_dilation
+        self.rhs_dilation = rhs_dilation
 
-@functools.partial(jit, static_argnums=[3, 4, 5, 6, 7, 8, 9])
-def conv_layer(
-    params: ParamsTree,  # non-static
-    conv_filters: geom.Layer,  # non-static
-    input_layer: geom.Layer,  # non-static
-    target_key: Optional[LayerKey] = None,
-    max_k: Optional[int] = None,
-    mold_params: bool = False,
-    # Convolve kwargs that are passed directly along
-    stride: Optional[tuple[int]] = None,
-    padding: Optional[tuple[int]] = None,
-    lhs_dilation: Optional[tuple[int]] = None,
-    rhs_dilation: Optional[tuple[int]] = None,
-) -> tuple[geom.Layer, ParamsTree]:
-    """
-    conv_layer takes a layer of conv filters and a layer of images and convolves them all together, taking
-    parameterized sums of the images prior to convolution to control memory explosion. This is an old
-    implementation, you should now use batch_conv_layer for a new method of parameterization, or
-    batch_conv_contract for the modern GI-Net technique of specifying the target out types.
+        self.D = invariant_filters.D
+        # if a particular desired convolution for input_keys -> target_keys is missing the needed
+        # filter (possibly because an equivariant one doesn't exist), this is set to true
+        self.missing_filter = False
 
-    args:
-        params (jnp.array): array of parameters, how learning will happen
-        param_idx (int): current index of the params
-        conv_filters (dictionary by k of jnp.array): conv filters we are using
-        input_layer (Layer): layer of the input images, can think of each image
-            as a channel in the traditional cnn case.
-        target_key (2-tuple of ints): (k,parity) pair, only do that convolutions that can be contracted
-            to k and parity will match, defaults to None
-        max_k (int): apply an order cap layer immediately following convolution, defaults to None
-
-        # Below, these are all parameters that are passed to the convolve function.
-        stride (tuple of ints): convolution stride
-        padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs):
-        lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D
-        rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D
-    """
-    params_idx, this_params = get_layer_params(params, mold_params, CONV_OLD)
-
-    # map over dilations, then filters
-    vmap_sums = vmap(geom.linear_combination, in_axes=(None, 0))
-
-    # this is old convolve, no batch, in_c, or out_c
-    convolve_old = lambda img, ff: geom.convolve(
-        input_layer.D,
-        img[None, None],
-        ff[None, None],
-        input_layer.is_torus,
-        stride,
-        padding,
-        lhs_dilation,
-        rhs_dilation,
-    )[0, 0]
-    vmap_convolve = vmap(convolve_old)
-
-    out_layer = input_layer.empty()
-    for (k, parity), prods_group in input_layer.items():
-        if mold_params:
-            this_params[(k, parity)] = {}
-
-        for (filter_k, filter_parity), filter_group in conv_filters.items():
-            if target_key is not None:
-                if (
-                    (k + target_key[0] - filter_k) % 2 != 0
-                ) or (  # if resulting k cannot be contracted to desired
-                    (parity + filter_parity) % 2 != target_key[1]
-                ):  # if resulting parity does not match desired
-                    continue
-
-            if mold_params:
-                this_params[(k, parity)][(filter_k, filter_parity)] = jnp.ones(
-                    (len(filter_group), len(prods_group))
-                )
-
-            res_k = k + filter_k
-
-            group_sums = vmap_sums(prods_group, this_params[(k, parity)][(filter_k, filter_parity)])
-            res = vmap_convolve(group_sums, filter_group)
-            out_layer.append(res_k, (parity + filter_parity) % 2, res)
-
-    if max_k is not None:
-        out_layer = order_cap_layer(out_layer, max_k)
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    return out_layer, params
-
-
-@functools.partial(jax.jit, static_argnums=[3, 4, 5])
-def get_filter_block_from_invariants(
-    params: ParamsTree,
-    input_layer: geom.BatchLayer,
-    invariant_filters: geom.Layer,
-    target_keys: tuple[LayerKey],
-    out_depth: tuple[tuple[LayerKey, int]],
-    mold_params: bool,
-) -> tuple[dict[LayerKey, dict[LayerKey, Array]], ParamsTree]:
-    """
-    For each (k,parity) of the input_layer and each (k,parity) of the target_keys, construct filters from
-    the available invariant_filters to build all possible connections between those two layers.
-    args:
-        params (params tree): the learned params tree
-        input_layer (BatchLayer): input layer so that we know the input depth at each (k,parity) that we need
-        invariant_filters (Layer): available invariant filters of each (k,parity) that will be used
-        target_keys (tuple of (k,parity) tuples): targeted keys for the output layer
-        out_depth (tuple): for each target_key, the output depth of this conv layer
-        mold_params (bool): True if we are building the params shape, defaults to False
-    """
-    vmap_sum = vmap(vmap(geom.linear_combination, in_axes=(None, 0)), in_axes=(None, 0))
-
-    if mold_params:
-        params = {}
-
-    out_depth = {key: depth for key, depth in out_depth}
-
-    filter_layer = {}
-    for key, image_block in input_layer.items():
-        filter_layer[key] = {}
-        in_depth = image_block.shape[
-            1
-        ]  # this is an un-vmapped BatchLayer, so (batch,in_c,spatial,tensors)
-
-        if mold_params:
-            params[key] = {}
-
-        for target_key in target_keys:
-            k, parity = key
-            target_k, target_parity = target_key
-            if (k + target_k, (parity + target_parity) % 2) not in invariant_filters:
-                continue  # relevant when there isn't an N=3, (0,1) filter
-
-            filter_block = invariant_filters[(k + target_k, (parity + target_parity) % 2)]
-            if mold_params:
-                params[key][target_key] = (
-                    (
-                        out_depth[target_key],
-                        in_depth,
-                        len(filter_block),
-                    ),  # params_shape
-                    (in_depth,)
-                    + filter_block.shape[
-                        1 : 1 + input_layer.D + k
-                    ],  # shape to use for input bounds
-                )
-                params_block = jnp.ones((out_depth[target_key], in_depth, len(filter_block)))
-            else:
-                params_block = params[key][target_key]
-
-            filter_layer[key][target_key] = vmap_sum(filter_block, params_block)
-
-    return filter_layer, params
-
-
-@functools.partial(jit, static_argnums=[2, 3, 4, 5])
-def get_filter_block(
-    params: ParamsTree,
-    input_layer: geom.BatchLayer,
-    M: int,
-    target_keys: tuple[LayerKey],
-    out_depth: tuple[tuple[LayerKey, int]],
-    mold_params: bool = False,
-) -> tuple[dict[LayerKey, dict[LayerKey, Array]], ParamsTree]:
-    """
-    For each (k,parity) of the input_layer and each (k,parity) of the target_keys, construct filters
-    to build all possible connections between those two layers. The filters are shape
-    (out_depth,in_depth, (M,)*D, (D,)*filter_k). Note that in_depth is the size of the input_layer.
-    args:
-        input_layer (BatchLayer): input layer so that we know the input depth at each (k,parity) that we need
-        M (int): the edge length of the filters
-        target_keys (tuple of tuple of ints): the target (k,parity) for this layer
-        out_depth (tuple): for each target_key, the output depth of this conv layer
-        mold_params (bool): True if we are building the params shape, defaults to False
-    """
-    D = input_layer.D
-    if mold_params:
-        params = {}
-
-    out_depth = {key: depth for key, depth in out_depth}
-
-    filter_layer = {}
-    for key, image_block in input_layer.items():
-        filter_layer[key] = {}
-        in_depth = image_block.shape[1]
-
-        if mold_params:
-            params[key] = {}
-
-        for target_key in target_keys:
-            filter_k = key[0] + target_key[0]
-            if mold_params:
-                params[key][target_key] = (
-                    (out_depth[target_key], in_depth) + (M,) * D + (D,) * filter_k,  # params_shape
-                    (in_depth,) + (M,) * D + (D,) * key[0],  # shape to use for input bounds
-                )
-                params_block = jnp.ones(params[key][target_key][0])
-            else:
-                params_block = params[key][target_key]
-
-            filter_layer[key][target_key] = params_block
-
-    return filter_layer, params
-
-
-def batch_conv_layer(
-    params: ParamsTree,
-    input_layer: geom.BatchLayer,
-    filter_info: Union[geom.Layer, dict[str, Any]],
-    depth: Union[int, tuple[tuple[LayerKey, int]]],
-    target_keys: tuple[LayerKey],
-    bias: Optional[bool] = None,
-    mold_params: bool = False,
-    # Convolve kwargs that are passed directly along
-    stride: Optional[tuple[int]] = None,
-    padding: Optional[tuple[int]] = None,
-    lhs_dilation: Optional[tuple[int]] = None,
-    rhs_dilation: Optional[tuple[int]] = None,
-) -> tuple[geom.BatchLayer, ParamsTree]:
-    """
-    Wrapper for batch_conv_contract that constructs the filter_block from either invariant filters or
-    free parameters, i.e. regular convolution with fully learned filters.
-    args:
-        params: params_dict
-        input_layer (Layer): the input data layer
-        filter_info (Layer or dict): the filter info. If it is a layer, then that layer is treated as the
-            fixed filters. Otherwise, it is a dict with 'type' that is fixed, in which case there is a
-            'filters' entry for the invariant filters, or free in which case there is an 'M' int for the
-            edge length of the filters to construct.
-        depth (int or tuple): if int, output depth of each target_key. If tuple, a tuple of of tuples
-            associating a key with a depth. For example, ( (key,depth), (key,depth) ) where each key is
-            also a tuple. So it could be something like ( ((0,0), 2), ((1,0),1) )
-        bias (bool): whether to add a bias. For equivariant layers, this will be a multiple of the mean.
-    """
-    params_idx, this_params = get_layer_params(params, mold_params, CONV)
-    if isinstance(depth, int):
-        depth = tuple((key, depth) for key in target_keys)
-
-    mean_bias = True
-    if isinstance(filter_info, geom.Layer):  # if just a layer is passed, defaults to fixed filters
-        filter_block, filter_block_params = get_filter_block_from_invariants(
-            this_params[CONV_FIXED],
-            input_layer,
-            filter_info,
-            target_keys,
-            depth,
-            mold_params,
-        )
-        this_params[CONV_FIXED] = filter_block_params
-    elif filter_info["type"] == "raw":
-        filter_block = filter_info["filters"]
-    elif filter_info["type"] == CONV_FIXED:
-        filter_block, filter_block_params = get_filter_block_from_invariants(
-            this_params[CONV_FIXED],
-            input_layer,
-            filter_info["filters"],
-            target_keys,
-            depth,
-            mold_params,
-        )
-        this_params[CONV_FIXED] = filter_block_params
-    elif filter_info["type"] == CONV_FREE:
-        mean_bias = False
-        filter_block, filter_block_params = get_filter_block(
-            this_params[CONV_FREE],
-            input_layer,
-            filter_info["M"],
-            target_keys,
-            depth,
-            mold_params,
-        )
-        this_params[CONV_FREE] = filter_block_params
-    else:
-        raise Exception(
-            f'conv_layer_build_filters: filter_info["type"] must be one of: raw, {CONV_FIXED}, {CONV_FREE}'
-        )
-
-    layer = batch_conv_contract(
-        input_layer,
-        filter_block,
-        target_keys,
-        stride,
-        padding,
-        lhs_dilation,
-        rhs_dilation,
-    )
-
-    if bias:
-        layer, this_params = add_bias(this_params, layer, mean_bias, mold_params=mold_params)
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    return layer, params
-
-
-def add_bias(
-    this_params: ParamsTree,
-    layer: geom.BatchLayer,
-    mean_bias: bool = True,
-    mold_params: bool = False,
-) -> tuple[geom.BatchLayer, ParamsTree]:
-    """
-    Per-channel bias. To maintain equivariance, we add a scale of the mean to each layer.
-    args:
-        this_params (dict): this part of a params tree, not an entire thing. Since you are just adding
-            this to the end of a layer.
-        layer (BatchLayer): input layer
-        mean_bias (bool): if true, add a scale of the mean, otherwise a single bias per channel, but it
-            is the same across batches.
-    """
-    out_layer = layer.empty()
-    if mold_params:
-        this_params[BIAS] = {}
-
-    for (k, parity), image_block in layer.items():
-        channels = image_block.shape[1]
-
-        if mold_params:
-            this_params[BIAS][(k, parity)] = jnp.ones((1, channels) + (1,) * (image_block.ndim - 2))
-
-        if mean_bias:
-            mean = jnp.mean(image_block, axis=tuple(range(2, 2 + layer.D)), keepdims=True)
-            assert mean.shape == image_block.shape[:2] + (1,) * layer.D + (layer.D,) * k
-            out_layer.append(k, parity, image_block + this_params[BIAS][(k, parity)] * mean)
+        if isinstance(use_bias, bool):
+            use_bias = "auto" if use_bias else use_bias
+        elif isinstance(use_bias, str):
+            assert use_bias in {"auto", "mean", "scalar"}
         else:
-            out_layer.append(k, parity, image_block + this_params[BIAS][(k, parity)])
-
-    return out_layer, this_params
-
-
-@functools.partial(jit, static_argnums=[2, 3, 4, 5, 6])
-def batch_conv_contract(
-    input_layer: geom.BatchLayer,
-    conv_filters: geom.Layer,
-    target_keys: tuple[LayerKey],
-    # Convolve kwargs that are passed directly along
-    stride: Optional[tuple[int]] = None,
-    padding: Optional[tuple[int]] = None,
-    lhs_dilation: Optional[tuple[int]] = None,
-    rhs_dilation: Optional[tuple[int]] = None,
-) -> geom.BatchLayer:
-    """
-    Per the theory, a linear map from kp -> k'p' can be characterized by a convolution with a
-    (k+k')(pp') tensor filter, followed by k contractions.
-    args:
-        params (jnp.array): array of parameters, how learning will happen
-        input_layer (Layer): layer of the input images, can think of each image
-            as a channel in the traditional cnn case.
-        invariant_filters (Layer): conv filters we are using as a layer
-        depth (int): number of output channels
-        target_keys (tuple of (k,parity) tuples): the output (k,parity) types
-        bias (bool): whether to include a bias image, defaults to None
-        mold_params (bool): whether we are calculating the params tree or running the alg, defaults to False
-
-        # Below, these are all parameters that are passed to the convolve function.
-        stride (tuple of ints): convolution stride
-        padding (either 'TORUS', 'VALID', 'SAME', or D length tuple of (upper,lower) pairs):
-        lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D
-        rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D
-    """
-    layer = input_layer.empty()
-    for (k, parity), images_block in input_layer.items():
-        for target_k, target_parity in target_keys:
-            if (target_k, target_parity) not in conv_filters[(k, parity)]:
-                continue
-
-            filter_block = conv_filters[(k, parity)][(target_k, target_parity)]
-
-            convolve_contracted_imgs = geom.convolve_contract(
-                input_layer.D,
-                images_block,
-                filter_block,
-                input_layer.is_torus,
-                stride,
-                padding,
-                lhs_dilation,
-                rhs_dilation,
+            raise ValueError(
+                f"ConvContract: bias must be str or bool, but found {type(use_bias)}:{use_bias}"
             )
 
-            if (target_k, target_parity) in layer:  # it already has that key
-                layer[(target_k, target_parity)] = (
-                    convolve_contracted_imgs + layer[(target_k, target_parity)]
+        self.weights = {}  # presumably some way to jax.lax.scan this?
+        self.bias = {}
+        all_filter_spatial_dims = []
+        for (in_k, in_p), in_c in self.input_keys:
+            self.weights[(in_k, in_p)] = {}
+            for (out_k, out_p), out_c in self.target_keys:
+                key, subkey1, subkey2 = random.split(key, num=3)
+
+                filter_key = (in_k + out_k, (in_p + out_p) % 2)
+                if filter_key not in self.invariant_filters:
+                    self.missing_filter = True
+                    continue  # relevant when there isn't an N=3, (0,1) filter
+
+                num_filters = len(self.invariant_filters[filter_key])
+                if False and filter_key == (0, 0):
+                    # TODO: Currently unused, a work in progress
+                    weight_per_ff = []
+                    # TODO: jax.lax.scan here instead
+                    for conv_filter, tensor_mul in zip(
+                        self.invariant_filters[filter_key],
+                        [1, (1 + 8 / 9), (1 + 2 / 3)],
+                        # [1, 1, 1],
+                    ):
+                        key, subkey = random.split(key)
+
+                        # number of weights that will appear in a single component output.
+                        tensor_mul = scipy.special.comb(jnp.sum(conv_filter), 2, repetition=True)
+                        # tensor_mul = jnp.sum(conv_filter**2, axis=tuple(range(self.D))) * tensor_mul
+                        bound = jnp.sqrt(1 / (in_c * num_filters * tensor_mul))
+
+                        weight_per_ff.append(
+                            random.uniform(subkey, shape=(out_c, in_c), minval=-bound, maxval=bound)
+                        )
+                    self.weights[(in_k, in_p)][(out_k, out_p)] = jnp.stack(weight_per_ff, axis=-1)
+
+                    # # bound = jnp.sqrt(3 / (0.085 * in_c * num_filters)) # tanh multiplier
+                    # bound = jnp.sqrt(3 / (in_c * num_filters))
+                    # key, subkey = random.split(key)
+                    # rand_weights = random.uniform(
+                    #     subkey, shape=(out_c, in_c, num_filters), minval=-bound, maxval=bound
+                    # )
+                    # self.weights[(in_k, in_p)][(out_k, out_p)] = rand_weights
+
+                else:
+                    # Works really well, not sure why?
+                    filter_spatial_dims, _ = geom.parse_shape(
+                        self.invariant_filters[filter_key].shape[1:], self.D
+                    )
+                    bound_shape = (in_c,) + filter_spatial_dims + (self.D,) * in_k
+                    bound = 1 / jnp.sqrt(math.prod(bound_shape))
+                    self.weights[(in_k, in_p)][(out_k, out_p)] = random.uniform(
+                        subkey1,
+                        shape=(out_c, in_c, len(self.invariant_filters[filter_key])),
+                        minval=-bound,
+                        maxval=bound,
+                    )
+                    all_filter_spatial_dims.append(filter_spatial_dims)
+
+                if use_bias:
+                    # this may get set multiple times, bound could be different but not a huge issue?
+                    self.bias[(out_k, out_p)] = random.uniform(
+                        subkey2,
+                        shape=(out_c,) + (1,) * (self.D + out_k),
+                        minval=-bound,
+                        maxval=bound,
+                    )
+
+        # If all the in_c match, all out_c match, and all the filter dims match, can use fast_mode
+        self.fast_mode = (
+            (not self.missing_filter)
+            and (len(set([in_c for _, in_c in input_keys])) == 1)
+            and (len(set([out_c for _, out_c in target_keys])) == 1)
+            and (len(set(all_filter_spatial_dims)) == 1)
+        )
+        self.fast_mode = False
+
+    def fast_convolve(
+        self: Self,
+        input_layer: geom.Layer,
+        weights: dict[LayerKey, dict[LayerKey, jax.Array]],
+    ):
+        """
+        Convolve when all filter_spatial_dims, in_c, and out_c match, can do a single convolve
+        instead of multiple between each type. Sadly, only ~20% speedup.
+        """
+        # These must all be equal to call fast_convolve
+        in_c = self.input_keys[0][1]
+        out_c = self.target_keys[0][1]
+
+        one_img = next(iter(input_layer.values()))
+        spatial_dims, _ = geom.parse_shape(one_img.shape[2:], self.D)
+        batch = len(one_img)
+        one_filter = next(iter(self.invariant_filters.values()))
+        filter_spatial_dims, _ = geom.parse_shape(one_filter.shape[1:], self.D)
+
+        image_ravel = jnp.zeros((batch,) + spatial_dims + (0, in_c))
+        filter_ravel = jnp.zeros((in_c,) + filter_spatial_dims + (0, out_c))
+        for (in_k, in_p), image_block in input_layer.items():
+            # (batch,in_c,spatial,tensor) -> (batch,spatial,-1,in_c)
+            img = jnp.moveaxis(image_block.reshape((batch, in_c) + spatial_dims + (-1,)), 1, -1)
+            image_ravel = jnp.concatenate([image_ravel, img], axis=-2)
+
+            filter_ravel_in = jnp.zeros(
+                (in_c,) + filter_spatial_dims + (self.D,) * in_k + (0, out_c)
+            )
+            for (out_k, out_p), weight_block in weights[(in_k, in_p)].items():
+                filter_key = (in_k + out_k, (in_p + out_p) % 2)
+
+                # (out_c,in_c,num_filters),(num, spatial, tensor) -> (out_c,in_c,spatial,tensor)
+                filter_block = jnp.einsum(
+                    "ijk,k...->ij...",
+                    weight_block,
+                    jax.lax.stop_gradient(self.invariant_filters[filter_key]),
                 )
-            else:
-                layer.append(target_k, target_parity, convolve_contracted_imgs)
-
-    return layer
-
-
-@functools.partial(jit, static_argnums=1)
-def activation_layer(
-    layer: geom.Layer, activation_function: Callable[[ArrayLike], Array]
-) -> geom.Layer:
-    scalar_layer = contract_to_scalars(layer)
-    for (k, parity), image_block in scalar_layer.items():  # k will 0
-        layer[(k, parity)] = activation_function(image_block)
-
-    return layer
-
-
-@jit
-def relu_layer(layer: geom.Layer) -> geom.Layer:
-    return activation_layer(layer, jax.nn.relu)
-
-
-def batch_relu_layer(layer: geom.BatchLayer) -> geom.BatchLayer:
-    return vmap(relu_layer)(layer)
-
-
-@functools.partial(jit, static_argnums=1)
-def leaky_relu_layer(layer: geom.Layer, negative_slope: float = 0.01) -> geom.Layer:
-    return activation_layer(
-        layer, functools.partial(jax.nn.leaky_relu, negative_slope=negative_slope)
-    )
-
-
-def batch_leaky_relu_layer(layer: geom.BatchLayer, negative_slope: float = 0.01) -> geom.BatchLayer:
-    return vmap(leaky_relu_layer, in_axes=(0, None))(layer, negative_slope)
-
-
-@jit
-def sigmoid_layer(layer: geom.Layer) -> geom.Layer:
-    return activation_layer(layer, jax.nn.sigmoid)
-
-
-def kink(x: ArrayLike, outer_slope: float = 1, inner_slope: float = 0) -> Array:
-    """
-    An attempt to make a ReLU that is an odd function (i.e., kink(-x) = -kink(x)). Between -1 and 1,
-    kink scales the function by inner_slope, and outside that scales it by outer_slope.
-    args:
-        x (jnp.array): the values to perform the pointwise nonlinearity on
-        outer_slope (float): slope for outer regions, defaults to 0.5
-        inner_slope (float): slope for inner regions, defaults to 2
-    """
-    return jnp.where((x <= -0.5) | (x >= 0.5), outer_slope * x, inner_slope * x)
-
-
-def batch_scalar_activation(
-    layer: geom.Layer, activation_function: Callable[[ArrayLike], Array]
-) -> geom.Layer:
-    """
-    Given a layer, apply the nonlinear activation function to each scalar image_block. If the layer has
-    odd parity, then the activation should be an odd function.
-    """
-    out_layer = layer.empty()
-    for (k, parity), image_block in layer.items():
-        out_image_block = activation_function(image_block) if (k == 0) else image_block
-        out_layer.append(k, parity, out_image_block)
-
-    return out_layer
-
-
-def norm_nonlinear(
-    params: ParamsTree,
-    layer: geom.BatchLayer,
-    scalar_activation: Callable[[ArrayLike], Array] = jax.nn.sigmoid,
-    mold_params: bool = False,
-) -> tuple[geom.BatchLayer, ParamsTree]:
-    """
-    This nonlinearity has so far been unsuccessful.
-    """
-    params_idx, this_params = get_layer_params(params, mold_params, NORM_NONLINEAR)
-
-    out_layer = layer.empty()
-    for (k, parity), image_block in layer.items():
-        norm_img = geom.norm(2 + layer.D, image_block, keepdims=True)
-        in_c = image_block.shape[1]
-
-        if mold_params:
-            this_params[(k, parity)] = {"bias": jnp.ones((1, in_c) + (1,) * layer.D + (1,) * k)}
-
-        out_layer.append(
-            k,
-            parity,
-            scalar_activation(norm_img + this_params[(k, parity)]["bias"]) * image_block,
-        )
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    return out_layer, params
-
-
-@functools.partial(jax.jit, static_argnums=[2, 3, 4, 5])
-def VN_nonlinear(
-    params: ParamsTree,
-    layer: geom.BatchLayer,
-    depth: Optional[int] = None,
-    scalar_activation: Callable[[ArrayLike], Array] = jax.nn.relu,
-    eps: float = 1e-5,
-    mold_params: bool = False,
-) -> tuple[geom.BatchLayer, ParamsTree]:
-    """
-    The vector nonlinearity in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
-    Basically use the channels of a vector to get a direction vector and a value vector. Use the
-    direction vector the split the value vector space in two. In one hemisphere, the value vector
-    is unchanged, while in the other it is projected to the hemispheres boundary.
-    args:
-        params (): params tree
-        layer (BatchLayer): the input layer, must
-        depth (int): out depth, defaults to None which will be set to the number of input channels
-        scalar_activation (func): nonlinearity used for scalar
-        eps (float): small value to avoid dividing by zero if the k_vec is close to 0, defaults to 1e-5
-    """
-    params_idx, this_params = get_layer_params(params, mold_params, VN_NONLINEAR)
-
-    out_layer = layer.empty()
-    for (k, parity), img_block in layer.items():
-        assert k == 0 or k == 1, "batch_VN_nonlinear: Layer can only have scalars and vectors"
-        in_c = img_block.shape[1]
-        out_c = in_c if depth is None else depth
-
-        if k == 0:
-            out_layer.append(k, parity, scalar_activation(img_block))
-        else:  # k==1
-            if mold_params:
-                this_params["W"] = jnp.ones((out_c, 1, in_c) + (1,) * layer.D + (1,))
-                this_params["U"] = jnp.ones((out_c, 1, in_c) + (1,) * layer.D + (1,))
-
-            # (batch,out_c,spatial,tensor)
-            q = jnp.moveaxis(jnp.sum(this_params["W"] * img_block[None], axis=2), 0, 1)
-            k_vec = jnp.moveaxis(jnp.sum(this_params["U"] * img_block[None], axis=2), 0, 1)
-            k_normed = k_vec / (geom.norm(layer.D + 2, k_vec, keepdims=True) + eps)
-
-            q_k_inner_product = geom.multicontract(
-                geom.mul(layer.D, q, k_normed, 2, 2), ((0, 1),), layer.D + 2
-            )[..., None]
-            projected_q = q - q_k_inner_product * k_normed
-            res = jnp.where(q_k_inner_product >= 0, q, projected_q)
-            out_layer.append(k, parity, res)
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    return out_layer, params
-
-
-def vector_dots_nonlinear(
-    params: ParamsTree,
-    layer: geom.BatchLayer,
-    depth: Optional[int] = None,
-    scalar_activation: Callable[[ArrayLike], Array] = jax.nn.relu,
-    mold_params: bool = False,
-) -> tuple[geom.BatchLayer, ParamsTree]:
-    """
-    The vector nonlinearity based on scalars are universal: https://arxiv.org/abs/2106.06610
-    We get a map from in_c vectors to depth vectors by taking the dot products of the channel of vectors,
-    then do a little MLP on those scalars and use them as coefficients of the output vectors.
-    args:
-        params (): params tree
-        layer (BatchLayer): the input layer, must
-        depth (int): out depth, defaults to None which will be set to the number of input channels
-        scalar_activation (func): nonlinearity used for scalar
-    """
-    params_idx, this_params = get_layer_params(params, mold_params, VECTOR_DOTS_NONLINEAR)
-
-    out_layer = layer.empty()
-    for (k, parity), img_block in layer.items():
-        assert k == 0 or k == 1, "vector_dots_nonlinear: Layer can only have scalars and vectors"
-        batch, in_c = img_block.shape[:2]
-        spatial, _ = geom.parse_shape(img_block.shape[2:], layer.D)
-        out_c = in_c if depth is None else depth
-
-        if k == 0:
-            out_layer.append(k, parity, scalar_activation(img_block))
-        else:  # k==1
-            if mold_params:
-                this_params[(k, parity)] = {
-                    "W1": jnp.ones((in_c**2, in_c * out_c)),
-                    "b1": jnp.ones((1, in_c * out_c)),
-                    "W2": jnp.ones((in_c * out_c, in_c * out_c)),
-                    "b2": jnp.ones((1, in_c * out_c)),
-                }
-
-            # (batch,in_c,spatial,tensor) -> (batch*spatial,in_c,tensor)
-            vecs = jnp.moveaxis(img_block, 1, 2 + layer.D).reshape((-1, in_c) + (layer.D,))
-            scalars = jax.vmap(lambda A: A @ A.T)(vecs)  # (batch*spatial,in_c,in_c)
-            scalars = scalars.reshape((len(scalars), -1))  # (batch*spatial,in_c^2)
-
-            scalars = (
-                scalars @ this_params[(k, parity)]["W1"] + this_params[(k, parity)]["b1"]
-            )  # (batch*spatial,in_c*out_c)
-            scalars = scalar_activation(scalars)
-            scalars = (
-                scalars @ this_params[(k, parity)]["W2"] + this_params[(k, parity)]["b2"]
-            )  # (batch*spatial,in_c*out_c)
-
-            out_vecs = jax.vmap(lambda V, S: S @ V)(
-                vecs, scalars.reshape((len(scalars), out_c, in_c))
-            )
-            out_vecs = out_vecs.reshape((batch,) + spatial + (out_c, layer.D))
-
-            out_layer.append(k, parity, jnp.moveaxis(out_vecs, 1 + layer.D, 1))
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    return out_layer, params
-
-
-def order_cap_layer(layer: geom.Layer, max_k: int) -> geom.Layer:
-    """
-    For each image with tensor order k larger than max_k, do all possible contractions to reduce it to order k, or k-1
-    if necessary because the difference is odd.
-    args:
-        layer (Layer): the input images in the layer
-        max_k (int): the max tensor order
-    """
-    out_layer = layer.empty()
-    for (k, parity), img in layer.items():
-        if k > max_k:
-            k_diff = k - max_k
-            k_diff += k_diff % 2  # if its odd, we need to go one lower
-
-            idx_shift = 1 + layer.D
-            for contract_idx in geom.get_contraction_indices(k, k - k_diff):
-                shifted_idx = tuple((i + idx_shift, j + idx_shift) for i, j in contract_idx)
-                contract_img = geom.multicontract(img, shifted_idx)
-                _, res_k = geom.parse_shape(contract_img.shape[1:], layer.D)
-
-                out_layer.append(res_k, parity, contract_img)
-        else:
-            out_layer.append(k, parity, img)
-
-    return out_layer
-
-
-def contract_to_scalars(input_layer: geom.Layer) -> geom.Layer:
-    suitable_images = input_layer.empty()
-    for (k, parity), image_block in input_layer.items():
-        if (k % 2) == 0:
-            suitable_images[(k, parity)] = image_block
-
-    return all_contractions(0, suitable_images)
-
-
-def cascading_contractions(
-    params: ParamsTree,
-    input_layer: geom.Layer,
-    target_k: int,
-    mold_params: bool = False,
-) -> tuple[geom.Layer, ParamsTree]:
-    """
-    Starting with the highest k, sum all the images into a single image, perform all possible contractions,
-    then add it to the layer below.
-    args:
-        params (list of floats): model params
-        target_k (int): what tensor order you want to end up at
-        input_layer (list of GeometricImages): images to contract
-        mold_params (bool): if True, use jnp.ones as the params and keep track of their shape
-    """
-    params_idx, this_params = get_layer_params(params, mold_params, CASCADING_CONTRACTIONS)
-
-    max_k = np.max(list(input_layer.keys()))
-    temp_layer = input_layer.copy()
-    for k in reversed(range(target_k + 2, max_k + 2, 2)):
-        for parity in [0, 1]:
-            if (k, parity) not in temp_layer:
-                continue
-
-            image_block = temp_layer[(k, parity)]
-            if mold_params:
-                this_params[(k, parity)] = {}
-
-            idx_shift = 1 + input_layer.D  # layer plus N x N x ... x N (D times)
-            for u, v in it.combinations(range(idx_shift, k + idx_shift), 2):
-                if mold_params:
-                    this_params[(k, parity)][(u, v)] = jnp.ones(len(image_block))
-
-                group_sum = jnp.expand_dims(
-                    geom.linear_combination(image_block, this_params[(k, parity)][(u, v)]),
-                    axis=0,
+                # (out_c,in_c,spatial,tensor) -> (in_c,spatial,in_tensor,-1,out_c)
+                ff = jnp.moveaxis(
+                    filter_block.reshape(
+                        (out_c, in_c) + filter_spatial_dims + (self.D,) * in_k + (-1,)
+                    ),
+                    0,
+                    -1,
                 )
-                contracted_img = geom.multicontract(group_sum, ((u, v),))
+                filter_ravel_in = jnp.concatenate([filter_ravel_in, ff], axis=-2)
 
-                temp_layer.append(k - 2, parity, contracted_img)
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    out_layer = temp_layer.empty()
-    for parity in [0, 1]:
-        if (k, parity) in temp_layer:
-            out_layer.append(target_k, parity, temp_layer[(target_k, parity)])
-
-    return out_layer, params
-
-
-def batch_cascading_contractions(
-    params: ParamsTree,
-    input_layer: geom.BatchLayer,
-    target_k: int,
-    mold_params: bool = False,
-) -> tuple[geom.BatchLayer, ParamsTree]:
-    return vmap(cascading_contractions, in_axes=(None, 0, None, None), out_axes=(0, None))(
-        params,
-        input_layer,
-        target_k,
-        mold_params,
-    )
-
-
-def all_contractions(target_k: int, input_layer: geom.Layer) -> geom.Layer:
-    out_layer = input_layer.empty()
-    for (k, parity), image_block in input_layer.items():
-        idx_shift = 1 + input_layer.D  # layer plus N x N x ... x N (D times)
-        if (k - target_k) % 2 != 0:
-            print(
-                "ml::all_contractions WARNING: Attempted contractions when input_layer is odd k away. "
-                "Use target_k parameter of the final conv_layer to prevent wasted convolutions.",
+            filter_ravel_in = filter_ravel_in.reshape(
+                (in_c,) + filter_spatial_dims + (-1,) + (out_c,)
             )
-            continue
-        if k < target_k:
-            print(
-                "ml::all_contractions WARNING: Attempted contractions when input_layer is smaller than "
-                "target_k. This means there may be wasted operations in the network.",
-            )  # not actually sure the best way to resolve this
-            continue
+            filter_ravel = jnp.concatenate([filter_ravel, filter_ravel_in], axis=-2)
 
-        for contract_idx in geom.get_contraction_indices(k, target_k):
-            contracted_img = geom.multicontract(image_block, contract_idx, idx_shift=idx_shift)
-            out_layer.append(target_k, parity, contracted_img)
+        image_ravel = image_ravel.reshape((batch,) + spatial_dims + (-1,))
+        filter_ravel = jnp.moveaxis(filter_ravel, 0, self.D).reshape(
+            filter_spatial_dims + (in_c, -1)
+        )
 
-    return out_layer
+        out = geom.convolve_ravel(
+            self.D,
+            image_ravel,
+            filter_ravel,
+            input_layer.is_torus,
+            self.stride,
+            self.padding,
+            self.lhs_dilation,
+            self.rhs_dilation,
+        )
+        new_spatial_dims = out.shape[1 : 1 + self.D]
+        # (batch,spatial,tensor_sum*out_c) -> (batch,out_c,spatial,tensor_sum)
+        out = jnp.moveaxis(out.reshape((batch,) + new_spatial_dims + (-1, out_c)), -1, 1)
 
-
-def batch_all_contractions(target_k: int, input_layer: geom.BatchLayer) -> geom.BatchLayer:
-    return vmap(all_contractions, in_axes=(None, 0))(target_k, input_layer)
-
-
-@functools.partial(jit, static_argnums=[2, 3, 4])
-def paramed_contractions(
-    params: ParamsTree,
-    input_layer: geom.Layer,
-    target_k: int,
-    depth: int,
-    mold_params: bool = False,
-    contraction_maps: Optional[dict[int, ArrayLike]] = None,
-) -> tuple[geom.Layer, ParamsTree]:
-    params_idx, this_params = get_layer_params(params, mold_params, PARAMED_CONTRACTIONS)
-    D = input_layer.D
-
-    out_layer = input_layer.empty()
-    for (k, parity), image_block in input_layer.items():
-        if (k - target_k) % 2 != 0:
-            print(
-                "ml::all_contractions WARNING: Attempted contractions when input_layer is odd k away. "
-                "Use target_k parameter of the final conv_layer to prevent wasted convolutions.",
+        out_k_sum = sum([self.D**out_k for (out_k, _), _ in self.target_keys])
+        idx = 0
+        layer = input_layer.empty()
+        for in_k, in_p in input_layer.keys():
+            length = (self.D**in_k) * out_k_sum
+            # break off all the channels related to this particular in_k
+            out_per_in = out[..., idx : idx + length].reshape(
+                (batch, out_c) + new_spatial_dims + (self.D,) * in_k + (-1,)
             )
-            continue
-        if k < target_k:
-            print(
-                "ml::all_contractions WARNING: Attempted contractions when input_layer is smaller than "
-                "target_k. This means there may be wasted operations in the network.",
-            )  # not actually sure the best way to resolve this
-            continue
-        if k == target_k:
-            out_layer.append(target_k, parity, image_block)
-            continue
 
-        spatial_dims, _ = geom.parse_shape(image_block.shape[1:], D)
-        spatial_size = np.multiply.reduce(spatial_dims)
-        if contraction_maps is None:
-            maps = jnp.stack(
-                [
-                    geom.get_contraction_map(input_layer.D, k, idxs)
-                    for idxs in geom.get_contraction_indices(k, target_k)
-                ]
-            )  # (maps, out_size, in_size)
+            out_idx = 0
+            for (out_k, out_p), _ in self.target_keys:
+                out_length = self.D**out_k
+                # separate the different out_k parts for particular in_k
+                img_block = out_per_in[..., out_idx : out_idx + out_length]
+                img_block = img_block.reshape(
+                    (batch, out_c) + new_spatial_dims + (self.D,) * (in_k + out_k)
+                )
+                contracted_img = jnp.sum(img_block, axis=range(2 + self.D, 2 + self.D + in_k))
+
+                if (out_k, out_p) in layer:  # it already has that key
+                    layer[(out_k, out_p)] = contracted_img + layer[(out_k, out_p)]
+                else:
+                    layer.append(out_k, out_p, contracted_img)
+
+                out_idx += out_length
+
+            idx += length
+
+        return layer
+
+    def individual_convolve(
+        self: Self,
+        input_layer: geom.Layer,
+        weights: dict[LayerKey, dict[LayerKey, jax.Array]],
+    ):
+        """
+        Function to perform convolve_contract on an entire layer by doing the pairwise convolutions
+        individually. This is necessary when filters have unequal sizes, or the in_c or out_c are
+        not all equal. Weights is passed as an argument to make it easier to test this function.
+        """
+        layer = input_layer.empty()
+        for (in_k, in_p), images_block in input_layer.items():
+            for (out_k, out_p), weight_block in weights[(in_k, in_p)].items():
+                filter_key = (in_k + out_k, (in_p + out_p) % 2)
+
+                # (out_c,in_c,num_inv_filters) (num, spatial, tensor) -> (out_c,in_c,spatial,tensor)
+                filter_block = jnp.einsum(
+                    "ijk,k...->ij...",
+                    weight_block,
+                    jax.lax.stop_gradient(self.invariant_filters[filter_key]),
+                )
+
+                convolve_contracted_imgs = geom.convolve_contract(
+                    input_layer.D,
+                    images_block,  # add batch dim
+                    filter_block,
+                    input_layer.is_torus,
+                    self.stride,
+                    self.padding,
+                    self.lhs_dilation,
+                    self.rhs_dilation,
+                )
+
+                if (out_k, out_p) in layer:  # it already has that key
+                    layer[(out_k, out_p)] = convolve_contracted_imgs + layer[(out_k, out_p)]
+                else:
+                    layer.append(out_k, out_p, convolve_contracted_imgs)
+
+        return layer
+
+    def __call__(self: Self, input_layer: geom.Layer):
+        if self.fast_mode:
+            layer = self.fast_convolve(input_layer, self.weights)
+        else:  # slow mode
+            layer = self.individual_convolve(input_layer, self.weights)
+
+        if self.use_bias:
+            biased_layer = layer.empty()
+            for (k, p), image in layer.items():
+                if (k, p) == (0, 0) and (self.use_bias == "scalar" or self.use_bias == "auto"):
+                    biased_layer.append(k, p, image + self.bias[(k, p)])
+                elif ((k, p) != (0, 0) and self.use_bias == "auto") or self.use_bias == "mean":
+                    mean_image = jnp.mean(
+                        image, axis=tuple(range(2, 2 + self.invariant_filters.D)), keepdims=True
+                    )
+                    biased_layer.append(
+                        k,
+                        p,
+                        image + mean_image * self.bias[(k, p)],
+                    )
+
+            return biased_layer
         else:
-            maps = contraction_maps[k]
-
-        if mold_params:
-            this_params[(k, parity)] = jnp.ones(
-                (depth, len(image_block), len(maps))
-            )  # (depth, channels, maps)
-
-        def channel_contract(maps, p, image_block):
-            # Given an image_block, contract in all the ways for each channel, then sum up the channels
-            # maps.shape: (maps, out_tensor_size, in_tensor_size)
-            # p.shape: (channels, maps)
-            # image_block.shape: (channels, (N,)*D, (D,)*k)
-
-            map_sum = vmap(geom.linear_combination, in_axes=(None, 0))(
-                maps, p
-            )  # (channels, out_size, in_size)
-            image_block.reshape((len(image_block), spatial_size, (D**k)))
-            vmap_contract = vmap(geom.apply_contraction_map, in_axes=(None, 0, 0, None))
-            return jnp.sum(vmap_contract(D, image_block, map_sum, target_k), axis=0)
-
-        vmap_contract = vmap(channel_contract, in_axes=(None, 0, None))  # vmap over depth in params
-        depth_block = vmap_contract(
-            maps,
-            this_params[(k, parity)],
-            image_block,
-        )  # (depth, image_shape)
-
-        out_layer.append(target_k, parity, depth_block)
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    return out_layer, params
+            return layer
 
 
-def batch_paramed_contractions(
-    params: ParamsTree,
-    input_layer: geom.BatchLayer,
-    target_k: int,
-    depth: int,
-    mold_params: bool = False,
-) -> tuple[geom.BatchLayer, ParamsTree]:
-    vmap_paramed_contractions = vmap(
-        paramed_contractions,
-        in_axes=(None, 0, None, None, None, None),
-        out_axes=(0, None),
-    )
+class GroupNorm(eqx.Module):
+    scale: dict[LayerKey, jax.Array]
+    bias: dict[LayerKey, jax.Array]
+    vanilla_norm: dict[LayerKey, eqx.nn.GroupNorm]
 
-    # do this here because we already cache it, don't want to do slow loop-unrolling by jitting it
-    contraction_maps = {}
-    for k, _ in input_layer.keys():
-        if k < 2:
-            continue
+    D: int = eqx.field(static=False)
+    groups: int = eqx.field(static=False)
+    eps: float = eqx.field(static=False)
 
-        contraction_maps[k] = jnp.stack(
-            [
-                geom.get_contraction_map(input_layer.D, k, idxs)
-                for idxs in geom.get_contraction_indices(k, target_k)
-            ]
-        )
+    def __init__(
+        self: Self,
+        input_keys: tuple[tuple[LayerKey, int]],
+        D: int,
+        groups: int,
+        eps: float = 1e-5,
+    ) -> Self:
+        """
+        Implementation of group_norm. When num_groups=num_channels, this is equivalent to instance_norm. When
+        num_groups=1, this is equivalent to layer_norm. This function takes in a BatchLayer, not a Layer.
+        args:
+            input_keys: input key signature
+            D (int): dimension
+            groups (int): the number of channel groups for group_norm
+            eps (float): number to add to variance so we aren't dividing by 0
+            equivariant (bool): defaults to True
+        """
+        self.D = D
+        self.groups = groups
+        self.eps = eps
 
-    return vmap_paramed_contractions(
-        params, input_layer, target_k, depth, mold_params, contraction_maps
-    )
+        self.scale = {}
+        self.bias = {}
+        self.vanilla_norm = {}  # for scalars, can use basic implementation of GroupNorm
+        for (k, p), in_c in input_keys:
+            assert (
+                in_c % groups
+            ) == 0, f"group_norm: Groups must evenly divide channels, but got groups={groups}, channels={in_c}."
 
+            if k == 0:
+                self.vanilla_norm[(k, p)] = eqx.nn.GroupNorm(groups, in_c, eps)
+            elif k == 1:
+                self.scale[(k, p)] = jnp.ones((in_c,) + (1,) * (D + k))
+                self.bias[(k, p)] = jnp.zeros((in_c,) + (1,) * (D + k))
+            elif k > 1:
+                raise NotImplementedError(
+                    f"ml::group_norm: Equivariant group_norm not implemented for k>1, but k={k}",
+                )
 
-@functools.partial(jit, static_argnums=[2, 3])
-def channel_collapse(
-    params: ParamsTree,
-    input_layer: geom.Layer,
-    depth: int = 1,
-    mold_params: bool = False,
-) -> tuple[geom.Layer, ParamsTree]:
-    """
-    Combine multiple channels into depth number of channels. Often the final step before exiting a GI-Net.
-    In some ways this is akin to a fully connected layer, where each channel image is an input.
-    args:
-        params (params dict): the usual
-        input_layer (Layer): input layer whose channels we will take a parameterized linear combination of
-        depth (int): output channel depth, defaults to 1
-        mold_params (bool):
-    """
-    params_idx, this_params = get_layer_params(params, mold_params, CHANNEL_COLLAPSE)
+    def __call__(self: Self, x: geom.Layer) -> geom.Layer:
+        out_x = x.empty()
+        for (k, p), image_block in x.items():
+            if k == 0:
+                whitened_data = jax.vmap(self.vanilla_norm[(k, p)])(image_block)  # normal norm
+            elif k == 1:
+                # save mean vec, allows for un-mean centering (?)
+                mean_vec = jnp.mean(image_block, axis=tuple(range(2, 2 + self.D)), keepdims=True)
+                assert mean_vec.shape == image_block.shape[:2] + (1,) * self.D + (self.D,) * k
+                whitened_data = _group_norm_K1(self.D, image_block, self.groups, eps=self.eps)
+                whitened_data = whitened_data * self.scale[(k, p)] + self.bias[(k, p)] * mean_vec
+            elif k > 1:
+                raise NotImplementedError(
+                    f"ml::group_norm: Equivariant group_norm not implemented for k>1, but k={k}",
+                )
 
-    out_layer = input_layer.empty()
-    for (k, parity), image_block in input_layer.items():
-        if mold_params:
-            this_params[(k, parity)] = jnp.ones((depth, len(image_block)))
+            out_x.append(k, p, whitened_data)
 
-        out_layer.append(
-            k,
-            parity,
-            vmap(geom.linear_combination, in_axes=(None, 0))(image_block, this_params[(k, parity)]),
-        )
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    return out_layer, params
-
-
-def batch_channel_collapse(params, input_layer, depth=1, mold_params=False):
-    vmap_channel_collapse = vmap(
-        channel_collapse, in_axes=(None, 0, None, None), out_axes=(0, None)
-    )
-    return vmap_channel_collapse(params, input_layer, depth, mold_params)
+        return out_x
 
 
-@functools.partial(jax.jit, static_argnums=3)
-def equiv_dense_layer(
-    params: ParamsTree,
-    input: ArrayLike,
-    basis: ArrayLike,
-    mold_params: bool = False,
-) -> tuple[Array, ParamsTree]:
-    """
-    A dense layer with a specific basis of linear maps, rather than any possible linear map. This
-    allows you to pass an equivariant basis so the whole layer is equivariant.
-    args:
-        params (params dict): a tree of params
-        input (jnp.array): array of data, shape (in_d,)
-        basis (jnp.array): basis of linear maps, shape (basis_len,out_d,in_d)
-    """
-    params_idx, this_params = get_layer_params(params, mold_params, EQUIV_DENSE)
+class LayerNorm(GroupNorm):
 
-    if mold_params:
-        this_params[SUM] = jnp.ones((len(basis), 1, 1))
-
-    equiv_map = jnp.sum(this_params[SUM] * basis, axis=0)  # (out_d, in_d)
-    output = equiv_map @ input
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    return output, params
+    def __init__(
+        self: Self, input_keys: tuple[tuple[LayerKey, int]], D: int, eps: float = 1e-5
+    ) -> Self:
+        super(LayerNorm, self).__init__(input_keys, D, 1, eps)
 
 
-def batch_equiv_dense_layer(
-    params: ParamsTree,
-    input: ArrayLike,
-    basis: ArrayLike,
-    mold_params: bool = False,
-) -> tuple[Array, ParamsTree]:
-    vmap_equiv_dense_layer = vmap(
-        equiv_dense_layer, in_axes=(None, 0, None, None), out_axes=(0, None)
-    )
-    return vmap_equiv_dense_layer(params, input, basis, mold_params)
+class VectorNeuronNonlinear(eqx.Module):
+    weights: dict[LayerKey, jax.Array]
 
+    eps: float = eqx.field(static=True)
+    D: int = eqx.field(static=True)
+    scalar_activation: Callable = eqx.field(static=True)
 
-@functools.partial(jit, static_argnums=[2, 5, 6, 7])
-def batch_norm(
-    params,
-    batch_layer,
-    train,
-    running_mean,
-    running_var,
-    momentum=0.1,
-    eps=1e-05,
-    mold_params=False,
-):
-    """
-    Batch norm, this is not equivariant.
-    args:
-        params (jnp.array): array of learned params
-        batch_layer (BatchLayer): layer to apply to batch norm on
-        train (bool): whether it is training, in which case update the mean and var
-        running_mean (dict of jnp.array): array of mean at each k
-        running_var (dict of jnp.array): array of var at each k
-        momentum (float): how much of the current batch stats to include in the mean and var
-        eps (float): prevent val from being scaled to infinity when the variance is 0
-        mold_params (bool): True if we are learning the params shape, defaults to False
-    """
-    params_idx, this_params = get_layer_params(params, mold_params, BATCH_NORM)
+    def __init__(
+        self: Self,
+        input_keys: tuple[tuple[geom.LayerKey, int]],
+        D: int,
+        scalar_activation: Callable[[ArrayLike], jax.Array] = jax.nn.relu,
+        eps: float = 1e-5,
+        key: ArrayLike = None,
+    ) -> Self:
+        """
+        The vector nonlinearity in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
+        Basically use the channels of a vector to get a direction vector. Use the direction vector
+        to get an inner product with the input vector. The inner product is like the input to a
+        typical nonlinear activation, and it is used to scale the non-orthogonal part of the input
+        vector.
+        args:
+            input_keys: the input keys to this layer
+            scalar_activation (func): nonlinearity used for scalar
+            eps (float): small value to avoid dividing by zero if the k_vec is close to 0, defaults to 1e-5
+        """
+        self.eps = eps
+        self.D = D
+        self.scalar_activation = scalar_activation
 
-    if (running_mean is None) and (running_var is None):
-        running_mean = {}
-        running_var = {}
+        self.weights = {}
+        for (k, p), in_c in input_keys:
+            if (k, p) != (0, 0):  # initialization?
+                bound = 1.0 / jnp.sqrt(in_c)
+                key, subkey = random.split(key, num=2)
+                self.weights[(k, p)] = random.uniform(
+                    subkey, shape=(in_c, in_c), minval=-bound, maxval=bound
+                )
 
-    out_layer = batch_layer.empty()
-    for key, image_block in batch_layer.items():
-        num_channels = image_block.shape[1]
-        _, k = geom.parse_shape(image_block.shape[2:], batch_layer.D)
-        shape = (1, num_channels) + (1,) * batch_layer.D + (1,) * k
-        if mold_params:
-            this_params[key] = {SCALE: jnp.ones(shape), BIAS: jnp.ones(shape)}
+    def __call__(self: Self, x: geom.BatchLayer):
+        out_x = x.empty()
+        for (k, p), img_block in x.items():
 
-            # some placeholder values for mean and variance. While mold_params=True, we are not
-            # inside pmap, so we want to avoid calling pmean
-            mean = jnp.zeros(shape)
-            var = jnp.ones(shape)
-        elif train:
-            # both are shape (channels, (N,)*D, (D,)*k)
-            mean = jax.lax.pmean(
-                jnp.mean(
-                    image_block,
-                    axis=(0,) + tuple(range(2, 2 + batch_layer.D + k)),
-                    keepdims=True,
-                ),
-                axis_name="batch",
-            )
-            var = jax.lax.pmean(
-                jnp.mean(
-                    (image_block - mean) ** 2,
-                    axis=(0,) + tuple(range(2, 2 + batch_layer.D + k)),
-                    keepdims=True,
-                ),
-                axis_name="batch",
-            )
-            assert mean.shape == var.shape == shape
-
-            if (key in running_mean) and (key in running_var):
-                running_mean[key] = (1 - momentum) * running_mean[key] + momentum * mean
-                running_var[key] = (1 - momentum) * running_var[key] + momentum * var
+            if (k, p) == (0, 0):
+                out_x.append(k, p, self.scalar_activation(img_block))
             else:
-                running_mean[key] = mean
-                running_var[key] = var
-        else:  # not train, use the final value from training
-            mean = running_mean[key]
-            var = running_var[key]
+                # -> (out_c,spatial,tensor)
+                k_vec = jnp.einsum("ij,kj...->ki...", self.weights[(k, p)], img_block)
+                k_vec_normed = k_vec / (geom.norm(2 + self.D, k_vec, keepdims=True) + self.eps)
 
-        centered_scaled_image = (image_block - mean) / jnp.sqrt(var + eps)
+                inner_prod = jnp.einsum(
+                    f"...{geom.LETTERS[:k]},...{geom.LETTERS[:k]}->...", img_block, k_vec_normed
+                )
 
-        # Now we multiply each channel by a scalar, then add a bias to each channel.
-        # This is following: https://pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html
-        added_images = centered_scaled_image * this_params[key][SCALE] + this_params[key][BIAS]
-        out_layer.append(key[0], key[1], added_images)
+                # split the vector into a parallel section and a perpendicular section
+                v_parallel = jnp.einsum(
+                    f"...,...{geom.LETTERS[:k]}->...{geom.LETTERS[:k]}", inner_prod, k_vec_normed
+                )
+                v_perp = img_block - v_parallel
+                h = self.scalar_activation(inner_prod) / (jnp.abs(inner_prod) + self.eps)
 
-    params = update_params(params, params_idx, this_params, mold_params)
+                scaled_parallel = jnp.einsum(
+                    f"...,...{geom.LETTERS[:k]}->...{geom.LETTERS[:k]}", h, v_parallel
+                )
+                out_x.append(k, p, scaled_parallel + v_perp)
 
-    return out_layer, params, running_mean, running_var
+        return out_x
+
+
+class MaxNormPool(eqx.Module):
+    patch_len: int = eqx.field(static=True)
+    use_norm: bool = eqx.field(static=True)
+
+    def __init__(self: Self, patch_len: int, use_norm: bool = True):
+        self.patch_len = patch_len
+        self.use_norm = use_norm
+
+    def __call__(self: Self, x: geom.Layer):
+        in_axes = (None, 0, None, None)
+        vmap_max_pool = jax.vmap(jax.vmap(geom.max_pool, in_axes=in_axes), in_axes=in_axes)
+
+        out_x = x.empty()
+        for (k, p), image_block in x.items():
+            out_x.append(k, p, vmap_max_pool(x.D, image_block, self.patch_len, self.use_norm))
+
+        return out_x
+
+
+class LayerWrapper(eqx.Module):
+    modules: dict[LayerKey, Union[eqx.Module, Callable]]
+
+    def __init__(
+        self: Self, module: Union[eqx.Module, Callable], input_keys: tuple[tuple[LayerKey, int]]
+    ):
+        """
+        Perform the module or callable (e.g., activation) on each layer of the input layer. Since
+        we only take input_keys, module should preserve the shape/tensor order and parity.
+        """
+        self.modules = {}
+        for (k, p), _ in input_keys:
+            # I believe this *should* duplicate so they are independent, per the description in
+            # https://docs.kidger.site/equinox/api/nn/shared/. However, it may not. In the scalar
+            # case this should be perfectly fine though.
+            self.modules[(k, p)] = module
+
+    def __call__(self: Self, x: geom.Layer):
+        out_layer = x.__class__({}, x.D, x.is_torus)
+        for (k, p), image in x.items():
+            vmap_call = eqx.filter_vmap(self.modules[(k, p)], axis_name="batch")
+            out_layer.append(k, p, vmap_call(image))
+
+        return out_layer
+
+
+class LayerWrapperAux(eqx.Module):
+    modules: dict[LayerKey, Union[eqx.Module, Callable]]
+
+    def __init__(
+        self: Self,
+        module: Union[eqx.Module, Callable],
+        input_keys: tuple[tuple[LayerKey, int]],
+    ):
+        """
+        Perform the module or callable (e.g., activation) on each layer of the input layer. Since
+        we only take input_keys, module should preserve the shape/tensor order and parity.
+        """
+        self.modules = {}
+        for (k, p), _ in input_keys:
+            # I believe this *should* duplicate so they are independent, per the description in
+            # https://docs.kidger.site/equinox/api/nn/shared/. However, it may not. In the scalar
+            # case this should be perfectly fine though.
+            self.modules[(k, p)] = module
+
+    def __call__(self: Self, x: geom.Layer, aux_data: Optional[eqx.nn.State]):
+        out_layer = x.__class__({}, x.D, x.is_torus)
+        for (k, p), image in x.items():
+            vmap_call = eqx.filter_vmap(
+                self.modules[(k, p)], in_axes=(0, None), out_axes=(0, None), axis_name="batch"
+            )
+            out, aux_data = vmap_call(image, aux_data)
+            out_layer.append(k, p, out)
+
+        return out_layer, aux_data
+
+
+def save(filename, model):
+    # TODO: save batch stats
+    with open(filename, "wb") as f:
+        eqx.tree_serialise_leaves(f, model)
+
+
+def load(filename, model):
+    with open(filename, "rb") as f:
+        return eqx.tree_deserialise_leaves(f, model)
 
 
 def _group_norm_K1(
     D: int, image_block: ArrayLike, groups: int, method: str = "eigh", eps: float = 1e-5
-) -> Array:
+) -> jax.Array:
     """
     Perform the layer norm whitening on a vector image block. This is somewhat based on the Clifford
     Layers Batch norm, link below. However, this differs in that we use eigh rather than cholesky because
@@ -1096,13 +609,7 @@ def _group_norm_K1(
         )
     elif method == "cholesky":
         L = jax.lax.linalg.cholesky(cov, symmetrize_input=False)  # (batch*groups,D,D)
-        L = L + eps * jnp.eye(D).reshape(
-            (
-                1,
-                D,
-                D,
-            )
-        )
+        L = L + eps * jnp.eye(D).reshape((1, D, D))
         whitened_data = jax.lax.linalg.triangular_solve(
             L,
             centered_img.reshape((batch * groups, -1) + (D,)),
@@ -1115,168 +622,10 @@ def _group_norm_K1(
     return whitened_data.reshape(image_block.shape)
 
 
-def group_norm(
-    params: ParamsTree,
-    layer: geom.BatchLayer,
-    groups: int,
-    eps: float = 1e-5,
-    equivariant: bool = True,
-    mold_params: bool = False,
-) -> tuple[geom.BatchLayer, ParamsTree]:
-    """
-    Implementation of group_norm. When num_groups=num_channels, this is equivalent to instance_norm. When
-    num_groups=1, this is equivalent to layer_norm. This function takes in a BatchLayer, not a Layer.
-    args:
-        params (params tree): the params of the model
-        layer (BatchLayer): input layer, each image is shape (batch,in_c,spatial)
-        groups (int): the number of channel groups for group_norm
-        eps (float): number to add to variance so we aren't dividing by 0
-        equivariant (bool): defaults to True
-        mold_params (bool): parameter to control whether to shape the parameters.
-    """
-    params_idx, this_params = get_layer_params(params, mold_params, GROUP_NORM)
-    if mold_params:
-        this_params = {SCALE: {}}
-
-    out_layer = layer.empty()
-    for (k, parity), image_block in layer.items():
-        batch, in_c = image_block.shape[:2]
-        spatial_dims, _ = geom.parse_shape(image_block.shape[2:], layer.D)
-        assert (in_c % groups) == 0  # groups must evenly divide the number of channels
-        channels_per_group = in_c // groups
-
-        image_grouped = image_block.reshape(
-            (batch, groups, channels_per_group) + spatial_dims + (layer.D,) * k
-        )
-
-        if equivariant and k == 1:
-            whitened_data = _group_norm_K1(layer.D, image_block, groups, eps=eps)
-        elif equivariant and k > 1:
-            raise NotImplementedError(
-                f"ml::group_norm: Currently equivariant group_norm is not implemented for k>1, but k={k}",
-            )
-        else:
-            mean = jnp.mean(image_grouped, axis=tuple(range(2, 3 + layer.D + k)), keepdims=True)
-            var = jnp.var(image_grouped, axis=tuple(range(2, 3 + layer.D + k)), keepdims=True)
-            assert mean.shape == var.shape == (batch, groups, 1) + (1,) * layer.D + (1,) * k
-            whitened_data = ((image_grouped - mean) / jnp.sqrt(var + eps)).reshape(
-                image_block.shape
-            )
-
-        if mold_params:
-            this_params[SCALE][(k, parity)] = jnp.ones((1, in_c) + (1,) * layer.D + (1,) * k)
-
-        scaled_image = whitened_data * this_params[SCALE][(k, parity)]
-        out_layer.append(k, parity, scaled_image)
-
-    out_layer, this_params = add_bias(
-        this_params, out_layer, mean_bias=equivariant, mold_params=mold_params
-    )
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    return out_layer, params
-
-
-@functools.partial(jit, static_argnums=[2, 3])
-def layer_norm(
-    params: ParamsTree,
-    input_layer: geom.BatchLayer,
-    eps: float = 1e-05,
-    mold_params: bool = False,
-) -> tuple[geom.BatchLayer, ParamsTree]:
-    """
-    Implementation of layer norm based on group_norm.
-    """
-    return group_norm(params, input_layer, 1, eps, mold_params)
-
-
-@functools.partial(jax.jit, static_argnums=[1, 2])
-def batch_max_pool(
-    input_layer: geom.BatchLayer, patch_len: int, use_norm: bool = True
-) -> geom.BatchLayer:
-    """
-    Max pool layer on a BatchLayer. Patch len must divide evenly every spatial_dim, and use_norm can
-    only be used with (pseudo-)scalars, and it breaks equivariance for pseudoscalars.
-    args:
-        input_layer (BatchLayer): input data
-        patch_len (int): side of the max pool sides
-        use_norm (bool): whether to use the Frobenius norm on the tensor, defaults to True
-    """
-    vmap_max_pool = jax.vmap(
-        jax.vmap(geom.max_pool, in_axes=(None, 0, None, None)),
-        in_axes=(None, 0, None, None),
-    )
-
-    out_layer = input_layer.empty()
-    for (k, parity), image_block in input_layer.items():
-        out_layer.append(k, parity, vmap_max_pool(input_layer.D, image_block, patch_len, use_norm))
-
-    return out_layer
-
-
-@functools.partial(jax.jit, static_argnums=[2, 3])
-def batch_VN_max_pool(
-    params: ParamsTree,
-    layer: geom.BatchLayer,
-    patch_len: int,
-    mold_params: bool = False,
-) -> tuple[geom.BatchLayer, ParamsTree]:
-    """
-    The max pool in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
-    Basically use the channels of a vector to get a direction vector. Then the vector that is most
-    aligned in the direction is the "max" vector.
-    args:
-        params (): params tree
-        layer (BatchLayer): the input layer
-        patch_len (int): sidelength of the patch to pool over
-        eps (float): small value to avoid dividing by zero if the k_vec is close to 0, defaults to 1e-5
-    """
-    params_idx, this_params = get_layer_params(params, mold_params, VN_MAX_POOL)
-
-    if mold_params:
-        this_params
-
-    out_layer = layer.empty()
-    for (k, parity), img_block in layer.items():
-        assert k == 0 or k == 1, "batch_VN_nonlinear: Layer can only have scalars and vectors"
-        in_c = img_block.shape[1]
-
-        if k == 0:
-            # do normal max pool
-            vmap_max_pool = jax.vmap(
-                jax.vmap(geom.max_pool, in_axes=(None, 0, None, None)),
-                in_axes=(None, 0, None, None),
-            )
-            out_layer.append(k, parity, vmap_max_pool(layer.D, img_block, patch_len, True))
-        elif k == 1:  # k==1
-            if mold_params:
-                this_params[(k, parity)] = {"W": jnp.ones((in_c, in_c))}
-
-            directions = jnp.einsum("ab,cb...->ca...", this_params[(k, parity)]["W"], img_block)
-            inner_product = jnp.einsum("...a,...a->...", directions, img_block)
-
-            vmap_max_pool = jax.vmap(
-                jax.vmap(geom.max_pool, in_axes=(None, 0, None, None, 0)),
-                in_axes=(None, 0, None, None, 0),
-            )
-
-            pooled_image = vmap_max_pool(layer.D, img_block, patch_len, False, inner_product)
-            out_layer.append(k, parity, pooled_image)
-        else:
-            raise NotImplementedError(
-                f"batch_VN_max_pool: only k==0,k==1 implemented but got k=={k}"
-            )
-
-    params = update_params(params, params_idx, this_params, mold_params)
-
-    return out_layer, params
-
-
-@functools.partial(jit, static_argnums=1)
+@functools.partial(jax.jit, static_argnums=1)
 def average_pool_layer(input_layer: geom.Layer, patch_len: int) -> geom.Layer:
     out_layer = input_layer.empty()
-    vmap_avg_pool = vmap(geom.average_pool, in_axes=(None, 0, None))
+    vmap_avg_pool = jax.vmap(geom.average_pool, in_axes=(None, 0, None))
     for (k, parity), image_block in input_layer.items():
         out_layer.append(k, parity, vmap_avg_pool(input_layer.D, image_block, patch_len))
 
@@ -1284,376 +633,10 @@ def average_pool_layer(input_layer: geom.Layer, patch_len: int) -> geom.Layer:
 
 
 def batch_average_pool(input_layer: geom.BatchLayer, patch_len: int) -> geom.BatchLayer:
-    return vmap(average_pool_layer, in_axes=(0, None))(input_layer, patch_len)
-
-
-@jit
-def basis_average_layer(input_layer: geom.BatchLayer, basis: ArrayLike) -> Array:
-    """
-    Experimental layer that finds an average over each basis element to get a coefficient for that basis
-    element.
-    """
-    # input_layer must be a only have (1,0)
-    # basis must be (basis_len, (N,)*D, (D,))
-    D = input_layer.D
-    num_coeffs = basis.shape[0]
-
-    def basis_prod(image, Qi):
-        return jnp.mean(
-            geom.multicontract(geom.mul(D, image, Qi), ((0, 1),), idx_shift=D),
-            axis=range(D),
-        )
-
-    # outer (first in result) maps over basis, inner (second in result) maps over channels of image
-    vmap_basis_prod = vmap(vmap(basis_prod, in_axes=(0, None)), in_axes=(None, 0))
-    coeffs = jnp.sum(vmap_basis_prod(input_layer[(1, 0)], basis), axis=1)  # (num_coeffs * D,)
-    return coeffs.reshape((D, int(num_coeffs / D))).transpose()  # (num_coeffs/D,D)
-
-
-def batch_basis_average_layer(input_layer: geom.BatchLayer, basis: ArrayLike) -> Array:
-    return vmap(basis_average_layer, in_axes=(0, None))(input_layer, basis)  # (L, num_coeffs, D)
-
-
-## Params
-
-
-def get_layer_params(
-    params: ParamsTree, mold_params: bool, layer_name: str
-) -> tuple[tuple[int, str], ParamsTree]:
-    """
-    Given a network params tree, create a key, value (empty defaultdict) for the next layer if
-    mold_params is true, or return the next key and value from the tree if mold_params is False
-    args:
-        params (dict tree of jnp.array): the entire params tree for a neural network function
-        mold_params (bool): whether the layer is building the params tree or using it
-        layer_name (string): type of layer, currently just a label
-    """
-    if mold_params:
-        params_key_idx = (len(list(params.keys())), layer_name)
-        this_params = defaultdict(lambda: None)
-    else:
-        params_key_idx = next(iter(params.keys()))
-        this_params = params[params_key_idx]
-
-    return params_key_idx, this_params
-
-
-def update_params(
-    params: ParamsTree,
-    params_idx: tuple[int, str],
-    layer_params: ParamsTree,
-    mold_params: bool,
-) -> ParamsTree:
-    """
-    If mold_params is true, save the layer_params at the slot params_idx, building up the
-    params tree. If mold_params is false, we are consuming layers so pop that set of params
-    args:
-        params (dict tree of jnp.array): the entire params tree for a neural network function
-        params_idx (tuple (int,str)): the key of the params that we are updating
-        layer_params (dict tree of params): the shaped param if mold_params is True
-        mold_params (bool): whether the layer is building the params tree or using it
-    """
-    # In mold_params, we are adding params one layer at a time, so we add it. When not in mold_params,
-    # we are popping one set of params from the front each layer.
-    if mold_params:
-        params[params_idx] = layer_params
-    else:
-        del params[params_idx]
-
-    return params
-
-
-def print_params(params: ParamsTree, leading_tabs: str = "") -> None:
-    """
-    Print the params tree in a structured fashion.
-    """
-    print("{")
-    for k, v in params.items():
-        if isinstance(v, dict):
-            print(f"{leading_tabs}{k}: ", end="")
-            print_params(v, leading_tabs=leading_tabs + "\t")
-        else:
-            print(f"{leading_tabs}{k}: {v.shape}")
-    print(leading_tabs + "}")
-
-
-def count_params(params: ParamsTree) -> int:
-    """
-    Count the total number of params in the params tree
-    args:
-        params (dict tree of params): the params of a neural network function
-    """
-    num_params = 0
-    for v in params.values():
-        num_params += count_params(v) if isinstance(v, dict) else v.size
-
-    return num_params
-
-
-def init_params(
-    net_func: Callable[[ParamsTree, geom.BatchLayer, ArrayLike, bool, bool], ParamsTree],
-    input_layer: geom.BatchLayer,
-    rand_key: ArrayLike,
-    return_func: bool = False,
-    override_initializers: dict[str, Callable[[ArrayLike, Any], Any]] = {},
-) -> ParamsTree:
-    """
-    Use this function to construct and initialize the tree of params used by the neural network function. The
-    first argument should be a function that takes (params, input_layer, rand_key, train, return_params) as
-    arguments. Any other arguments should be provided already, possibly using functools.partial. When return_params
-    is true, the function should return params as the last element of a tuple or list.
-    args:
-        net_func (function): neural network function
-        input_layer (geom.Layer): One piece of data to give the initial shape, doesn't have to match batch size
-        rand_key (rand key): key used both as input and for the initialization of the params (gets split)
-        return_func (bool): if False, return params, if True return a func that takes a rand_key and returns
-            the params. Defaults to False.
-        override_initializers (dict): Pass custom initializers with this dictionary. The key is the layer name
-            and the value is a function that takes (rand_key, tree) and returns the tree of initialized params.
-    """
-    rand_key, subkey = random.split(rand_key)
-    with jax.disable_jit():  # this could be slow, lets see?
-        params = net_func(defaultdict(lambda: None), input_layer, subkey, True, return_params=True)[
-            -1
-        ]
-
-    initializers = {
-        BATCH_NORM: batch_norm_init,
-        GROUP_NORM: group_norm_init,
-        CHANNEL_COLLAPSE: channel_collapse_init,
-        CONV: functools.partial(conv_init, D=input_layer.D),
-        CONV_OLD: conv_old_init,
-        CASCADING_CONTRACTIONS: cascading_contractions_init,
-        PARAMED_CONTRACTIONS: paramed_contractions_init,
-        EQUIV_DENSE: equiv_dense_init,
-        VN_MAX_POOL: VN_max_pool_init,
-        VN_NONLINEAR: VN_nonlinear_init,
-        NORM_NONLINEAR: norm_nonlinear_init,
-        VECTOR_DOTS_NONLINEAR: vector_dots_init,
-    }
-
-    initializers = {**initializers, **override_initializers}
-
-    if return_func:
-        return lambda in_key: recursive_init_params(params, in_key, initializers)
-    else:
-        rand_key, subkey = random.split(rand_key)
-        return recursive_init_params(params, subkey, initializers)
-
-
-def recursive_init_params(
-    params: ParamsTree,
-    rand_key: ArrayLike,
-    initializers: dict[str, Callable[[ArrayLike, Any], Any]],
-) -> ParamsTree:
-    """
-    Given a tree of params, initialize all the params according to the initializers. No longer recursive.
-    args:
-        params (dict tree of jnp.array): properly shaped dict tree
-        rand_key (rand key): used for initializing the parameters
-    """
-    out_tree = {}
-    for (i, layer_name), v in params.items():
-        rand_key, subkey = random.split(rand_key)
-        out_tree[(i, layer_name)] = initializers[layer_name](subkey, v)
-
-    return out_tree
-
-
-def batch_norm_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
-    out_params = {}
-    for key, inner_tree in tree.items():
-        out_params[key] = {SCALE: jnp.ones(inner_tree[SCALE].shape)}
-        # bias violates equivariance for certain tensor/parities, so it might be missing
-        if BIAS in inner_tree:
-            out_params[key][BIAS] = jnp.zeros(inner_tree[BIAS].shape)
-
-    return out_params
-
-
-def group_norm_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
-    out_params = {}
-    if BIAS in tree:
-        out_params[BIAS] = {}
-        for key, params_block in tree[BIAS].items():
-            out_params[BIAS][key] = jnp.zeros(params_block.shape)
-
-    if SCALE in tree:
-        out_params[SCALE] = {}
-        for key, params_block in tree[SCALE].items():
-            out_params[SCALE][key] = jnp.ones(params_block.shape)
-
-    return out_params
-
-
-def channel_collapse_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
-    out_params = {}
-    for key, params_block in tree.items():
-        rand_key, subkey = random.split(rand_key)
-        bound = 1 / jnp.sqrt(params_block.shape[1])
-        out_params[key] = random.uniform(subkey, params_block.shape, minval=-bound, maxval=bound)
-
-    return out_params
-
-
-def conv_init(rand_key: ArrayLike, tree: ParamsTree, D: int) -> ParamsTree:
-    assert (CONV_FREE in tree) or (CONV_FIXED in tree)
-    out_params = {}
-    filter_type = CONV_FREE if CONV_FREE in tree else CONV_FIXED
-    params = {}
-    for key, d in tree[filter_type].items():
-        params[key] = {}
-        for filter_key, (params_shape, filter_block_shape) in d.items():
-            rand_key, subkey = random.split(rand_key)
-            bound = 1 / jnp.sqrt(np.multiply.reduce(filter_block_shape))
-            params[key][filter_key] = random.uniform(
-                subkey, shape=params_shape, minval=-bound, maxval=bound
-            )
-
-    out_params[filter_type] = params
-
-    if BIAS in tree:
-        bias_params = {}
-        for key, params_block in tree[BIAS].items():
-            # reuse the bound from above, it shouldn't be any different
-            rand_key, subkey = random.split(rand_key)
-            bias_params[key] = random.uniform(
-                subkey, shape=params_block.shape, minval=-bound, maxval=bound
-            )
-
-        out_params[BIAS] = bias_params
-
-    return out_params
-
-
-def conv_old_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
-    # Keep this how it was originally initialized so old code still works the same.
-    out_params = {}
-    for key, d in tree.items():
-        out_params[key] = {}
-        for filter_key, params_block in d.items():
-            rand_key, subkey = random.split(rand_key)
-            out_params[key][filter_key] = 0.1 * random.normal(subkey, shape=params_block.shape)
-
-    return out_params
-
-
-def cascading_contractions_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
-    out_params = {}
-    for key, d in tree.items():
-        out_params[key] = {}
-        for contraction_idx, params_block in d.items():
-            rand_key, subkey = random.split(rand_key)
-            out_params[key][contraction_idx] = 0.1 * random.normal(subkey, shape=params_block.shape)
-
-    return out_params
-
-
-def paramed_contractions_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
-    out_params = {}
-    for key, param_block in tree.items():
-        _, channels, maps = param_block.shape
-        bound = 1 / jnp.sqrt(channels * maps)
-        rand_key, subkey = random.split(rand_key)
-        out_params[key] = random.uniform(
-            subkey, shape=param_block.shape, minval=-bound, maxval=bound
-        )
-
-    return out_params
-
-
-def equiv_dense_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
-    out_params = {}
-    for key, param_block in tree.items():
-        rand_key, subkey = random.split(rand_key)
-        bound = 1.0 / jnp.sqrt(param_block.size)
-        out_params[key] = random.uniform(
-            subkey, shape=param_block.shape, minval=-bound, maxval=bound
-        )
-
-    return out_params
-
-
-def VN_nonlinear_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
-    out_params = {}
-    for key, param_block in tree.items():
-        rand_key, subkey = random.split(rand_key)
-        bound = 1.0 / jnp.sqrt(param_block.shape[2])
-        out_params[key] = random.uniform(
-            subkey, shape=param_block.shape, minval=-bound, maxval=bound
-        )
-
-    return out_params
-
-
-def norm_nonlinear_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
-    out_params = {}
-    for key, param_block_dict in tree.items():
-        param_block = param_block_dict["bias"]
-        rand_key, subkey = random.split(rand_key)
-        bound = 1.0 / jnp.sqrt(param_block.shape[1])
-        out_params[key] = {
-            "bias": random.uniform(subkey, shape=param_block.shape, minval=-bound, maxval=bound)
-        }
-
-    return out_params
-
-
-def vector_dots_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
-    out_params = {}
-    for key, param_block_dict in tree.items():
-        out_params[key] = {}
-        rand_key, subkey = random.split(rand_key)
-        bound = 1.0 / jnp.sqrt(len(param_block_dict["W1"]))
-        out_params[key]["W1"] = random.uniform(
-            subkey, shape=param_block_dict["W1"].shape, minval=-bound, maxval=bound
-        )
-        out_params[key]["b1"] = random.uniform(
-            subkey, shape=param_block_dict["b1"].shape, minval=-bound, maxval=bound
-        )
-
-        bound = 1.0 / jnp.sqrt(len(param_block_dict["W2"]))
-        out_params[key]["W2"] = random.uniform(
-            subkey, shape=param_block_dict["W2"].shape, minval=-bound, maxval=bound
-        )
-        out_params[key]["b2"] = random.uniform(
-            subkey, shape=param_block_dict["b2"].shape, minval=-bound, maxval=bound
-        )
-
-    return out_params
-
-
-def VN_max_pool_init(rand_key: ArrayLike, tree: ParamsTree) -> ParamsTree:
-    out_params = {}
-    for key, params in tree.items():
-        out_params[key] = {}
-        rand_key, subkey = random.split(rand_key)
-        bound = 1.0 / jnp.sqrt(len(params["W"]))
-        out_params[key]["W"] = random.uniform(
-            subkey,
-            shape=params["W"].shape,
-            minval=-bound,
-            maxval=bound,
-        )
-
-    return out_params
+    return jax.vmap(average_pool_layer, in_axes=(0, None))(input_layer, patch_len)
 
 
 ## Losses
-
-
-def rmse_loss(x: ArrayLike, y: ArrayLike) -> Array:
-    """
-    Root Mean Squared Error Loss.
-    args:
-        x (jnp.array): the input image
-        y (jnp.array): the associated output for x that we are comparing against
-    """
-    return jnp.sqrt(mse_loss(x, y))
-
-
-def mse_loss(x: ArrayLike, y: ArrayLike) -> Array:
-    return jnp.mean((x - y) ** 2)
 
 
 def timestep_smse_loss(
@@ -1661,7 +644,7 @@ def timestep_smse_loss(
     layer_y: geom.BatchLayer,
     n_steps: int,
     reduce: Optional[str] = "mean",
-) -> Array:
+) -> jax.Array:
     """
     Returns loss for each timestep. Loss is summed over the channels, and mean over spatial dimensions
     and the batch.
@@ -1692,7 +675,7 @@ def timestep_smse_loss(
         return loss_per_step
 
 
-def smse_loss(layer_x: geom.Layer, layer_y: geom.Layer) -> Array:
+def smse_loss(layer_x: geom.Layer, layer_y: geom.Layer) -> jax.Array:
     """
     Sum of mean squared error loss. The sum is over the channels, the mean is over the spatial dimensions and
     the batch.
@@ -1706,17 +689,9 @@ def smse_loss(layer_x: geom.Layer, layer_y: geom.Layer) -> Array:
     )
 
 
-def l2_loss(x: ArrayLike, y: ArrayLike) -> Array:
-    return jnp.sqrt(l2_squared_loss(x, y))
-
-
-def l2_squared_loss(x: ArrayLike, y: ArrayLike) -> Array:
-    return jnp.sum((x - y) ** 2)
-
-
 def normalized_smse_loss(
     layer_x: geom.BatchLayer, layer_y: geom.BatchLayer, eps: float = 1e-5
-) -> Array:
+) -> jax.Array:
     """
     Pointwise normalized loss. We find the norm of each channel at each spatial point of the true value
     and divide the tensor by that norm. Then we take the l2 loss, mean over the spatial dimensions, sum
@@ -1780,170 +755,131 @@ def get_batch_layer(
     return batches if (len(batches) > 1) else batches[0]
 
 
-def map_loss_in_batches(
-    map_and_loss: Union[
-        Callable[
-            [Any, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool, Any],
-            tuple[Array, Any],
-        ],
-        Callable[[Any, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool], Array],
-    ],
-    params: ParamsTree,
-    layer_X: geom.BatchLayer,
-    layer_Y: geom.BatchLayer,
-    batch_size: int,
-    rand_key: ArrayLike,
-    train: bool,
-    has_aux: bool = False,
-    aux_data: Optional[Any] = None,
-    devices: Optional[list[jax.Device]] = None,
-) -> Array:
-    """
-    Runs map_and_loss for the entire layer_X, layer_Y, splitting into batches if the layer is larger than
-    the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
-    to split those over batches for memory reasons. Automatically pmaps over multiple gpus, so the number
-    of gpus must evenly divide batch_size as well as as any remainder of the layer.
-    args:
-        map_and_loss (function): function that takes in params, X_batch, Y_batch, rand_key, train, and
-            aux_data if has_aux is true, and returns the loss, and aux_data if has_aux is true.
-        params (params tree): the params to run through map_and_loss
-        layer_X (BatchLayer): input data
-        layer_Y (BatchLayer): target output data
-        batch_size (int): effective batch_size, must be divisible by number of gpus
-        rand_key (jax.random.PRNGKey): rand key
-        train (bool): whether this is training or not, likely not
-        has_aux (bool): has auxilliary data, such as batch_stats, defaults to False
-        aux_data (any): auxilliary data, such as batch stats. Passed to the function is has_aux is True.
-        devices (list): gpu/cpu devices to use
-    returns: average loss over the entire layer
-    """
-    if has_aux:
-        pmap_loss_grad = jax.pmap(
-            map_and_loss,
-            axis_name="batch",
-            in_axes=(None, 0, 0, None, None, None),
-            out_axes=(0, None),
-            static_broadcasted_argnums=4,
-            devices=devices,
-        )
-    else:
-        pmap_loss_grad = jax.pmap(
-            map_and_loss,
-            axis_name="batch",
-            in_axes=(None, 0, 0, None, None),
-            static_broadcasted_argnums=4,
-            devices=devices,
-        )
+### Stopping Conditions
 
-    rand_key, subkey = random.split(rand_key)
-    X_batches, Y_batches = get_batch_layer((layer_X, layer_Y), batch_size, subkey, devices)
-    total_loss = None
-    for X_batch, Y_batch in zip(X_batches, Y_batches):
-        rand_key, subkey = random.split(rand_key)
-        if has_aux:
-            one_loss, aux_data = pmap_loss_grad(params, X_batch, Y_batch, subkey, train, aux_data)
+
+class StopCondition:
+    def __init__(self: Self, verbose: int = 0) -> Self:
+        assert verbose in {0, 1, 2}
+        self.best_model = None
+        self.verbose = verbose
+
+    def stop(
+        self: Self,
+        model: eqx.Module,
+        current_epoch: int,
+        train_loss: float,
+        val_loss: float,
+        epoch_time: int,
+    ) -> None:
+        pass
+
+    def log_status(
+        self: Self, epoch: int, train_loss: float, val_loss: float, epoch_time: int
+    ) -> None:
+        if train_loss is not None:
+            if val_loss is not None:
+                print(
+                    f"Epoch {epoch} Train: {train_loss:.7f} Val: {val_loss:.7f} Epoch time: {epoch_time:.5f}",
+                )
+            else:
+                print(f"Epoch {epoch} Train: {train_loss:.7f} Epoch time: {epoch_time:.5f}")
+
+
+class EpochStop(StopCondition):
+    # Stop when enough epochs have passed.
+
+    def __init__(self: Self, epochs: int, verbose: int = 0) -> Self:
+        super(EpochStop, self).__init__(verbose=verbose)
+        self.epochs = epochs
+
+    def stop(
+        self: Self,
+        model: eqx.Module,
+        current_epoch: int,
+        train_loss: float,
+        val_loss: float,
+        epoch_time: int,
+    ) -> bool:
+        self.best_model = model
+
+        if self.verbose == 2 or (
+            self.verbose == 1 and (current_epoch % (self.epochs // np.min([10, self.epochs])) == 0)
+        ):
+            self.log_status(current_epoch, train_loss, val_loss, epoch_time)
+
+        return current_epoch >= self.epochs
+
+
+class TrainLoss(StopCondition):
+    # Stop when the training error stops improving after patience number of epochs.
+
+    def __init__(self: Self, patience: int = 0, min_delta: float = 0, verbose: int = 0) -> Self:
+        super(TrainLoss, self).__init__(verbose=verbose)
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best_train_loss = jnp.inf
+        self.epochs_since_best = 0
+
+    def stop(
+        self: Self,
+        model: eqx.Module,
+        current_epoch: int,
+        train_loss: Optional[float],
+        val_loss: Optional[float],
+        epoch_time: int,
+    ) -> bool:
+        if train_loss is None:
+            return False
+
+        if train_loss < (self.best_train_loss - self.min_delta):
+            self.best_train_loss = train_loss
+            self.best_model = model
+            self.epochs_since_best = 0
+
+            if self.verbose >= 1:
+                self.log_status(current_epoch, train_loss, val_loss, epoch_time)
         else:
-            one_loss = pmap_loss_grad(params, X_batch, Y_batch, subkey, False)
+            self.epochs_since_best += 1
 
-        total_loss = (0 if total_loss is None else total_loss) + jnp.mean(one_loss, axis=0)
-
-    return total_loss / len(X_batches)
+        return self.epochs_since_best > self.patience
 
 
-def map_in_batches(
-    map_f: Union[
-        Callable[[ParamsTree, geom.BatchLayer, ArrayLike, bool, Any], tuple[Any, Any]],
-        Callable[[ParamsTree, geom.BatchLayer, ArrayLike, bool], Any],
-    ],
-    params: ParamsTree,
-    layer_X: geom.BatchLayer,
-    batch_size: int,
-    rand_key: ArrayLike,
-    train: bool,
-    has_aux: bool = False,
-    aux_data: Optional[Any] = None,
-    devices: Optional[list[jax.Device]] = None,
-    merge_layer: bool = False,
-) -> Union[geom.BatchLayer, Any]:
-    """
-    Runs map_f for the entire layer_X, splitting into batches if the layer is larger than
-    the batch_size. This is helpful to run a whole validation/test set through map_f when you need
-    to split those over batches for memory reasons. Automatically pmaps over multiple gpus, so the number
-    of gpus must evenly divide batch_size as well as as any remainder of the layer.
-    args:
-        map_f (function): function that takes in params, X_batch, rand_key, train, and
-            aux_data if has_aux is true, and returns the mapped layer, and aux_data if has_aux is true.
-        params (params tree): the params to run through map_f
-        layer_X (BatchLayer): input data
-        batch_size (int): effective batch_size, must be divisible by number of gpus
-        rand_key (jax.random.PRNGKey): rand key
-        train (bool): whether this is training or not, likely not
-        has_aux (bool): has auxilliary data, such as batch_stats, defaults to False
-        aux_data (any): auxilliary data, such as batch stats. Passed to the function is has_aux is True.
-        devices (list): gpu/cpu devices to use
-        merge_layer (bool): if the result is a list of layers, automatically merge those layers
-    returns: average loss over the entire layer
-    """
-    if has_aux:
-        pmap_f = jax.pmap(
-            map_f,
-            axis_name="batch",
-            in_axes=(None, 0, None, None, None),
-            out_axes=(0, None),
-            static_broadcasted_argnums=3,
-            devices=devices,
-        )
-    else:
-        pmap_f = jax.pmap(
-            map_f,
-            axis_name="batch",
-            in_axes=(None, 0, None, None),
-            static_broadcasted_argnums=3,
-            devices=devices,
-        )
+class ValLoss(StopCondition):
+    # Stop when the validation error stops improving after patience number of epochs.
 
-    results = []
-    for X_batch in get_batch_layer(layer_X, batch_size, None, devices):
-        rand_key, subkey = random.split(rand_key)
-        if has_aux:
-            batch_out, aux_data = pmap_f(params, X_batch, subkey, train, aux_data)
+    def __init__(self: Self, patience: int = 0, min_delta: float = 0, verbose: int = 0) -> Self:
+        super(ValLoss, self).__init__(verbose=verbose)
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best_val_loss = jnp.inf
+        self.epochs_since_best = 0
+
+    def stop(
+        self: Self,
+        model: eqx.Module,
+        current_epoch: int,
+        train_loss: Optional[float],
+        val_loss: Optional[float],
+        epoch_time: int,
+    ) -> bool:
+        if val_loss is None:
+            return False
+
+        if val_loss < (self.best_val_loss - self.min_delta):
+            self.best_val_loss = val_loss
+            self.best_model = model
+            self.epochs_since_best = 0
+
+            if self.verbose >= 1:
+                self.log_status(current_epoch, train_loss, val_loss, epoch_time)
         else:
-            batch_out = pmap_f(params, X_batch, subkey, False)
+            self.epochs_since_best += 1
 
-        results.append(batch_out)
-
-    if merge_layer:  # if the results is a list of layers, automatically merge those layers
-        out_layer = results[0].empty()
-        for layer in results:
-            for (
-                k,
-                parity,
-            ), image_block in layer.items():  # (num_batches, batch_size, channels, spatial, tensor)
-                out_layer.append(k, parity, image_block.reshape((-1,) + image_block.shape[2:]))
-
-        return out_layer
-    else:
-        return results
+        return self.epochs_since_best > self.patience
 
 
-def add_noise(layer: geom.Layer, stdev: float, rand_key: ArrayLike) -> geom.Layer:
-    """
-    Add mean 0, stdev standard deviation Gaussian noise to the data X.
-    args:
-        X (layer): the X input data to the model
-        stdev (float): the standard deviation of the desired Gaussian noise
-        rand_key (jnp.random key): the key for randomness
-    """
-    noisy_layer = layer.empty()
-    for (k, parity), image_block in layer.items():
-        rand_key, subkey = random.split(rand_key)
-        noisy_layer.append(
-            k,
-            parity,
-            image_block + stdev * random.normal(subkey, shape=image_block.shape),
-        )
-
-    return noisy_layer
+# ~~~~~~~~~~~~~~~~~~~~~~ Training Functions ~~~~~~~~~~~~~~~~~~~~~~
 
 
 def autoregressive_step(
@@ -2008,357 +944,307 @@ def autoregressive_step(
 
 
 def autoregressive_map(
-    params: ParamsTree,
-    layer_x: geom.BatchLayer,
-    key: ArrayLike,
-    train: bool,
+    batch_model: eqx.Module,
+    x: geom.BatchLayer,
     aux_data: Any = None,
     past_steps: int = 1,
     future_steps: int = 1,
-    net: Optional[
-        Union[
-            Callable[
-                [Any, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool, Any],
-                tuple[Array, Any],
-            ],
-            Callable[[Any, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool], Array],
-        ]
-    ] = None,
-    has_aux: bool = False,
 ) -> geom.BatchLayer:
     """
-    Given a network, perform an autoregressive step (future_steps) times, and return the output
+    Given a model, perform an autoregressive step (future_steps) times, and return the output
     steps in a single layer.
     args:
-        params (params tree): the params
-        layer_x (Layer): the input layer to map
-        key (rand key):
-        train (bool): whether it is in training mode or test mode
+        batch_model (eqx.Module): model that operates of batches, probably a vmapped version of model.
+        x (BatchLayer): the input layer to map
         past_steps (int): the number of past steps input to the autoregressive map, default 1
         future_steps (int): how many times to loop through the autoregression, default 1
         aux_data (): auxilliary data to pass to the network
-        net (func): the network that performs one step of the autoregression
         has_aux (bool): whether net returns an aux_data, defaults to False
     """
-    assert net is not None
-
-    out_layer = (
-        layer_x.empty()
-    )  # assume that the out layer has the same D and is_torus as the inptu
+    out_x = x.empty()  # assume out_layer matches D and is_torus
     for _ in range(future_steps):
-        key, subkey = random.split(key)
-        if has_aux:
-            learned_x, aux_data = net(params, layer_x, subkey, train, batch_stats=aux_data)
+        if aux_data is None:
+            learned_x = batch_model(x)
         else:
-            learned_x = net(params, layer_x, subkey, train)
+            learned_x, aux_data = batch_model(x, aux_data)
 
-        layer_x, out_layer = autoregressive_step(layer_x, learned_x, out_layer, past_steps)
+        x, out_x = autoregressive_step(x, learned_x, out_x, past_steps)
 
-    return (out_layer, aux_data) if has_aux else out_layer
-
-
-### Train
+    return out_x, aux_data
 
 
-class StopCondition:
-    def __init__(self: Self, verbose: int = 0) -> Self:
-        assert verbose in {0, 1, 2}
-        self.best_params = None
-        self.verbose = verbose
-
-    def stop(
-        self: Self,
-        params: ParamsTree,
-        current_epoch: int,
-        train_loss: float,
-        val_loss: float,
-        epoch_time: int,
-    ) -> None:
-        pass
-
-    def log_status(
-        self: Self, epoch: int, train_loss: float, val_loss: float, epoch_time: int
-    ) -> None:
-        if train_loss is not None:
-            if val_loss is not None:
-                print(
-                    f"Epoch {epoch} Train: {train_loss:.7f} Val: {val_loss:.7f} Epoch time: {epoch_time:.5f}",
-                )
-            else:
-                print(f"Epoch {epoch} Train: {train_loss:.7f} Epoch time: {epoch_time:.5f}")
-
-
-class EpochStop(StopCondition):
-    # Stop when enough epochs have passed.
-
-    def __init__(self: Self, epochs: int, verbose: int = 0) -> Self:
-        super(EpochStop, self).__init__(verbose=verbose)
-        self.epochs = epochs
-
-    def stop(
-        self: Self,
-        params: ParamsTree,
-        current_epoch: int,
-        train_loss: float,
-        val_loss: float,
-        epoch_time: int,
-    ) -> bool:
-        self.best_params = params
-
-        if self.verbose == 2 or (
-            self.verbose == 1 and (current_epoch % (self.epochs // np.min([10, self.epochs])) == 0)
-        ):
-            self.log_status(current_epoch, train_loss, val_loss, epoch_time)
-
-        return current_epoch >= self.epochs
-
-
-class TrainLoss(StopCondition):
-    # Stop when the training error stops improving after patience number of epochs.
-
-    def __init__(self: Self, patience: int = 0, min_delta: float = 0, verbose: int = 0) -> Self:
-        super(TrainLoss, self).__init__(verbose=verbose)
-        self.patience = patience
-        self.min_delta = min_delta
-        self.best_train_loss = jnp.inf
-        self.epochs_since_best = 0
-
-    def stop(
-        self: Self,
-        params: ParamsTree,
-        current_epoch: int,
-        train_loss: Optional[float],
-        val_loss: Optional[float],
-        epoch_time: int,
-    ) -> bool:
-        if train_loss is None:
-            return False
-
-        if train_loss < (self.best_train_loss - self.min_delta):
-            self.best_train_loss = train_loss
-            self.best_params = params
-            self.epochs_since_best = 0
-
-            if self.verbose >= 1:
-                self.log_status(current_epoch, train_loss, val_loss, epoch_time)
-        else:
-            self.epochs_since_best += 1
-
-        return self.epochs_since_best > self.patience
-
-
-class ValLoss(StopCondition):
-    # Stop when the validation error stops improving after patience number of epochs.
-
-    def __init__(self: Self, patience: int = 0, min_delta: float = 0, verbose: int = 0) -> Self:
-        super(ValLoss, self).__init__(verbose=verbose)
-        self.patience = patience
-        self.min_delta = min_delta
-        self.best_val_loss = jnp.inf
-        self.epochs_since_best = 0
-
-    def stop(
-        self: Self,
-        params: ParamsTree,
-        current_epoch: int,
-        train_loss: Optional[float],
-        val_loss: Optional[float],
-        epoch_time: int,
-    ) -> bool:
-        if val_loss is None:
-            return False
-
-        if val_loss < (self.best_val_loss - self.min_delta):
-            self.best_val_loss = val_loss
-            self.best_params = params
-            self.epochs_since_best = 0
-
-            if self.verbose >= 1:
-                self.log_status(current_epoch, train_loss, val_loss, epoch_time)
-        else:
-            self.epochs_since_best += 1
-
-        return self.epochs_since_best > self.patience
-
-
-@jit
-def grads_mean(grads: Union[dict, ArrayLike]) -> dict:
+def evaluate(
+    model: eqx.Module,
+    map_and_loss: Union[
+        Callable[
+            [eqx.Module, geom.BatchLayer, geom.BatchLayer, eqx.nn.State],
+            tuple[jax.Array, eqx.nn.State, geom.BatchLayer],
+        ],
+        Callable[
+            [eqx.Module, geom.BatchLayer, geom.BatchLayer, eqx.nn.State],
+            tuple[jax.Array, eqx.nn.State],
+        ],
+    ],
+    x: geom.BatchLayer,
+    y: geom.BatchLayer,
+    aux_data: Optional[eqx.nn.State] = None,
+    return_map: bool = False,
+) -> jax.Array:
     """
-    Recursively take the mean over the first axis of every jnp.array in the tree of gradients.
+    Runs map_and_loss for the entire layer_X, layer_Y, splitting into batches if the layer is larger than
+    the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
+    to split those over batches for memory reasons. Automatically pmaps over multiple gpus, so the number
+    of gpus must evenly divide batch_size as well as as any remainder of the layer.
     args:
-        grads (tree of jnp.arrays): the grads
+        map_and_loss (function): function that takes in model, X_batch, Y_batch, and
+            aux_data if has_aux is true, and returns the loss, and aux_data if has_aux is true.
+        model (model PyTree): the model to run through map_and_loss
+        x (BatchLayer): input data
+        y (BatchLayer): target output data
+        sharding: sharding over multiple GPUs, if None (default), will use available devices
+        has_aux (bool): has auxilliary data, such as batch_stats, defaults to False
+        aux_data (any): auxilliary data, such as batch stats. Passed to the function is has_aux is True.
+    returns: average loss over the entire layer
     """
-    # mean over a grads dictionary
-    if not isinstance(grads, dict):  # is a jnp.ndarray
-        return jnp.mean(grads, axis=0)
+    inference_model = eqx.nn.inference_mode(model)
+    if return_map:
+        compute_loss_pmap = eqx.filter_pmap(
+            map_and_loss,
+            axis_name="pmap_batch",
+            in_axes=(None, 0, 0, None),
+            out_axes=(0, None, 0),
+        )
+        loss, _, out_layer = compute_loss_pmap(inference_model, x, y, aux_data)
+        return jnp.mean(loss, axis=0), out_layer.merge_pmap()
+    else:
+        compute_loss_pmap = eqx.filter_pmap(
+            map_and_loss,
+            axis_name="pmap_batch",
+            in_axes=(None, 0, 0, None),
+            out_axes=(0, None),
+        )
+        loss, _ = compute_loss_pmap(inference_model, x, y, aux_data)
+        return jnp.mean(loss, axis=0)
 
-    out_grads = {}
-    for k, v in grads.items():
-        out_grads[k] = grads_mean(v)
 
-    return out_grads
+def loss_reducer(ls):
+    """
+    A reducer for map_loss_in_batches that takes the batch mean of the loss
+    """
+    return jnp.mean(jnp.stack(ls), axis=0)
+
+
+def aux_data_reducer(ls):
+    """
+    A reducer for aux_data like batch stats that just takes the last one
+    """
+    return ls[-1]
+
+
+def layer_reducer(ls):
+    """
+    If map data returns the mapped layers, merge them togther
+    """
+    return functools.reduce(lambda carry, val: carry.concat(val), ls, ls[0].empty())
+
+
+def map_loss_in_batches(
+    map_and_loss: Callable[
+        [eqx.Module, geom.BatchLayer, geom.BatchLayer, eqx.nn.State], tuple[jax.Array, eqx.nn.State]
+    ],
+    model: eqx.Module,
+    x: geom.BatchLayer,
+    y: geom.BatchLayer,
+    batch_size: int,
+    rand_key: ArrayLike,
+    reducers: Optional[tuple] = None,
+    devices: Optional[list[jax.devices]] = None,
+    aux_data: Optional[eqx.nn.State] = None,
+    return_map: bool = False,
+) -> jax.Array:
+    """
+    Runs map_and_loss for the entire layer_X, layer_Y, splitting into batches if the layer is larger than
+    the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
+    to split those over batches for memory reasons. Automatically pmaps over multiple gpus, so the number
+    of gpus must evenly divide batch_size as well as as any remainder of the layer.
+    args:
+        map_and_loss (function): function that takes in model, X_batch, Y_batch, and
+            aux_data and returns the loss and aux_data
+        model (model PyTree): the model to run through map_and_loss
+        x (BatchLayer): input data
+        y (BatchLayer): target output data
+        batch_size (int): effective batch_size, must be divisible by number of gpus
+        rand_key (jax.random.PRNGKey): rand key
+        devices (list of jax devices): the gpus that the code will run on
+        aux_data (any): auxilliary data, such as batch stats. Passed to the function is has_aux is True.
+    returns: average loss over the entire layer
+    """
+    if reducers is None:
+        # use the default reducer for loss
+        reducers = [loss_reducer]
+        if return_map:
+            reducers.append(layer_reducer)
+
+    X_batches, Y_batches = get_batch_layer((x, y), batch_size, rand_key, devices)
+    results = [[] for _ in range(len(reducers))]
+    for X_batch, Y_batch in zip(X_batches, Y_batches):
+        one_result = evaluate(model, map_and_loss, X_batch, Y_batch, aux_data, return_map)
+
+        if len(reducers) == 1:
+            results[0].append(one_result)
+        else:
+            for val, result_ls in zip(one_result, results):
+                result_ls.append(val)
+
+    if len(reducers) == 1:
+        return reducers[0](results[0])
+    else:
+        return tuple(reducer(result_ls) for reducer, result_ls in zip(reducers, results))
+
+
+def train_step(
+    map_and_loss: Callable[
+        [eqx.Module, geom.BatchLayer, geom.BatchLayer, Optional[eqx.nn.State]],
+        tuple[jax.Array, Optional[eqx.nn.State]],
+    ],
+    model: eqx.Module,
+    optim: optax.GradientTransformation,
+    opt_state,
+    x: geom.BatchLayer,
+    y: geom.BatchLayer,
+    aux_data: Optional[eqx.nn.State] = None,
+):
+    """
+    Perform one step and gradient update of the model. Uses filter_pmap to use multiple gpus.
+    args:
+        map_and_loss (func): map and loss function where the input is a model pytree, x BatchLayer,
+            y BatchLayer, and aux_data, and returns a float loss and aux_data
+        model (equinox model pytree): the model
+        optim (optax optimizer):
+        opt_state:
+        x (BatchLayer): input data
+        y (BatchLayer): target data
+        aux_data (Any): auxilliary data for stateful layers
+    returns: model, opt_state, loss_value
+    """
+    # NOTE: do not `jit` over `pmap` see (https://github.com/google/jax/issues/2926)
+    loss_grad = eqx.filter_value_and_grad(map_and_loss, has_aux=True)
+
+    compute_loss_pmap = eqx.filter_pmap(
+        loss_grad,
+        axis_name="pmap_batch",
+        in_axes=(None, 0, 0, None),
+        out_axes=((0, None), 0),
+    )
+    (loss, aux_data), grads = compute_loss_pmap(model, x, y, aux_data)
+    loss = jnp.mean(loss, axis=0)
+
+    get_weights = lambda m: jax.tree_util.tree_leaves(m, is_leaf=eqx.is_array)
+    new_grad_arrays = [jnp.mean(x, axis=0) for x in get_weights(grads)]
+    grads = eqx.tree_at(get_weights, grads, new_grad_arrays)
+
+    updates, opt_state = optim.update(grads, opt_state, model)
+    model = eqx.apply_updates(model, updates)
+    return model, opt_state, loss, aux_data
 
 
 def train(
     X: geom.BatchLayer,
     Y: geom.BatchLayer,
     map_and_loss: Union[
+        Callable[[eqx.Module, geom.BatchLayer, geom.BatchLayer], jax.Array],
         Callable[
-            [ParamsTree, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool, Any],
-            tuple[Array, Any],
+            [eqx.Module, geom.BatchLayer, geom.BatchLayer, Any],
+            tuple[jax.Array, Any],
         ],
-        Callable[[ParamsTree, geom.BatchLayer, geom.BatchLayer, ArrayLike, bool], Array],
     ],
-    params: ParamsTree,
+    model: eqx.Module,
     rand_key: ArrayLike,
     stop_condition: StopCondition,
-    batch_size: int = 16,
-    optimizer: Optional[optax.GradientTransformation] = None,
+    batch_size: int,
+    optimizer: optax.GradientTransformation,
     validation_X: Optional[geom.BatchLayer] = None,
     validation_Y: Optional[geom.BatchLayer] = None,
-    noise_stdev: Optional[float] = None,
-    save_params: Optional[str] = None,
-    has_aux: bool = False,
-    aux_data: Optional[Any] = None,
-    checkpoint_kwargs: Optional[dict[str, Any]] = None,
+    save_model: Optional[str] = None,
     devices: Optional[list[jax.Device]] = None,
-) -> Union[tuple[ParamsTree, Any, Array, Array], tuple[ParamsTree, Array, Array]]:
+    aux_data: Optional[eqx.nn.State] = None,
+) -> Union[tuple[eqx.Module, Any, jax.Array, jax.Array], tuple[eqx.Module, jax.Array, jax.Array]]:
     """
     Method to train the model. It uses stochastic gradient descent (SGD) with the optimizer to learn the
-    parameters the minimize the map_and_loss function. The params are returned. This function automatically
-    pmaps over the available gpus, so batch_size should be divisible by the number of gpus. If you only want
+    parameters the minimize the map_and_loss function. The model is returned. This function automatically
+    shards over the available gpus, so batch_size should be divisible by the number of gpus. If you only want
     to train on a single GPU, the script should be run with CUDA_VISIBLE_DEVICES=# for whatever gpu number.
-    In order to do collectives across the pmap batches, use axis_name='batch', such as
-    jnp.pmean(x, axis_name='batch').
     args:
         X (BatchLayer): The X input data as a layer by k of (images, channels, (N,)*D, (D,)*k)
         Y (BatchLayer): The Y target data as a layer by k of (images, channels, (N,)*D, (D,)*k)
-        map_and_loss (function): function that takes in params, X_batch, Y_batch, rand_key, and train and
-            returns the loss. If has_aux is True, then it also takes in aux_data and returns aux_data.
-        params (jnp.array):
+        map_and_loss (function): function that takes in model, X_batch, Y_batch, and aux_data and
+            returns the loss and aux_data.
+        model: Model pytree
         rand_key (jnp.random key): key for randomness
         stop_condition (StopCondition): when to stop the training process, currently only 1 condition
             at a time
-        batch_size (int): defaults to 16, the size of each mini-batch in SGD
-        optimizer (optax optimizer): optimizer, defaults to adam(learning_rate=0.1)
+        batch_size (int): the size of each mini-batch in SGD
+        optimizer (optax optimizer): optimizer
         validation_X (BatchLayer): input data for a validation data set as a layer by k
             of (images, channels, (N,)*D, (D,)*k)
         validation_Y (BatchLayer): target data for a validation data set as a layer by k
             of (images, channels, (N,)*D, (D,)*k)
-        noise_stdev (float): standard deviation for any noise to add to training data, defaults to None
-        save_params (str): if string, save params every 10 epochs, defaults to None
-        has_aux (bool): Passed to value_and_grad, specifies whether there is auxilliary data returned from
-            map_and_loss. If true, this auxilliary data will be passed back in to map_and_loss with the
-            name "aux_data". The last aux_data will also be returned from this function.
-        aux_data (any): initial aux data passed in to map_and_loss when has_aux is true.
-        checkpoint_kwargs (dict): dictionary of kwargs to pass to jax.checkpoint. If None, checkpoint will
-            not be called, defaults to None.
+        save_model (str): if string, save model every 10 epochs, defaults to None
+        aux_data (eqx.nn.State): initial aux data passed in to map_and_loss when has_aux is true.
         devices (list): gpu/cpu devices to use, if None (default) then it will use jax.devices()
+    returns: A tuple of best model in inference mode, aux_data, epoch loss, and val loss
     """
-    if isinstance(stop_condition, ValLoss):
-        assert validation_X and validation_Y
+    if isinstance(stop_condition, ValLoss) and not (validation_X and validation_Y):
+        raise ValueError("Stop condition is ValLoss, but no validation data provided.")
 
-    if checkpoint_kwargs is None:
-        batch_loss_grad = value_and_grad(map_and_loss, has_aux=has_aux)
-    else:
-        batch_loss_grad = checkpoint(
-            value_and_grad(map_and_loss, has_aux=has_aux), **checkpoint_kwargs
-        )
+    devices = devices if devices else jax.devices()
 
-    if has_aux:
-        pmap_loss_grad = jax.pmap(
-            batch_loss_grad,
-            axis_name="batch",
-            in_axes=(None, 0, 0, None, None, None),
-            out_axes=((0, None), 0),
-            static_broadcasted_argnums=4,
-            devices=devices,
-        )
-    else:
-        pmap_loss_grad = jax.pmap(
-            batch_loss_grad,
-            axis_name="batch",
-            in_axes=(None, 0, 0, None, None),
-            static_broadcasted_argnums=4,
-            devices=devices,
-        )
-
-    if optimizer is None:
-        optimizer = optax.adam(0.1)
-
-    opt_state = optimizer.init(params)
-
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     epoch = 0
     epoch_val_loss = None
     epoch_loss = None
-    train_loss = []
-    val_loss = []
+    val_loss = 0
     epoch_time = 0
-    while not stop_condition.stop(params, epoch, epoch_loss, epoch_val_loss, epoch_time):
-        if noise_stdev:
-            rand_key, subkey = random.split(rand_key)
-            train_X = add_noise(X, noise_stdev, subkey)
-        else:
-            train_X = X
-
+    while not stop_condition.stop(model, epoch, epoch_loss, epoch_val_loss, epoch_time):
         rand_key, subkey = random.split(rand_key)
-        X_batches, Y_batches = get_batch_layer((train_X, Y), batch_size, subkey, devices)
+        X_batches, Y_batches = get_batch_layer((X, Y), batch_size, subkey, devices)
         epoch_loss = 0
         start_time = time.time()
         for X_batch, Y_batch in zip(X_batches, Y_batches):
-            rand_key, subkey = random.split(rand_key)
-            if has_aux:
-                (pmap_loss_val, aux_data), pmap_grads = pmap_loss_grad(
-                    params,
-                    X_batch,
-                    Y_batch,
-                    subkey,
-                    True,
-                    aux_data,
-                )
-            else:
-                pmap_loss_val, pmap_grads = pmap_loss_grad(params, X_batch, Y_batch, subkey, True)
-
-            updates, opt_state = optimizer.update(grads_mean(pmap_grads), opt_state, params)
-            params = optax.apply_updates(params, updates)
-            epoch_loss += jnp.mean(pmap_loss_val)
+            model, opt_state, loss_value, aux_data = train_step(
+                map_and_loss,
+                model,
+                optimizer,
+                opt_state,
+                X_batch,
+                Y_batch,
+                aux_data,
+            )
+            epoch_loss += loss_value
 
         epoch_loss = epoch_loss / len(X_batches)
-        train_loss.append(epoch_loss)
-
         epoch += 1
 
         # We evaluate the validation loss in batches for memory reasons.
         if validation_X and validation_Y:
-            rand_key, subkey = random.split(rand_key)
             epoch_val_loss = map_loss_in_batches(
                 map_and_loss,
-                params,
+                model,
                 validation_X,
                 validation_Y,
                 batch_size,
                 subkey,
-                False,  # train
-                has_aux,
-                aux_data,
-                devices,
+                devices=devices,
+                aux_data=aux_data,
             )
-            val_loss.append(epoch_val_loss)
+            val_loss = epoch_val_loss
 
-        if save_params and ((epoch % 10) == 0):
-            jnp.save(save_params, stop_condition.best_params)
+        if save_model and ((epoch % 10) == 0):
+            save(save_model, model)
 
         epoch_time = time.time() - start_time
 
-    if has_aux:
-        return (
-            stop_condition.best_params,
-            aux_data,
-            jnp.array(train_loss),
-            jnp.array(val_loss),
-        )
-    else:
-        return stop_condition.best_params, jnp.array(train_loss), jnp.array(val_loss)
+    return stop_condition.best_model, aux_data, epoch_loss, val_loss
 
 
 BENCHMARK_DATA = "benchmark_data"

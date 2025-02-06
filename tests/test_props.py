@@ -385,49 +385,29 @@ class TestPropositions:
         channels = 2
         prec = jax.lax.Precision.HIGHEST
         key = random.PRNGKey(time.time_ns())
-        for D in [2, 3]:
-            fixed_params = {ml.GROUP_NORM: {ml.BIAS: {}, ml.SCALE: {}}}
-            layer = geom.BatchLayer({}, D)
-            for parity in [0, 1]:
-                for k in [0, 1]:
-                    key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
-                    layer.append(
-                        k,
-                        parity,
-                        random.normal(subkey1, shape=((batch, channels) + (N,) * D + (D,) * k)),
-                    )
-                    fixed_params[ml.GROUP_NORM][ml.SCALE][(k, parity)] = random.normal(
-                        subkey2, shape=(1, channels) + (1,) * layer.D + (1,) * k
-                    )
-                    fixed_params[ml.GROUP_NORM][ml.BIAS][(k, parity)] = random.normal(
-                        subkey3, shape=(1, channels) + (1,) * layer.D + (1,) * k
-                    )
+        ks = [0, 1]
+        parities = [0, 1]
 
-            operators = geom.make_all_operators(D)
+        for D in [2, 3]:
+            key, *subkeys = random.split(key, num=(len(ks) * len(parities)) + 1)
+            input_keys = tuple(((k, v), channels) for k, v in it.product(ks, parities))
+
+            data = {
+                (k, parity): random.normal(subkey, shape=((batch, channels) + (N,) * D + (D,) * k))
+                for subkey, ((k, parity), _) in zip(subkeys, input_keys)
+            }
+            layer = geom.BatchLayer(data, D)
+            layer_norm = ml.LayerNorm(input_keys, D, eps=0)
 
             # assert that layer norm (group_norm with groups=1) is equivariant
-            for gg in operators:
-                params = {k: v for k, v in fixed_params.items()}
-                layer1 = ml.group_norm(params, layer, 1, equivariant=True, eps=0)[
-                    0
-                ].times_group_element(gg, precision=prec)
-                params = {k: v for k, v in fixed_params.items()}
-                layer2 = ml.group_norm(
-                    params,
-                    layer.times_group_element(gg, precision=prec),
-                    1,
-                    eps=0,
-                    equivariant=True,
-                )[0]
-
-                for image_block1, image_block2 in zip(layer1.values(), layer2.values()):
-                    assert jnp.allclose(
-                        image_block1, image_block2, atol=1e-2, rtol=1e-2
-                    ), f"{jnp.max(image_block1 - image_block2)}"
+            for gg in geom.make_all_operators(D):
+                layer1 = layer_norm(layer).times_group_element(gg, precision=prec)
+                layer2 = layer_norm(layer.times_group_element(gg, precision=prec))
+                assert layer1.__eq__(layer2, rtol=1e-3, atol=1e-2)
 
     def testLayerNormWhitening(self):
         """
-        Show that Layer Nom does center and scale the vectors.
+        Show that Layer Norm does center and scale the vectors.
         """
         N = 3
         batch = 3
@@ -451,35 +431,28 @@ class TestPropositions:
             assert jnp.allclose(cov, eye, atol=1e-2, rtol=1e-2), f"{cov}"
 
     def testVNNonlinearEquivariance(self):
-        D = 2
         N = 5
         batch = 3
         in_c = 10
-        out_c = 10
         prec = jax.lax.Precision.HIGHEST
         key = random.PRNGKey(0)
-        key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
-        layer = geom.BatchLayer(
-            {
-                (0, 0): random.normal(subkey1, shape=(batch, in_c) + (N,) * D),
-                (1, 0): random.normal(subkey2, shape=(batch, in_c) + (N,) * D + (D,)),
-            },
-            D,
-        )
 
-        params = {
-            ml.VN_NONLINEAR: {
-                "W": random.normal(subkey3, shape=(out_c, 1, in_c) + (1,) * D + (1,)),
-                "U": random.normal(subkey4, shape=(out_c, 1, in_c) + (1,) * D + (1,)),
+        ks = [0, 1, 2]
+        parities = [0, 1]
+        for D in [2, 3]:
+            key, *subkeys = random.split(key, num=(len(ks) * len(parities)) + 1)
+
+            data = {
+                (k, parity): random.normal(subkey, shape=((batch, in_c) + (N,) * D + (D,) * k))
+                for subkey, (k, parity) in zip(subkeys, it.product(ks, parities))
             }
-        }
+            layer = geom.BatchLayer(data, D)
 
-        # test that it is equivariant
-        for gg in geom.make_all_operators(D):
-            first = ml.VN_nonlinear(dict(params), layer, out_c, eps=0)[0].times_group_element(
-                gg, prec
-            )
-            second = ml.VN_nonlinear(
-                dict(params), layer.times_group_element(gg, prec), out_c, eps=0
-            )[0]
-            assert first == second
+            key, subkey = random.split(key)
+            vn_nonlinear = ml.VectorNeuronNonlinear(layer.get_signature(), D, eps=0, key=subkey)
+
+            # assert that the vn nonlinearity is equivariant
+            for gg in geom.make_all_operators(D):
+                layer1 = vn_nonlinear(layer).times_group_element(gg, precision=prec)
+                layer2 = vn_nonlinear(layer.times_group_element(gg, precision=prec))
+                assert layer1.__eq__(layer2, rtol=1e-3, atol=1e-2)

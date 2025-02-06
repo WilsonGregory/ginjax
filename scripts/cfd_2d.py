@@ -10,17 +10,15 @@ from typing import Optional
 import jax.numpy as jnp
 import jax
 import jax.random as random
-import jax.experimental.mesh_utils as mesh_utils
 from jaxtyping import ArrayLike
 import optax
 import equinox as eqx
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
-import geometricconvolutions.ml_eqx as ml_eqx
 import geometricconvolutions.utils as utils
 import geometricconvolutions.data as gc_data
-import geometricconvolutions.models_eqx as models
+import geometricconvolutions.models as models
 
 
 def read_one_h5(filename: str, num_trajectories: int) -> tuple:
@@ -275,7 +273,7 @@ def map_and_loss(
     future_steps: int = 1,
     return_map: bool = False,
 ):
-    out_layer, aux_data = ml_eqx.autoregressive_map(
+    out_layer, aux_data = ml.autoregressive_map(
         model,
         layer_x,
         aux_data,
@@ -322,7 +320,7 @@ def train_and_eval(
     if load_model is None:
         steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
         key, subkey = random.split(key)
-        model, batch_stats, train_loss, val_loss = ml_eqx.train(
+        model, batch_stats, train_loss, val_loss = ml.train(
             train_X,
             train_Y,
             map_and_loss,
@@ -343,12 +341,12 @@ def train_and_eval(
 
         if save_model is not None:
             # TODO: need to save batch_stats as well
-            ml_eqx.save(f"{save_model}{model_name}_L{train_X.L}_e{epochs}_model.eqx", model)
+            ml.save(f"{save_model}{model_name}_L{train_X.L}_e{epochs}_model.eqx", model)
     else:
-        model = ml_eqx.load(f"{save_model}{model_name}_L{train_X.L}_e{epochs}_model.eqx", model)
+        model = ml.load(f"{save_model}{model_name}_L{train_X.L}_e{epochs}_model.eqx", model)
 
         key, subkey1, subkey2 = random.split(key)
-        train_loss = ml_eqx.map_loss_in_batches(
+        train_loss = ml.map_loss_in_batches(
             map_and_loss,
             model,
             train_X,
@@ -357,7 +355,7 @@ def train_and_eval(
             subkey1,
             aux_data=batch_stats,
         )
-        val_loss = ml_eqx.map_loss_in_batches(
+        val_loss = ml.map_loss_in_batches(
             map_and_loss,
             model,
             val_X,
@@ -368,7 +366,7 @@ def train_and_eval(
         )
 
     key, subkey = random.split(key)
-    test_loss = ml_eqx.map_loss_in_batches(
+    test_loss = ml.map_loss_in_batches(
         map_and_loss,
         model,
         test_single_X,
@@ -380,7 +378,7 @@ def train_and_eval(
     print(f"Test Loss: {test_loss}")
 
     key, subkey = random.split(key)
-    test_rollout_loss, rollout_layer = ml_eqx.map_loss_in_batches(
+    test_rollout_loss, rollout_layer = ml.map_loss_in_batches(
         partial(map_and_loss, future_steps=rollout_steps, return_map=True),
         model,
         test_rollout_X,

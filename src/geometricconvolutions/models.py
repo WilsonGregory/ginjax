@@ -1,62 +1,14 @@
-import functools
-from collections import defaultdict
-import numpy as np
+from typing import Callable, Optional, Sequence, Union
+from typing_extensions import Self
 
 import jax
 import jax.numpy as jnp
 import jax.random as random
+from jaxtyping import ArrayLike
+import equinox as eqx
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
-
-
-def unet_conv_block(
-    params,
-    layer,
-    train,
-    num_conv,
-    conv_kwargs,
-    batch_stats=None,
-    batch_stats_idx=None,
-    activation_f=None,
-    mold_params=False,
-):
-    """
-    The Conv block for the U-Net, include batch norm and an activation function.
-    args:
-        params (params tree): the params of the model
-        layer (BatchLayer): input batch layer
-        train (bool): whether train mode or test mode, relevant for batch_norm
-        num_conv (int): the number of convolutions, how many times to repeat the block
-        conv_kwargs (dict): keyword args to pass the the convolution function
-        batch_stats (dict): state for batch_norm, also determines whether batch_norm layer happens
-        batch_stats_idx (int): the index of batch_norm that we are on
-        activation_f (string or function): the function that we pass to batch_scalar_activation
-        mold_params (bool): whether we are mapping the params, or applying them
-    returns: layer, params, batch_stats, batch_stats_idx
-    """
-    for _ in range(num_conv):
-        layer, params = ml.batch_conv_layer(
-            params,
-            layer,
-            **conv_kwargs,
-            mold_params=mold_params,
-        )
-        if batch_stats is not None:
-            layer, params, mean, var = ml.batch_norm(
-                params,
-                layer,
-                train,
-                batch_stats[batch_stats_idx]["mean"],
-                batch_stats[batch_stats_idx]["var"],
-                mold_params=mold_params,
-            )
-            batch_stats[batch_stats_idx] = {"mean": mean, "var": var}
-            batch_stats_idx += 1
-        layer, params = handle_activation(activation_f, params, layer, mold_params)
-
-    return layer, params, batch_stats, batch_stats_idx
-
 
 ACTIVATION_REGISTRY = {
     "relu": jax.nn.relu,
@@ -65,708 +17,659 @@ ACTIVATION_REGISTRY = {
 }
 
 
-def handle_activation(activation_f, params, layer, mold_params):
-    if activation_f is None:
-        return layer, params
-    elif isinstance(activation_f, str):
-        if activation_f == ml.VN_NONLINEAR:
-            return ml.VN_nonlinear(params, layer, mold_params=mold_params)
-        elif activation_f == ml.NORM_NONLINEAR:
-            return ml.norm_nonlinear(params, layer, mold_params=mold_params)
+def handle_activation(
+    activation_f: Union[Callable, str],
+    equivariant: bool,
+    input_keys: tuple[tuple[ml.LayerKey, int]],
+    D: int,
+    key: ArrayLike,
+):
+    if equivariant:
+        if activation_f is None:
+            return lambda x: x
+        elif isinstance(activation_f, str):
+            return ml.VectorNeuronNonlinear(
+                input_keys, D, ACTIVATION_REGISTRY[activation_f], key=key
+            )
         else:
-            return (
-                ml.batch_scalar_activation(layer, ACTIVATION_REGISTRY[activation_f]),
-                params,
-            )
+            return ml.VectorNeuronNonlinear(input_keys, D, activation_f, key=key)
     else:
-        return ml.batch_scalar_activation(layer, activation_f), params
+        if activation_f is None:
+            return ml.LayerWrapper(eqx.nn.Identity(), input_keys)
+        elif isinstance(activation_f, str):
+            return ml.LayerWrapper(ACTIVATION_REGISTRY[activation_f], input_keys)
+        else:
+            return ml.LayerWrapper(activation_f, input_keys)
 
 
-@functools.partial(jax.jit, static_argnums=[3, 4, 5, 6, 7, 8, 11, 12, 13])
-def unetBase(
-    params,
-    layer,
-    key,
-    train,
-    output_keys=None,
-    output_depth=1,
-    depth=64,
-    activation_f=jax.nn.gelu,
-    equivariant=False,
-    conv_filters=None,
-    upsample_filters=None,  # 2x2 filters
-    use_group_norm=True,
-    return_params=False,
-    mold_params=None,
+def make_conv(
+    D: int,
+    input_keys: tuple[tuple[ml.LayerKey, int]],
+    target_keys: tuple[tuple[ml.LayerKey, int]],
+    use_bias: Union[str, bool],
+    equivariant: bool,
+    invariant_filters: Optional[geom.Layer] = None,
+    kernel_size: Optional[Union[int, Sequence[int]]] = None,
+    stride: Optional[tuple[int]] = None,
+    padding: Optional[tuple[int]] = None,
+    lhs_dilation: Optional[Union[tuple[int], bool]] = None,
+    rhs_dilation: Optional[tuple[int]] = None,
+    key: Optional[ArrayLike] = None,
 ):
     """
-    The U-Net from the original 2015 paper. The involves 4 downsampling steps and 4 upsampling steps,
-    each interspersed with 2 convolutions interleaved with scalar activations and batch norm. The downsamples
-    are achieved with max_pool layers with patch length of 2 and the upsamples are achieved with transposed
-    convolution. Additionally, there are residual connections after every downsample and upsample. For the
-    equivariant version, we use invariant filters, norm max_pool, and no batch_norm.
-    args:
-        params (params tree): the params of the model
-        layer (BatchLayer): input batch layer
-        key (jnp.random key): key for any layers requiring randomization
-        train (bool): whether train mode or test mode, relevant for batch_norm
-        batch_stats (dict): state for batch_norm, default None
-        output_keys (tuple of tuples of ints): the output key types of the model. For the Shallow Water
-            experiments, should be ((0,0),(1,0)) for the pressure/velocity form and ((0,0),(0,1)) for
-            the pressure/vorticity form.
-        output_depth (int or tuple): output depth for each output key. If an int, then the depth is
-            that int for each key. Defaults to 1, cannot be None. Needs to be hashable, so the structure
-            is ( (key,depth), (key,depth)) where key itself is a tuple like (0,0)
-        depth (int): the depth of the layers, defaults to 64
-        activation_f (string or function): the function that we pass to batch_scalar_activation
-        equivariant (bool): whether to use the equivariant version of the model, defaults to False
-        conv_filters (Layer): the conv filters used for the equivariant version
-        upsample_filters (Layer): the conv filters used for the upsample layer of the equivariant version
-        use_group_norm (bool): whether to use group_norm, defaults to True
-        return_params (bool): whether we are mapping the params, or applying them
-        mold_params (bool):
+    Factory for convolution layer which makes ConvContract if equivariant and makes a regular conv
+    otherwise.
     """
-    num_downsamples = 4
-    num_conv = 2
-    bias = True
-
-    if mold_params is None:
-        mold_params = return_params
-
-    assert output_keys is not None
-    assert output_depth is not None
-
-    if isinstance(output_depth, int):
-        output_depth = tuple((key, output_depth) for key in output_keys)
-
     if equivariant:
-        assert (conv_filters is not None) and (upsample_filters is not None)
-        filter_info = {"type": ml.CONV_FIXED, "filters": conv_filters}
-        filter_info_upsample = {"type": ml.CONV_FIXED, "filters": upsample_filters}
-        target_keys = output_keys
-    else:
-        filter_info = {"type": ml.CONV_FREE, "M": 3}
-        filter_info_upsample = {"type": ml.CONV_FREE, "M": 2}
-        target_keys = ((0, 0),)
-
-        # convert to channels of a scalar layer
-        layer = layer.to_scalar_layer()
-
-    # embedding
-    for _ in range(num_conv):
-        layer, params = ml.batch_conv_layer(
-            params,
-            layer,
-            filter_info,
-            depth,
+        return ml.ConvContract(
+            input_keys,
             target_keys,
-            bias=bias,
-            mold_params=mold_params,
+            invariant_filters,
+            use_bias,
+            stride,
+            padding,
+            lhs_dilation,
+            rhs_dilation,
+            key,
         )
+    else:
+        assert len(input_keys) == len(target_keys) == 1
+        assert input_keys[0][0] == target_keys[0][0] == (0, 0)
+        padding = "SAME" if padding is None else padding
+        stride = 1 if stride is None else stride
+        rhs_dilation = 1 if rhs_dilation is None else rhs_dilation
+        use_bias = True if use_bias == "auto" else use_bias
+        if lhs_dilation is None:
+            return ml.LayerWrapper(
+                eqx.nn.Conv(
+                    D,
+                    input_keys[0][1],
+                    target_keys[0][1],
+                    kernel_size,
+                    stride,
+                    padding,
+                    rhs_dilation,
+                    use_bias=use_bias,
+                    key=key,
+                ),
+                input_keys,
+            )
+        else:
+            # if there is lhs_dilation, assume its a transpose convolution
+            return ml.LayerWrapper(
+                eqx.nn.ConvTranspose(
+                    D,
+                    input_keys[0][1],
+                    target_keys[0][1],
+                    kernel_size,
+                    stride,
+                    padding,
+                    dilation=rhs_dilation,
+                    use_bias=use_bias,
+                    key=key,
+                ),
+                input_keys,
+            )
+
+
+def count_params(model: eqx.Module) -> int:
+    return sum(
+        [
+            0 if x is None else x.size
+            for x in eqx.filter(jax.tree_util.tree_leaves(model), eqx.is_array)
+        ]
+    )
+
+
+class ConvBlock(eqx.Module):
+    conv: Union[ml.ConvContract, ml.LayerWrapper]
+    norm: Optional[Union[ml.GroupNorm, eqx.nn.BatchNorm]]
+    nonlinearity: Union[eqx.Module, Callable]
+
+    D: int = eqx.field(static=True)
+    equivariant: bool = eqx.field(static=True)
+    use_batch_norm: bool = eqx.field(static=True)
+    use_group_norm: bool = eqx.field(static=True)
+    preactivation_order: bool = eqx.field(static=True)
+
+    def __init__(
+        self: Self,
+        D,
+        input_keys: tuple[tuple[ml.LayerKey, int]],
+        output_keys: tuple[tuple[ml.LayerKey, int]],
+        use_bias: Union[bool, str] = "auto",
+        activation_f: Union[Callable, str] = jax.nn.gelu,
+        equivariant: bool = True,
+        conv_filters: geom.Layer = None,
+        kernel_size: Optional[Union[int, Sequence[int]]] = None,
+        use_group_norm: bool = False,
+        use_batch_norm: bool = False,
+        preactivation_order: bool = False,
+        key: ArrayLike = None,
+        **conv_kwargs,
+    ):
+        self.D = D
+        self.equivariant = equivariant
+        self.use_group_norm = use_group_norm
+        self.use_batch_norm = use_batch_norm
+        self.preactivation_order = preactivation_order
+
+        subkey1, subkey2 = random.split(key)
+        self.conv = make_conv(
+            self.D,
+            input_keys,
+            output_keys,
+            use_bias,
+            equivariant,
+            conv_filters,
+            kernel_size,
+            key=subkey1,
+            **conv_kwargs,
+        )
+
         if use_group_norm:
-            layer, params = ml.group_norm(
-                params, layer, 1, equivariant=equivariant, mold_params=mold_params
-            )
-        layer, params = handle_activation(activation_f, params, layer, mold_params)
-
-    # first we do the downsampling
-    residual_layers = []
-    for downsample in range(1, num_downsamples + 1):
-
-        residual_layers.append(layer)
-
-        layer = ml.batch_max_pool(layer, 2, use_norm=equivariant)
-
-        for _ in range(num_conv):
-            layer, params = ml.batch_conv_layer(
-                params,
-                layer,
-                filter_info,
-                depth * (2**downsample),
-                target_keys,
-                bias=bias,
-                mold_params=mold_params,
-            )
-            if use_group_norm:
-                layer, params = ml.group_norm(
-                    params, layer, 1, equivariant=equivariant, mold_params=mold_params
-                )
-            layer, params = handle_activation(activation_f, params, layer, mold_params)
-
-    # now we do the upsampling and concatenation
-    for upsample in reversed(range(num_downsamples)):
-
-        # upsample
-        layer, params = ml.batch_conv_layer(
-            params,
-            layer,
-            filter_info_upsample,
-            depth * (2**upsample),
-            target_keys,
-            padding=((1, 1),) * layer.D,
-            lhs_dilation=(2,) * layer.D,  # do the transposed convolution
-            bias=bias,
-            mold_params=mold_params,
-        )
-        # concat the upsampled layer and the residual
-        layer = layer.concat(residual_layers[upsample], axis=1)
-
-        for _ in range(num_conv):
-            layer, params = ml.batch_conv_layer(
-                params,
-                layer,
-                filter_info,
-                depth * (2**upsample),
-                target_keys,
-                bias=bias,
-                mold_params=mold_params,
-            )
-            if use_group_norm:
-                layer, params = ml.group_norm(
-                    params, layer, 1, equivariant=equivariant, mold_params=mold_params
-                )
-            layer, params = handle_activation(activation_f, params, layer, mold_params)
-
-    layer, params = ml.batch_conv_layer(
-        params,
-        layer,
-        filter_info,
-        output_depth,
-        output_keys,
-        bias=bias,
-        mold_params=mold_params,
-    )
-
-    return (layer, params) if return_params else layer
-
-
-@functools.partial(jax.jit, static_argnums=[3, 5, 6, 7, 8, 9, 12, 13])
-def unet2015(
-    params,
-    layer,
-    key,
-    train,
-    batch_stats=None,
-    output_keys=None,
-    output_depth=1,
-    depth=64,
-    activation_f=jax.nn.gelu,
-    equivariant=False,
-    conv_filters=None,
-    upsample_filters=None,  # 2x2 filters
-    use_batch_norm=True,
-    return_params=False,
-):
-    """
-    The U-Net from the original 2015 paper. The involves 4 downsampling steps and 4 upsampling steps,
-    each interspersed with 2 convolutions interleaved with scalar activations and batch norm. The downsamples
-    are achieved with max_pool layers with patch length of 2 and the upsamples are achieved with transposed
-    convolution. Additionally, there are residual connections after every downsample and upsample. For the
-    equivariant version, we use invariant filters, norm max_pool, and no batch_norm.
-    args:
-        params (params tree): the params of the model
-        layer (BatchLayer): input batch layer
-        key (jnp.random key): key for any layers requiring randomization
-        train (bool): whether train mode or test mode, relevant for batch_norm
-        batch_stats (dict): state for batch_norm, default None
-        output_keys (tuple of tuples of ints): the output key types of the model. For the Shallow Water
-            experiments, should be ((0,0),(1,0)) for the pressure/velocity form and ((0,0),(0,1)) for
-            the pressure/vorticity form.
-        output_depth (int or tuple): output depth for each output key. If an int, then the depth is
-            that int for each key. Defaults to 1, cannot be None. Needs to be hashable, so the structure
-            is ( (key,depth), (key,depth)) where key itself is a tuple like (0,0)
-        depth (int): the depth of the layers, defaults to 64
-        activaton_f (function): the function that we pass to batch_scalar_activation
-        equivariant (bool): whether to use the equivariant version of the model, defaults to False
-        conv_filters (Layer): the conv filters used for the equivariant version
-        upsample_filters (Layer): the conv filters used for the upsample layer of the equivariant version
-        use_batch_norm (bool): whether to use the batch norm, defaults to True. If equivariant, then this is False
-        return_params (bool): whether we are mapping the params, or applying them
-    """
-    num_downsamples = 4
-    num_conv = 2
-
-    assert output_keys is not None
-
-    batch_stats_idx = 0
-    if equivariant:
-        assert (conv_filters is not None) and (upsample_filters is not None)
-        filter_info = {"type": ml.CONV_FIXED, "filters": conv_filters}
-        filter_info_upsample = {"type": ml.CONV_FIXED, "filters": upsample_filters}
-        target_keys = output_keys
-    else:
-        filter_info = {"type": ml.CONV_FREE, "M": 3}
-        filter_info_upsample = {"type": ml.CONV_FREE, "M": 2}
-        target_keys = ((0, 0),)
-        if (batch_stats is None) and use_batch_norm:
-            batch_stats = defaultdict(lambda: {"mean": None, "var": None})
-
-        # convert to channels of a scalar layer
-        layer = layer.to_scalar_layer()
-
-    # first we do the downsampling
-    residual_layers = []
-    for downsample in range(num_downsamples):
-        layer, params, batch_stats, batch_stats_idx = unet_conv_block(
-            params,
-            layer,
-            train,
-            num_conv,
-            {
-                "filter_info": filter_info,
-                "depth": depth * (2**downsample),
-                "target_keys": target_keys,
-            },
-            batch_stats,
-            batch_stats_idx,
-            activation_f,
-            mold_params=return_params,
-        )
-        residual_layers.append(layer)
-        layer = ml.batch_max_pool(layer, 2, use_norm=equivariant)
-
-    # bottleneck layer
-    layer, params, batch_stats, batch_stats_idx = unet_conv_block(
-        params,
-        layer,
-        train,
-        num_conv,
-        {
-            "filter_info": filter_info,
-            "depth": depth * (2**num_downsamples),
-            "target_keys": target_keys,
-        },
-        batch_stats,
-        batch_stats_idx,
-        activation_f,
-        mold_params=return_params,
-    )
-
-    # now we do the upsampling and concatenation
-    for upsample in reversed(range(num_downsamples)):
-
-        # upsample
-        layer, params = ml.batch_conv_layer(
-            params,
-            layer,
-            filter_info_upsample,
-            depth * (2**upsample),
-            target_keys,
-            padding=((1, 1),) * layer.D,
-            lhs_dilation=(2,) * layer.D,  # do the transposed convolution
-            mold_params=return_params,
-        )
-        # concat the upsampled layer and the residual
-        layer = layer.concat(residual_layers[upsample], axis=1)
-
-        layer, params, batch_stats, batch_stats_idx = unet_conv_block(
-            params,
-            layer,
-            train,
-            num_conv,
-            {
-                "filter_info": filter_info,
-                "depth": depth * (2**upsample),
-                "target_keys": target_keys,
-            },
-            batch_stats,
-            batch_stats_idx,
-            activation_f,
-            mold_params=return_params,
-        )
-
-    layer, params = ml.batch_conv_layer(
-        params,
-        layer,
-        filter_info,
-        output_depth,
-        output_keys,
-        mold_params=return_params,
-    )
-
-    if (batch_stats is not None) or return_params:
-        res = (layer,)
-        if batch_stats is not None:
-            res = res + (batch_stats,)
-        if return_params:
-            res = res + (params,)
-    else:
-        res = layer
-
-    return res
-
-
-@functools.partial(jax.jit, static_argnums=[3, 4, 5, 6, 7, 8, 10, 11])
-def dil_resnet(
-    params,
-    layer,
-    key,
-    train,
-    output_keys,
-    output_depth=1,
-    depth=48,
-    activation_f=jax.nn.relu,
-    equivariant=False,
-    conv_filters=None,
-    use_group_norm=False,
-    return_params=False,
-):
-    """
-    The DilatedResNet from https://arxiv.org/pdf/2112.15275.pdf. There are 4 dilated resnet blocks. There
-    7 dilated convoltions that are [1,2,4,8,4,2,1] with biases, each followed by an activation function.
-    The residual layers are then added (not concatenated) back at the end of the block. There is a single
-    convolution (with bias) at the beginning and end to encode and decode. The
-    args:
-        params (params tree): the params of the model
-        layer (BatchLayer): input batch layer
-        key (jnp.random key): key for any layers requiring randomization
-        train (bool): whether train mode or test mode, relevant for batch_norm
-        output_keys (tuple of tuples of ints): the output key types of the model. For the Shallow Water
-            experiments, should be ((0,0),(1,0)) for the pressure/velocity form and ((0,0),(0,1)) for
-            the pressure/vorticity form.
-        output_depth (int or tuple): output depth for each output key. If an int, then the depth is
-            that int for each key. Defaults to 1, cannot be None. Needs to be hashable, so the structure
-            is ( (key,depth), (key,depth)) where key itself is a tuple like (0,0)
-        depth (int): the depth of the layers, defaults to 48
-        activation_f (string or function): the function that we pass to batch_scalar_activation, defaults to relu
-        equivariant (bool): whether to use the equivariant version of the model, defaults to False
-        conv_filters (Layer): the conv filters used for the equivariant version
-        return_params (bool): whether we are mapping the params, or applying them
-    """
-    assert layer.D == 2
-    num_blocks = 4
-
-    if isinstance(output_depth, int):
-        output_depth = tuple((key, output_depth) for key in output_keys)
-
-    if equivariant:
-        assert conv_filters is not None
-        filter_info_M3 = {"type": ml.CONV_FIXED, "filters": conv_filters}
-        filter_info_M1 = filter_info_M3
-        target_keys = output_keys
-    else:
-        layer = layer.to_scalar_layer()
-        filter_info_M3 = {"type": ml.CONV_FREE, "M": 3}
-        filter_info_M1 = {"type": ml.CONV_FREE, "M": 1}
-        target_keys = ((0, 0),)
-
-    # encoder
-    for _ in range(2):
-        layer, params = ml.batch_conv_layer(
-            params,
-            layer,
-            filter_info_M1,
-            depth,
-            target_keys,
-            bias=True,
-            mold_params=return_params,
-        )
-        layer, params = handle_activation(activation_f, params, layer, return_params)
-
-    for _ in range(num_blocks):
-
-        residual_layer = layer.copy()
-        # dCNN block
-        for dilation in [1, 2, 4, 8, 4, 2, 1]:
-            layer, params = ml.batch_conv_layer(
-                params,
-                layer,
-                filter_info_M3,
-                depth,
-                target_keys,
-                bias=True,
-                mold_params=return_params,
-                rhs_dilation=(dilation,) * layer.D,
-            )
-            if use_group_norm:
-                layer, params = ml.group_norm(
-                    params, layer, 1, equivariant=equivariant, mold_params=return_params
-                )
-            layer, params = handle_activation(activation_f, params, layer, return_params)
-
-        layer = layer + residual_layer
-
-    # decoder
-    layer, params = ml.batch_conv_layer(
-        params,
-        layer,
-        filter_info_M1,
-        depth,
-        target_keys,
-        bias=True,
-        mold_params=return_params,
-    )
-    layer, params = handle_activation(activation_f, params, layer, return_params)
-    layer, params = ml.batch_conv_layer(
-        params,
-        layer,
-        filter_info_M1,
-        output_depth,
-        output_keys,
-        bias=True,
-        mold_params=return_params,
-    )
-
-    return (layer, params) if return_params else layer
-
-
-@functools.partial(jax.jit, static_argnums=[3, 4, 5, 6, 7, 8, 10, 11])
-def resnet(
-    params,
-    layer,
-    key,
-    train,
-    output_keys,
-    output_depth=1,
-    depth=128,
-    activation_f=jax.nn.gelu,
-    equivariant=False,
-    conv_filters=None,
-    use_group_norm=True,
-    return_params=False,
-):
-    """
-    The ResNet. There are 8 resnet blocks with 2 convolutions each, group norm, activations before each
-    convolution.
-    args:
-        params (params tree): the params of the model
-        layer (BatchLayer): input batch layer
-        key (jnp.random key): key for any layers requiring randomization
-        train (bool): whether train mode or test mode, relevant for batch_norm
-        output_keys (tuple of tuples of ints): the output key types of the model. For the Shallow Water
-            experiments, should be ((0,0),(1,0)) for the pressure/velocity form and ((0,0),(0,1)) for
-            the pressure/vorticity form.
-        output_depth (int or tuple): output depth for each output key. If an int, then the depth is
-            that int for each key. Defaults to 1, cannot be None. Needs to be hashable, so the structure
-            is ( (key,depth), (key,depth)) where key itself is a tuple like (0,0)
-        depth (int): the depth of the layers, defaults to 48
-        activation_f (string or function): the function that we pass to batch_scalar_activation, defaults to relu
-        equivariant (bool): whether to use the equivariant version of the model, defaults to False
-        conv_filters (Layer): the conv filters used for the equivariant version
-        return_params (bool): whether we are mapping the params, or applying them
-    """
-    num_blocks = 8
-    num_conv = 2
-
-    assert output_keys is not None
-    assert output_depth is not None
-
-    if isinstance(output_depth, int):
-        output_depth = tuple((key, output_depth) for key in output_keys)
-
-    if equivariant:
-        assert conv_filters is not None
-        filter_info_M3 = {"type": ml.CONV_FIXED, "filters": conv_filters}
-        filter_info_M1 = filter_info_M3  # there aren't enough ones for this to work well
-        target_keys = output_keys
-    else:
-        layer = layer.to_scalar_layer()
-        filter_info_M3 = {"type": ml.CONV_FREE, "M": 3}
-        filter_info_M1 = {"type": ml.CONV_FREE, "M": 1}
-        target_keys = ((0, 0),)
-
-    # encoder
-    for _ in range(2):
-        layer, params = ml.batch_conv_layer(
-            params,
-            layer,
-            filter_info_M1,
-            depth,
-            target_keys,
-            bias=True,
-            mold_params=return_params,
-        )
-        layer, params = handle_activation(activation_f, params, layer, return_params)
-
-    for _ in range(num_blocks):
-
-        shortcut_layer = layer.copy()
-
-        for _ in range(num_conv):
-            # pre-activation order
-            if use_group_norm:
-                layer, params = ml.group_norm(
-                    params, layer, 1, equivariant=equivariant, mold_params=return_params
-                )
-            layer, params = handle_activation(activation_f, params, layer, return_params)
-
-            layer, params = ml.batch_conv_layer(
-                params,
-                layer,
-                filter_info_M3,
-                depth,
-                target_keys,
-                bias=True,
-                mold_params=return_params,
-            )
-
-        layer = layer + shortcut_layer
-
-    # decoder
-    layer, params = ml.batch_conv_layer(
-        params,
-        layer,
-        filter_info_M1,
-        depth,
-        target_keys,
-        bias=True,
-        mold_params=return_params,
-    )
-    layer, params = handle_activation(activation_f, params, layer, return_params)
-
-    layer, params = ml.batch_conv_layer(
-        params,
-        layer,
-        filter_info_M1,
-        output_depth,
-        output_keys,
-        bias=True,
-        mold_params=return_params,
-    )
-
-    return (layer, params) if return_params else layer
-
-
-def do_nothing(params, layer, key, train, idxs, return_params=False):
-    """
-    Not to be confused with Calvin Coolidge. Allows you to compare the loss to a model that just picks one
-    channel of each layer as the output. This is helpful for dynamics problems where sometimes just picking
-    the next step as the previous step is a surprisingly effective strategy.
-    args:
-        params (dict): the params tree
-        layer (BatchLayer): input layer
-        key (rand_key):
-        train (bool): whether we are train mode
-        idxs (dict): dict of (k,parity): idx where idx is layer to select as the output
-    """
-    out_layer = layer.empty()
-    for (k, parity), image_block in layer.items():
-        idx = idxs[(k, parity)]
-        out_layer.append(k, parity, image_block[:, idx : idx + 1])
-
-    return (out_layer, params) if return_params else out_layer
-
-
-def group_average(
-    params,
-    layer,
-    key,
-    train,
-    model_f,
-    *args,
-    always_average=False,
-    return_params=False,
-    **kwargs,
-):
-    if train and (not always_average):
-        # train the model as normal
-        return model_f(params, layer, key, train, *args, return_params=return_params, **kwargs)
-    else:
-        # during evaluation time, do the group averaging
-
-        group_operators = geom.make_all_operators(layer.D)
-        sum_layer = None
-        for gg in group_operators:
-            out = model_f(
-                {k: v for k, v in params.items()},
-                layer.times_group_element(gg),
-                key,
-                train,
-                *args,
-                return_params=return_params,
-                **kwargs,
-            )
-
-            if isinstance(out, tuple):  # if there are return params, or batch stats
-                # out_remainder will get repeatedly set, so hopefully that isn't a problem
-                out_layer, *out_remainder = out
+            if self.equivariant:
+                self.norm = ml.LayerNorm(output_keys, self.D)
             else:
-                out_layer = out
+                self.norm = ml.LayerWrapper(eqx.nn.GroupNorm(1, output_keys[0][1]), output_keys)
+        elif use_batch_norm:
+            self.norm = ml.LayerWrapperAux(
+                eqx.nn.BatchNorm(output_keys[0][1], axis_name=["pmap_batch", "batch"]), output_keys
+            )
+        else:
+            self.norm = None
 
-            out_rot = out_layer.times_group_element(gg.T)
-            sum_layer = out_rot if sum_layer is None else sum_layer + out_rot
+        self.nonlinearity = handle_activation(
+            activation_f, self.equivariant, output_keys, self.D, subkey2
+        )
 
-        mean_layer = sum_layer / len(group_operators)
-        return (mean_layer,) + tuple(out_remainder) if isinstance(out, tuple) else mean_layer
+    def __call__(self: Self, x: geom.BatchLayer, batch_stats: Optional[eqx.nn.State] = None):
+        if self.preactivation_order:
+            if self.use_group_norm:
+                x = self.norm(x)
+            elif self.use_batch_norm:
+                x, batch_stats = self.norm(x, batch_stats)
+
+            x = self.nonlinearity(x)
+            x = self.conv(x)
+        else:
+            x = self.conv(x)
+            if self.use_group_norm:
+                x = self.norm(x)
+            elif self.use_batch_norm:
+                x, batch_stats = self.norm(x, batch_stats)
+
+            x = self.nonlinearity(x)
+
+        return x, batch_stats
 
 
-def unetBase_approx_equiv(
-    params,
-    layer,
-    key,
-    train,
-    output_keys=None,
-    depth=64,
-    activation_f=jax.nn.gelu,
-    conv_filters=None,
-    upsample_filters=None,  # 2x2 filters
-    use_group_norm=True,
-    scale_adjust=0.1,
-    return_params=False,
-):
-    """
-    The U-Net Base model that uses an equivariant model and a vanilla model. The involves 4 downsampling
-    steps and 4 upsampling steps,
-    each interspersed with 2 convolutions interleaved with scalar activations and batch norm. The downsamples
-    are achieved with max_pool layers with patch length of 2 and the upsamples are achieved with transposed
-    convolution. Additionally, there are residual connections after every downsample and upsample. For the
-    equivariant version, we use invariant filters, norm max_pool, and no batch_norm.
-    args:
-        params (params tree): the params of the model
-        layer (BatchLayer): input batch layer
-        key (jnp.random key): key for any layers requiring randomization
-        train (bool): whether train mode or test mode, relevant for batch_norm
-        batch_stats (dict): state for batch_norm, default None
-        output_keys (tuple of tuples of ints): the output key types of the model. For the Shallow Water
-            experiments, should be ((0,0),(1,0)) for the pressure/velocity form and ((0,0),(0,1)) for
-            the pressure/vorticity form.
-        depth (int): the depth of the layers, defaults to 64
-        activation_f (string or function): the function that we pass to batch_scalar_activation
-        equivariant (bool): whether to use the equivariant version of the model, defaults to False
-        conv_filters (Layer): the conv filters used for the equivariant version
-        upsample_filters (Layer): the conv filters used for the upsample layer of the equivariant version
-        use_group_norm (bool): whether to use group_norm, defaults to True
-        return_params (bool): whether we are mapping the params, or applying them
-    """
-    equiv_layer, params = unetBase(
-        params,
-        layer,
-        key,
-        train,
-        output_keys,
-        depth,
-        activation_f,
-        True,  # equivariant
-        conv_filters,
-        upsample_filters,  # 2x2 filters
-        use_group_norm,
-        return_params=True,
-        mold_params=return_params,
-    )
+class UNet(eqx.Module):
+    embedding: list[eqx.Module]
+    downsample_blocks: list[list[Union[ConvBlock, ml.MaxNormPool]]]
+    upsample_blocks: list[list[Union[ml.ConvContract, ConvBlock]]]
+    decode: ml.ConvContract
 
-    free_result = unetBase(
-        params,
-        layer,
-        key,
-        train,
-        output_keys,
-        depth * 2,
-        equivariant=False,
-        return_params=return_params,
-    )
+    D: int = eqx.field(static=True)
+    equivariant: bool = eqx.field(static=True)
+    use_batch_norm: bool = eqx.field(static=True)
+    output_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
 
-    if return_params:
-        free_layer = free_result[0]
-        params = free_result[1]
-    else:
-        free_layer = free_result
+    def __init__(
+        self: Self,
+        D,
+        input_keys: tuple[tuple[ml.LayerKey, int]],
+        output_keys: tuple[tuple[ml.LayerKey, int]],
+        depth: int,
+        num_downsamples: int = 4,
+        num_conv: int = 2,
+        use_bias: Union[bool, str] = "auto",
+        activation_f: Union[Callable, str] = jax.nn.gelu,
+        equivariant: bool = True,
+        conv_filters: geom.Layer = None,
+        upsample_filters: geom.Layer = None,
+        kernel_size: Optional[Union[int, Sequence[int]]] = None,
+        use_group_norm: bool = False,
+        use_batch_norm: bool = False,
+        key: ArrayLike = None,
+    ):
+        assert num_conv > 0
 
-    # scale the non-equivariant result to have 1/10th of max norm
-    equiv_max_norm = jnp.max(equiv_layer.norm().to_vector())
-    free_max_norm = jnp.max(free_layer.norm().to_vector())
-    scale = (equiv_max_norm / free_max_norm) * scale_adjust
+        self.output_keys = output_keys
+        if equivariant:
+            key_union = {k_p for k_p, _ in input_keys}.union({k_p for k_p, _ in output_keys})
+            mid_keys = tuple((k_p, depth) for k_p in key_union)
+            assert not use_batch_norm, "UNet::init Batch Norm cannot be used with equivariant model"
+        else:
+            mid_keys = (((0, 0), depth),)
+            # use these keys along the way, then for the final output use self.output_keys
+            input_keys = (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
+            output_keys = (((0, 0), sum(out_c * (D**k) for (k, _), out_c in output_keys)),)
 
-    if return_params:
-        return equiv_layer + (free_layer * scale), params
-    else:
-        return equiv_layer + (free_layer * scale)
+        self.D = D
+        self.equivariant = equivariant
+        self.use_batch_norm = use_batch_norm
+
+        # embedding layers
+        self.embedding = []
+        for conv_idx in range(num_conv):
+            in_keys = input_keys if conv_idx == 0 else mid_keys
+            key, subkey = random.split(key)
+            self.embedding.append(
+                ConvBlock(
+                    self.D,
+                    in_keys,
+                    mid_keys,
+                    use_bias,
+                    activation_f,
+                    equivariant,
+                    conv_filters,
+                    kernel_size,
+                    use_group_norm,
+                    use_batch_norm,
+                    key=subkey,
+                )
+            )
+
+        self.downsample_blocks = []
+        for downsample in range(1, num_downsamples + 1):
+            down_layers = [ml.MaxNormPool(2, equivariant)]
+
+            for conv_idx in range(num_conv):
+                out_keys = tuple((k_p, depth * (2**downsample)) for k_p, _ in mid_keys)
+                if conv_idx == 0:
+                    in_keys = tuple((k_p, depth * (2 ** (downsample - 1))) for k_p, _ in mid_keys)
+                else:
+                    in_keys = out_keys
+
+                key, subkey = random.split(key)
+                down_layers.append(
+                    ConvBlock(
+                        self.D,
+                        in_keys,
+                        out_keys,
+                        use_bias,
+                        activation_f,
+                        equivariant,
+                        conv_filters,
+                        kernel_size,
+                        use_group_norm,
+                        use_batch_norm,
+                        key=subkey,
+                    )
+                )
+
+            self.downsample_blocks.append(down_layers)
+
+        self.upsample_blocks = []
+        for upsample in reversed(range(num_downsamples)):
+            in_keys = tuple((k_p, depth * (2 ** (upsample + 1))) for k_p, _ in mid_keys)
+            out_keys = tuple((k_p, depth * (2**upsample)) for k_p, _ in mid_keys)
+            key, subkey = random.split(key)
+            # perform the transposed convolution. For non-equivariant, padding and stride should
+            # instead be the padding and stride for the forward direction convolution.
+            if equivariant:
+                padding = ((1, 1),) * self.D
+                lhs_dilation = (2,) * self.D
+                stride = None
+                upsample_kernel_size = None  # ignored for equivariant
+            else:
+                padding = "VALID"
+                lhs_dilation = True  # signals to do ConvTranspose
+                stride = (2,) * self.D
+                upsample_kernel_size = (2,) * self.D  # kernel size of the downsample
+
+            up_layers = [
+                make_conv(
+                    self.D,
+                    in_keys,
+                    out_keys,
+                    use_bias,
+                    equivariant,
+                    upsample_filters,
+                    upsample_kernel_size,
+                    stride,
+                    padding,
+                    lhs_dilation,
+                    key=subkey,
+                )
+            ]
+
+            for conv_idx in range(num_conv):
+                out_keys = tuple((k_p, depth * (2**upsample)) for k_p, _ in mid_keys)
+                if conv_idx == 0:  # due to adding the residual layer back, in_c is doubled again
+                    in_keys = tuple((k_p, depth * (2 ** (upsample + 1))) for k_p, _ in mid_keys)
+                else:
+                    in_keys = out_keys
+
+                key, subkey = random.split(key)
+                up_layers.append(
+                    ConvBlock(
+                        self.D,
+                        in_keys,
+                        out_keys,
+                        use_bias,
+                        activation_f,
+                        equivariant,
+                        conv_filters,
+                        kernel_size,
+                        use_group_norm,
+                        use_batch_norm,
+                        key=subkey,
+                    )
+                )
+
+            self.upsample_blocks.append(up_layers)
+
+        key, subkey = random.split(key)
+
+        self.decode = make_conv(
+            self.D,
+            mid_keys,
+            output_keys,
+            use_bias,
+            equivariant,
+            conv_filters,
+            kernel_size,
+            key=subkey,
+        )
+
+    def __call__(self: Self, x: geom.BatchLayer, batch_stats: Optional[eqx.nn.State] = None):
+        if not self.equivariant:
+            x = x.to_scalar_layer()
+
+        for layer in self.embedding:
+            x, batch_stats = layer(x, batch_stats)
+
+        residual_layers = []
+        for block in self.downsample_blocks:
+            residual_layers.append(x)
+            x = block[0](x)  # first one is maxpool
+            for layer in block[1:]:
+                x, batch_stats = layer(x, batch_stats)
+
+        for block, residual_idx in zip(self.upsample_blocks, reversed(range(len(residual_layers)))):
+            upsample_x = block[0](x)  # first layer in block is the upsample
+            x = upsample_x.concat(residual_layers[residual_idx], axis=1)
+            for layer in block[1:]:
+                x, batch_stats = layer(x, batch_stats)
+
+        x = self.decode(x)
+        if self.equivariant:
+            out_layer = x
+        else:
+            output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
+            out_layer = geom.BatchLayer.from_scalar_layer(x, output_keys)
+
+        if self.use_batch_norm:
+            return out_layer, batch_stats
+        else:
+            return out_layer
+
+
+class DilResNet(eqx.Module):
+    encoder: list[ml.ConvContract]
+    blocks: list[list[ml.ConvContract]]
+    decoder: list[ml.ConvContract]
+
+    D: int = eqx.field(static=True)
+    equivariant: bool = eqx.field(static=True)
+    output_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
+
+    def __init__(
+        self: Self,
+        D,
+        input_keys: tuple[tuple[ml.LayerKey, int]],
+        output_keys: tuple[tuple[ml.LayerKey, int]],
+        depth: int,
+        num_blocks: int = 4,
+        use_bias: Union[bool, str] = "auto",
+        activation_f: Union[Callable, str] = jax.nn.relu,
+        equivariant: bool = True,
+        conv_filters: geom.Layer = None,
+        kernel_size: Optional[Union[int, Sequence[int]]] = None,
+        use_group_norm: bool = False,
+        key: ArrayLike = None,
+    ):
+        self.D = D
+        self.equivariant = equivariant
+        self.output_keys = output_keys
+
+        if equivariant:
+            key_union = {k_p for k_p, _ in input_keys}.union({k_p for k_p, _ in output_keys})
+            mid_keys = tuple((k_p, depth) for k_p in key_union)
+        else:
+            mid_keys = (((0, 0), depth),)
+            # use these keys along the way, then for the final output use self.output_keys
+            input_keys = (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
+            output_keys = (((0, 0), sum(out_c * (D**k) for (k, _), out_c in output_keys)),)
+
+        # encoder
+        key, subkey1, subkey2 = random.split(key, num=3)
+        self.encoder = [
+            ConvBlock(
+                D,
+                input_keys,
+                mid_keys,
+                use_bias,
+                activation_f,
+                equivariant,
+                conv_filters,
+                1,
+                key=subkey1,
+            ),
+            ConvBlock(
+                D,
+                mid_keys,
+                mid_keys,
+                use_bias,
+                activation_f,
+                equivariant,
+                conv_filters,
+                1,
+                key=subkey2,
+            ),
+        ]
+
+        self.blocks = []
+        for _ in range(num_blocks):
+            # dCNN block
+            dilation_block = []
+            for dilation in [1, 2, 4, 8, 4, 2, 1]:
+                key, subkey = random.split(key)
+                dilation_block.append(
+                    ConvBlock(
+                        D,
+                        mid_keys,
+                        mid_keys,
+                        use_bias,
+                        activation_f,
+                        equivariant,
+                        conv_filters,
+                        kernel_size,
+                        use_group_norm,
+                        rhs_dilation=(dilation,) * D,
+                        key=subkey,
+                    )
+                )
+
+            self.blocks.append(dilation_block)
+
+        key, subkey1, subkey2 = random.split(key, num=3)
+        self.decoder = [
+            ConvBlock(
+                D,
+                mid_keys,
+                mid_keys,
+                use_bias,
+                activation_f,
+                equivariant,
+                conv_filters,
+                1,
+                key=subkey1,
+            ),
+            ConvBlock(
+                D, mid_keys, output_keys, use_bias, None, equivariant, conv_filters, 1, key=subkey2
+            ),
+        ]
+
+    def __call__(self: Self, x: geom.BatchLayer):
+        if not self.equivariant:
+            x = x.to_scalar_layer()
+
+        for layer in self.encoder:
+            x, _ = layer(x)
+
+        for dilation_block in self.blocks:
+            residual_x = x.copy()
+
+            for layer in dilation_block:
+                x, _ = layer(x)
+
+            x = x + residual_x
+
+        for layer in self.decoder:
+            x, _ = layer(x)
+
+        if self.equivariant:
+            out_layer = x
+        else:
+            output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
+            out_layer = geom.BatchLayer.from_scalar_layer(x, output_keys)
+
+        return out_layer
+
+
+class ResNet(eqx.Module):
+    encoder: list[ml.ConvContract]
+    blocks: list[list[ml.ConvContract]]
+    decoder: list[ml.ConvContract]
+
+    D: int = eqx.field(static=True)
+    equivariant: bool = eqx.field(static=True)
+    output_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
+
+    def __init__(
+        self: Self,
+        D,
+        input_keys: tuple[tuple[ml.LayerKey, int]],
+        output_keys: tuple[tuple[ml.LayerKey, int]],
+        depth: int,
+        num_blocks: int = 8,
+        num_conv: int = 2,
+        use_bias: Union[bool, str] = "auto",
+        activation_f: Union[Callable, str] = jax.nn.gelu,
+        equivariant: bool = True,
+        conv_filters: geom.Layer = None,
+        kernel_size: Optional[Union[int, Sequence[int]]] = None,
+        use_group_norm: bool = True,
+        preactivation_order: bool = True,
+        key: ArrayLike = None,
+    ):
+        self.D = D
+        self.equivariant = equivariant
+        self.output_keys = output_keys
+
+        if equivariant:
+            key_union = {k_p for k_p, _ in input_keys}.union({k_p for k_p, _ in output_keys})
+            mid_keys = tuple((k_p, depth) for k_p in key_union)
+        else:
+            mid_keys = (((0, 0), depth),)
+            # use these keys along the way, then for the final output use self.output_keys
+            input_keys = (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
+            output_keys = (((0, 0), sum(out_c * (D**k) for (k, _), out_c in output_keys)),)
+
+        # encoder
+        key, subkey1, subkey2 = random.split(key, num=3)
+        self.encoder = [
+            ConvBlock(
+                D,
+                input_keys,
+                mid_keys,
+                use_bias,
+                activation_f,
+                equivariant,
+                conv_filters,
+                1,
+                key=subkey1,
+            ),
+            ConvBlock(
+                D,
+                mid_keys,
+                mid_keys,
+                use_bias,
+                activation_f,
+                equivariant,
+                conv_filters,
+                1,
+                key=subkey2,
+            ),
+        ]
+
+        self.blocks = []
+        for _ in range(num_blocks):
+            # dCNN block
+            block = []
+            for _ in range(num_conv):
+                key, subkey = random.split(key)
+                block.append(
+                    ConvBlock(
+                        D,
+                        mid_keys,
+                        mid_keys,
+                        use_bias,
+                        activation_f,
+                        equivariant,
+                        conv_filters,
+                        kernel_size,
+                        use_group_norm,
+                        preactivation_order=preactivation_order,
+                        key=subkey,
+                    )
+                )
+
+            self.blocks.append(block)
+
+        key, subkey1, subkey2 = random.split(key, num=3)
+        self.decoder = [
+            ConvBlock(
+                D,
+                mid_keys,
+                mid_keys,
+                use_bias,
+                activation_f,
+                equivariant,
+                conv_filters,
+                1,
+                key=subkey1,
+            ),
+            ConvBlock(
+                D, mid_keys, output_keys, use_bias, None, equivariant, conv_filters, 1, key=subkey2
+            ),
+        ]
+
+    def __call__(self: Self, x: geom.BatchLayer):
+        if not self.equivariant:
+            x = x.to_scalar_layer()
+
+        for layer in self.encoder:
+            x, _ = layer(x)
+
+        for block in self.blocks:
+            residual_x = x.copy()
+
+            for layer in block:
+                x, _ = layer(x)
+
+            x = x + residual_x
+
+        for layer in self.decoder:
+            x, _ = layer(x)
+
+        if self.equivariant:
+            out_layer = x
+        else:
+            output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
+            out_layer = geom.BatchLayer.from_scalar_layer(x, output_keys)
+
+        return out_layer

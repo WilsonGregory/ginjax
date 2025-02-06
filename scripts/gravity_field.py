@@ -4,7 +4,7 @@ import sys
 import argparse
 import time
 import matplotlib.pyplot as plt
-from typing_extensions import Self
+from typing_extensions import Optional, Self
 
 import jax.numpy as jnp
 import jax.random as random
@@ -14,7 +14,6 @@ import optax
 import equinox as eqx
 
 import geometricconvolutions.geometric as geom
-import geometricconvolutions.ml_eqx as ml_eqx
 import geometricconvolutions.ml as ml
 from geometricconvolutions.data import get_gravity_data as get_data
 
@@ -43,10 +42,10 @@ def plot_results(
 
 
 class Model(eqx.Module):
-    embedding: ml_eqx.ConvContract
-    first_layers: list[ml_eqx.ConvContract]
-    second_layers: list[ml_eqx.ConvContract]
-    last_layer: ml_eqx.ConvContract
+    embedding: ml.ConvContract
+    first_layers: list[ml.ConvContract]
+    second_layers: list[ml.ConvContract]
+    last_layer: ml.ConvContract
 
     def __init__(
         self: Self,
@@ -61,13 +60,13 @@ class Model(eqx.Module):
         target_keys = (((1, 0), 1),)
 
         key, subkey = random.split(key)
-        self.embedding = ml_eqx.ConvContract(input_keys, mid_keys, conv_filters, key=subkey)
+        self.embedding = ml.ConvContract(input_keys, mid_keys, conv_filters, key=subkey)
 
         self.first_layers = []
         for dilation in range(1, spatial_dims[0]):  # dilations in parallel
             key, subkey = random.split(key)
             self.first_layers.append(
-                ml_eqx.ConvContract(
+                ml.ConvContract(
                     mid_keys, mid_keys, conv_filters, rhs_dilation=(dilation,) * D, key=subkey
                 )
             )
@@ -76,13 +75,13 @@ class Model(eqx.Module):
         for dilation in range(1, int(spatial_dims[0] / 2)):  # dilations in parallel
             key, subkey = random.split(key)
             self.first_layers.append(
-                ml_eqx.ConvContract(
+                ml.ConvContract(
                     mid_keys, mid_keys, conv_filters, rhs_dilation=(dilation,) * D, key=subkey
                 )
             )
 
         key, subkey = random.split(key)
-        self.last_layer = ml_eqx.ConvContract(mid_keys, target_keys, conv_filters, key=subkey)
+        self.last_layer = ml.ConvContract(mid_keys, target_keys, conv_filters, key=subkey)
 
     def __call__(self: Self, x: geom.Layer) -> geom.Layer:
         x = self.embedding(x)
@@ -99,8 +98,10 @@ class Model(eqx.Module):
         return self.last_layer(x)
 
 
-def map_and_loss(model: Model, x: geom.BatchLayer, y: geom.BatchLayer) -> float:
-    return ml.smse_loss(jax.vmap(model)(x), y)
+def map_and_loss(
+    model: Model, x: geom.BatchLayer, y: geom.BatchLayer, aux_data: Optional[eqx.nn.State] = None
+) -> float:
+    return ml.smse_loss(model(x), y), aux_data
 
 
 def handleArgs(argv):
@@ -158,7 +159,7 @@ model = Model(train_X.get_spatial_dims(), (((0, 0), 1),), conv_filters, 10, key=
 print(f"Num params: {sum([x.size for x in jax.tree_util.tree_leaves(model)]):,}")
 
 if args.load_model:
-    model = ml_eqx.load(f"{args.load_model}params.eqx", model)
+    model = ml.load(f"{args.load_model}params.eqx", model)
 else:
     optimizer = optax.adam(
         optax.exponential_decay(
@@ -168,7 +169,7 @@ else:
         )
     )
     key, subkey = random.split(key)
-    model, train_loss, val_loss = ml_eqx.train(
+    model, _, train_loss, val_loss = ml.train(
         train_X,
         train_Y,
         map_and_loss,
@@ -182,10 +183,10 @@ else:
         save_model=f"{args.save_model}params.eqx" if args.save_model else None,
     )
     if args.save_model:
-        ml_eqx.save(f"{args.save_model}params.eqx", model)
+        ml.save(f"{args.save_model}params.eqx", model)
 
 key, subkey = random.split(key)
-test_loss = ml_eqx.map_loss_in_batches(map_and_loss, model, test_X, test_Y, args.batch, subkey)
+test_loss = ml.map_loss_in_batches(map_and_loss, model, test_X, test_Y, args.batch, subkey)
 print("Full Test loss:", test_loss)
 print(f"One Test loss:", map_and_loss(model, test_X.get_one(), test_Y.get_one()))
 

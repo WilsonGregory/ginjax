@@ -13,9 +13,8 @@ from jax.typing import ArrayLike
 import equinox as eqx
 
 import geometricconvolutions.geometric as geom
-import geometricconvolutions.ml_eqx as ml_eqx
 import geometricconvolutions.ml as ml
-import geometricconvolutions.models_eqx as models_eqx
+import geometricconvolutions.models as models
 
 
 class MLP(eqx.Module):
@@ -80,7 +79,7 @@ class VanillaModel(eqx.Module):
 
 
 class Model(eqx.Module):
-    layers: list[ml_eqx.ConvContract]
+    layers: list[ml.ConvContract]
     D: int
 
     def __init__(
@@ -103,7 +102,7 @@ class Model(eqx.Module):
             self.layers.append(
                 (
                     "conv_contract",
-                    ml_eqx.ConvContract(
+                    ml.ConvContract(
                         input_keys, target_keys, conv_filters, use_bias=False, key=subkey1
                     ),
                 )
@@ -112,9 +111,7 @@ class Model(eqx.Module):
                 self.layers.append(
                     (
                         "activation",
-                        ml_eqx.VectorNeuronNonlinear(
-                            target_keys, self.D, activation_f, key=subkey2
-                        ),
+                        ml.VectorNeuronNonlinear(target_keys, self.D, activation_f, key=subkey2),
                     )
                 )
 
@@ -171,7 +168,7 @@ model = Model(
     activation_f=activation_f,
     key=subkey,
 )
-print(models_eqx.count_params(model))
+print(models.count_params(model))
 
 output_x = model(input_x)
 exit()

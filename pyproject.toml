@@ -2,7 +2,7 @@
 name = "geometricconvolutions"
 version = "0.1.1"
 author = [
-    { name = "Wilson Gregory"},
+    { name = "Wilson Gregory", email = "wilson.g.gregory@gmail.com"},
     { name = "David Hogg"}
 ]
 license = { file = "LICENSE" }

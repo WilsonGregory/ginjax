@@ -20,15 +20,15 @@ from geometricconvolutions.data import get_gravity_data as get_data
 
 def plot_results(
     model: Model,
-    layer_x: geom.Layer,
-    layer_y: geom.Layer,
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
     axs: list[plt.Axes],
     titles: list[str],
 ):
     assert len(axs) == len(titles)
-    learned_x = model(layer_x).to_images()[0]
-    x = layer_x.to_images()[0]
-    y = layer_y.to_images()[0]
+    learned_x = model(multi_image_x).to_images()[0]
+    x = multi_image_x.to_images()[0]
+    y = multi_image_y.to_images()[0]
     images = [x, y, learned_x, y - learned_x]
     for i, image, ax, title in zip(range(len(images)), images, axs, titles):
         if i == 0:
@@ -50,8 +50,8 @@ class Model(eqx.Module):
     def __init__(
         self: Self,
         spatial_dims: tuple[int],
-        input_keys: tuple[tuple[ml.LayerKey, int]],
-        conv_filters: geom.Layer,
+        input_keys: geom.Signature,
+        conv_filters: geom.MultiImage,
         depth: int,
         key: ArrayLike,
     ) -> Self:
@@ -83,7 +83,7 @@ class Model(eqx.Module):
         key, subkey = random.split(key)
         self.last_layer = ml.ConvContract(mid_keys, target_keys, conv_filters, key=subkey)
 
-    def __call__(self: Self, x: geom.Layer) -> geom.Layer:
+    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
         x = self.embedding(x)
 
         out_x = None
@@ -99,7 +99,10 @@ class Model(eqx.Module):
 
 
 def map_and_loss(
-    model: Model, x: geom.BatchLayer, y: geom.BatchLayer, aux_data: Optional[eqx.nn.State] = None
+    model: Model,
+    x: geom.BatchMultiImage,
+    y: geom.BatchMultiImage,
+    aux_data: Optional[eqx.nn.State] = None,
 ) -> float:
     return ml.smse_loss(model(x), y), aux_data
 
@@ -199,15 +202,15 @@ if args.images_dir is not None:
     fig, axs = plt.subplots(nrows=2, ncols=4, figsize=(24, 12))
     plot_results(
         model,
-        train_X.get_one_layer(),
-        train_Y.get_one_layer(),
+        train_X.get_one_batch_multi_image(),
+        train_Y.get_one_batch_multi_image(),
         axs[0],
         titles,
     )
     plot_results(
         model,
-        test_X.get_one_layer(),
-        test_Y.get_one_layer(),
+        test_X.get_one_batch_multi_image(),
+        test_Y.get_one_batch_multi_image(),
         axs[1],
         titles,
     )

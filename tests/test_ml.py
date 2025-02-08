@@ -7,9 +7,8 @@ import geometricconvolutions.ml as ml
 
 
 class TestMachineLearning:
-    # Class to test the functions in the ml.py file, which include layers, data pre-processing, batching, etc.
 
-    def testGetBatchLayer(self):
+    def testGetBatches(self):
         num_devices = 1  # since it can only see the cpu
         cpu = [jax.devices("cpu")[0]]
         key = random.PRNGKey(0)
@@ -17,11 +16,15 @@ class TestMachineLearning:
         D = 2
         k = 0
 
-        X = geom.BatchLayer({(k, 0): random.normal(key, shape=((10, 1) + (N,) * D + (D,) * k))}, D)
-        Y = geom.BatchLayer({(k, 0): random.normal(key, shape=((10, 1) + (N,) * D + (D,) * k))}, D)
+        X = geom.BatchMultiImage(
+            {(k, 0): random.normal(key, shape=((10, 1) + (N,) * D + (D,) * k))}, D
+        )
+        Y = geom.BatchMultiImage(
+            {(k, 0): random.normal(key, shape=((10, 1) + (N,) * D + (D,) * k))}, D
+        )
 
         batch_size = 2
-        X_batches, Y_batches = ml.get_batch_layer(
+        X_batches, Y_batches = ml.get_batches(
             (X, Y), batch_size=batch_size, rand_key=key, devices=cpu
         )
         assert len(X_batches) == len(Y_batches) == 5
@@ -32,14 +35,14 @@ class TestMachineLearning:
                 == (num_devices, batch_size, 1) + (N,) * D + (D,) * k
             )
 
-        X = geom.BatchLayer(
+        X = geom.BatchMultiImage(
             {
                 (0, 0): random.normal(key, shape=((20, 1) + (N,) * D + (D,) * 0)),
                 (1, 0): random.normal(key, shape=((20, 1) + (N,) * D + (D,) * 1)),
             },
             D,
         )
-        Y = geom.BatchLayer(
+        Y = geom.BatchMultiImage(
             {
                 (0, 0): random.normal(key, shape=((20, 1) + (N,) * D + (D,) * 0)),
                 (1, 0): random.normal(key, shape=((20, 1) + (N,) * D + (D,) * 1)),
@@ -47,9 +50,9 @@ class TestMachineLearning:
             D,
         )
 
-        # batching when the layer has multiple channels at different values of k
+        # batching when the multi_image has multiple channels at different values of k
         batch_size = 5
-        X_batches, Y_batches = ml.get_batch_layer(
+        X_batches, Y_batches = ml.get_batches(
             (X, Y), batch_size=batch_size, rand_key=key, devices=cpu
         )
         assert len(X_batches) == len(Y_batches) == 4
@@ -65,14 +68,14 @@ class TestMachineLearning:
                 == (num_devices, batch_size, 1) + (N,) * D + (D,) * 1
             )
 
-        X = geom.BatchLayer(
+        X = geom.BatchMultiImage(
             {
                 (0, 0): random.normal(key, shape=((20, 2) + (N,) * D + (D,) * 0)),
                 (1, 0): random.normal(key, shape=((20, 1) + (N,) * D + (D,) * 1)),
             },
             D,
         )
-        Y = geom.BatchLayer(
+        Y = geom.BatchMultiImage(
             {
                 (0, 0): random.normal(key, shape=((20, 2) + (N,) * D + (D,) * 0)),
                 (1, 0): random.normal(key, shape=((20, 1) + (N,) * D + (D,) * 1)),
@@ -80,9 +83,9 @@ class TestMachineLearning:
             D,
         )
 
-        # batching when layer has multiple channels for one value of k
+        # batching when multi_image has multiple channels for one value of k
         batch_size = 5
-        X_batches, Y_batches = ml.get_batch_layer(
+        X_batches, Y_batches = ml.get_batches(
             (X, Y), batch_size=batch_size, rand_key=key, devices=cpu
         )
         assert len(X_batches) == len(Y_batches) == 4
@@ -109,10 +112,14 @@ class TestMachineLearning:
 
         data1 = random.normal(key1, shape=(batch, past_steps) + (N,) * D)
 
-        input1 = geom.BatchLayer({(0, 0): data1}, D)
-        one_step1 = geom.BatchLayer({(0, 0): random.normal(key2, shape=(batch, 1) + (N,) * D)}, D)
+        input1 = geom.BatchMultiImage({(0, 0): data1}, D)
+        one_step1 = geom.BatchMultiImage(
+            {(0, 0): random.normal(key2, shape=(batch, 1) + (N,) * D)}, D
+        )
 
-        new_input, output = ml.autoregressive_step(input1, one_step1, input1.empty(), past_steps)
+        new_input, output = ml.training.autoregressive_step(
+            input1, one_step1, input1.empty(), past_steps
+        )
         assert jnp.allclose(
             new_input[(0, 0)],
             jnp.concatenate([input1[(0, 0)][:, 1:], one_step1[(0, 0)]], axis=1),
@@ -121,8 +128,8 @@ class TestMachineLearning:
 
         data2 = random.normal(key3, shape=(batch, 2 * past_steps) + (N,) * D + (D,))
 
-        input2 = geom.BatchLayer({(0, 0): data1, (1, 0): data2}, D)
-        one_step2 = geom.BatchLayer(
+        input2 = geom.BatchMultiImage({(0, 0): data1, (1, 0): data2}, D)
+        one_step2 = geom.BatchMultiImage(
             {
                 (0, 0): random.normal(key4, shape=(batch, 1) + (N,) * D),
                 (1, 0): random.normal(key5, shape=(batch, 2) + (N,) * D + (D,)),
@@ -130,7 +137,9 @@ class TestMachineLearning:
             D,
         )
 
-        new_input, output = ml.autoregressive_step(input2, one_step2, input2.empty(), past_steps)
+        new_input, output = ml.training.autoregressive_step(
+            input2, one_step2, input2.empty(), past_steps
+        )
         assert jnp.allclose(
             new_input[(0, 0)],
             jnp.concatenate([input2[(0, 0)][:, 1:], one_step2[(0, 0)]], axis=1),
@@ -147,10 +156,10 @@ class TestMachineLearning:
         constant_field2 = random.normal(key7, shape=(batch, 1) + (N,) * D + (D,))
 
         input3 = input2.concat(
-            geom.BatchLayer({(0, 0): constant_field1, (1, 0): constant_field2}, D),
+            geom.BatchMultiImage({(0, 0): constant_field1, (1, 0): constant_field2}, D),
             axis=1,
         )
-        new_input, output = ml.autoregressive_step(
+        new_input, output = ml.training.autoregressive_step(
             input3, one_step2, input3.empty(), past_steps, {(0, 0): 1, (1, 0): 1}
         )
         assert jnp.allclose(

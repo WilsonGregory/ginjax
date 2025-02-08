@@ -56,7 +56,7 @@ def get_data(
     past_steps: int,
     rollout_steps: int,
     normalize: bool = True,
-) -> tuple[geom.BatchLayer]:
+) -> tuple[geom.BatchMultiImage]:
     density, pressure, velocity = read_one_h5(filename, n_train + n_val + n_test)
 
     if normalize:
@@ -73,7 +73,7 @@ def get_data(
     is_torus = True
     start = 0
     stop = n_train
-    train_X, train_Y = gc_data.times_series_to_layers(
+    train_X, train_Y = gc_data.times_series_to_multi_images(
         D,
         {(0, 0): density[start:stop], (1, 0): velocity[start:stop]},
         {},
@@ -81,7 +81,7 @@ def get_data(
         past_steps,
         1,
     )
-    train_pressure_X, train_pressure_Y = gc_data.times_series_to_layers(
+    train_pressure_X, train_pressure_Y = gc_data.times_series_to_multi_images(
         D,
         {(0, 0): pressure[start:stop]},
         {},
@@ -94,7 +94,7 @@ def get_data(
 
     start = start + n_train
     stop = start + n_val
-    val_X, val_Y = gc_data.times_series_to_layers(
+    val_X, val_Y = gc_data.times_series_to_multi_images(
         D,
         {(0, 0): density[start:stop], (1, 0): velocity[start:stop]},
         {},
@@ -102,7 +102,7 @@ def get_data(
         past_steps,
         1,
     )
-    val_pressure_X, val_pressure_Y = gc_data.times_series_to_layers(
+    val_pressure_X, val_pressure_Y = gc_data.times_series_to_multi_images(
         D,
         {(0, 0): pressure[start:stop]},
         {},
@@ -115,7 +115,7 @@ def get_data(
 
     start = start + n_val
     stop = start + n_test
-    test_X, test_Y = gc_data.times_series_to_layers(
+    test_X, test_Y = gc_data.times_series_to_multi_images(
         D,
         {(0, 0): density[start:stop], (1, 0): velocity[start:stop]},
         {},
@@ -123,7 +123,7 @@ def get_data(
         past_steps,
         1,
     )
-    test_pressure_X, test_pressure_Y = gc_data.times_series_to_layers(
+    test_pressure_X, test_pressure_Y = gc_data.times_series_to_multi_images(
         D,
         {(0, 0): pressure[start:stop]},
         {},
@@ -134,7 +134,7 @@ def get_data(
     test_X = test_X.concat(test_pressure_X, axis=1)
     test_Y = test_Y.concat(test_pressure_Y, axis=1)
 
-    test_rollout_X, test_rollout_Y = gc_data.times_series_to_layers(
+    test_rollout_X, test_rollout_Y = gc_data.times_series_to_multi_images(
         D,
         {(0, 0): density[start:stop], (1, 0): velocity[start:stop]},
         {},
@@ -142,7 +142,7 @@ def get_data(
         past_steps,
         rollout_steps,
     )
-    test_rollout_pressure_X, test_rollout_pressure_Y = gc_data.times_series_to_layers(
+    test_rollout_pressure_X, test_rollout_pressure_Y = gc_data.times_series_to_multi_images(
         D,
         {(0, 0): pressure[start:stop]},
         {},
@@ -165,9 +165,9 @@ def get_data(
     )
 
 
-def plot_layer(
-    test_layer: geom.BatchLayer,
-    actual_layer: geom.BatchLayer,
+def plot_multi_image(
+    test_multi_image: geom.BatchMultiImage,
+    actual_multi_image: geom.BatchMultiImage,
     save_loc: str,
     future_steps: int,
     component: int = 0,
@@ -176,25 +176,29 @@ def plot_layer(
     minimal: bool = False,
 ):
     """
-    Plot all timesteps of a particular component of two layers, and the differences between them.
+    Plot all timesteps of a particular component of two MultiImages, and the differences between them.
     args:
-        test_layer (BatchLayer): the predicted layer
-        actual_layer (BatchLayer): the ground truth layer
-        save_loc (str): file location to save the image
-        future_steps (int): the number future time steps in the layer
-        component (int): index of the component to plot, default to 0
-        show_power (bool): whether to also plot the power spectrum, default to False
-        title (str): additional str to add to title, will be "test {title} {col}"
+        test_multi_image: the predicted MultiImage
+        actual_multi_image: the ground truth MultiImage
+        save_loc: file location to save the image
+        future_steps: the number future time steps in the MultiImage
+        component: index of the component to plot, default to 0
+        show_power: whether to also plot the power spectrum
+        title: additional str to add to title, will be "test {title} {col}"
             "actual {title} {col}"
-        minimal (bool): if minimal, no titles, colorbars, or axes labels, defaults to False
+        minimal: if minimal, no titles, colorbars, or axes labels
     """
-    test_layer_comp = test_layer.get_component(component, future_steps).get_one_layer()
-    actual_layer_comp = actual_layer.get_component(component, future_steps).get_one_layer()
+    test_multi_image_comp = test_multi_image.get_component(
+        component, future_steps
+    ).get_one_batch_multi_image()
+    actual_multi_image_comp = actual_multi_image.get_component(
+        component, future_steps
+    ).get_one_batch_multi_image()
 
-    test_images = test_layer_comp.to_images()
-    actual_images = actual_layer_comp.to_images()
+    test_images = test_multi_image_comp.to_images()
+    actual_images = actual_multi_image_comp.to_images()
 
-    img_arr = jnp.concatenate([test_layer_comp[(0, 0)], actual_layer_comp[(0, 0)]])
+    img_arr = jnp.concatenate([test_multi_image_comp[(0, 0)], actual_multi_image_comp[(0, 0)]])
     vmax = jnp.max(jnp.abs(img_arr))
     vmin = -1 * vmax
 
@@ -241,7 +245,7 @@ def plot_layer(
 
 
 def plot_timestep_power(
-    layers: list[geom.BatchLayer],
+    multi_images: list[geom.BatchMultiImage],
     labels: list[str],
     save_loc: str,
     future_steps: int,
@@ -252,8 +256,10 @@ def plot_timestep_power(
     for i, ax in enumerate(axes):
         utils.plot_power(
             [
-                layer.get_component(component, future_steps, as_layer=False)[:, i : i + 1]
-                for layer in layers
+                multi_image.get_component(component, future_steps, as_multi_image=False)[
+                    :, i : i + 1
+                ]
+                for multi_image in multi_images
             ],
             labels,
             ax,
@@ -267,28 +273,28 @@ def plot_timestep_power(
 @eqx.filter_jit
 def map_and_loss(
     model: eqx.Module,
-    layer_x: geom.BatchLayer,
-    layer_y: geom.BatchLayer,
+    multi_image_x: geom.BatchMultiImage,
+    multi_image_y: geom.BatchMultiImage,
     aux_data: Optional[eqx.nn.State] = None,
     future_steps: int = 1,
     return_map: bool = False,
 ):
-    out_layer, aux_data = ml.autoregressive_map(
+    out, aux_data = ml.autoregressive_map(
         model,
-        layer_x,
+        multi_image_x,
         aux_data,
-        layer_x[(1, 0)].shape[1],  # past_steps
+        multi_image_x[(1, 0)].shape[1],  # past_steps
         future_steps,
     )
 
-    loss = ml.timestep_smse_loss(out_layer, layer_y, future_steps)
+    loss = ml.timestep_smse_loss(out, multi_image_y, future_steps)
     loss = loss[0] if future_steps == 1 else loss
 
-    return (loss, aux_data, out_layer) if return_map else (loss, aux_data)
+    return (loss, aux_data, out) if return_map else (loss, aux_data)
 
 
 def train_and_eval(
-    data: tuple[geom.BatchLayer],
+    data: tuple[geom.BatchMultiImage],
     key: ArrayLike,
     model_name: str,
     model: eqx.Module,
@@ -378,7 +384,7 @@ def train_and_eval(
     print(f"Test Loss: {test_loss}")
 
     key, subkey = random.split(key)
-    test_rollout_loss, rollout_layer = ml.map_loss_in_batches(
+    test_rollout_loss, rollout_multi_image = ml.map_loss_in_batches(
         partial(map_and_loss, future_steps=rollout_steps, return_map=True),
         model,
         test_rollout_X,
@@ -393,8 +399,8 @@ def train_and_eval(
 
     if images_dir is not None:
         components = ["density", "pressure", "velocity_x", "velocity_y"]
-        plot_layer(
-            rollout_layer.get_one(),
+        plot_multi_image(
+            rollout_multi_image.get_one(),
             test_rollout_Y.get_one(),
             f"{images_dir}{model_name}_L{train_X.L}_e{epochs}_rollout.png",
             future_steps=rollout_steps,
@@ -403,7 +409,7 @@ def train_and_eval(
             title=f"{components[plot_component]}",
         )
         plot_timestep_power(
-            [rollout_layer, test_rollout_Y],
+            [rollout_multi_image, test_rollout_Y],
             ["test", "actual"],
             f"{images_dir}{model_name}_L{train_X.L}_e{epochs}_{components[plot_component]}_power_spectrum.png",
             future_steps=rollout_steps,

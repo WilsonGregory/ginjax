@@ -62,7 +62,9 @@ def get_gravity_data(N, D, num_points, rand_key, num_images=1):
         masses.append(geom.GeometricImage(point_mass, 0, D, is_torus=False))
         gravity_fields.append(gravity_field)
 
-    return geom.BatchLayer.from_images(masses), geom.BatchLayer.from_images(gravity_fields)
+    return geom.BatchMultiImage.from_images(masses), geom.BatchMultiImage.from_images(
+        gravity_fields
+    )
 
 
 # Generate data for the moving charges problems
@@ -164,7 +166,9 @@ def get_charge_data(
 
         final_fields.append(Qtransform(get_velocity_field(N, D, charges), s))
 
-    return geom.BatchLayer.from_images(initial_fields), geom.BatchLayer.from_images(final_fields)
+    return geom.BatchMultiImage.from_images(initial_fields), geom.BatchMultiImage.from_images(
+        final_fields
+    )
 
 
 # ------------------------------------------------------------------------------
@@ -209,7 +213,7 @@ def time_series_idxs(past_steps, future_steps, delta_t, total_steps) -> tuple:
     return in_idxs, out_idxs
 
 
-def times_series_to_layers(
+def times_series_to_multi_images(
     D: int,
     dynamic_fields: dict,
     constant_fields: dict,
@@ -221,11 +225,11 @@ def times_series_to_layers(
     downsample: int = 0,
 ) -> tuple:
     """
-    Given time series fields, convert them to input and output BatchLayers based on the number of past steps,
+    Given time series fields, convert them to input and output BatchMultiImages based on the number of past steps,
     future steps, and any subsampling/downsampling.
     args:
         D (int): dimension of problem
-        dynamic_fields (dict of jnp.array): the fields to build layers, dict with keys (k,parity) and values
+        dynamic_fields (dict of jnp.array): the fields to build MultiImages, dict with keys (k,parity) and values
             of array of shape (batch,time,spatial,tensor)
         constant_fields (dict of jnp.array): fields constant over time, dict with keys (k,parity) and values
             of array of shape (batch,spatial,tensor)
@@ -236,7 +240,7 @@ def times_series_to_layers(
         delta_t (int): number of timesteps per model step, defaults to 1
         downsample (int): number of times to downsample the image by average pooling, decreases by a factor
             of 2, defaults to 0 times.
-    returns tuple of BatchLayers layer_X and layer_Y
+    returns tuple of BatchMultiImages multi_image_X and \r_Y
     """
     assert len(dynamic_fields.values()) != 0
 
@@ -261,14 +265,14 @@ def times_series_to_layers(
         for k, v in dynamic_fields.items()
     }
 
-    layer_X = geom.BatchLayer(input_dynamic_fields, D, is_torus).concat(
-        geom.BatchLayer(input_constant_fields, D, is_torus),
+    multi_image_X = geom.BatchMultiImage(input_dynamic_fields, D, is_torus).concat(
+        geom.BatchMultiImage(input_constant_fields, D, is_torus),
         axis=1,
     )
-    layer_Y = geom.BatchLayer(output_dynamic_fields, D, is_torus)
+    multi_image_Y = geom.BatchMultiImage(output_dynamic_fields, D, is_torus)
 
     for _ in range(downsample):
-        layer_X = ml.batch_average_pool(layer_X, 2)
-        layer_Y = ml.batch_average_pool(layer_Y, 2)
+        multi_image_X = ml.batch_average_pool(multi_image_X, 2)
+        multi_image_Y = ml.batch_average_pool(multi_image_Y, 2)
 
-    return layer_X, layer_Y
+    return multi_image_X, multi_image_Y

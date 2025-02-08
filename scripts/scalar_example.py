@@ -18,9 +18,9 @@ class SimpleModel(eqx.Module):
     def __init__(
         self: Self,
         D: int,
-        input_keys: tuple[tuple[ml.LayerKey, int]],
-        output_keys: tuple[tuple[ml.LayerKey, int]],
-        conv_filters: geom.Layer,
+        input_keys: geom.Signature,
+        output_keys: geom.Signature,
+        conv_filters: geom.MultiImage,
         key: ArrayLike,
     ):
         self.D = D
@@ -30,7 +30,7 @@ class SimpleModel(eqx.Module):
             ml.ConvContract(output_keys, output_keys, conv_filters, False, key=subkey2),
         ]
 
-    def __call__(self: Self, x: geom.BatchLayer):
+    def __call__(self: Self, x: geom.BatchMultiImage):
         for layer in self.net:
             x = layer(x)
 
@@ -39,49 +39,51 @@ class SimpleModel(eqx.Module):
 
 def map_and_loss(
     model: eqx.Module,
-    layer_x: geom.BatchLayer,
-    layer_y: geom.BatchLayer,
+    multi_image_x: geom.BatchMultiImage,
+    multi_image_y: geom.BatchMultiImage,
     aux_data: Optional[eqx.nn.State] = None,
 ) -> float:
     """
-    Given an input batch layer x and a target batch layer y, apply the neural network to the input
-    layer and then calculate the mean squared error loss with the target batch layer y. The first
+    Given an input BatchMultiImage x and a target BatchMultiImage y, apply the neural network to the input
+    MultiImage and then calculate the mean squared error loss with the target BatchMultiImage y. The first
     5 arguments are what is expected in the ml.train function, but we don't use key and train.
 
     args:
         model: The model to apply on our input data
-        layer_x: the input data to the network
-        layer_y: the target data for the network
+        multi_image_x: the input data to the network
+        multi_image_y: the target data for the network
         aux_data: The train function expects to pass an aux_data. This is used for models with
             batch norm. In this case it will be ignored.
 
     Returns:
         The loss value
     """
-    return ml.smse_loss(layer_y, model(layer_x)), aux_data
+    return ml.smse_loss(multi_image_y, model(multi_image_x)), aux_data
 
 
 def target_function(
-    layer: geom.BatchLayer, conv_filter_a: jax.Array, conv_filter_b: jax.Array
-) -> geom.BatchLayer:
+    multi_image: geom.BatchMultiImage, conv_filter_a: jax.Array, conv_filter_b: jax.Array
+) -> geom.BatchMultiImage:
     """
     Target function that applies two convolutions in sequence
 
     args:
-        image: layer input
+        image: input
         conv_filter_a: first convolution filter
         conv_filter_b: second convolution filter
 
     Returns:
-        The layer after convolving twice
+        The BatchMultiImage after convolving twice
     """
     convolved_data = geom.convolve(
-        layer.D,
-        geom.convolve(layer.D, layer[(0, 0)], conv_filter_a[None, None], layer.is_torus),
+        multi_image.D,
+        geom.convolve(
+            multi_image.D, multi_image[(0, 0)], conv_filter_a[None, None], multi_image.is_torus
+        ),
         conv_filter_b[None, None],
-        layer.is_torus,
+        multi_image.is_torus,
     )
-    return geom.BatchLayer({(0, 0): convolved_data}, layer.D, layer.is_torus)
+    return geom.BatchMultiImage({(0, 0): convolved_data}, multi_image.D, multi_image.is_torus)
 
 
 # Main
@@ -98,16 +100,20 @@ conv_filters = geom.get_invariant_filters(
 )
 
 key, subkey = random.split(key)
-layer_X = geom.BatchLayer({(0, 0): random.normal(subkey, shape=(num_images, 1) + (N,) * D)}, D)
-layer_y = target_function(layer_X, conv_filters[(0, 0)][1], conv_filters[(0, 0)][2])
+multi_image_X = geom.BatchMultiImage(
+    {(0, 0): random.normal(subkey, shape=(num_images, 1) + (N,) * D)}, D
+)
+multi_image_y = target_function(multi_image_X, conv_filters[(0, 0)][1], conv_filters[(0, 0)][2])
 
 key, subkey = random.split(key)
-model = SimpleModel(D, layer_X.get_signature(), layer_y.get_signature(), conv_filters, subkey)
+model = SimpleModel(
+    D, multi_image_X.get_signature(), multi_image_y.get_signature(), conv_filters, subkey
+)
 
 key, subkey = random.split(key)
 trained_model, _, _, _ = ml.train(
-    layer_X,
-    layer_y,
+    multi_image_X,
+    multi_image_y,
     map_and_loss,
     model,
     subkey,

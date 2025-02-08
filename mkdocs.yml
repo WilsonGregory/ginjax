@@ -15,8 +15,8 @@ theme:
         # We deliberately don't automatically use `media` to check a user's preferences. We default to light mode as
         # (a) it looks more professional, and (b) is more obvious about the fact that it offers a (dark mode) toggle.
         - scheme: default
-          primary: cyan
-          accent: deep purple
+          primary: amber
+          accent: brown
           toggle:
              icon: material/brightness-5
              name: Dark mode
@@ -55,13 +55,7 @@ plugins:
     - mkdocstrings:
         handlers:
             python:
-                setup_commands:
-                    - import pytkdocs_tweaks
-                    - pytkdocs_tweaks.main()
-                    - import jaxtyping
-                    - jaxtyping.set_array_name_format("array")
-
-                optional:
+                options:
                     inherited_members: true  # Allow looking up inherited methods
                     show_root_heading: true  # actually display anything at all...
                     show_root_full_path: true  # display "diffrax.asdf" not just "asdf"

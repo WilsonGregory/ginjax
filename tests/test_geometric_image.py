@@ -424,22 +424,6 @@ class TestGeometricImage:
                 i2 - i2_shift, j2 - j2_shift
             )
 
-    def testContractionByLinearMap(self):
-        D = 2
-        N = 3
-        k = 5
-        key = random.PRNGKey(time.time_ns())
-        img1 = geom.GeometricImage(random.normal(key, shape=((N,) * D + (D,) * k)), 0, D)
-
-        for idxs in geom.get_contraction_indices(k, 1):
-            contraction_map = geom.get_contraction_map(D, k, idxs)
-            assert jnp.allclose(
-                img1.multicontract(idxs).data,
-                geom.apply_contraction_map(D, img1.data, contraction_map, 1),
-                rtol=geom.TINY,
-                atol=geom.TINY,
-            )
-
     def testLeviCivitaContract(self):
         key = random.PRNGKey(0)
         key, subkey = random.split(key)

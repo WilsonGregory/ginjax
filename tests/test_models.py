@@ -37,7 +37,7 @@ class TestModels:
                 target_keys = tuple((out_key, out_c) for out_key in out_ks_ps)
 
                 key, *subkeys = random.split(key, num=len(input_keys) + 1)
-                layer = geom.Layer(
+                multi_image = geom.MultiImage(
                     {
                         (k, p): random.normal(subkeys[i], shape=(batch, in_c) + (N,) * D + (D,) * k)
                         for i, ((k, p), _) in enumerate(input_keys)
@@ -52,6 +52,6 @@ class TestModels:
                 if conv.missing_filter:
                     continue
 
-                assert conv.fast_convolve(layer, conv.weights) == conv.individual_convolve(
-                    layer, conv.weights
+                assert conv.fast_convolve(multi_image, conv.weights) == conv.individual_convolve(
+                    multi_image, conv.weights
                 )

@@ -1,15 +1,13 @@
-import geometricconvolutions.geometric as geom
-import geometricconvolutions.data as gc_data
 import pytest
-import jax.numpy as jnp
-import jax.random as random
-import jax
 import math
 import time
 
-import sys
+import jax
+import jax.numpy as jnp
+import jax.random as random
 
-sys.path.append("scripts/phase2vec/")
+import geometricconvolutions.geometric as geom
+import geometricconvolutions.data as gc_data
 
 
 class TestMisc:
@@ -145,60 +143,6 @@ class TestMisc:
         for pair in known_list:
             assert pair in idxs
 
-    def testGetInvariantImage(self):
-        N = 5
-
-        D = 2
-        operators = geom.make_all_operators(D)
-        for k in [0, 2, 4]:
-            invariant_basis = geom.get_invariant_image(N, D, k, 0, data_only=False)
-
-            for gg in operators:
-                assert invariant_basis == invariant_basis.times_group_element(gg)
-
-        D = 3
-        operators = geom.make_all_operators(D)
-        for k in [0, 2, 4]:
-            invariant_basis = geom.get_invariant_image(N, D, k, 0, data_only=False)
-
-            for gg in operators:
-                assert invariant_basis == invariant_basis.times_group_element(gg)
-
-    def testGetOperatorsOnLayer(self):
-        key = random.PRNGKey(time.time_ns())
-        D = 2
-        N = 5
-        operators = jnp.stack(geom.make_all_operators(D))
-
-        layer = geom.Layer(
-            {
-                (0, 0): jnp.ones((1,) + (N,) * D),
-                (1, 0): jnp.ones((1,) + (N,) * D + (D,)),
-                (2, 0): jnp.ones((1,) + (N,) * D + (D, D)),
-            },
-            D,
-            False,
-        )
-
-        operators_on_layer = geom.get_operators_on_layer(operators, layer)
-
-        # Assert that operators are orthogonal
-        for gg_layer in operators_on_layer:
-            assert jnp.allclose(gg_layer @ gg_layer.T, jnp.eye(len(gg_layer)))
-            assert jnp.allclose(gg_layer.T @ gg_layer, jnp.eye(len(gg_layer)))
-
-        rand_layer = layer.empty()
-        for (k, parity), img in layer.items():
-            key, subkey = random.split(key)
-            rand_layer.append(k, parity, random.normal(subkey, shape=img.shape))
-
-        # Assert that using the operator_on_layer is equivalent to using the times_group_element
-        for gg_layer, gg in zip(operators_on_layer, operators):
-            assert jnp.allclose(
-                rand_layer.times_group_element(gg, precision=jax.lax.Precision.HIGHEST).to_vector(),
-                gg_layer @ rand_layer.to_vector(),
-            )
-
     def testTimeSeriesIdxsHardcoded(self):
         past_steps = 2
         future_steps = 1
@@ -294,7 +238,7 @@ class TestMisc:
                                 img_data[b, i + past_steps : i + past_steps + future_steps],
                             )
 
-    def testTimeSeriesToLayers(self):
+    def testTimeSeriesToMultiImages(self):
         key = random.PRNGKey(time.time_ns())
         D = 2
         batch = 5
@@ -310,13 +254,13 @@ class TestMisc:
             (1, 0): random.normal(subkey2, shape=(batch, timesteps) + (N,) * D + (D,)),
         }
 
-        X, Y = gc_data.times_series_to_layers(
+        X, Y = gc_data.times_series_to_multi_images(
             D, dynamic_fields, {}, False, past_steps, future_steps
         )
         num_windows = (
             timesteps - past_steps - future_steps + 1
         )  # sliding window per original trajectory
-        assert isinstance(X, geom.BatchLayer) and isinstance(Y, geom.BatchLayer)
+        assert isinstance(X, geom.BatchMultiImage) and isinstance(Y, geom.BatchMultiImage)
         assert list(X.keys()) == [(0, 0), (1, 0)]
         assert X[(0, 0)].shape == ((batch * num_windows, past_steps) + (N,) * D)
         assert X[(1, 0)].shape == ((batch * num_windows, past_steps) + (N,) * D + (D,))
@@ -338,7 +282,7 @@ class TestMisc:
         key, subkey3 = random.split(key)
         constant_fields = {(1, 0): random.normal(subkey3, shape=(batch,) + (N,) * D + (D,))}
 
-        X2, Y2 = gc_data.times_series_to_layers(
+        X2, Y2 = gc_data.times_series_to_multi_images(
             D,
             dynamic_fields,
             constant_fields,

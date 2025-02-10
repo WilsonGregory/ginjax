@@ -107,12 +107,12 @@ def get_data(
     force, particles, velocity = read_data(
         data_dir,
         num_train_traj + num_val_traj + num_test_traj,
-        downsample,  # downsampling handled prior to time_series_to_layers
+        downsample,  # downsampling handled prior to time_series_to_multi_images
     )
 
     start = 0
     stop = num_train_traj
-    train_X, train_Y = gc_data.times_series_to_layers(
+    train_X, train_Y = gc_data.times_series_to_multi_images(
         D,
         {(0, 0): particles[start:stop], (1, 0): velocity[start:stop]},
         {(1, 0): force[start:stop]},
@@ -124,7 +124,7 @@ def get_data(
     )
     start = stop
     stop = stop + num_val_traj
-    val_X, val_Y = gc_data.times_series_to_layers(
+    val_X, val_Y = gc_data.times_series_to_multi_images(
         D,
         {(0, 0): particles[start:stop], (1, 0): velocity[start:stop]},
         {(1, 0): force[start:stop]},
@@ -136,7 +136,7 @@ def get_data(
     )
     start = stop
     stop = stop + num_test_traj
-    test_single_X, test_single_Y = gc_data.times_series_to_layers(
+    test_single_X, test_single_Y = gc_data.times_series_to_multi_images(
         D,
         {(0, 0): particles[start:stop], (1, 0): velocity[start:stop]},
         {(1, 0): force[start:stop]},
@@ -146,7 +146,7 @@ def get_data(
         skip_initial,
         delta_t,
     )
-    test_rollout_X, test_rollout_Y = gc_data.times_series_to_layers(
+    test_rollout_X, test_rollout_Y = gc_data.times_series_to_multi_images(
         D,
         {(0, 0): particles[start:stop], (1, 0): velocity[start:stop]},
         {(1, 0): force[start:stop]},

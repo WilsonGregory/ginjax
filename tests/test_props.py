@@ -1,4 +1,3 @@
-import math
 import time
 import itertools as it
 import pytest
@@ -158,7 +157,7 @@ class TestPropositions:
         key = random.PRNGKey(time.time_ns())
         key, subkey = random.split(key)
         img1 = geom.GeometricImage(random.normal(subkey, shape=((N,) * D + (D,) * k)), 0, D)
-        kron_delta_img = geom.KroneckerDeltaSymbol.get_image(N, D, kron_delta_k)
+        kron_delta_img = geom.get_kronecker_delta_image(N, D, kron_delta_k)
 
         expanded_img1 = img1 * kron_delta_img
         assert expanded_img1.k == k + kron_delta_k
@@ -170,7 +169,7 @@ class TestPropositions:
         D = 3
         key, subkey = random.split(key)
         img2 = geom.GeometricImage(random.normal(subkey, shape=((N,) * D + (D,) * k)), 0, D)
-        kron_delta_img = geom.KroneckerDeltaSymbol.get_image(N, D, kron_delta_k)
+        kron_delta_img = geom.get_kronecker_delta_image(N, D, kron_delta_k)
 
         expanded_img2 = img2 * kron_delta_img
         assert expanded_img2.k == k + kron_delta_k
@@ -317,7 +316,7 @@ class TestPropositions:
                         assert first == second
 
     def testNormEquivariance(self):
-        # Same test but for layers
+        # Same test but for multi_images
         key = random.PRNGKey(0)
         N = 5
         batch = 2
@@ -334,7 +333,7 @@ class TestPropositions:
             for parity in [0, 1]:
                 for k in [0, 1, 2, 3]:
                     key, subkey = random.split(key)
-                    layer = geom.BatchLayer(
+                    multi_image = geom.BatchMultiImage(
                         {
                             (k, parity): random.normal(
                                 subkey, shape=(batch, channels) + (N,) * D + (D,) * k
@@ -345,8 +344,12 @@ class TestPropositions:
 
                     # assert that norm is equivariant
                     for gg in operators:
-                        first = vmap_times_gg(D, geom.norm(D + 2, layer[(k, parity)]), 0, gg, prec)
-                        second = geom.norm(D + 2, layer.times_group_element(gg, prec)[(k, parity)])
+                        first = vmap_times_gg(
+                            D, geom.norm(D + 2, multi_image[(k, parity)]), 0, gg, prec
+                        )
+                        second = geom.norm(
+                            D + 2, multi_image.times_group_element(gg, prec)[(k, parity)]
+                        )
                         assert jnp.allclose(first, second)
 
     def testMaxPoolEquivariance(self):
@@ -394,14 +397,14 @@ class TestPropositions:
                 (k, parity): random.normal(subkey, shape=((batch, channels) + (N,) * D + (D,) * k))
                 for subkey, ((k, parity), _) in zip(subkeys, input_keys)
             }
-            layer = geom.BatchLayer(data, D)
+            multi_image = geom.BatchMultiImage(data, D)
             layer_norm = ml.LayerNorm(input_keys, D, eps=0)
 
             # assert that layer norm (group_norm with groups=1) is equivariant
             for gg in geom.make_all_operators(D):
-                layer1 = layer_norm(layer).times_group_element(gg, precision=prec)
-                layer2 = layer_norm(layer.times_group_element(gg, precision=prec))
-                assert layer1.__eq__(layer2, rtol=1e-3, atol=1e-2)
+                multi_image1 = layer_norm(multi_image).times_group_element(gg, precision=prec)
+                multi_image2 = layer_norm(multi_image.times_group_element(gg, precision=prec))
+                assert multi_image1.__eq__(multi_image2, rtol=1e-3, atol=1e-2)
 
     def testLayerNormWhitening(self):
         """
@@ -415,7 +418,7 @@ class TestPropositions:
             key, subkey = random.split(key)
             image_block = random.normal(subkey, shape=(batch, channels) + (N,) * D + (D,))
 
-            whitened_data = ml._group_norm_K1(D, image_block, 1, eps=0)
+            whitened_data = ml.layers._group_norm_K1(D, image_block, 1, eps=0)
 
             # mean centered
             mean = jnp.mean(whitened_data, axis=tuple(range(1, whitened_data.ndim)))
@@ -444,13 +447,15 @@ class TestPropositions:
                 (k, parity): random.normal(subkey, shape=((batch, in_c) + (N,) * D + (D,) * k))
                 for subkey, (k, parity) in zip(subkeys, it.product(ks, parities))
             }
-            layer = geom.BatchLayer(data, D)
+            multi_image = geom.BatchMultiImage(data, D)
 
             key, subkey = random.split(key)
-            vn_nonlinear = ml.VectorNeuronNonlinear(layer.get_signature(), D, eps=0, key=subkey)
+            vn_nonlinear = ml.VectorNeuronNonlinear(
+                multi_image.get_signature(), D, eps=0, key=subkey
+            )
 
             # assert that the vn nonlinearity is equivariant
             for gg in geom.make_all_operators(D):
-                layer1 = vn_nonlinear(layer).times_group_element(gg, precision=prec)
-                layer2 = vn_nonlinear(layer.times_group_element(gg, precision=prec))
-                assert layer1.__eq__(layer2, rtol=1e-3, atol=1e-2)
+                multi_image1 = vn_nonlinear(multi_image).times_group_element(gg, precision=prec)
+                multi_image2 = vn_nonlinear(multi_image.times_group_element(gg, precision=prec))
+                assert multi_image1.__eq__(multi_image2, rtol=1e-3, atol=1e-2)

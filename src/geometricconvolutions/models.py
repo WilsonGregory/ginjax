@@ -20,7 +20,7 @@ ACTIVATION_REGISTRY = {
 def handle_activation(
     activation_f: Union[Callable, str],
     equivariant: bool,
-    input_keys: tuple[tuple[ml.LayerKey, int]],
+    input_keys: geom.Signature,
     D: int,
     key: ArrayLike,
 ):
@@ -44,11 +44,11 @@ def handle_activation(
 
 def make_conv(
     D: int,
-    input_keys: tuple[tuple[ml.LayerKey, int]],
-    target_keys: tuple[tuple[ml.LayerKey, int]],
+    input_keys: geom.Signature,
+    target_keys: geom.Signature,
     use_bias: Union[str, bool],
     equivariant: bool,
-    invariant_filters: Optional[geom.Layer] = None,
+    invariant_filters: Optional[geom.MultiImage] = None,
     kernel_size: Optional[Union[int, Sequence[int]]] = None,
     stride: Optional[tuple[int]] = None,
     padding: Optional[tuple[int]] = None,
@@ -135,12 +135,12 @@ class ConvBlock(eqx.Module):
     def __init__(
         self: Self,
         D,
-        input_keys: tuple[tuple[ml.LayerKey, int]],
-        output_keys: tuple[tuple[ml.LayerKey, int]],
+        input_keys: geom.Signature,
+        output_keys: geom.Signature,
         use_bias: Union[bool, str] = "auto",
         activation_f: Union[Callable, str] = jax.nn.gelu,
         equivariant: bool = True,
-        conv_filters: geom.Layer = None,
+        conv_filters: geom.MultiImage = None,
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = False,
         use_batch_norm: bool = False,
@@ -183,7 +183,7 @@ class ConvBlock(eqx.Module):
             activation_f, self.equivariant, output_keys, self.D, subkey2
         )
 
-    def __call__(self: Self, x: geom.BatchLayer, batch_stats: Optional[eqx.nn.State] = None):
+    def __call__(self: Self, x: geom.BatchMultiImage, batch_stats: Optional[eqx.nn.State] = None):
         if self.preactivation_order:
             if self.use_group_norm:
                 x = self.norm(x)
@@ -213,21 +213,21 @@ class UNet(eqx.Module):
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
     use_batch_norm: bool = eqx.field(static=True)
-    output_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
+    output_keys: geom.Signature = eqx.field(static=True)
 
     def __init__(
         self: Self,
         D,
-        input_keys: tuple[tuple[ml.LayerKey, int]],
-        output_keys: tuple[tuple[ml.LayerKey, int]],
+        input_keys: geom.Signature,
+        output_keys: geom.Signature,
         depth: int,
         num_downsamples: int = 4,
         num_conv: int = 2,
         use_bias: Union[bool, str] = "auto",
         activation_f: Union[Callable, str] = jax.nn.gelu,
         equivariant: bool = True,
-        conv_filters: geom.Layer = None,
-        upsample_filters: geom.Layer = None,
+        conv_filters: geom.MultiImage = None,
+        upsample_filters: geom.MultiImage = None,
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = False,
         use_batch_norm: bool = False,
@@ -374,9 +374,9 @@ class UNet(eqx.Module):
             key=subkey,
         )
 
-    def __call__(self: Self, x: geom.BatchLayer, batch_stats: Optional[eqx.nn.State] = None):
+    def __call__(self: Self, x: geom.BatchMultiImage, batch_stats: Optional[eqx.nn.State] = None):
         if not self.equivariant:
-            x = x.to_scalar_layer()
+            x = x.to_scalar_multi_image()
 
         for layer in self.embedding:
             x, batch_stats = layer(x, batch_stats)
@@ -396,15 +396,15 @@ class UNet(eqx.Module):
 
         x = self.decode(x)
         if self.equivariant:
-            out_layer = x
+            out = x
         else:
             output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
-            out_layer = geom.BatchLayer.from_scalar_layer(x, output_keys)
+            out = geom.BatchMultiImage.from_scalar_multi_image(x, output_keys)
 
         if self.use_batch_norm:
-            return out_layer, batch_stats
+            return out, batch_stats
         else:
-            return out_layer
+            return out
 
 
 class DilResNet(eqx.Module):
@@ -414,19 +414,19 @@ class DilResNet(eqx.Module):
 
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
-    output_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
+    output_keys: geom.Signature = eqx.field(static=True)
 
     def __init__(
         self: Self,
         D,
-        input_keys: tuple[tuple[ml.LayerKey, int]],
-        output_keys: tuple[tuple[ml.LayerKey, int]],
+        input_keys: geom.Signature,
+        output_keys: geom.Signature,
         depth: int,
         num_blocks: int = 4,
         use_bias: Union[bool, str] = "auto",
         activation_f: Union[Callable, str] = jax.nn.relu,
         equivariant: bool = True,
-        conv_filters: geom.Layer = None,
+        conv_filters: geom.MultiImage = None,
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = False,
         key: ArrayLike = None,
@@ -513,9 +513,9 @@ class DilResNet(eqx.Module):
             ),
         ]
 
-    def __call__(self: Self, x: geom.BatchLayer):
+    def __call__(self: Self, x: geom.BatchMultiImage):
         if not self.equivariant:
-            x = x.to_scalar_layer()
+            x = x.to_scalar_multi_image()
 
         for layer in self.encoder:
             x, _ = layer(x)
@@ -532,12 +532,12 @@ class DilResNet(eqx.Module):
             x, _ = layer(x)
 
         if self.equivariant:
-            out_layer = x
+            out = x
         else:
             output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
-            out_layer = geom.BatchLayer.from_scalar_layer(x, output_keys)
+            out = geom.BatchMultiImage.from_scalar_multi_image(x, output_keys)
 
-        return out_layer
+        return out
 
 
 class ResNet(eqx.Module):
@@ -547,20 +547,20 @@ class ResNet(eqx.Module):
 
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
-    output_keys: tuple[tuple[ml.LayerKey, int]] = eqx.field(static=True)
+    output_keys: geom.Signature = eqx.field(static=True)
 
     def __init__(
         self: Self,
         D,
-        input_keys: tuple[tuple[ml.LayerKey, int]],
-        output_keys: tuple[tuple[ml.LayerKey, int]],
+        input_keys: geom.Signature,
+        output_keys: geom.Signature,
         depth: int,
         num_blocks: int = 8,
         num_conv: int = 2,
         use_bias: Union[bool, str] = "auto",
         activation_f: Union[Callable, str] = jax.nn.gelu,
         equivariant: bool = True,
-        conv_filters: geom.Layer = None,
+        conv_filters: geom.MultiImage = None,
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = True,
         preactivation_order: bool = True,
@@ -648,9 +648,9 @@ class ResNet(eqx.Module):
             ),
         ]
 
-    def __call__(self: Self, x: geom.BatchLayer):
+    def __call__(self: Self, x: geom.BatchMultiImage):
         if not self.equivariant:
-            x = x.to_scalar_layer()
+            x = x.to_scalar_multi_image()
 
         for layer in self.encoder:
             x, _ = layer(x)

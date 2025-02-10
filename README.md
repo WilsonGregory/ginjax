@@ -12,7 +12,7 @@ See the paper for more details: https://arxiv.org/abs/2305.12585
     2. [Learning Scalar Filters](#learning-scalar-filters)
 3. [Features](#features)
     1. [GeometricImage](#geometricimage)
-    2. [Layer and BatchLayer](#layer-and-batchlayer)
+    2. [MultiImage and BatchMultiImage](#multi-image-and-batch-multi-image)
 4. [Authors](#authors)
 5. [License](#license)
 
@@ -145,7 +145,7 @@ import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 ```
 
-First, lets define our inputs, `layer_X`. The models we define run on objects of the class `BatchLayer`. This object basically collects all the batches and channels of geometric images at different tensors and parities into a single object. To construct this, we pass a dictionary mapping (tensor_order,tensor_parity) to a block of data with axes (batch,channels,spatial_dimensions,tensor_dimensions). For this example, our images will be 2D, 64 x 64 scalar images.
+First, lets define our inputs, `multi_image_X`. The models we define run on objects of the class `BatchMultiImage`. This object basically collects all the batches and channels of geometric images at different tensors and parities into a single object. To construct this, we pass a dictionary mapping (tensor_order,tensor_parity) to a block of data with axes (batch,channels,spatial_dimensions,tensor_dimensions). For this example, our images will be 2D, 64 x 64 scalar images.
 ```
 key = random.PRNGKey(time.time_ns())
 
@@ -154,10 +154,10 @@ N = 64 #image size
 num_images = 10
 
 key, subkey = random.split(key)
-layer_X = geom.BatchLayer({(0, 0): random.normal(subkey, shape=(num_images, 1) + (N,) * D)}, D)
+multi_image_X = geom.BatchMultiImage({(0, 0): random.normal(subkey, shape=(num_images, 1) + (N,) * D)}, D)
 ```
 
-Our filters will be 3x3 and they will be the invariant scalar filters only. There are 3 of these, and the first one is the identity. We use `get_invariant_filters` to get a layer of these filters.
+Our filters will be 3x3 and they will be the invariant scalar filters only. There are 3 of these, and the first one is the identity. We use `get_invariant_filters` to get a MultiImage of these filters.
 ```
 M = 3  #filter image size
 group_actions = geom.make_all_operators(D)
@@ -166,19 +166,23 @@ conv_filters = geom.get_invariant_filters(Ms=[M], ks=[0], parities=[0], D=D, ope
 
 Now let us define our target function, and then construct our target images Y. The target function will merely be convolving by the filter at index 1, then convolving by the filter at index 2.
 ```
-def target_function(layer: geom.BatchLayer, conv_filter_a: jax.Array, conv_filter_b: jax.Array) -> geom.BatchLayer:
+def target_function(
+    multi_image: geom.BatchMultiImage, conv_filter_a: jax.Array, conv_filter_b: jax.Array
+) -> geom.BatchMultiImage:
     convolved_data = geom.convolve(
-        layer.D,
-        geom.convolve(layer.D, layer[(0, 0)], conv_filter_a[None, None], layer.is_torus),
+        multi_image.D,
+        geom.convolve(
+            multi_image.D, multi_image[(0, 0)], conv_filter_a[None, None], multi_image.is_torus
+        ),
         conv_filter_b[None, None],
-        layer.is_torus,
+        multi_image.is_torus,
     )
-    return geom.BatchLayer({(0, 0): convolved_data}, layer.D, layer.is_torus)
+    return geom.BatchMultiImage({(0, 0): convolved_data}, multi_image.D, multi_image.is_torus)
 
-layer_y = target_function(layer_X, conv_filters[(0, 0)][1], conv_filters[(0, 0)][2])
+multi_image_y = target_function(multi_image_X, conv_filters[(0, 0)][1], conv_filters[(0, 0)][2])
 ```
 
-Now we define our network that will learn this target function. We will just have it apply two convolutions in a row, using the invariant scalar filters. Our loss function will be the mean-squared error. The `ml.train` function expects a `map_and_loss` function that takes as input the model, the input layer, the target layer, and any auxilliary data, which we won't use in this instance.
+Now we define our network that will learn this target function. We will just have it apply two convolutions in a row, using the invariant scalar filters. Our loss function will be the mean-squared error. The `ml.train` function expects a `map_and_loss` function that takes as input the model, the input BatchMultiImage, the target BatchMultiImage, and any auxilliary data, which we won't use in this instance.
 ```
 class SimpleModel(eqx.Module):
     D: int
@@ -187,9 +191,9 @@ class SimpleModel(eqx.Module):
     def __init__(
         self: Self,
         D: int,
-        input_keys: tuple[tuple[ml.LayerKey, int]],
-        output_keys: tuple[tuple[ml.LayerKey, int]],
-        conv_filters: geom.Layer,
+        input_keys: geom.Signature,
+        output_keys: geom.Signature,
+        conv_filters: geom.MultiImage,
         key: ArrayLike,
     ):
         self.D = D
@@ -199,7 +203,7 @@ class SimpleModel(eqx.Module):
             ml.ConvContract(output_keys, output_keys, conv_filters, False, key=subkey2),
         ]
 
-    def __call__(self: Self, x: geom.BatchLayer):
+    def __call__(self: Self, x: geom.BatchMultiImage):
         for layer in self.net:
             x = layer(x)
 
@@ -207,22 +211,22 @@ class SimpleModel(eqx.Module):
 
 def map_and_loss(
     model: eqx.Module,
-    layer_x: geom.BatchLayer,
-    layer_y: geom.BatchLayer,
+    multi_image_x: geom.BatchMultiImage,
+    multi_image_y: geom.BatchMultiImage,
     aux_data: Optional[eqx.nn.State] = None,
 ) -> float:
-    return ml.smse_loss(layer_y, model(layer_x)), aux_data
+    return ml.smse_loss(multi_image_y, model(multi_image_x)), aux_data
 ```
 
 Now we initialize our model, train it using the train function with a given optimizer for 500 epochs, and print the resulting weights.
 ```
 key, subkey = random.split(key)
-model = SimpleModel(D, layer_X.get_signature(), layer_y.get_signature(), conv_filters, subkey)
+model = SimpleModel(D, multi_image_X.get_signature(), multi_image_y.get_signature(), conv_filters, subkey)
 
 key, subkey = random.split(key)
 trained_model, _, _, _ = ml.train(
-    layer_X,
-    layer_y,
+    multi_image_X,
+    multi_image_y,
     map_and_loss,
     model,
     subkey,
@@ -258,9 +262,9 @@ and we can see that the first convolution is almost 1 for index 1, and the 2ond 
 
 The GeometricImage is the main concept of this package. We define a geometric image for dimension D, sidelength N, parity p, and tensor order k. Note that currently, all the sidelengths must be the same. To construct a geometric image, do: `image = GeometricImage(data, parity, D)`. Data is a jnp.array with the shape `((N,)*D + (D,)*k)`.
 
-### Layer and BatchLayer
+### MultiImage and BatchMultiImage
 
-The Layer and BatchLayer classes allow us to group multiple images together that have the same dimension and sidelength. Layer is a dictionary where the keys are tensor order k, and the values are a image data block where the first index is the channel, then the remaining indices are the normal ones you would find in a geometric image. BatchLayer has the same structure, but the first index of the data image block is the batch, the second is the channel, and then the rest are the geometric image. You can easily construct Layers and BatchLayers from images using the `from_images` function.
+The MultiImage and BatchMultiImage classes allow us to group multiple images together that have the same dimension and sidelength. MultiImage is a dictionary where the keys are tensor order k, and the values are a image data block where the first index is the channel, then the remaining indices are the normal ones you would find in a geometric image. BatchMultiImage has the same structure, but the first index of the data image block is the batch, the second is the channel, and then the rest are the geometric image. You can easily construct MultiImages and BatchMultiImages from images using the `from_images` function.
 
 ## Authors
 - **David W. Hogg** (NYU) (MPIA) (Flatiron)

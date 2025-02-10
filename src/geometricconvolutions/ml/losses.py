@@ -1,4 +1,4 @@
-from typing_extensions import Optional
+from typing_extensions import Optional, Union
 import numpy as np
 
 import jax
@@ -41,7 +41,7 @@ def timestep_smse_loss(
         return jnp.mean(loss_per_step, axis=0)
     elif reduce == "max":
         return loss_per_step[jnp.argmax(jnp.sum(loss_per_step, axis=1))]
-    elif reduce is None:
+    else:
         return loss_per_step
 
 

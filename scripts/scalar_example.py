@@ -38,11 +38,11 @@ class SimpleModel(eqx.Module):
 
 
 def map_and_loss(
-    model: eqx.Module,
+    model: SimpleModel,
     multi_image_x: geom.BatchMultiImage,
     multi_image_y: geom.BatchMultiImage,
     aux_data: Optional[eqx.nn.State] = None,
-) -> float:
+) -> tuple[jax.Array, Optional[eqx.nn.State]]:
     """
     Given an input BatchMultiImage x and a target BatchMultiImage y, apply the neural network to the input
     MultiImage and then calculate the mean squared error loss with the target BatchMultiImage y. The first

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Sequence
+from typing import Sequence, Union
 
 import itertools as it
 import numpy as np
@@ -64,7 +64,7 @@ def make_all_operators(D: int) -> list[np.ndarray]:
 basis_cache = {}
 
 
-def get_basis(key: str, shape: tuple[int]) -> jnp.ndarray:
+def get_basis(key: str, shape: tuple[int, ...]) -> jax.Array:
     """
     Return a basis for the given shape. Bases are cached so we only have to calculate them once. The
     result will be a jnp.array of shape (len, shape) where len is the shape all multiplied together.
@@ -103,7 +103,6 @@ def get_unique_invariant_filters(
 
     # make the seed filters
     shape = (M,) * D + (D,) * k
-    operators = jnp.stack(operators)
 
     basis = get_basis("image", shape)  # (N**D * D**k, (N,)*D, (D,)*k)
     # not a true vmap because we can't vmap over the operators, but equivalent (if slower)
@@ -158,7 +157,15 @@ def get_invariant_filters(
     scale: str = "normalize",
     return_type: str = "multi_image",
     return_maxn: bool = False,
-):
+) -> Union[
+    tuple[
+        Union[dict[tuple[int, int, int, int], GeometricFilter], list[GeometricFilter], MultiImage],
+        dict[tuple[int, int], int],
+    ],
+    dict[tuple[int, int, int, int], GeometricFilter],
+    list[GeometricFilter],
+    MultiImage,
+]:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and parities. By default
     it returns the filters in a dictionary with the key (D,M,k,parity), but flattens to a list if return_list=True
@@ -192,10 +199,10 @@ def get_invariant_filters(
                 if n > maxn[(D, M)]:
                     maxn[(D, M)] = n
 
-    allfilters_list = list(it.chain(*list(allfilters.values())))
+    allfilters_list = list(it.chain(*list(allfilters.values())))  # list of GeometricFilters
     if return_type == "list":
         allfilters = allfilters_list
-    elif return_type == "multi_image":
+    if return_type == "multi_image":
         allfilters = MultiImage.from_images(allfilters_list)
     # else, allfilters is the default structure
 

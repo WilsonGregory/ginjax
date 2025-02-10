@@ -108,7 +108,7 @@ class MultiImage:
     def items(self: Self) -> Generator[tuple[tuple[int, int], jnp.ndarray]]:
         return self.data.items()
 
-    def __getitem__(self: Self, idx: tuple[int, int]) -> jnp.ndarray:
+    def __getitem__(self: Self, idx: MultiImageKey) -> jax.Array:
         return self.data[idx]
 
     def __setitem__(self: Self, idx: tuple[int, int], val: jnp.ndarray) -> jnp.ndarray:
@@ -394,7 +394,7 @@ class BatchMultiImage(MultiImage):
         data: dict[MultiImageKey, jax.Array],
         D: int,
         is_torus: Union[bool, tuple[bool]] = True,
-    ) -> Self:
+    ) -> None:
         """
         Construct a BatchMultiImage
         args:

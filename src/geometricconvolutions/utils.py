@@ -4,6 +4,7 @@ from matplotlib.collections import PatchCollection
 from matplotlib.patches import Wedge
 
 import jax.numpy as jnp
+from jaxtyping import ArrayLike
 
 # Visualize the filters.
 
@@ -66,8 +67,8 @@ def plot_scalars(
     boxes=True,
     fill=True,
     symbols=True,
-    vmin=-2.0,
-    vmax=2.0,
+    vmin: ArrayLike = -2.0,
+    vmax: ArrayLike = 2.0,
     cmap="BrBG",
     colorbar=False,
 ):
@@ -96,8 +97,8 @@ def plot_vectors(
     ws,
     boxes=True,
     fill=True,
-    vmin=0.0,
-    vmax=2.0,
+    vmin: ArrayLike = 0.0,
+    vmax: ArrayLike = 2.0,
     cmap="PuRd",
     scaling=0.33,
 ):

@@ -136,9 +136,7 @@ class TestPropositions:
         # Test that the outer product of two invariant filters is also invariant
         D = 2
         group_operators = geom.make_all_operators(D)
-        all_filters = geom.get_invariant_filters(
-            [3], [0, 1, 2], [0, 1], D, group_operators, return_type="list"
-        )
+        all_filters = geom.get_invariant_filters_list([3], [0, 1, 2], [0, 1], D, group_operators)
         for g in group_operators:
             for c1 in all_filters:
                 for c2 in all_filters:
@@ -184,14 +182,13 @@ class TestPropositions:
         group_operators = geom.make_all_operators(D)
         max_k = 5
 
-        conv_filters_dict = geom.get_invariant_filters(
+        conv_filters_dict, _ = geom.get_invariant_filters_dict(
             [N],
             range(max_k + 1),
             [0, 1],
             D,
             group_operators,
             scale="one",
-            return_type="dict",
         )
         for k in range(max_k - 1):
             for parity in [0, 1]:
@@ -315,7 +312,7 @@ class TestPropositions:
                         second = image.times_group_element(gg, prec).norm()
                         assert first == second
 
-    def testNormEquivariance(self):
+    def testNormEquivarianceMultiImage(self):
         # Same test but for multi_images
         key = random.PRNGKey(0)
         N = 5
@@ -398,7 +395,7 @@ class TestPropositions:
                 for subkey, ((k, parity), _) in zip(subkeys, input_keys)
             }
             multi_image = geom.BatchMultiImage(data, D)
-            layer_norm = ml.LayerNorm(input_keys, D, eps=0)
+            layer_norm = ml.LayerNorm(multi_image.get_signature(), D, eps=0)
 
             # assert that layer norm (group_norm with groups=1) is equivariant
             for gg in geom.make_all_operators(D):

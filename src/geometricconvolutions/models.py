@@ -1,4 +1,4 @@
-from typing import Callable, Optional, Sequence, Union
+from typing import Any, Callable, Optional, Sequence, Union
 from typing_extensions import Self
 
 import jax
@@ -18,12 +18,12 @@ ACTIVATION_REGISTRY = {
 
 
 def handle_activation(
-    activation_f: Union[Callable, str],
+    activation_f: Optional[Union[Callable, str]],
     equivariant: bool,
     input_keys: geom.Signature,
     D: int,
     key: ArrayLike,
-):
+) -> Callable[[Any], geom.MultiImage]:
     if equivariant:
         if activation_f is None:
             return lambda x: x
@@ -50,17 +50,18 @@ def make_conv(
     equivariant: bool,
     invariant_filters: Optional[geom.MultiImage] = None,
     kernel_size: Optional[Union[int, Sequence[int]]] = None,
-    stride: Optional[tuple[int]] = None,
-    padding: Optional[tuple[int]] = None,
-    lhs_dilation: Optional[Union[tuple[int], bool]] = None,
-    rhs_dilation: Optional[tuple[int]] = None,
-    key: Optional[ArrayLike] = None,
-):
+    stride: Union[tuple[int, ...], int] = 1,
+    padding: Optional[Union[str, int, tuple[tuple[int, int], ...]]] = None,
+    lhs_dilation: Optional[tuple[int, ...]] = None,
+    rhs_dilation: Union[int, tuple[int, ...]] = 1,
+    key: Any = None,  # any instead of arraylike because split cannot handle None
+) -> Union[ml.ConvContract, ml.LayerWrapper]:
     """
     Factory for convolution layer which makes ConvContract if equivariant and makes a regular conv
     otherwise.
     """
     if equivariant:
+        assert invariant_filters is not None
         return ml.ConvContract(
             input_keys,
             target_keys,
@@ -73,12 +74,12 @@ def make_conv(
             key,
         )
     else:
+        assert kernel_size is not None
         assert len(input_keys) == len(target_keys) == 1
         assert input_keys[0][0] == target_keys[0][0] == (0, 0)
         padding = "SAME" if padding is None else padding
-        stride = 1 if stride is None else stride
-        rhs_dilation = 1 if rhs_dilation is None else rhs_dilation
         use_bias = True if use_bias == "auto" else use_bias
+        assert isinstance(use_bias, bool)
         if lhs_dilation is None:
             return ml.LayerWrapper(
                 eqx.nn.Conv(
@@ -123,8 +124,9 @@ def count_params(model: eqx.Module) -> int:
 
 class ConvBlock(eqx.Module):
     conv: Union[ml.ConvContract, ml.LayerWrapper]
-    norm: Optional[Union[ml.GroupNorm, eqx.nn.BatchNorm]]
-    nonlinearity: Union[eqx.Module, Callable]
+    group_norm: Optional[Union[ml.GroupNorm, ml.LayerWrapper]]
+    batch_norm: Optional[ml.LayerWrapperAux]
+    nonlinearity: Union[ml.VectorNeuronNonlinear, ml.LayerWrapper, Callable]
 
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
@@ -138,14 +140,14 @@ class ConvBlock(eqx.Module):
         input_keys: geom.Signature,
         output_keys: geom.Signature,
         use_bias: Union[bool, str] = "auto",
-        activation_f: Union[Callable, str] = jax.nn.gelu,
+        activation_f: Optional[Union[Callable, str]] = jax.nn.gelu,
         equivariant: bool = True,
-        conv_filters: geom.MultiImage = None,
+        conv_filters: Optional[geom.MultiImage] = None,
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = False,
         use_batch_norm: bool = False,
         preactivation_order: bool = False,
-        key: ArrayLike = None,
+        key: Any = None,
         **conv_kwargs,
     ):
         self.D = D
@@ -169,35 +171,46 @@ class ConvBlock(eqx.Module):
 
         if use_group_norm:
             if self.equivariant:
-                self.norm = ml.LayerNorm(output_keys, self.D)
+                self.group_norm = ml.LayerNorm(output_keys, self.D)
             else:
-                self.norm = ml.LayerWrapper(eqx.nn.GroupNorm(1, output_keys[0][1]), output_keys)
-        elif use_batch_norm:
-            self.norm = ml.LayerWrapperAux(
+                self.group_norm = ml.LayerWrapper(
+                    eqx.nn.GroupNorm(1, output_keys[0][1]), output_keys
+                )
+        else:
+            self.group_norm = None
+
+        if use_batch_norm:
+            self.batch_norm = ml.LayerWrapperAux(
                 eqx.nn.BatchNorm(output_keys[0][1], axis_name=["pmap_batch", "batch"]), output_keys
             )
         else:
-            self.norm = None
+            self.batch_norm = None
 
         self.nonlinearity = handle_activation(
             activation_f, self.equivariant, output_keys, self.D, subkey2
         )
 
-    def __call__(self: Self, x: geom.BatchMultiImage, batch_stats: Optional[eqx.nn.State] = None):
+    def __call__(
+        self: Self, x: geom.BatchMultiImage, batch_stats: Optional[eqx.nn.State] = None
+    ) -> tuple[geom.BatchMultiImage, Optional[eqx.nn.State]]:
         if self.preactivation_order:
             if self.use_group_norm:
-                x = self.norm(x)
+                assert self.group_norm is not None
+                x = self.group_norm(x)
             elif self.use_batch_norm:
-                x, batch_stats = self.norm(x, batch_stats)
+                assert self.batch_norm is not None
+                x, batch_stats = self.batch_norm(x, batch_stats)
 
             x = self.nonlinearity(x)
             x = self.conv(x)
         else:
             x = self.conv(x)
             if self.use_group_norm:
-                x = self.norm(x)
+                assert self.group_norm is not None
+                x = self.group_norm(x)
             elif self.use_batch_norm:
-                x, batch_stats = self.norm(x, batch_stats)
+                assert self.batch_norm is not None
+                x, batch_stats = self.batch_norm(x, batch_stats)
 
             x = self.nonlinearity(x)
 
@@ -205,10 +218,10 @@ class ConvBlock(eqx.Module):
 
 
 class UNet(eqx.Module):
-    embedding: list[eqx.Module]
-    downsample_blocks: list[list[Union[ConvBlock, ml.MaxNormPool]]]
-    upsample_blocks: list[list[Union[ml.ConvContract, ConvBlock]]]
-    decode: ml.ConvContract
+    embedding: list[ConvBlock]
+    downsample_blocks: list[tuple[ml.MaxNormPool, list[ConvBlock]]]
+    upsample_blocks: list[tuple[Union[ml.ConvContract, ml.LayerWrapper], list[ConvBlock]]]
+    decode: Union[ml.ConvContract, ml.LayerWrapper]
 
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
@@ -226,25 +239,28 @@ class UNet(eqx.Module):
         use_bias: Union[bool, str] = "auto",
         activation_f: Union[Callable, str] = jax.nn.gelu,
         equivariant: bool = True,
-        conv_filters: geom.MultiImage = None,
-        upsample_filters: geom.MultiImage = None,
+        conv_filters: Optional[geom.MultiImage] = None,
+        upsample_filters: Optional[geom.MultiImage] = None,
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = False,
         use_batch_norm: bool = False,
-        key: ArrayLike = None,
+        key: Any = None,
     ):
         assert num_conv > 0
+        assert key is not None
 
         self.output_keys = output_keys
         if equivariant:
             key_union = {k_p for k_p, _ in input_keys}.union({k_p for k_p, _ in output_keys})
-            mid_keys = tuple((k_p, depth) for k_p in key_union)
+            mid_keys = geom.Signature(tuple((k_p, depth) for k_p in key_union))
             assert not use_batch_norm, "UNet::init Batch Norm cannot be used with equivariant model"
         else:
-            mid_keys = (((0, 0), depth),)
+            mid_keys = geom.Signature((((0, 0), depth),))
             # use these keys along the way, then for the final output use self.output_keys
-            input_keys = (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
-            output_keys = (((0, 0), sum(out_c * (D**k) for (k, _), out_c in output_keys)),)
+            input_keys_size = sum(in_c * (D**k) for (k, _), in_c in input_keys)
+            input_keys = geom.Signature((((0, 0), input_keys_size),))
+            output_key_size = sum(out_c * (D**k) for (k, _), out_c in output_keys)
+            output_keys = geom.Signature((((0, 0), output_key_size),))
 
         self.D = D
         self.equivariant = equivariant
@@ -273,17 +289,21 @@ class UNet(eqx.Module):
 
         self.downsample_blocks = []
         for downsample in range(1, num_downsamples + 1):
-            down_layers = [ml.MaxNormPool(2, equivariant)]
+            down_layers = (ml.MaxNormPool(2, equivariant), [])
 
             for conv_idx in range(num_conv):
-                out_keys = tuple((k_p, depth * (2**downsample)) for k_p, _ in mid_keys)
+                out_keys = geom.Signature(
+                    tuple((k_p, depth * (2**downsample)) for k_p, _ in mid_keys)
+                )
                 if conv_idx == 0:
-                    in_keys = tuple((k_p, depth * (2 ** (downsample - 1))) for k_p, _ in mid_keys)
+                    in_keys = geom.Signature(
+                        tuple((k_p, depth * (2 ** (downsample - 1))) for k_p, _ in mid_keys)
+                    )
                 else:
                     in_keys = out_keys
 
                 key, subkey = random.split(key)
-                down_layers.append(
+                down_layers[1].append(
                     ConvBlock(
                         self.D,
                         in_keys,
@@ -303,23 +323,23 @@ class UNet(eqx.Module):
 
         self.upsample_blocks = []
         for upsample in reversed(range(num_downsamples)):
-            in_keys = tuple((k_p, depth * (2 ** (upsample + 1))) for k_p, _ in mid_keys)
-            out_keys = tuple((k_p, depth * (2**upsample)) for k_p, _ in mid_keys)
+            in_keys = geom.Signature(
+                tuple((k_p, depth * (2 ** (upsample + 1))) for k_p, _ in mid_keys)
+            )
+            out_keys = geom.Signature(tuple((k_p, depth * (2**upsample)) for k_p, _ in mid_keys))
             key, subkey = random.split(key)
             # perform the transposed convolution. For non-equivariant, padding and stride should
             # instead be the padding and stride for the forward direction convolution.
             if equivariant:
                 padding = ((1, 1),) * self.D
-                lhs_dilation = (2,) * self.D
-                stride = None
+                stride = (1,) * self.D
                 upsample_kernel_size = None  # ignored for equivariant
             else:
                 padding = "VALID"
-                lhs_dilation = True  # signals to do ConvTranspose
                 stride = (2,) * self.D
                 upsample_kernel_size = (2,) * self.D  # kernel size of the downsample
 
-            up_layers = [
+            up_layers = (
                 make_conv(
                     self.D,
                     in_keys,
@@ -330,20 +350,25 @@ class UNet(eqx.Module):
                     upsample_kernel_size,
                     stride,
                     padding,
-                    lhs_dilation,
+                    (2,) * self.D,  # lhs_dilation
                     key=subkey,
-                )
-            ]
+                ),
+                [],
+            )
 
             for conv_idx in range(num_conv):
-                out_keys = tuple((k_p, depth * (2**upsample)) for k_p, _ in mid_keys)
+                out_keys = geom.Signature(
+                    tuple((k_p, depth * (2**upsample)) for k_p, _ in mid_keys)
+                )
                 if conv_idx == 0:  # due to adding the residual layer back, in_c is doubled again
-                    in_keys = tuple((k_p, depth * (2 ** (upsample + 1))) for k_p, _ in mid_keys)
+                    in_keys = geom.Signature(
+                        tuple((k_p, depth * (2 ** (upsample + 1))) for k_p, _ in mid_keys)
+                    )
                 else:
                     in_keys = out_keys
 
                 key, subkey = random.split(key)
-                up_layers.append(
+                up_layers[1].append(
                     ConvBlock(
                         self.D,
                         in_keys,
@@ -382,24 +407,25 @@ class UNet(eqx.Module):
             x, batch_stats = layer(x, batch_stats)
 
         residual_layers = []
-        for block in self.downsample_blocks:
+        for max_pool_layer, conv_blocks in self.downsample_blocks:
             residual_layers.append(x)
-            x = block[0](x)  # first one is maxpool
-            for layer in block[1:]:
+            x = max_pool_layer(x)
+            for layer in conv_blocks:
                 x, batch_stats = layer(x, batch_stats)
 
-        for block, residual_idx in zip(self.upsample_blocks, reversed(range(len(residual_layers)))):
-            upsample_x = block[0](x)  # first layer in block is the upsample
+        for (upsample_layer, conv_blocks), residual_idx in zip(
+            self.upsample_blocks, reversed(range(len(residual_layers)))
+        ):
+            upsample_x = upsample_layer(x)  # first layer in block is the upsample
             x = upsample_x.concat(residual_layers[residual_idx], axis=1)
-            for layer in block[1:]:
+            for layer in conv_blocks:
                 x, batch_stats = layer(x, batch_stats)
 
         x = self.decode(x)
         if self.equivariant:
             out = x
         else:
-            output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
-            out = geom.BatchMultiImage.from_scalar_multi_image(x, output_keys)
+            out = geom.BatchMultiImage.from_scalar_multi_image(x, self.output_keys)
 
         if self.use_batch_norm:
             return out, batch_stats
@@ -408,9 +434,9 @@ class UNet(eqx.Module):
 
 
 class DilResNet(eqx.Module):
-    encoder: list[ml.ConvContract]
-    blocks: list[list[ml.ConvContract]]
-    decoder: list[ml.ConvContract]
+    encoder: list[ConvBlock]
+    blocks: list[list[ConvBlock]]
+    decoder: list[ConvBlock]
 
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
@@ -426,10 +452,10 @@ class DilResNet(eqx.Module):
         use_bias: Union[bool, str] = "auto",
         activation_f: Union[Callable, str] = jax.nn.relu,
         equivariant: bool = True,
-        conv_filters: geom.MultiImage = None,
+        conv_filters: Optional[geom.MultiImage] = None,
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = False,
-        key: ArrayLike = None,
+        key: Any = None,
     ):
         self.D = D
         self.equivariant = equivariant
@@ -437,12 +463,16 @@ class DilResNet(eqx.Module):
 
         if equivariant:
             key_union = {k_p for k_p, _ in input_keys}.union({k_p for k_p, _ in output_keys})
-            mid_keys = tuple((k_p, depth) for k_p in key_union)
+            mid_keys = geom.Signature(tuple((k_p, depth) for k_p in key_union))
         else:
-            mid_keys = (((0, 0), depth),)
+            mid_keys = geom.Signature((((0, 0), depth),))
             # use these keys along the way, then for the final output use self.output_keys
-            input_keys = (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
-            output_keys = (((0, 0), sum(out_c * (D**k) for (k, _), out_c in output_keys)),)
+            input_keys = geom.Signature(
+                (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
+            )
+            output_keys = geom.Signature(
+                (((0, 0), sum(out_c * (D**k) for (k, _), out_c in output_keys)),)
+            )
 
         # encoder
         key, subkey1, subkey2 = random.split(key, num=3)
@@ -534,16 +564,15 @@ class DilResNet(eqx.Module):
         if self.equivariant:
             out = x
         else:
-            output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
-            out = geom.BatchMultiImage.from_scalar_multi_image(x, output_keys)
+            out = geom.BatchMultiImage.from_scalar_multi_image(x, self.output_keys)
 
         return out
 
 
 class ResNet(eqx.Module):
-    encoder: list[ml.ConvContract]
-    blocks: list[list[ml.ConvContract]]
-    decoder: list[ml.ConvContract]
+    encoder: list[ConvBlock]
+    blocks: list[list[ConvBlock]]
+    decoder: list[ConvBlock]
 
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
@@ -560,11 +589,11 @@ class ResNet(eqx.Module):
         use_bias: Union[bool, str] = "auto",
         activation_f: Union[Callable, str] = jax.nn.gelu,
         equivariant: bool = True,
-        conv_filters: geom.MultiImage = None,
+        conv_filters: Optional[geom.MultiImage] = None,
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = True,
         preactivation_order: bool = True,
-        key: ArrayLike = None,
+        key: Any = None,
     ):
         self.D = D
         self.equivariant = equivariant
@@ -572,12 +601,16 @@ class ResNet(eqx.Module):
 
         if equivariant:
             key_union = {k_p for k_p, _ in input_keys}.union({k_p for k_p, _ in output_keys})
-            mid_keys = tuple((k_p, depth) for k_p in key_union)
+            mid_keys = geom.Signature(tuple((k_p, depth) for k_p in key_union))
         else:
-            mid_keys = (((0, 0), depth),)
+            mid_keys = geom.Signature((((0, 0), depth),))
             # use these keys along the way, then for the final output use self.output_keys
-            input_keys = (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
-            output_keys = (((0, 0), sum(out_c * (D**k) for (k, _), out_c in output_keys)),)
+            input_keys = geom.Signature(
+                (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
+            )
+            output_keys = geom.Signature(
+                (((0, 0), sum(out_c * (D**k) for (k, _), out_c in output_keys)),)
+            )
 
         # encoder
         key, subkey1, subkey2 = random.split(key, num=3)
@@ -667,9 +700,8 @@ class ResNet(eqx.Module):
             x, _ = layer(x)
 
         if self.equivariant:
-            out_layer = x
+            out = x
         else:
-            output_keys = {(k, p): out_c for (k, p), out_c in self.output_keys}
-            out_layer = geom.BatchLayer.from_scalar_layer(x, output_keys)
+            out = geom.BatchMultiImage.from_scalar_multi_image(x, self.output_keys)
 
-        return out_layer
+        return out

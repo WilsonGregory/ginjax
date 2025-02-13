@@ -5,7 +5,7 @@ import numpy as np
 from functools import partial
 import matplotlib.pyplot as plt
 import h5py
-from typing import Optional
+from typing import Optional, Union
 
 import jax.numpy as jnp
 import jax
@@ -56,7 +56,7 @@ def get_data(
     past_steps: int,
     rollout_steps: int,
     normalize: bool = True,
-) -> tuple[geom.BatchMultiImage]:
+) -> tuple[geom.BatchMultiImage, ...]:
     density, pressure, velocity = read_one_h5(filename, n_train + n_val + n_test)
 
     if normalize:
@@ -256,9 +256,7 @@ def plot_timestep_power(
     for i, ax in enumerate(axes):
         utils.plot_power(
             [
-                multi_image.get_component(component, future_steps, as_multi_image=False)[
-                    :, i : i + 1
-                ]
+                multi_image.get_component(component, future_steps)[(0, 0)][:, i : i + 1]
                 for multi_image in multi_images
             ],
             labels,
@@ -278,7 +276,10 @@ def map_and_loss(
     aux_data: Optional[eqx.nn.State] = None,
     future_steps: int = 1,
     return_map: bool = False,
-):
+) -> Union[
+    tuple[ArrayLike, Optional[eqx.nn.State], geom.BatchMultiImage],
+    tuple[ArrayLike, Optional[eqx.nn.State]],
+]:
     out, aux_data = ml.autoregressive_map(
         model,
         multi_image_x,
@@ -294,7 +295,7 @@ def map_and_loss(
 
 
 def train_and_eval(
-    data: tuple[geom.BatchMultiImage],
+    data: tuple[geom.BatchMultiImage, ...],
     key: ArrayLike,
     model_name: str,
     model: eqx.Module,
@@ -308,7 +309,7 @@ def train_and_eval(
     has_aux: bool = False,
     verbose: int = 1,
     plot_component: int = 0,
-) -> tuple[float]:
+) -> tuple[Optional[ArrayLike], ...]:
     (
         train_X,
         train_Y,
@@ -384,16 +385,14 @@ def train_and_eval(
     print(f"Test Loss: {test_loss}")
 
     key, subkey = random.split(key)
-    test_rollout_loss, rollout_multi_image = ml.map_loss_in_batches(
+    test_rollout_loss, rollout_multi_image = ml.map_plus_loss_in_batches(
         partial(map_and_loss, future_steps=rollout_steps, return_map=True),
         model,
         test_rollout_X,
         test_rollout_Y,
         batch_size,
         subkey,
-        # map_and_loss kwargs
         aux_data=batch_stats,
-        return_map=True,
     )
     print(f"Test Rollout Loss: {test_rollout_loss}, Sum: {jnp.sum(test_rollout_loss)}")
 
@@ -487,7 +486,6 @@ args = handleArgs(sys.argv)
 
 D = 2
 N = 128
-output_keys = (((0, 0), 2), ((1, 0), 1))
 
 past_steps = 4  # how many steps to look back to predict the next step
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
@@ -507,6 +505,7 @@ data = get_data(
     args.normalize,
 )
 input_keys = data[0].get_signature()
+output_keys = data[1].get_signature()  # (((0, 0), 2), ((1, 0), 1))
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(
@@ -515,6 +514,8 @@ conv_filters = geom.get_invariant_filters(
 upsample_filters = geom.get_invariant_filters(
     Ms=[2], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions
 )
+assert conv_filters is not None
+assert upsample_filters is not None
 
 train_and_eval = partial(
     train_and_eval,
@@ -530,104 +531,104 @@ train_and_eval = partial(
 
 key, *subkeys = random.split(key, num=9)
 model_list = [
-    (
-        "dil_resnet64",
-        partial(
-            train_and_eval,
-            model=models.DilResNet(
-                D,
-                input_keys,
-                output_keys,
-                depth=64,
-                equivariant=False,
-                kernel_size=3,
-                key=subkeys[0],
-            ),
-            lr=2e-3,
-        ),
-    ),
-    (
-        "dil_resnet_equiv48",
-        partial(
-            train_and_eval,
-            model=models.DilResNet(
-                D,
-                input_keys,
-                output_keys,
-                depth=48,
-                conv_filters=conv_filters,
-                key=subkeys[1],
-            ),
-            lr=1e-3,
-        ),
-    ),
-    (
-        "resnet",
-        partial(
-            train_and_eval,
-            model=models.ResNet(
-                D,
-                input_keys,
-                output_keys,
-                depth=128,
-                equivariant=False,
-                kernel_size=3,
-                key=subkeys[2],
-            ),
-            lr=1e-3,
-        ),
-    ),
-    (
-        "resnet_equiv_groupnorm_100",
-        partial(
-            train_and_eval,
-            model=models.ResNet(
-                D,
-                input_keys,
-                output_keys,
-                depth=100,  # very slow at 100
-                conv_filters=conv_filters,
-                key=subkeys[3],
-            ),
-            lr=7e-4,
-        ),
-    ),
-    (
-        "unetBase",
-        partial(
-            train_and_eval,
-            model=models.UNet(
-                D,
-                input_keys,
-                output_keys,
-                depth=64,
-                use_bias=True,
-                activation_f=jax.nn.gelu,
-                equivariant=False,
-                kernel_size=3,
-                use_group_norm=True,
-                key=subkeys[4],
-            ),
-            lr=8e-4,
-        ),
-    ),
-    (
-        "unetBase_equiv48",
-        partial(
-            train_and_eval,
-            model=models.UNet(
-                D,
-                input_keys,
-                output_keys,
-                depth=48,
-                activation_f=jax.nn.gelu,
-                conv_filters=conv_filters,
-                upsample_filters=upsample_filters,
-                key=subkeys[5],
-            ),
-            lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-        ),
-    ),
+    # (
+    #     "dil_resnet64",
+    #     partial(
+    #         train_and_eval,
+    #         model=models.DilResNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=64,
+    #             equivariant=False,
+    #             kernel_size=3,
+    #             key=subkeys[0],
+    #         ),
+    #         lr=2e-3,
+    #     ),
+    # ),
+    # (
+    #     "dil_resnet_equiv48",
+    #     partial(
+    #         train_and_eval,
+    #         model=models.DilResNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=48,
+    #             conv_filters=conv_filters,
+    #             key=subkeys[1],
+    #         ),
+    #         lr=1e-3,
+    #     ),
+    # ),
+    # (
+    #     "resnet",
+    #     partial(
+    #         train_and_eval,
+    #         model=models.ResNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=128,
+    #             equivariant=False,
+    #             kernel_size=3,
+    #             key=subkeys[2],
+    #         ),
+    #         lr=1e-3,
+    #     ),
+    # ),
+    # (
+    #     "resnet_equiv_groupnorm_100",
+    #     partial(
+    #         train_and_eval,
+    #         model=models.ResNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=100,  # very slow at 100
+    #             conv_filters=conv_filters,
+    #             key=subkeys[3],
+    #         ),
+    #         lr=7e-4,
+    #     ),
+    # ),
+    # (
+    #     "unetBase",
+    #     partial(
+    #         train_and_eval,
+    #         model=models.UNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=64,
+    #             use_bias=True,
+    #             activation_f=jax.nn.gelu,
+    #             equivariant=False,
+    #             kernel_size=3,
+    #             use_group_norm=True,
+    #             key=subkeys[4],
+    #         ),
+    #         lr=8e-4,
+    #     ),
+    # ),
+    # (
+    #     "unetBase_equiv48",
+    #     partial(
+    #         train_and_eval,
+    #         model=models.UNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=48,
+    #             activation_f=jax.nn.gelu,
+    #             conv_filters=conv_filters,
+    #             upsample_filters=upsample_filters,
+    #             key=subkeys[5],
+    #         ),
+    #         lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+    #     ),
+    # ),
     (
         "unet2015",
         partial(
@@ -736,7 +737,7 @@ for i in range(len(model_list) // 2):
 
             if jnp.allclose(
                 mean_results[0, idx, j],
-                min(mean_results[0, 2 * i, j], mean_results[0, 2 * i + 1, j]),
+                min(float(mean_results[0, 2 * i, j]), float(mean_results[0, 2 * i + 1, j])),
             ):
                 print(f'& \\textbf{"{"}{mean_results[0,idx,j]:.3f} {stdev}{"}"}', end="")
             else:

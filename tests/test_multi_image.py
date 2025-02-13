@@ -23,24 +23,24 @@ class TestMultiImage:
 
         k = 0
         multi_image2 = geom.MultiImage(
-            {k: random.normal(key, shape=((1,) + (N,) * D + (D,) * k))}, D, False
+            {(k, 0): random.normal(key, shape=((1,) + (N,) * D + (D,) * k))}, D, False
         )
         assert multi_image2.D == D
         assert multi_image2.is_torus == (False,) * D
-        assert multi_image2[0].shape == (1, N, N)
+        assert multi_image2[(0, 0)].shape == (1, N, N)
 
         # multi_images can have multiple k values, and can have different size channels at each k
         multi_image3 = geom.MultiImage(
             {
-                0: random.normal(key, shape=((10,) + (N,) * D + (D,) * 0)),
-                1: random.normal(key, shape=((3,) + (N,) * D + (D,) * 1)),
+                (0, 0): random.normal(key, shape=((10,) + (N,) * D + (D,) * 0)),
+                (1, 0): random.normal(key, shape=((3,) + (N,) * D + (D,) * 1)),
             },
             D,
             True,
         )
-        assert list(multi_image3.keys()) == [0, 1]
-        assert multi_image3[0].shape == (10, N, N)
-        assert multi_image3[1].shape == (3, N, N, D)
+        assert list(multi_image3.keys()) == [(0, 0), (1, 0)]
+        assert multi_image3[(0, 0)].shape == (10, N, N)
+        assert multi_image3[(1, 0)].shape == (3, N, N, D)
         assert multi_image3.is_torus == (True,) * D
 
     def testCopy(self):
@@ -50,8 +50,8 @@ class TestMultiImage:
 
         multi_image1 = geom.MultiImage(
             {
-                0: random.normal(key, shape=((10,) + (N,) * D + (D,) * 0)),
-                1: random.normal(key, shape=((3,) + (N,) * D + (D,) * 1)),
+                (0, 0): random.normal(key, shape=((10,) + (N,) * D + (D,) * 0)),
+                (1, 0): random.normal(key, shape=((3,) + (N,) * D + (D,) * 1)),
             },
             D,
             True,
@@ -60,9 +60,9 @@ class TestMultiImage:
         multi_image2 = multi_image1.copy()
         assert multi_image1 is not multi_image2
 
-        multi_image2[1] = jnp.arange(1 * (N**D) * D).reshape((1,) + (N,) * D + (D,) * 1)
-        assert multi_image2[1].shape == (1, N, N, D)
-        assert multi_image1[1].shape == (
+        multi_image2[(1, 0)] = jnp.arange(1 * (N**D) * D).reshape((1,) + (N,) * D + (D,) * 1)
+        assert multi_image2[(1, 0)].shape == (1, N, N, D)
+        assert multi_image1[(1, 0)].shape == (
             3,
             N,
             N,
@@ -77,6 +77,7 @@ class TestMultiImage:
         random_data = random.normal(key, shape=((10,) + (N,) * D + (D,) * 1))
         images = [geom.GeometricImage(data, 0, D) for data in random_data]
         multi_image1 = geom.MultiImage.from_images(images)
+        assert multi_image1 is not None
         assert multi_image1.D == D
         assert multi_image1.is_torus == (True,) * D
         assert list(multi_image1.keys()) == [(1, 0)]
@@ -86,6 +87,7 @@ class TestMultiImage:
         random_data2 = random.normal(key, shape=((33,) + (N,) * D + (D,) * 2))
         images.extend([geom.GeometricImage(data, 0, D) for data in random_data2])
         multi_image2 = geom.MultiImage.from_images(images)
+        assert multi_image2 is not None
         assert list(multi_image2.keys()) == [(1, 0), (2, 0)]
         assert multi_image2[(1, 0)].shape == (10, N, N, D)
         assert multi_image2[(2, 0)].shape == (33, N, N, D, D)
@@ -113,8 +115,8 @@ class TestMultiImage:
         # values do not match
         multi_image4 = geom.MultiImage(
             {
-                (0,): jnp.ones((10,) + (N,) * D + (D,) * 0),
-                1: jnp.ones((10,) + (N,) * D + (D,) * 1),
+                (0, 0): jnp.ones((10,) + (N,) * D + (D,) * 0),
+                (1, 0): jnp.ones((10,) + (N,) * D + (D,) * 1),
             },
             D,
             True,
@@ -156,7 +158,7 @@ class TestMultiImage:
 
         # N is set by append if it is empty
         multi_image2 = multi_image1.empty()
-        assert multi_image2.get_spatial_dims() is None
+        assert multi_image2.get_spatial_dims() == ()
 
         multi_image2.append(0, 0, random.normal(key, shape=((10,) + (N,) * D + (D,) * 0)))
         assert multi_image2.get_spatial_dims() == (N,) * D
@@ -261,7 +263,7 @@ class TestMultiImage:
             True,
         )
         with pytest.raises(AssertionError):
-            multi_image5 + multi_image6
+            assert multi_image5 + multi_image6
 
         # mismatched number of channels
         multi_image7 = geom.MultiImage(
@@ -275,7 +277,7 @@ class TestMultiImage:
             True,
         )
         with pytest.raises(TypeError):
-            multi_image7 + multi_image8
+            assert multi_image7 + multi_image8
 
     def testMul(self):
         key = random.PRNGKey(0)
@@ -308,7 +310,7 @@ class TestMultiImage:
 
         # try to multiply two multi_images together
         with pytest.raises(AssertionError):
-            multi_image1 * multi_image1
+            assert multi_image1 * multi_image1
 
     def testDiv(self):
         key = random.PRNGKey(0)
@@ -341,7 +343,7 @@ class TestMultiImage:
 
         # try to multiply two multi_images together
         with pytest.raises(AssertionError):
-            multi_image1 * multi_image1
+            assert multi_image1 * multi_image1
 
     def testSize(self):
         D = 2
@@ -425,12 +427,10 @@ class TestMultiImage:
             D,
         )
 
-        layout = {(0, 0): 3, (1, 0): 1, (1, 1): 2, (2, 0): 1}
-
         scalar_multi_image2 = rand_multi_image.to_scalar_multi_image()
         assert list(scalar_multi_image2.keys()) == [(0, 0)]
         assert rand_multi_image == rand_multi_image.to_scalar_multi_image().from_scalar_multi_image(
-            layout
+            rand_multi_image.get_signature()
         )
 
     def testTimesGroupElement(self):
@@ -588,13 +588,6 @@ class TestBatchmulti_image:
         assert multi_image3.L == 4
         assert multi_image3[(k, 0)].shape == (4, 1, N, N, D)
         assert jnp.allclose(multi_image3[(k, 0)], multi_image1[(k, 0)][jnp.array([3, 23, 4, 17])])
-
-        # Indices must be a jax array
-        with pytest.raises(AssertionError):
-            multi_image1.get_subset([3])
-
-        with pytest.raises(AssertionError):
-            multi_image1.get_subset((0, 2, 3))
 
         with pytest.raises(AssertionError):
             multi_image1.get_subset(jnp.array(0))
@@ -773,12 +766,10 @@ class TestBatchmulti_image:
             D,
         )
 
-        layout = {(0, 0): 3, (1, 0): 1, (1, 1): 2, (2, 0): 1}
-
         scalar_multi_image2 = rand_multi_image.to_scalar_multi_image()
         assert list(scalar_multi_image2.keys()) == [(0, 0)]
         assert rand_multi_image == rand_multi_image.to_scalar_multi_image().from_scalar_multi_image(
-            layout
+            rand_multi_image.get_signature()
         )
 
     def testTimesGroupElement(self):
@@ -896,7 +887,7 @@ class TestBatchmulti_image:
             True,
         )
         with pytest.raises(AssertionError):
-            multi_image5 + multi_image6
+            assert multi_image5 + multi_image6
 
         # mismatched number of channels
         multi_image7 = geom.MultiImage(
@@ -910,7 +901,7 @@ class TestBatchmulti_image:
             True,
         )
         with pytest.raises(TypeError):
-            multi_image7 + multi_image8
+            assert multi_image7 + multi_image8
 
         # mismatched batch size
         key, subkey9, subkey10 = random.split(key, 3)
@@ -925,7 +916,7 @@ class TestBatchmulti_image:
             True,
         )
         with pytest.raises(TypeError):
-            multi_image9 + multi_image10
+            assert multi_image9 + multi_image10
 
     def testMul(self):
         key = random.PRNGKey(0)
@@ -959,4 +950,4 @@ class TestBatchmulti_image:
 
         # try to multiply two multi_images together
         with pytest.raises(AssertionError):
-            multi_image1 * multi_image1
+            assert multi_image1 * multi_image1

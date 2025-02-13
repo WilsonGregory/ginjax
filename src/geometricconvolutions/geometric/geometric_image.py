@@ -7,6 +7,7 @@ from typing_extensions import Any, Callable, Generator, Optional, Self, Sequence
 import jax
 import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class
+from jaxtyping import ArrayLike
 
 from geometricconvolutions.geometric.constants import LeviCivitaSymbol, KroneckerDeltaSymbol, TINY
 from geometricconvolutions.geometric.functional_geometric_image import (
@@ -26,13 +27,19 @@ import geometricconvolutions.utils as utils
 
 @register_pytree_node_class
 class GeometricImage:
+    D: int
+    spatial_dims: tuple[int, ...]
+    k: int
+    data: jax.Array
+    parity: int
+    is_torus: tuple[bool, ...]
 
     # Constructors
 
     @classmethod
     def zeros(
         cls,
-        N: int,
+        N: Union[int, tuple[int, ...]],
         k: int,
         parity: int,
         D: int,
@@ -41,11 +48,11 @@ class GeometricImage:
         """
         Class method zeros to construct a geometric image of zeros
         args:
-            N (int or tuple of ints): length of all sides if an int, otherwise a tuple of the side lengths
-            k (int): the order of the tensor in each pixel, i.e. 0 (scalar), 1 (vector), 2 (matrix), etc.
-            parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
-            D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
-            is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
+            N: length of all sides if an int, otherwise a tuple of the side lengths
+            k: the order of the tensor in each pixel, i.e. 0 (scalar), 1 (vector), 2 (matrix), etc.
+            parity: 0 or 1, 0 is normal vectors, 1 is pseudovectors
+            D: dimension of the image, and length of vectors or side length of matrices or tensors.
+            is_torus: whether the datablock is a torus, used for convolutions
         """
         spatial_dims = N if isinstance(N, tuple) else (N,) * D
         assert len(spatial_dims) == D
@@ -54,20 +61,20 @@ class GeometricImage:
     @classmethod
     def fill(
         cls,
-        N: int,
+        N: Union[int, tuple[int, ...]],
         parity: int,
         D: int,
-        fill: Union[jnp.ndarray, int, float],
-        is_torus: Union[bool, tuple[bool]] = True,
+        fill: Union[jax.Array, float],
+        is_torus: Union[bool, tuple[bool, ...]] = True,
     ) -> Self:
         """
         Class method fill constructor to construct a geometric image every pixel as fill
         args:
-            N (int or tuple of ints): length of all sides if an int, otherwise a tuple of the side lengths
-            parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
-            D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
-            fill (jnp.ndarray or number): tensor to fill the image with
-            is_torus (bool): whether the datablock is a torus, used for convolutions. Defaults to true.
+            N: length of all sides if an int, otherwise a tuple of the side lengths
+            parity: 0 or 1, 0 is normal vectors, 1 is pseudovectors
+            D: dimension of the image, and length of vectors or side length of matrices or tensors.
+            fill: tensor to fill the image with
+            is_torus: whether the datablock is a torus, used for convolutions. Defaults to true.
         """
         spatial_dims = N if isinstance(N, tuple) else (N,) * D
         assert len(spatial_dims) == D
@@ -87,8 +94,8 @@ class GeometricImage:
         data: jnp.ndarray,
         parity: int,
         D: int,
-        is_torus: Union[bool, tuple[bool]] = True,
-    ) -> Self:
+        is_torus: Union[bool, tuple[bool, ...]] = True,
+    ) -> None:
         """
         Construct the GeometricImage. It will be (N^D x D^k), so if N=100, D=2, k=1, then it's (100 x 100 x 2)
         args:
@@ -121,11 +128,12 @@ class GeometricImage:
 
     # Getters, setters, basic info
 
-    def hash(self: Self, indices: jnp.ndarray) -> jnp.ndarray:
+    def hash(self: Self, indices: ArrayLike) -> tuple[jax.Array, ...]:
         """
         Deals with torus by modding (with `np.remainder()`).
+
         args:
-            indices (tuple of ints): indices to apply the remainder to
+            indices: indices to apply the remainder to
         """
         return hash(self.D, self.data, indices)
 
@@ -145,13 +153,13 @@ class GeometricImage:
         self.data = self.data.at[key].set(val)
         return self
 
-    def shape(self: Self) -> tuple[int]:
+    def shape(self: Self) -> tuple[int, ...]:
         """
         Return the full shape of the data block
         """
         return self.data.shape
 
-    def image_shape(self: Self, plus_Ns: Optional[tuple[int]] = None) -> tuple[int]:
+    def image_shape(self: Self, plus_Ns: Optional[tuple[int, ...]] = None) -> tuple[int, ...]:
         """
         Return the shape of the data block that is not the ktensor shape, but what comes before that.
         args:
@@ -160,7 +168,7 @@ class GeometricImage:
         plus_Ns = (0,) * self.D if (plus_Ns is None) else plus_Ns
         return tuple(N + plus_N for N, plus_N in zip(self.spatial_dims, plus_Ns))
 
-    def pixel_shape(self: Self) -> tuple[int]:
+    def pixel_shape(self: Self) -> tuple[int, ...]:
         """
         Return the shape of the data block that is the ktensor, aka the pixel of the image.
         """
@@ -182,7 +190,8 @@ class GeometricImage:
             self.is_torus,
         )
 
-    def keys(self: Self) -> Sequence[Sequence[int]]:
+    # itertools does not have type hints, but it will be a product[tuple[int,...]]
+    def keys(self: Self) -> Any:
         """
         Iterate over the keys of GeometricImage
         """
@@ -208,19 +217,22 @@ class GeometricImage:
 
     # Binary Operators, Complicated functions
 
-    def __eq__(self: Self, other: Self) -> bool:
+    def __eq__(self: Self, other: object) -> bool:
         """
         Equality operator, must have same shape, parity, and data within the TINY=1e-5 tolerance.
         """
-        return (
-            self.D == other.D
-            and self.spatial_dims == other.spatial_dims
-            and self.k == other.k
-            and self.parity == other.parity
-            and self.is_torus == other.is_torus
-            and self.data.shape == other.data.shape
-            and jnp.allclose(self.data, other.data, rtol=TINY, atol=TINY)
-        )
+        if isinstance(other, GeometricImage):
+            return (
+                self.D == other.D
+                and self.spatial_dims == other.spatial_dims
+                and self.k == other.k
+                and self.parity == other.parity
+                and self.is_torus == other.is_torus
+                and self.data.shape == other.data.shape
+                and bool(jnp.allclose(self.data, other.data, rtol=TINY, atol=TINY))
+            )
+        else:
+            return False
 
     def __add__(self: Self, other: Self) -> Self:
         """
@@ -295,10 +307,10 @@ class GeometricImage:
     def convolve_with(
         self: Self,
         filter_image: Self,
-        stride: Optional[tuple[int]] = None,
-        padding: Optional[tuple[int]] = None,
-        lhs_dilation: Optional[tuple[int]] = None,
-        rhs_dilation: Optional[tuple[int]] = None,
+        stride: Union[int, tuple[int, ...]] = 1,
+        padding: Optional[tuple[tuple[int, int]]] = None,
+        lhs_dilation: Optional[tuple[int,...]] = None,
+        rhs_dilation: Union[int, tuple[int,...]] = 1,
     ) -> Self:
         """
         See convolve for a description of this function.
@@ -386,7 +398,7 @@ class GeometricImage:
         """
         Normalize so that the max norm of each pixel is 1, and all other tensors are scaled appropriately
         """
-        max_norm = jnp.max(self.norm().data)
+        max_norm = float(jnp.max(self.norm().data))
         if max_norm > TINY:
             return self.times_scalar(1.0 / max_norm)
         else:
@@ -431,7 +443,7 @@ class GeometricImage:
             self.is_torus,
         )
 
-    def levi_civita_contract(self: Self, indices: tuple[tuple[int]]) -> Self:
+    def levi_civita_contract(self: Self, indices: Union[tuple[int, ...], int]) -> Self:
         """
         Perform the Levi-Civita contraction. Outer product with the Levi-Civita Symbol, then perform D-1 contractions.
         Resulting image has k= self.k - self.D + 2
@@ -441,7 +453,7 @@ class GeometricImage:
         assert self.k >= (
             self.D - 1
         )  # so we have enough indices to work on since we perform D-1 contractions
-        if self.D == 2 and not (isinstance(indices, tuple) or isinstance(indices, list)):
+        if not isinstance(indices, tuple):
             indices = (indices,)
         assert len(indices) == self.D - 1
 
@@ -488,13 +500,13 @@ class GeometricImage:
 
     def plot(
         self: Self,
-        ax: Optional[plt.Axes] = None,
+        ax: Optional[Any] = None,
         title: str = "",
         boxes: bool = False,
         fill: bool = True,
         symbols: bool = False,
-        vmin: Optional[float] = None,
-        vmax: Optional[float] = None,
+        vmin: Optional[ArrayLike] = None,
+        vmax: Optional[ArrayLike] = None,
         colorbar: bool = False,
         vector_scaling: float = 0.5,
     ) -> None:
@@ -517,7 +529,10 @@ class GeometricImage:
 
         # This was breaking earlier with jax arrays, not sure why. I really don't want plotting to break,
         # so I am will swap to numpy arrays just in case.
-        xs, ys, *zs = np.array(self.key_array()).T
+        key_array_transpose = np.array(self.key_array()).T
+        xs = key_array_transpose[0]
+        ys = key_array_transpose[1]
+        zs = key_array_transpose[2:]
         if self.D == 3:
             xs = xs + utils.XOFF * zs
             ys = ys + utils.YOFF * zs
@@ -590,8 +605,8 @@ class GeometricFilter(GeometricImage):
         data: jnp.ndarray,
         parity: int,
         D: int,
-        is_torus: Union[bool, tuple[bool]] = True,
-    ) -> Self:
+        is_torus: Union[bool, tuple[bool, ...]] = True,
+    ) -> None:
         super(GeometricFilter, self).__init__(data, parity, D, is_torus)
         assert (
             self.spatial_dims == (self.spatial_dims[0],) * self.D
@@ -623,7 +638,7 @@ class GeometricFilter(GeometricImage):
         for key in self.key_array():
             numerator += jnp.linalg.norm(key * norms[tuple(key)], ord=2)
 
-        denominator = jnp.sum(norms)
+        denominator = float(jnp.sum(norms))
         return numerator / denominator
 
     def rectify(self: Self) -> Self:
@@ -644,13 +659,13 @@ class GeometricFilter(GeometricImage):
 
     def plot(
         self: Self,
-        ax: Optional[plt.Axes] = None,
+        ax: Optional[Any] = None,
         title: str = "",
         boxes: bool = True,
         fill: bool = True,
         symbols: bool = True,
-        vmin: Optional[float] = None,
-        vmax: Optional[float] = None,
+        vmin: Optional[ArrayLike] = None,
+        vmax: Optional[ArrayLike] = None,
         colorbar: bool = False,
         vector_scaling: float = 0.33,
     ) -> None:

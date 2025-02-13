@@ -44,14 +44,13 @@ print("Number of operators:", len(operators))
 image.times_group_element(operators[1])
 
 # Now let us generate all 3 by 3 filters of tensor order k=0,1 and parity=0,1 that are invariant to the operators
-invariant_filters = geom.get_invariant_filters(
+invariant_filters = geom.get_invariant_filters_list(
     Ms=[3],
     ks=[0, 1],
     parities=[0, 1],
     D=D,
     operators=operators,
     scale="one",  # all the values of the filter are 1, can also 'normalize' so the norm of the tensor pixel is 1
-    return_type="list",
 )
 print("Number of invariant filters N=3, k=0,1 parity=0,1:", len(invariant_filters))
 

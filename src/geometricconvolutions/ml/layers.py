@@ -1,6 +1,6 @@
 import math
 import functools
-from typing_extensions import Callable, Optional, Self, Union
+from typing_extensions import Any, Callable, Optional, Self, Union
 
 import jax
 import jax.numpy as jnp
@@ -13,7 +13,7 @@ import geometricconvolutions.geometric as geom
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Helpers ~~~~~~~~~~~~~~~~~~~~~~
 def _group_norm_K1(
-    D: int, image_block: ArrayLike, groups: int, method: str = "eigh", eps: float = 1e-5
+    D: int, image_block: jax.Array, groups: int, method: str = "eigh", eps: float = 1e-5
 ) -> jax.Array:
     """
     Perform the layer norm whitening on a vector image block. This is somewhat based on the Clifford
@@ -77,17 +77,17 @@ def _group_norm_K1(
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Layers ~~~~~~~~~~~~~~~~~~~~~~
 class ConvContract(eqx.Module):
-    weights: dict[geom.MultiImageKey, dict[geom.MultiImageKey, jax.Array]]
-    bias: dict[geom.MultiImageKey, jax.Array]
+    weights: dict[tuple[int, int], dict[tuple[int, int], jax.Array]]
+    bias: dict[tuple[int, int], jax.Array]
     invariant_filters: geom.MultiImage
 
     input_keys: geom.Signature = eqx.field(static=True)
     target_keys: geom.Signature = eqx.field(static=True)
     use_bias: Union[str, bool] = eqx.field(static=True)
-    stride: Optional[tuple[int]] = eqx.field(static=True)
-    padding: Optional[tuple[int]] = eqx.field(static=True)
-    lhs_dilation: Optional[tuple[int]] = eqx.field(static=True)
-    rhs_dilation: Optional[tuple[int]] = eqx.field(static=True)
+    stride: Union[int, tuple[int, ...]] = eqx.field(static=True)
+    padding: Optional[Union[str, int, tuple[tuple[int, int], ...]]] = eqx.field(static=True)
+    lhs_dilation: Optional[tuple[int, ...]] = eqx.field(static=True)
+    rhs_dilation: Union[int, tuple[int, ...]] = eqx.field(static=True)
     D: int = eqx.field(static=True)
     fast_mode: bool = eqx.field(static=True)
     missing_filter: bool = eqx.field(static=True)
@@ -98,11 +98,11 @@ class ConvContract(eqx.Module):
         target_keys: geom.Signature,
         invariant_filters: geom.MultiImage,
         use_bias: Union[str, bool] = "auto",
-        stride: Optional[tuple[int]] = None,
-        padding: Optional[tuple[int]] = None,
-        lhs_dilation: Optional[tuple[int]] = None,
-        rhs_dilation: Optional[tuple[int]] = None,
-        key: Optional[ArrayLike] = None,
+        stride: Union[int, tuple[int, ...]] = 1,
+        padding: Optional[Union[str, int, tuple[tuple[int, int], ...]]] = None,
+        lhs_dilation: Optional[tuple[int, ...]] = None,
+        rhs_dilation: Union[int, tuple[int, ...]] = 1,
+        key: Any = None,
     ):
         """
         Equivariant tensor convolution then contraction.
@@ -217,7 +217,7 @@ class ConvContract(eqx.Module):
     def fast_convolve(
         self: Self,
         input_multi_image: geom.BatchMultiImage,
-        weights: dict[geom.MultiImageKey, dict[geom.MultiImageKey, jax.Array]],
+        weights: dict[tuple[int, int], dict[tuple[int, int], jax.Array]],
     ):
         """
         Convolve when all filter_spatial_dims, in_c, and out_c match, can do a single convolve
@@ -322,7 +322,7 @@ class ConvContract(eqx.Module):
     def individual_convolve(
         self: Self,
         input_multi_image: geom.BatchMultiImage,
-        weights: dict[geom.MultiImageKey, dict[geom.MultiImageKey, jax.Array]],
+        weights: dict[tuple[int, int], dict[tuple[int, int], jax.Array]],
     ):
         """
         Function to perform convolve_contract on an entire MultiImage by doing the pairwise convolutions
@@ -386,9 +386,9 @@ class ConvContract(eqx.Module):
 
 
 class GroupNorm(eqx.Module):
-    scale: dict[geom.MultiImageKey, jax.Array]
-    bias: dict[geom.MultiImageKey, jax.Array]
-    vanilla_norm: dict[geom.MultiImageKey, eqx.nn.GroupNorm]
+    scale: dict[tuple[int, int], jax.Array]
+    bias: dict[tuple[int, int], jax.Array]
+    vanilla_norm: dict[tuple[int, int], eqx.nn.GroupNorm]
 
     D: int = eqx.field(static=False)
     groups: int = eqx.field(static=False)
@@ -400,7 +400,7 @@ class GroupNorm(eqx.Module):
         D: int,
         groups: int,
         eps: float = 1e-5,
-    ) -> Self:
+    ) -> None:
         """
         Implementation of group_norm. When num_groups=num_channels, this is equivalent to instance_norm. When
         num_groups=1, this is equivalent to layer_norm.
@@ -444,7 +444,7 @@ class GroupNorm(eqx.Module):
                 assert mean_vec.shape == image_block.shape[:2] + (1,) * self.D + (self.D,) * k
                 whitened_data = _group_norm_K1(self.D, image_block, self.groups, eps=self.eps)
                 whitened_data = whitened_data * self.scale[(k, p)] + self.bias[(k, p)] * mean_vec
-            elif k > 1:
+            else:  # k > 1
                 raise NotImplementedError(
                     f"ml::group_norm: Equivariant group_norm not implemented for k>1, but k={k}",
                 )
@@ -456,12 +456,12 @@ class GroupNorm(eqx.Module):
 
 class LayerNorm(GroupNorm):
 
-    def __init__(self: Self, input_keys: geom.Signature, D: int, eps: float = 1e-5) -> Self:
+    def __init__(self: Self, input_keys: geom.Signature, D: int, eps: float = 1e-5) -> None:
         super(LayerNorm, self).__init__(input_keys, D, 1, eps)
 
 
 class VectorNeuronNonlinear(eqx.Module):
-    weights: dict[geom.MultiImageKey, jax.Array]
+    weights: dict[tuple[int, int], jax.Array]
 
     eps: float = eqx.field(static=True)
     D: int = eqx.field(static=True)
@@ -473,8 +473,8 @@ class VectorNeuronNonlinear(eqx.Module):
         D: int,
         scalar_activation: Callable[[ArrayLike], jax.Array] = jax.nn.relu,
         eps: float = 1e-5,
-        key: ArrayLike = None,
-    ) -> Self:
+        key: Any = None,
+    ) -> None:
         """
         The vector nonlinearity in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
         Basically use the channels of a vector to get a direction vector. Use the direction vector
@@ -533,11 +533,11 @@ class MaxNormPool(eqx.Module):
     patch_len: int = eqx.field(static=True)
     use_norm: bool = eqx.field(static=True)
 
-    def __init__(self: Self, patch_len: int, use_norm: bool = True):
+    def __init__(self: Self, patch_len: int, use_norm: bool = True) -> None:
         self.patch_len = patch_len
         self.use_norm = use_norm
 
-    def __call__(self: Self, x: geom.BatchMultiImage):
+    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
         in_axes = (None, 0, None, None)
         vmap_max_pool = jax.vmap(jax.vmap(geom.max_pool, in_axes=in_axes), in_axes=in_axes)
 
@@ -549,9 +549,9 @@ class MaxNormPool(eqx.Module):
 
 
 class LayerWrapper(eqx.Module):
-    modules: dict[geom.MultiImageKey, Union[eqx.Module, Callable]]
+    modules: dict[tuple[int, int], Callable[..., Any]]
 
-    def __init__(self: Self, module: Union[eqx.Module, Callable], input_keys: geom.Signature):
+    def __init__(self: Self, module: Callable[..., Any], input_keys: geom.Signature) -> None:
         """
         Perform the module or callable (e.g., activation) on each layer of the input MultiImage.
         Since we only take input_keys, module should preserve the shape/tensor order and parity.
@@ -563,7 +563,7 @@ class LayerWrapper(eqx.Module):
             # case this should be perfectly fine though.
             self.modules[(k, p)] = module
 
-    def __call__(self: Self, x: geom.MultiImage):
+    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
         out = x.__class__({}, x.D, x.is_torus)
         for (k, p), image in x.items():
             vmap_call = eqx.filter_vmap(self.modules[(k, p)], axis_name="batch")
@@ -573,9 +573,9 @@ class LayerWrapper(eqx.Module):
 
 
 class LayerWrapperAux(eqx.Module):
-    modules: dict[geom.MultiImageKey, Union[eqx.Module, Callable]]
+    modules: dict[tuple[int, int], Callable[..., Any]]
 
-    def __init__(self: Self, module: Union[eqx.Module, Callable], input_keys: geom.Signature):
+    def __init__(self: Self, module: Callable[..., Any], input_keys: geom.Signature):
         """
         Perform the module or callable (e.g., activation) on each layer of the input MultiImage.
         Since we only take input_keys, module should preserve the shape/tensor order and parity.
@@ -587,14 +587,16 @@ class LayerWrapperAux(eqx.Module):
             # case this should be perfectly fine though.
             self.modules[(k, p)] = module
 
-    def __call__(self: Self, x: geom.MultiImage, aux_data: Optional[eqx.nn.State]):
+    def __call__(
+        self: Self, x: geom.BatchMultiImage, aux_data: Optional[eqx.nn.State]
+    ) -> tuple[geom.BatchMultiImage, Optional[eqx.nn.State]]:
         out = x.__class__({}, x.D, x.is_torus)
         for (k, p), image in x.items():
             vmap_call = eqx.filter_vmap(
                 self.modules[(k, p)], in_axes=(0, None), out_axes=(0, None), axis_name="batch"
             )
-            out, aux_data = vmap_call(image, aux_data)
-            out.append(k, p, out)
+            out_image, aux_data = vmap_call(image, aux_data)
+            out.append(k, p, out_image)
 
         return out, aux_data
 

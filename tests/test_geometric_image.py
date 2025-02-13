@@ -1,12 +1,11 @@
 import math
 import time
-from functools import partial
+import numpy as np
 
 import geometricconvolutions.geometric as geom
 import pytest
 import jax.numpy as jnp
 from jax import random
-import jax.nn
 
 TINY = 1.0e-5
 
@@ -784,8 +783,8 @@ class TestGeometricImage:
         )
 
     def testTimesGroupElement(self):
-        left90 = jnp.array([[0, -1], [1, 0]])
-        flipX = jnp.array([[-1, 0], [0, 1]])
+        left90 = np.array([[0, -1], [1, 0]])
+        flipX = np.array([[-1, 0], [0, 1]])
 
         img1 = geom.GeometricImage(jnp.arange(9).reshape((3, 3)), 0, 2)
 
@@ -880,8 +879,8 @@ class TestGeometricImage:
         assert (img5_flipX.data == jnp.array([[8, 9, 10, 11], [4, 5, 6, 7], [0, 1, 2, 3]])).all()
 
     def testTimesGroupElementEven(self):
-        left90 = jnp.array([[0, -1], [1, 0]])
-        flipX = jnp.array([[-1, 0], [0, 1]])
+        left90 = np.array([[0, -1], [1, 0]])
+        flipX = np.array([[-1, 0], [0, 1]])
 
         img1 = geom.GeometricImage(jnp.arange(4).reshape((2, 2)), 0, 2)
 
@@ -923,8 +922,8 @@ class TestGeometricImage:
 
     def testTimesGroupElement3D(self):
         D = 3
-        flipDepth = jnp.array([[-1, 0, 0], [0, 1, 0], [0, 0, 1]])
-        left90 = jnp.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
+        flipDepth = np.array([[-1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        left90 = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
 
         img1 = geom.GeometricImage(jnp.arange(27).reshape((3, 3, 3)), 0, D)
 

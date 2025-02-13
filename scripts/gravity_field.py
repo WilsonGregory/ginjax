@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 import argparse
 import time
+import itertools as it
+import numpy as np
 import matplotlib.pyplot as plt
 from typing_extensions import Optional, Self
 
@@ -15,17 +17,73 @@ import equinox as eqx
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
-from geometricconvolutions.data import get_gravity_data as get_data
+
+# Generate data for the gravity problem
+
+
+def get_gravity_vector(position1, position2, mass):
+    r_vec = position1 - position2
+    r_squared = np.linalg.norm(r_vec) ** 3
+    return (mass / r_squared) * r_vec
+
+
+def get_gravity_field_image(N, D, point_position, point_mass):
+    field = np.zeros((N,) * D + (D,))
+
+    # this could all be vectorized
+    for position in it.product(range(N), repeat=D):
+        position = np.array(position)
+        if np.all(position == point_position):
+            continue
+
+        field[tuple(position)] = get_gravity_vector(point_position, position, point_mass)
+
+    return geom.GeometricImage(jnp.array(field), 0, D, is_torus=False)
+
+
+def get_data(
+    N, D, num_points, rand_key, num_images=1
+) -> tuple[geom.BatchMultiImage, geom.BatchMultiImage]:
+    rand_key, subkey = random.split(rand_key)
+    planets = random.uniform(subkey, shape=(num_points,))
+    planets = planets / jnp.max(planets)
+
+    masses = []
+    gravity_fields = []
+    for _ in range(num_images):
+        point_mass = np.zeros((N, N))
+        gravity_field = geom.GeometricImage.zeros(N=N, k=1, parity=0, D=D, is_torus=False)
+
+        # Sample uniformly the cells
+        rand_key, subkey = random.split(rand_key)
+        possible_locations = np.array(list(it.product(range(N), repeat=D)))
+        location_choices = random.choice(
+            subkey, possible_locations, shape=(num_points,), replace=False, axis=0
+        )
+        for (x, y), mass in zip(location_choices, planets):
+            point_mass[x, y] = mass
+            gravity_field = gravity_field + get_gravity_field_image(N, D, np.array([x, y]), mass)
+
+        masses.append(geom.GeometricImage(jnp.array(point_mass), 0, D, is_torus=False))
+        gravity_fields.append(gravity_field)
+
+    masses_images = geom.BatchMultiImage.from_images(masses)
+    gravity_field_images = geom.BatchMultiImage.from_images(gravity_fields)
+    assert masses_images is not None
+    assert gravity_field_images is not None
+
+    return masses_images, gravity_field_images
 
 
 def plot_results(
-    model: Model,
-    multi_image_x: geom.MultiImage,
-    multi_image_y: geom.MultiImage,
-    axs: list[plt.Axes],
+    model: eqx.Module,
+    multi_image_x: geom.BatchMultiImage,
+    multi_image_y: geom.BatchMultiImage,
+    axs: list,
     titles: list[str],
 ):
     assert len(axs) == len(titles)
+    assert callable(model)
     learned_x = model(multi_image_x).to_images()[0]
     x = multi_image_x.to_images()[0]
     y = multi_image_y.to_images()[0]
@@ -49,15 +107,15 @@ class Model(eqx.Module):
 
     def __init__(
         self: Self,
-        spatial_dims: tuple[int],
+        spatial_dims: tuple[int, ...],
         input_keys: geom.Signature,
         conv_filters: geom.MultiImage,
         depth: int,
         key: ArrayLike,
-    ) -> Self:
+    ) -> None:
         D = conv_filters.D
-        mid_keys = (((0, 0), depth), ((1, 0), depth))
-        target_keys = (((1, 0), 1),)
+        mid_keys = geom.Signature((((0, 0), depth), ((1, 0), depth)))
+        target_keys = geom.Signature((((1, 0), 1),))
 
         key, subkey = random.split(key)
         self.embedding = ml.ConvContract(input_keys, mid_keys, conv_filters, key=subkey)
@@ -90,6 +148,7 @@ class Model(eqx.Module):
         for layer in self.first_layers:
             out_x = layer(x) if out_x is None else out_x + layer(x)
 
+        assert out_x is not None
         x = out_x
         out_x = None
         for layer in self.second_layers:
@@ -99,11 +158,12 @@ class Model(eqx.Module):
 
 
 def map_and_loss(
-    model: Model,
+    model: eqx.Module,
     x: geom.BatchMultiImage,
     y: geom.BatchMultiImage,
     aux_data: Optional[eqx.nn.State] = None,
-) -> float:
+) -> tuple[jax.Array, Optional[eqx.nn.State]]:
+    assert callable(model)
     return ml.smse_loss(model(x), y), aux_data
 
 
@@ -156,9 +216,10 @@ group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(
     Ms=[3], ks=[0, 1, 2], parities=[0], D=D, operators=group_actions
 )
+assert conv_filters is not None
 
 key, subkey = random.split(key)
-model = Model(train_X.get_spatial_dims(), (((0, 0), 1),), conv_filters, 10, key=subkey)
+model = Model(train_X.get_spatial_dims(), train_X.get_signature(), conv_filters, 10, key=subkey)
 print(f"Num params: {sum([x.size for x in jax.tree_util.tree_leaves(model)]):,}")
 
 if args.load_model:
@@ -202,15 +263,15 @@ if args.images_dir is not None:
     fig, axs = plt.subplots(nrows=2, ncols=4, figsize=(24, 12))
     plot_results(
         model,
-        train_X.get_one_batch_multi_image(),
-        train_Y.get_one_batch_multi_image(),
+        train_X.get_one(),
+        train_Y.get_one(),
         axs[0],
         titles,
     )
     plot_results(
         model,
-        test_X.get_one_batch_multi_image(),
-        test_Y.get_one_batch_multi_image(),
+        test_X.get_one(),
+        test_Y.get_one(),
         axs[1],
         titles,
     )

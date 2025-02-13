@@ -35,7 +35,7 @@ def get_batches(
     batch_size: int,
     rand_key: ArrayLike,
     devices: Optional[list[jax.Device]] = None,
-) -> Union[list[list[geom.BatchMultiImage]], list[geom.BatchMultiImage]]:
+) -> list[list[geom.BatchMultiImage]]:
     """
     Given a set of MultiImages, construct random batches of those MultiImages. The most common use case
     is for MultiImagess to be a tuple (X,Y) so that the batches have the inputs and outputs. In this case, it will return
@@ -65,7 +65,7 @@ def get_batches(
         for j, multi_image in enumerate(multi_images):
             batches[j].append(multi_image.get_subset(idxs).reshape_pmap(devices))
 
-    return batches if (len(batches) > 1) else batches[0]
+    return batches
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Training Functions ~~~~~~~~~~~~~~~~~~~~~~
@@ -76,7 +76,7 @@ def autoregressive_step(
     one_step: geom.BatchMultiImage,
     output: geom.BatchMultiImage,
     past_steps: int,
-    constant_fields: dict[geom.MultiImageKey, ArrayLike] = {},
+    constant_fields: dict[tuple[int, int], int] = {},
     future_steps: int = 1,
 ) -> tuple[geom.BatchMultiImage, geom.BatchMultiImage]:
     """
@@ -135,10 +135,10 @@ def autoregressive_step(
 def autoregressive_map(
     batch_model: eqx.Module,
     x: geom.BatchMultiImage,
-    aux_data: Any = None,
+    aux_data: Optional[eqx.nn.State] = None,
     past_steps: int = 1,
     future_steps: int = 1,
-) -> geom.BatchMultiImage:
+) -> tuple[geom.BatchMultiImage, Optional[eqx.nn.State]]:
     """
     Given a model, perform an autoregressive step (future_steps) times, and return the output
     steps in a single BatchMultiImage.
@@ -150,6 +150,7 @@ def autoregressive_map(
         aux_data: auxilliary data to pass to the network
         has_aux: whether net returns an aux_data, defaults to False
     """
+    assert callable(batch_model)
     out_x = x.empty()  # assume out matches D and is_torus
     for _ in range(future_steps):
         if aux_data is None:
@@ -166,19 +167,19 @@ def evaluate(
     model: eqx.Module,
     map_and_loss: Union[
         Callable[
-            [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, eqx.nn.State],
-            tuple[jax.Array, eqx.nn.State, geom.BatchMultiImage],
+            [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, Optional[eqx.nn.State]],
+            tuple[jax.Array, Optional[eqx.nn.State]],
         ],
         Callable[
-            [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, eqx.nn.State],
-            tuple[jax.Array, eqx.nn.State],
+            [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, Optional[eqx.nn.State]],
+            tuple[jax.Array, Optional[eqx.nn.State], geom.BatchMultiImage],
         ],
     ],
     x: geom.BatchMultiImage,
     y: geom.BatchMultiImage,
     aux_data: Optional[eqx.nn.State] = None,
     return_map: bool = False,
-) -> jax.Array:
+) -> Union[jax.Array, tuple[jax.Array, geom.BatchMultiImage]]:
     """
     Runs map_and_loss for the entire x, y, splitting into batches if the BatchMultiImage is larger than
     the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
@@ -225,13 +226,6 @@ def loss_reducer(ls):
     return jnp.mean(jnp.stack(ls), axis=0)
 
 
-def aux_data_reducer(ls):
-    """
-    A reducer for aux_data like batch stats that just takes the last one
-    """
-    return ls[-1]
-
-
 def multi_image_reducer(ls):
     """
     If map data returns the mapped MultiImages, merge them togther
@@ -241,18 +235,16 @@ def multi_image_reducer(ls):
 
 def map_loss_in_batches(
     map_and_loss: Callable[
-        [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, eqx.nn.State],
-        tuple[jax.Array, eqx.nn.State],
+        [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, Optional[eqx.nn.State]],
+        tuple[jax.Array, Optional[eqx.nn.State]],
     ],
     model: eqx.Module,
     x: geom.BatchMultiImage,
     y: geom.BatchMultiImage,
     batch_size: int,
     rand_key: ArrayLike,
-    reducers: Optional[tuple] = None,
-    devices: Optional[list[jax.devices]] = None,
+    devices: Optional[list[jax.Device]] = None,
     aux_data: Optional[eqx.nn.State] = None,
-    return_map: bool = False,
 ) -> jax.Array:
     """
     Runs map_and_loss for the entire x, y, splitting into batches if the BatchMultiImage is larger than
@@ -274,27 +266,58 @@ def map_loss_in_batches(
     Returns:
         Average loss over the entire BatchMultiImage
     """
-    if reducers is None:
-        # use the default reducer for loss
-        reducers = [loss_reducer]
-        if return_map:
-            reducers.append(multi_image_reducer)
-
     X_batches, Y_batches = get_batches((x, y), batch_size, rand_key, devices)
-    results = [[] for _ in range(len(reducers))]
+    losses = [
+        evaluate(model, map_and_loss, X_batch, Y_batch, aux_data, False)
+        for X_batch, Y_batch in zip(X_batches, Y_batches)
+    ]
+    return loss_reducer(losses)
+
+
+def map_plus_loss_in_batches(
+    map_and_loss: Callable[
+        [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, Optional[eqx.nn.State]],
+        tuple[jax.Array, Optional[eqx.nn.State], geom.BatchMultiImage],
+    ],
+    model: eqx.Module,
+    x: geom.BatchMultiImage,
+    y: geom.BatchMultiImage,
+    batch_size: int,
+    rand_key: ArrayLike,
+    devices: Optional[list[jax.Device]] = None,
+    aux_data: Optional[eqx.nn.State] = None,
+) -> tuple[jax.Array, geom.BatchMultiImage]:
+    """
+    This is like `map_loss_in_batches`, but it returns the mapped images in additon to just the loss.
+    Runs map_and_loss for the entire x, y, splitting into batches if the BatchMultiImage is larger than
+    the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
+    to split those over batches for memory reasons. Automatically pmaps over multiple gpus, so the number
+    of gpus must evenly divide batch_size as well as as any remainder of the BatchMultiImage.
+
+    args:
+        map_and_loss: function that takes in model, X_batch, Y_batch, and
+            aux_data and returns the loss and aux_data
+        model: the model to run through map_and_loss
+        x: input data
+        y: target output data
+        batch_size: effective batch_size, must be divisible by number of gpus
+        rand_key: rand key
+        devices: the gpus that the code will run on
+        aux_data: auxilliary data, such as batch stats. Passed to the function is has_aux is True.
+
+    Returns:
+        Average loss over the entire BatchMultiImage, and the mapped entire BatchMultiImage
+    """
+    X_batches, Y_batches = get_batches((x, y), batch_size, rand_key, devices)
+    losses = []
+    out_maps = []
     for X_batch, Y_batch in zip(X_batches, Y_batches):
-        one_result = evaluate(model, map_and_loss, X_batch, Y_batch, aux_data, return_map)
+        one_loss, one_map = evaluate(model, map_and_loss, X_batch, Y_batch, aux_data, True)
 
-        if len(reducers) == 1:
-            results[0].append(one_result)
-        else:
-            for val, result_ls in zip(one_result, results):
-                result_ls.append(val)
+        losses.append(one_loss)
+        out_maps.append(one_map)
 
-    if len(reducers) == 1:
-        return reducers[0](results[0])
-    else:
-        return tuple(reducer(result_ls) for reducer, result_ls in zip(reducers, results))
+    return loss_reducer(losses), multi_image_reducer(out_maps)
 
 
 def train_step(
@@ -346,12 +369,9 @@ def train_step(
 def train(
     X: geom.BatchMultiImage,
     Y: geom.BatchMultiImage,
-    map_and_loss: Union[
-        Callable[[eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage], jax.Array],
-        Callable[
-            [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, Any],
-            tuple[jax.Array, Any],
-        ],
+    map_and_loss: Callable[
+        [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, Optional[eqx.nn.State]],
+        tuple[jax.Array, Optional[eqx.nn.State]],
     ],
     model: eqx.Module,
     rand_key: ArrayLike,
@@ -363,7 +383,7 @@ def train(
     save_model: Optional[str] = None,
     devices: Optional[list[jax.Device]] = None,
     aux_data: Optional[eqx.nn.State] = None,
-) -> Union[tuple[eqx.Module, Any, jax.Array, jax.Array], tuple[eqx.Module, jax.Array, jax.Array]]:
+) -> tuple[eqx.Module, Optional[eqx.nn.State], Optional[ArrayLike], Optional[ArrayLike]]:
     """
     Method to train the model. It uses stochastic gradient descent (SGD) with the optimizer to learn the
     parameters the minimize the map_and_loss function. The model is returned. This function automatically
@@ -398,8 +418,9 @@ def train(
     epoch = 0
     epoch_val_loss = None
     epoch_loss = None
-    val_loss = 0
+    val_loss = None
     epoch_time = 0
+    stop_condition.best_model = model
     while not stop_condition.stop(model, epoch, epoch_loss, epoch_val_loss, epoch_time):
         rand_key, subkey = random.split(rand_key)
         X_batches, Y_batches = get_batches((X, Y), batch_size, subkey, devices)
@@ -448,8 +469,8 @@ BENCHMARK_NONE = "benchmark_none"
 
 
 def benchmark(
-    get_data: Callable[[Any], geom.BatchMultiImage],
-    models: list[tuple[str, Callable[[geom.BatchMultiImage, ArrayLike, str], Any]]],
+    get_data: Callable[[Any], tuple[geom.BatchMultiImage, ...]],
+    models: list[tuple[str, Callable]],
     rand_key: ArrayLike,
     benchmark: str,
     benchmark_range: Sequence,

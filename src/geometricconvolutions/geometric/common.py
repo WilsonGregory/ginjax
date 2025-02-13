@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Sequence, Union
+from typing import Optional, Sequence
 
 import itertools as it
 import numpy as np
@@ -148,44 +148,31 @@ def get_unique_invariant_filters(
     return filters
 
 
-def get_invariant_filters(
+def get_invariant_filters_dict(
     Ms: Sequence[int],
     ks: Sequence[int],
     parities: Sequence[int],
     D: int,
     operators: Sequence[np.ndarray],
     scale: str = "normalize",
-    return_type: str = "multi_image",
-    return_maxn: bool = False,
-) -> Union[
-    tuple[
-        Union[dict[tuple[int, int, int, int], GeometricFilter], list[GeometricFilter], MultiImage],
-        dict[tuple[int, int], int],
-    ],
-    dict[tuple[int, int, int, int], GeometricFilter],
-    list[GeometricFilter],
-    MultiImage,
-]:
+) -> tuple[dict[tuple[int, int, int, int], list[GeometricFilter]], dict[tuple[int, int], int]]:
     """
-    Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and parities. By default
-    it returns the filters in a dictionary with the key (D,M,k,parity), but flattens to a list if return_list=True
+    Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and parities.
+
     args:
-        Ms (iterable of int): filter side lengths
-        ks (iterable of int): tensor orders
-        parities (iterable of int):  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
-        D (int): image dimension
-        operators (jnp-array): array of operators of a group
-        scale (string): option for scaling the values of the filters, 'normalize' (default) to make amplitudes of each
+        Ms: filter side lengths
+        ks: tensor orders
+        parities:  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
+        D: image dimension
+        operators: array of operators of a group
+        scale: option for scaling the values of the filters, 'normalize' (default) to make amplitudes of each
         tensor +/- 1. 'one' to set them all to 1.
-        return_type (string): returns the filters as the dict, a list, or a MultiImage
-        return_maxn (bool): defaults to False, if true returns the length of the max list for each D, M
+
     returns:
         allfilters: a dictionary of filters of the specified D, M, k, and parity. If return_list=True, this is a list
-        maxn: a dictionary that tracks the longest number of filters per key, for a particular D,M combo. Not returned
-            if return_list=True
+        maxn: a dictionary that tracks the longest number of filters per key, for a particular D,M combo.
     """
     assert scale == "normalize" or scale == "one"
-    assert return_type in {"dict", "list", "multi_image"}
 
     allfilters = {}
     maxn = {}
@@ -199,17 +186,50 @@ def get_invariant_filters(
                 if n > maxn[(D, M)]:
                     maxn[(D, M)] = n
 
-    allfilters_list = list(it.chain(*list(allfilters.values())))  # list of GeometricFilters
-    if return_type == "list":
-        allfilters = allfilters_list
-    if return_type == "multi_image":
-        allfilters = MultiImage.from_images(allfilters_list)
-    # else, allfilters is the default structure
+    return allfilters, maxn
 
-    if return_maxn:
-        return allfilters, maxn
-    else:
-        return allfilters
+
+def get_invariant_filters_list(
+    Ms: Sequence[int],
+    ks: Sequence[int],
+    parities: Sequence[int],
+    D: int,
+    operators: Sequence[np.ndarray],
+    scale: str = "normalize",
+) -> list[GeometricFilter]:
+    """
+    This is get_invariant_filters_dict, but it converts it to a list, see that function for a full
+    description.
+    """
+    allfilters, _ = get_invariant_filters_dict(Ms, ks, parities, D, operators, scale)
+    return list(it.chain(*list(allfilters.values())))  # list of GeometricFilters
+
+
+def get_invariant_filters(
+    Ms: Sequence[int],
+    ks: Sequence[int],
+    parities: Sequence[int],
+    D: int,
+    operators: Sequence[np.ndarray],
+    scale: str = "normalize",
+) -> Optional[MultiImage]:
+    """
+    Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and parities.
+    They are returned as a MultiImage.
+
+    args:
+        Ms: filter side lengths
+        ks: tensor orders
+        parities:  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
+        D: image dimension
+        operators: array of operators of a group
+        scale: option for scaling the values of the filters, 'normalize' (default) to make amplitudes of each
+        tensor +/- 1. 'one' to set them all to 1.
+    returns:
+        allfilters: a dictionary of filters of the specified D, M, k, and parity. If return_list=True, this is a list
+    """
+    allfilters_list = get_invariant_filters_list(Ms, ks, parities, D, operators, scale)
+    return MultiImage.from_images(allfilters_list)
 
 
 def tensor_name(k: int, parity: int) -> str:

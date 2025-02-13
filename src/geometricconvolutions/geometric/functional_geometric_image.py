@@ -17,7 +17,7 @@ import equinox as eqx
 from geometricconvolutions.geometric.constants import LETTERS
 
 
-def parse_shape(shape: tuple[int], D: int) -> tuple[tuple[int], int]:
+def parse_shape(shape: tuple[int, ...], D: int) -> tuple[tuple[int, ...], int]:
     """
     Given a geometric image shape and dimension D, return the sidelength tuple and tensor order k.
     args:
@@ -29,7 +29,7 @@ def parse_shape(shape: tuple[int], D: int) -> tuple[tuple[int], int]:
     return shape[:D], len(shape) - D
 
 
-def hash(D: int, image: ArrayLike, indices: ArrayLike) -> tuple[jax.Array]:
+def hash(D: int, image: jax.Array, indices: ArrayLike) -> tuple[jax.Array]:
     """
     Deals with torus by modding (with `np.remainder()`).
     args:
@@ -42,20 +42,24 @@ def hash(D: int, image: ArrayLike, indices: ArrayLike) -> tuple[jax.Array]:
 
 
 def get_torus_expanded(
-    image: jnp.ndarray,
-    is_torus: tuple[bool],
-    filter_spatial_dims: tuple[int],
-    rhs_dilation: tuple[int],
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+    image: jax.Array,
+    is_torus: tuple[bool, ...],
+    filter_spatial_dims: tuple[int, ...],
+    rhs_dilation: tuple[int, ...],
+) -> tuple[jax.Array, tuple[tuple[int, int], ...]]:
     """
     For a particular filter, expand the image so that we no longer have to do convolutions on the torus, we are
-    just doing convolutions on the expanded image and will get the same result. Return a new GeometricImage
+    just doing convolutions on the expanded image and will get the same result.
+
     args:
         D (int): dimension of the image
         image (jnp.array): image data, (batch,spatial,channels)
         is_torus (tuple of bool): d-length tuple of bools specifying which spatial dimensions are toroidal
         filter_spatial_dims (tuple of ints): the spatial dimensions of the filter
         rhs_dilation (tuple of int): dilation to apply to each filter dimension D
+
+    Returns:
+        The new expanded torus, and the appropriate padding_literal to use in convolve
     """
     # assert all the filter side lengths are odd
     assert functools.reduce(lambda carry, M: carry and (M % 2 == 1), filter_spatial_dims, True)
@@ -79,10 +83,10 @@ def get_torus_expanded(
 
 
 def get_same_padding(
-    filter_spatial_dims: tuple[int],
-    rhs_dilation: tuple[int],
-    pad_dims: Optional[tuple[bool]] = None,
-) -> tuple[tuple[int]]:
+    filter_spatial_dims: tuple[int, ...],
+    rhs_dilation: tuple[int, ...],
+    pad_dims: Optional[tuple[bool, ...]] = None,
+) -> tuple[tuple[int, int], ...]:
     """
     Calculate the padding for each dimension D necessary for 'SAME' padding, including rhs_dilation.
     args:
@@ -91,7 +95,13 @@ def get_same_padding(
         pad_dims (tuple of bool): which dimensions to pad, defaults to None which is all dimensions
     """
     pad_dims = (True,) * len(filter_spatial_dims) if pad_dims is None else pad_dims
-    padding_f = lambda M, dilation, pad: ((((M - 1) // 2) * dilation,) * 2 if pad else (0, 0))
+
+    def padding_f(M: int, dilation: int, pad: int) -> tuple[int, int]:
+        if pad:
+            return (((M - 1) // 2) * dilation, ((M - 1) // 2) * dilation)
+        else:
+            return (0, 0)
+
     zipped_dims = zip(filter_spatial_dims, rhs_dilation, pad_dims)
     return tuple(padding_f(M, dilation, pad) for M, dilation, pad in zipped_dims)
 
@@ -188,15 +198,15 @@ def mul(
 @eqx.filter_jit
 def convolve(
     D: int,
-    image: jnp.ndarray,
-    filter_image: jnp.ndarray,
-    is_torus: Union[tuple[bool], bool],
-    stride: Optional[tuple[int]] = None,
-    padding: Optional[tuple[int]] = None,
-    lhs_dilation: Optional[tuple[int]] = None,
-    rhs_dilation: Optional[tuple[int]] = None,
+    image: jax.Array,
+    filter_image: jax.Array,
+    is_torus: Union[tuple[bool, ...], bool],
+    stride: Union[int, tuple[int, ...]] = 1,
+    padding: Optional[Union[str, int, tuple[tuple[int, int], ...]]] = None,
+    lhs_dilation: Optional[tuple[int, ...]] = None,
+    rhs_dilation: Union[int, tuple[int, ...]] = 1,
     tensor_expand: bool = True,
-) -> jnp.ndarray:
+) -> jax.Array:
     """
     Here is how this function works:
     1. Expand the geom_image to its torus shape, i.e. add filter.m cells all around the perimeter of the image
@@ -237,12 +247,7 @@ def convolve(
 
     if tensor_expand:
         img_expanded, filter_expanded = pre_tensor_product_expand(
-            D,
-            image,
-            filter_image,
-            a_offset=2,
-            b_offset=2,
-            dtype="float32",
+            D, image, filter_image, a_offset=2, b_offset=2, dtype=jnp.float32
         )
     else:
         img_expanded, filter_expanded = image, filter_image
@@ -278,11 +283,11 @@ def convolve_ravel(
     D: int,
     image: jnp.ndarray,
     filter_image: jnp.ndarray,
-    is_torus: Union[tuple[bool], bool],
-    stride: Optional[tuple[int]] = None,
-    padding: Optional[tuple[int]] = None,
-    lhs_dilation: Optional[tuple[int]] = None,
-    rhs_dilation: Optional[tuple[int]] = None,
+    is_torus: Union[tuple[bool, ...], bool],
+    stride: Union[int, tuple[int, ...]] = 1,
+    padding: Optional[Union[str, int, tuple[tuple[int, int], ...]]] = None,
+    lhs_dilation: Optional[tuple[int, ...]] = None,
+    rhs_dilation: Union[int, tuple[int, ...]] = 1,
 ) -> jnp.ndarray:
     """
     Raveled verson of convolution. Assumes the channels are all lined up correctly for the tensor
@@ -314,11 +319,11 @@ def convolve_ravel(
         and (padding == "TORUS" or padding == "SAME" or padding is None)
     ), f"convolve: Filters with even sidelengths {filter_spatial_dims} require literal padding, not {padding}"
 
-    if rhs_dilation is None:
-        rhs_dilation = (1,) * D
+    if not isinstance(rhs_dilation, tuple):
+        rhs_dilation = (rhs_dilation,) * D
 
-    if stride is None:
-        stride = (1,) * D
+    if not isinstance(stride, tuple):
+        stride = (stride,) * D
 
     if padding is None:  # if unspecified, infer from is_torus
         padding = "TORUS" if len(list(filter(lambda x: x, is_torus))) else "SAME"
@@ -337,6 +342,8 @@ def convolve_ravel(
         padding_literal = ((0, 0),) * D
     elif padding == "SAME":
         padding_literal = get_same_padding(filter_spatial_dims, rhs_dilation)
+    elif isinstance(padding, int):
+        padding_literal = ((padding, padding),) * D
     else:
         padding_literal = padding
 
@@ -360,14 +367,14 @@ def convolve_ravel(
 @eqx.filter_jit
 def convolve_contract(
     D: int,
-    image: jnp.ndarray,
-    filter_image: jnp.ndarray,
-    is_torus: Union[bool, tuple[bool]],
-    stride: Optional[tuple[int]] = None,
-    padding: Optional[tuple[int]] = None,
-    lhs_dilation: Optional[tuple[int]] = None,
-    rhs_dilation: Optional[tuple[int]] = None,
-) -> jnp.ndarray:
+    image: jax.Array,
+    filter_image: jax.Array,
+    is_torus: Union[bool, tuple[bool, ...]],
+    stride: Union[int, tuple[int, ...]] = 1,
+    padding: Optional[Union[str, int, tuple[tuple[int, int], ...]]] = None,
+    lhs_dilation: Optional[tuple[int, ...]] = None,
+    rhs_dilation: Union[int, tuple[int, ...]] = 1,
+) -> jax.Array:
     """
     Given an input k image and a k+k' filter, take the tensor convolution that contract k times with one index
     each from the image and filter. This implementation is slightly more efficient then doing the convolution
@@ -399,8 +406,8 @@ def convolve_contract(
 def get_contraction_indices(
     initial_k: int,
     final_k: int,
-    swappable_idxs: tuple[tuple[tuple[int]]] = (),
-) -> list[tuple[tuple[int]]]:
+    swappable_idxs: tuple[tuple[tuple[int, int], ...], ...] = (),
+) -> list[tuple[tuple[int, int], ...]]:
     """
     Get all possible unique indices for multicontraction. Returns a list of indices. The indices are a tuple of tuples
     where each of the inner tuples are pairs of indices. For example, if initial_k=5, final_k = 4, one element of the
@@ -452,7 +459,9 @@ def get_contraction_indices(
 
 
 @functools.partial(jax.jit, static_argnums=[1, 2])
-def multicontract(data: jnp.ndarray, indices: tuple[tuple[int]], idx_shift: int = 0) -> jnp.ndarray:
+def multicontract(
+    data: jnp.ndarray, indices: tuple[tuple[int, int], ...], idx_shift: int = 0
+) -> jax.Array:
     """
     Perform the Kronecker Delta contraction on the data. Must have at least 2 dimensions, and because we implement with
     einsum, must have at most 52 dimensions. Indices a tuple of pairs of indices, also tuples.
@@ -499,7 +508,7 @@ def get_rotated_keys(D: int, data: jnp.ndarray, gg: np.ndarray) -> np.ndarray:
 
 def times_group_element(
     D: int,
-    data: ArrayLike,
+    data: jax.Array,
     parity: int,
     gg: np.ndarray,
     precision: Optional[jax.lax.Precision] = None,
@@ -571,7 +580,7 @@ def tensor_times_gg(
     return newdata
 
 
-def norm(idx_shift: int, data: ArrayLike, keepdims: bool = False) -> jax.Array:
+def norm(idx_shift: int, data: jax.Array, keepdims: bool = False) -> jax.Array:
     """
     Perform the frobenius norm on each pixel tensor, returning a scalar image
     args:
@@ -597,10 +606,10 @@ def norm(idx_shift: int, data: ArrayLike, keepdims: bool = False) -> jax.Array:
 @functools.partial(jax.jit, static_argnums=[0, 2, 3])
 def max_pool(
     D: int,
-    image_data: ArrayLike,
+    image_data: jax.Array,
     patch_len: int,
     use_norm: bool = True,
-    comparator_image: Optional[ArrayLike] = None,
+    comparator_image: Optional[jax.Array] = None,
 ) -> jax.Array:
     """
     Perform a max pooling operation where the length of the side of each patch is patch_len. Max is
@@ -652,7 +661,7 @@ def max_pool(
 
 
 @functools.partial(jax.jit, static_argnums=[0, 2])
-def average_pool(D: int, image_data: ArrayLike, patch_len: int) -> jax.Array:
+def average_pool(D: int, image_data: jax.Array, patch_len: int) -> jax.Array:
     """
     Perform a average pooling operation where the length of the side of each patch is patch_len. This is
     equivalent to doing a convolution where each element of the filter is 1 over the number of pixels in the

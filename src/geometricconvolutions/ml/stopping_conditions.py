@@ -2,11 +2,15 @@ from typing_extensions import Optional, Self
 import numpy as np
 
 import jax.numpy as jnp
+from jaxtyping import ArrayLike
 import equinox as eqx
 
 
 class StopCondition:
-    def __init__(self: Self, verbose: int = 0) -> Self:
+    best_model: Optional[eqx.Module]
+    verbose: int
+
+    def __init__(self: Self, verbose: int = 0) -> None:
         assert verbose in {0, 1, 2}
         self.best_model = None
         self.verbose = verbose
@@ -15,14 +19,18 @@ class StopCondition:
         self: Self,
         model: eqx.Module,
         current_epoch: int,
-        train_loss: float,
-        val_loss: float,
-        epoch_time: int,
-    ) -> None:
-        pass
+        train_loss: Optional[ArrayLike],
+        val_loss: Optional[ArrayLike],
+        epoch_time: float,
+    ) -> bool:
+        return True
 
     def log_status(
-        self: Self, epoch: int, train_loss: float, val_loss: float, epoch_time: int
+        self: Self,
+        epoch: int,
+        train_loss: Optional[ArrayLike],
+        val_loss: Optional[ArrayLike],
+        epoch_time: float,
     ) -> None:
         if train_loss is not None:
             if val_loss is not None:
@@ -36,7 +44,7 @@ class StopCondition:
 class EpochStop(StopCondition):
     # Stop when enough epochs have passed.
 
-    def __init__(self: Self, epochs: int, verbose: int = 0) -> Self:
+    def __init__(self: Self, epochs: int, verbose: int = 0) -> None:
         super(EpochStop, self).__init__(verbose=verbose)
         self.epochs = epochs
 
@@ -44,9 +52,9 @@ class EpochStop(StopCondition):
         self: Self,
         model: eqx.Module,
         current_epoch: int,
-        train_loss: float,
-        val_loss: float,
-        epoch_time: int,
+        train_loss: Optional[ArrayLike],
+        val_loss: Optional[ArrayLike],
+        epoch_time: float,
     ) -> bool:
         self.best_model = model
 
@@ -61,7 +69,7 @@ class EpochStop(StopCondition):
 class TrainLoss(StopCondition):
     # Stop when the training error stops improving after patience number of epochs.
 
-    def __init__(self: Self, patience: int = 0, min_delta: float = 0, verbose: int = 0) -> Self:
+    def __init__(self: Self, patience: int = 0, min_delta: float = 0, verbose: int = 0) -> None:
         super(TrainLoss, self).__init__(verbose=verbose)
         self.patience = patience
         self.min_delta = min_delta
@@ -72,11 +80,11 @@ class TrainLoss(StopCondition):
         self: Self,
         model: eqx.Module,
         current_epoch: int,
-        train_loss: Optional[float],
-        val_loss: Optional[float],
-        epoch_time: int,
+        train_loss: Optional[ArrayLike],
+        val_loss: Optional[ArrayLike],
+        epoch_time: float,
     ) -> bool:
-        if train_loss is None:
+        if train_loss is None or not isinstance(train_loss, float):
             return False
 
         if train_loss < (self.best_train_loss - self.min_delta):
@@ -95,7 +103,7 @@ class TrainLoss(StopCondition):
 class ValLoss(StopCondition):
     # Stop when the validation error stops improving after patience number of epochs.
 
-    def __init__(self: Self, patience: int = 0, min_delta: float = 0, verbose: int = 0) -> Self:
+    def __init__(self: Self, patience: int = 0, min_delta: float = 0, verbose: int = 0) -> None:
         super(ValLoss, self).__init__(verbose=verbose)
         self.patience = patience
         self.min_delta = min_delta
@@ -106,11 +114,11 @@ class ValLoss(StopCondition):
         self: Self,
         model: eqx.Module,
         current_epoch: int,
-        train_loss: Optional[float],
-        val_loss: Optional[float],
-        epoch_time: int,
+        train_loss: Optional[ArrayLike],
+        val_loss: Optional[ArrayLike],
+        epoch_time: float,
     ) -> bool:
-        if val_loss is None:
+        if val_loss is None or not isinstance(val_loss, float):
             return False
 
         if val_loss < (self.best_val_loss - self.min_delta):

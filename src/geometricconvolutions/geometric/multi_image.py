@@ -1,6 +1,7 @@
 import functools
 import numpy as np
-from typing_extensions import Generator, NewType, Optional, Self, Union
+from typing_extensions import NewType, Optional, Self, Sequence, Union
+from collections.abc import ItemsView, KeysView, ValuesView
 
 import jax
 import jax.numpy as jnp
@@ -11,8 +12,7 @@ from geometricconvolutions.geometric.constants import TINY
 from geometricconvolutions.geometric.functional_geometric_image import norm, times_group_element
 from geometricconvolutions.geometric.geometric_image import GeometricImage
 
-MultiImageKey = NewType("MultiImageKey", tuple[int, int])
-Signature = NewType("Signature", tuple[tuple[MultiImageKey, int]])
+Signature = NewType("Signature", tuple[tuple[tuple[int, int], int], ...])
 
 
 @register_pytree_node_class
@@ -22,10 +22,10 @@ class MultiImage:
 
     def __init__(
         self: Self,
-        data: dict[MultiImageKey, jax.Array],
+        data: dict[tuple[int, int], jax.Array],
         D: int,
-        is_torus: Union[bool, tuple[bool]] = True,
-    ) -> Self:
+        is_torus: Union[bool, tuple[bool, ...]] = True,
+    ) -> None:
         """
         Construct a MultiImage
         args:
@@ -49,7 +49,7 @@ class MultiImage:
         return self.__class__({}, self.D, self.is_torus)
 
     @classmethod
-    def from_images(cls, images: list[GeometricImage]) -> Self:
+    def from_images(cls, images: Sequence[GeometricImage]) -> Optional[Self]:
         # We assume that all images have the same D and is_torus
         if len(images) == 0:
             return None
@@ -61,7 +61,7 @@ class MultiImage:
         return out
 
     @classmethod
-    def from_vector(cls, vector: jnp.ndarray, multi_image: Self) -> Self:
+    def from_vector(cls, vector: jax.Array, multi_image: Self) -> Self:
         """
         Convert a vector to a MultiImage, using the shape and parity of the provided MultiImage.
         args:
@@ -86,12 +86,12 @@ class MultiImage:
     def size(self: Self) -> int:
         return functools.reduce(lambda size, img: size + img.size, self.values(), 0)
 
-    def get_spatial_dims(self: Self) -> tuple[int]:
+    def get_spatial_dims(self: Self) -> tuple[int, ...]:
         """
         Get the spatial dimensions.
         """
         if len(self.values()) == 0:
-            return None
+            return ()
 
         (k, _), image_block = next(iter(self.items()))
         prior_indices = image_block.ndim - (k + self.D)  # handles batch or channels
@@ -99,16 +99,16 @@ class MultiImage:
 
     # Functions that map directly to calling the function on data
 
-    def keys(self: Self) -> Generator[tuple[int, int]]:
+    def keys(self: Self) -> KeysView[tuple[int, int]]:
         return self.data.keys()
 
-    def values(self: Self) -> Generator[jnp.ndarray]:
+    def values(self: Self) -> ValuesView[jax.Array]:
         return self.data.values()
 
-    def items(self: Self) -> Generator[tuple[tuple[int, int], jnp.ndarray]]:
+    def items(self: Self) -> ItemsView[tuple[int, int], jax.Array]:
         return self.data.items()
 
-    def __getitem__(self: Self, idx: MultiImageKey) -> jax.Array:
+    def __getitem__(self: Self, idx: tuple[int, int]) -> jax.Array:
         return self.data[idx]
 
     def __setitem__(self: Self, idx: tuple[int, int], val: jnp.ndarray) -> jnp.ndarray:
@@ -118,23 +118,26 @@ class MultiImage:
     def __contains__(self: Self, idx: tuple[int, int]) -> bool:
         return idx in self.data
 
-    def __eq__(self: Self, other: Self, rtol: float = TINY, atol: float = TINY) -> bool:
-        if (
-            (self.D != other.D)
-            or (self.is_torus != other.is_torus)
-            or (self.keys() != other.keys())
-        ):
-            return False
-
-        for key in self.keys():
-            if not jnp.allclose(self[key], other[key], rtol, atol):
+    def __eq__(self: Self, other: object, rtol: float = TINY, atol: float = TINY) -> bool:
+        if isinstance(other, MultiImage):
+            if (
+                (self.D != other.D)
+                or (self.is_torus != other.is_torus)
+                or (self.keys() != other.keys())
+            ):
                 return False
 
-        return True
+            for key in self.keys():
+                if not jnp.allclose(self[key], other[key], rtol, atol):
+                    return False
+
+            return True
+        else:
+            return False
 
     # Other functions
 
-    def append(self: Self, k: int, parity: int, image_block: jnp.ndarray, axis: int = 0) -> Self:
+    def append(self: Self, k: int, parity: int, image_block: jax.Array, axis: int = 0) -> Self:
         """
         Append an image block at (k,parity). It will be concatenated along axis=0, so channel for
         MultiImage and vmapped BatchMultiImage, and batch for normal BatchMultiImage
@@ -248,18 +251,18 @@ class MultiImage:
 
         return out
 
-    def from_scalar_multi_image(self: Self, layout: dict[tuple[int, int], int]) -> Self:
+    def from_scalar_multi_image(self: Self, layout: Signature) -> Self:
         """
         Convert a scalar MultiImage back to a MultiImage with the specified layout
         args:
-            layout: dictionary of keys (k,parity) and values num_channels for the output MultiImage
+            layout: signature of keys (k,parity) and values num_channels for the output MultiImage
         """
         assert list(self.keys()) == [(0, 0)]
         spatial_dims = self[(0, 0)].shape[1:]
 
         out = self.empty()
         idx = 0
-        for (k, parity), num_channels in layout.items():
+        for (k, parity), num_channels in layout:
             length = num_channels * (self.D**k)
             # reshape, it is (num_channels*(D**k), spatial_dims) -> (num_channels, (D,)*k, spatial_dims)
             reshaped_data = self[(0, 0)][idx : idx + length].reshape(
@@ -298,12 +301,7 @@ class MultiImage:
 
         return out
 
-    def get_component(
-        self: Self,
-        component: int,
-        future_steps: int = 1,
-        as_multi_image: bool = True,
-    ) -> Union[Self, jnp.ndarray]:
+    def get_component(self: Self, component: Union[int, slice], future_steps: int = 1) -> Self:
         """
         Given a MultiImage with data with shape (channels*future_steps,spatial,tensor), combine all
         fields into a single block of data (future_steps,spatial,channels*tensor) then pick the
@@ -314,11 +312,8 @@ class MultiImage:
         args:
             component: which component to select
             future_steps: the number of future timesteps of this MultiImage, defaults to 1
-            as_multi_image: if true, return as a new MultiImage with a scalar feature, otherwise
-                just the data
         """
-        # explicitly call MultiImage's version, even if calling from vmapped BatchMultiImage
-        spatial_dims = MultiImage.get_spatial_dims(self)
+        spatial_dims = self.get_spatial_dims()
 
         data = None
         for (k, _), img in self.items():
@@ -332,24 +327,21 @@ class MultiImage:
 
             data = exp_data if data is None else jnp.concatenate([data, exp_data], axis=-1)
 
+        assert data is not None, "MultiImage::get_component: Multi Image has no images of any order"
         component_data = data[..., component].reshape((future_steps,) + spatial_dims + (-1,))
         component_data = jnp.moveaxis(component_data, -1, 0).reshape((-1,) + spatial_dims)
-        if as_multi_image:
-            return self.__class__({(0, 0): component_data}, self.D, self.is_torus)
-        else:
-            return component_data
+        return self.__class__({(0, 0): component_data}, self.D, self.is_torus)
 
     def get_signature(self: Self) -> Signature:
         """
         Get a tuple of ( ((k,p),channels), ((k,p),channels), ...). This works for MultiImages and
         BatchMultiImages.
         """
-        if self.data == {}:
-            return None
-
         k, p = next(iter(self.data.keys()))
         leading_axes = self[k, p].ndim - self.D - k
-        return tuple((k_p, img.shape[leading_axes - 1]) for k_p, img in self.data.items())
+        return Signature(
+            tuple((k_p, img.shape[leading_axes - 1]) for k_p, img in self.data.items())
+        )
 
     def device_replicate(self: Self, sharding: jax.sharding.PositionalSharding) -> Self:
         """
@@ -391,9 +383,9 @@ class BatchMultiImage(MultiImage):
 
     def __init__(
         self: Self,
-        data: dict[MultiImageKey, jax.Array],
+        data: dict[tuple[int, int], jax.Array],
         D: int,
-        is_torus: Union[bool, tuple[bool]] = True,
+        is_torus: Union[bool, tuple[bool, ...]] = True,
     ) -> None:
         """
         Construct a BatchMultiImage
@@ -412,7 +404,7 @@ class BatchMultiImage(MultiImage):
             break
 
     @classmethod
-    def from_images(cls, images: list[GeometricImage]) -> Self:
+    def from_images(cls, images: Sequence[GeometricImage]) -> Optional[Self]:
         # We assume that all images have the same D and is_torus
         if len(images) == 0:
             return None
@@ -474,7 +466,9 @@ class BatchMultiImage(MultiImage):
         return self._times_group_element(gg, precision)
 
     @functools.partial(jax.vmap, in_axes=(0, None, None))
-    def _times_group_element(self: Self, gg: np.ndarray, precision: jax.lax.Precision) -> Self:
+    def _times_group_element(
+        self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision]
+    ) -> Self:
         return super(BatchMultiImage, self).times_group_element(gg, precision)
 
     @jax.vmap
@@ -486,28 +480,24 @@ class BatchMultiImage(MultiImage):
         return super(BatchMultiImage, self).to_scalar_multi_image()
 
     @functools.partial(jax.vmap, in_axes=(0, None))
-    def from_scalar_multi_image(self: Self, layout: Self) -> Self:
+    def from_scalar_multi_image(self: Self, layout: Signature) -> Self:
         return super(BatchMultiImage, self).from_scalar_multi_image(layout)
 
     @classmethod
     @functools.partial(jax.vmap, in_axes=(None, 0, 0))
-    def from_vector(cls, vector: ArrayLike, multi_image: Self) -> Self:
+    def from_vector(cls, vector: jax.Array, multi_image: Self) -> Self:
         return super().from_vector(vector, multi_image)
 
     @jax.vmap
     def norm(self: Self) -> Self:
         return super(BatchMultiImage, self).norm()
 
-    def get_component(
-        self: Self, component: int, future_steps: int = 1, as_multi_image: bool = True
-    ) -> Union[Self, jnp.ndarray]:
-        return self._get_component(component, future_steps, as_multi_image)
+    def get_component(self: Self, component: Union[int, slice], future_steps: int = 1) -> Self:
+        return self._get_component(component, future_steps)
 
-    @functools.partial(jax.vmap, in_axes=(0, None, None, None))
-    def _get_component(
-        self: Self, component: int, future_steps: int, as_multi_image: bool
-    ) -> Union[Self, jnp.ndarray]:
-        return super(BatchMultiImage, self).get_component(component, future_steps, as_multi_image)
+    @functools.partial(jax.vmap, in_axes=(0, None, None))
+    def _get_component(self: Self, component: Union[int, slice], future_steps: int) -> Self:
+        return super(BatchMultiImage, self).get_component(component, future_steps)
 
     def device_put(self: Self, sharding: jax.sharding.PositionalSharding) -> Self:
         """

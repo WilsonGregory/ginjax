@@ -12,6 +12,7 @@ from .layers import (
     MaxNormPool as MaxNormPool,
     LayerWrapper as LayerWrapper,
     LayerWrapperAux as LayerWrapperAux,
+    batch_average_pool as batch_average_pool,
 )
 
 from .stopping_conditions import (
@@ -26,6 +27,7 @@ from .training import (
     get_batches as get_batches,
     autoregressive_map as autoregressive_map,
     map_loss_in_batches as map_loss_in_batches,
+    map_plus_loss_in_batches as map_plus_loss_in_batches,
     train as train,
     benchmark as benchmark,
     BENCHMARK_DATA as BENCHMARK_DATA,

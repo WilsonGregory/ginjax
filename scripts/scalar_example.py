@@ -38,7 +38,7 @@ class SimpleModel(eqx.Module):
 
 
 def map_and_loss(
-    model: SimpleModel,
+    model: eqx.Module,
     multi_image_x: geom.BatchMultiImage,
     multi_image_y: geom.BatchMultiImage,
     aux_data: Optional[eqx.nn.State] = None,
@@ -58,6 +58,7 @@ def map_and_loss(
     Returns:
         The loss value
     """
+    assert callable(model)
     return ml.smse_loss(multi_image_y, model(multi_image_x)), aux_data
 
 
@@ -98,6 +99,7 @@ group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(
     Ms=[M], ks=[0], parities=[0], D=D, operators=group_actions
 )
+assert conv_filters is not None
 
 key, subkey = random.split(key)
 multi_image_X = geom.BatchMultiImage(
@@ -121,6 +123,7 @@ trained_model, _, _, _ = ml.train(
     num_images,
     optimizer=optax.adam(optax.exponential_decay(0.1, transition_steps=1, decay_rate=0.99)),
 )
+assert isinstance(trained_model, SimpleModel)
 
 print(trained_model.net[0].weights)
 print(trained_model.net[1].weights)

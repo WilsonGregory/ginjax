@@ -155,7 +155,7 @@ def get_invariant_filters_dict(
     D: int,
     operators: Sequence[np.ndarray],
     scale: str = "normalize",
-):
+) -> tuple[dict[tuple[int, int, int, int], list[GeometricFilter]], dict[tuple[int, int], int]]:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and parities.
 

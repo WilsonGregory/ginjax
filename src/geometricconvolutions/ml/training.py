@@ -267,12 +267,10 @@ def map_loss_in_batches(
         Average loss over the entire BatchMultiImage
     """
     X_batches, Y_batches = get_batches((x, y), batch_size, rand_key, devices)
-    losses = []
-    for X_batch, Y_batch in zip(X_batches, Y_batches):
-        one_loss = evaluate(model, map_and_loss, X_batch, Y_batch, aux_data, False)
-
-        losses.append(one_loss)
-
+    losses = [
+        evaluate(model, map_and_loss, X_batch, Y_batch, aux_data, False)
+        for X_batch, Y_batch in zip(X_batches, Y_batches)
+    ]
     return loss_reducer(losses)
 
 

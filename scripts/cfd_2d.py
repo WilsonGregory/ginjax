@@ -531,104 +531,104 @@ train_and_eval = partial(
 
 key, *subkeys = random.split(key, num=9)
 model_list = [
-    # (
-    #     "dil_resnet64",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.DilResNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=64,
-    #             equivariant=False,
-    #             kernel_size=3,
-    #             key=subkeys[0],
-    #         ),
-    #         lr=2e-3,
-    #     ),
-    # ),
-    # (
-    #     "dil_resnet_equiv48",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.DilResNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=48,
-    #             conv_filters=conv_filters,
-    #             key=subkeys[1],
-    #         ),
-    #         lr=1e-3,
-    #     ),
-    # ),
-    # (
-    #     "resnet",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.ResNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=128,
-    #             equivariant=False,
-    #             kernel_size=3,
-    #             key=subkeys[2],
-    #         ),
-    #         lr=1e-3,
-    #     ),
-    # ),
-    # (
-    #     "resnet_equiv_groupnorm_100",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.ResNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=100,  # very slow at 100
-    #             conv_filters=conv_filters,
-    #             key=subkeys[3],
-    #         ),
-    #         lr=7e-4,
-    #     ),
-    # ),
-    # (
-    #     "unetBase",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.UNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=64,
-    #             use_bias=True,
-    #             activation_f=jax.nn.gelu,
-    #             equivariant=False,
-    #             kernel_size=3,
-    #             use_group_norm=True,
-    #             key=subkeys[4],
-    #         ),
-    #         lr=8e-4,
-    #     ),
-    # ),
-    # (
-    #     "unetBase_equiv48",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.UNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=48,
-    #             activation_f=jax.nn.gelu,
-    #             conv_filters=conv_filters,
-    #             upsample_filters=upsample_filters,
-    #             key=subkeys[5],
-    #         ),
-    #         lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-    #     ),
-    # ),
+    (
+        "dil_resnet64",
+        partial(
+            train_and_eval,
+            model=models.DilResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=64,
+                equivariant=False,
+                kernel_size=3,
+                key=subkeys[0],
+            ),
+            lr=2e-3,
+        ),
+    ),
+    (
+        "dil_resnet_equiv48",
+        partial(
+            train_and_eval,
+            model=models.DilResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=48,
+                conv_filters=conv_filters,
+                key=subkeys[1],
+            ),
+            lr=1e-3,
+        ),
+    ),
+    (
+        "resnet",
+        partial(
+            train_and_eval,
+            model=models.ResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=128,
+                equivariant=False,
+                kernel_size=3,
+                key=subkeys[2],
+            ),
+            lr=1e-3,
+        ),
+    ),
+    (
+        "resnet_equiv_groupnorm_100",
+        partial(
+            train_and_eval,
+            model=models.ResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=100,  # very slow at 100
+                conv_filters=conv_filters,
+                key=subkeys[3],
+            ),
+            lr=7e-4,
+        ),
+    ),
+    (
+        "unetBase",
+        partial(
+            train_and_eval,
+            model=models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=64,
+                use_bias=True,
+                activation_f=jax.nn.gelu,
+                equivariant=False,
+                kernel_size=3,
+                use_group_norm=True,
+                key=subkeys[4],
+            ),
+            lr=8e-4,
+        ),
+    ),
+    (
+        "unetBase_equiv48",
+        partial(
+            train_and_eval,
+            model=models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=48,
+                activation_f=jax.nn.gelu,
+                conv_filters=conv_filters,
+                upsample_filters=upsample_filters,
+                key=subkeys[5],
+            ),
+            lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+        ),
+    ),
     (
         "unet2015",
         partial(

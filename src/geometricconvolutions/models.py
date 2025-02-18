@@ -399,7 +399,9 @@ class UNet(eqx.Module):
             key=subkey,
         )
 
-    def __call__(self: Self, x: geom.BatchMultiImage, batch_stats: Optional[eqx.nn.State] = None):
+    def __call__(
+        self: Self, x: geom.BatchMultiImage, batch_stats: Optional[eqx.nn.State] = None
+    ) -> Union[geom.BatchMultiImage, tuple[geom.BatchMultiImage, Optional[eqx.nn.State]]]:
         if not self.equivariant:
             x = x.to_scalar_multi_image()
 

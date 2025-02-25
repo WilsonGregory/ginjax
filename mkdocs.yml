@@ -70,6 +70,7 @@ plugins:
 nav:
   - Home: index.md
   - Quickstart: quickstart.md
+  - Examples: examples/
   - API: api/*
 
 extra_javascript:

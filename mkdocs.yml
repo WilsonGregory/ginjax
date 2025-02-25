@@ -61,7 +61,7 @@ plugins:
                     show_root_full_path: true  # display "diffrax.asdf" not just "asdf"
                     show_if_no_docstring: false # don't want to display attributes
                     show_signature_annotations: true
-                    show_source: true  # don't include source code
+                    show_source: true 
                     members_order: source  # order methods according to their order of definition in the source code, not alphabetical order
                     heading_level: 3
                     show_symbol_type_heading: true

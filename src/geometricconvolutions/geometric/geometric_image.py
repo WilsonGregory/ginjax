@@ -27,6 +27,12 @@ import geometricconvolutions.utils as utils
 
 @register_pytree_node_class
 class GeometricImage:
+    """
+    One of the main classes of the package. This class is a single geometric image, a.k.a. an image
+    where every pixel is a k,p tensor. This class is primarily used for simple operations on
+    geometric images and plotting.
+    """
+
     D: int
     spatial_dims: tuple[int, ...]
     k: int
@@ -46,13 +52,17 @@ class GeometricImage:
         is_torus: Union[bool, tuple[bool]] = True,
     ) -> Self:
         """
-        Class method zeros to construct a geometric image of zeros
+        Zero constructor for GeometricImage.
+
         args:
             N: length of all sides if an int, otherwise a tuple of the side lengths
             k: the order of the tensor in each pixel, i.e. 0 (scalar), 1 (vector), 2 (matrix), etc.
             parity: 0 or 1, 0 is normal vectors, 1 is pseudovectors
             D: dimension of the image, and length of vectors or side length of matrices or tensors.
             is_torus: whether the datablock is a torus, used for convolutions
+
+        returns:
+            constructed GeometricImage
         """
         spatial_dims = N if isinstance(N, tuple) else (N,) * D
         assert len(spatial_dims) == D
@@ -68,13 +78,17 @@ class GeometricImage:
         is_torus: Union[bool, tuple[bool, ...]] = True,
     ) -> Self:
         """
-        Class method fill constructor to construct a geometric image every pixel as fill
+        Fill constructor to construct a geometric image every pixel as fill
+
         args:
             N: length of all sides if an int, otherwise a tuple of the side lengths
             parity: 0 or 1, 0 is normal vectors, 1 is pseudovectors
             D: dimension of the image, and length of vectors or side length of matrices or tensors.
             fill: tensor to fill the image with
             is_torus: whether the datablock is a torus, used for convolutions. Defaults to true.
+
+        returns:
+            Constructed GeometricImage
         """
         spatial_dims = N if isinstance(N, tuple) else (N,) * D
         assert len(spatial_dims) == D
@@ -97,14 +111,16 @@ class GeometricImage:
         is_torus: Union[bool, tuple[bool, ...]] = True,
     ) -> None:
         """
-        Construct the GeometricImage. It will be (N^D x D^k), so if N=100, D=2, k=1, then it's (100 x 100 x 2)
+        Constructor for GeometricImage. It will be (N^D x D^k), so if N=100, D=2, k=1, then it's
+        (100 x 100 x 2). The spatial dimensions don't have to be square.
+
         args:
-            data (array-like):
-            parity (int): 0 or 1, 0 is normal vectors, 1 is pseudovectors
-            D (int): dimension of the image, and length of vectors or side length of matrices or tensors.
-            is_torus (bool or tuple of bools): whether the datablock is a torus, used for convolutions.
+            data: image data, shape (spatial,tensor)
+            parity: 0 or 1, 0 is normal vectors, 1 is pseudovectors
+            D: dimension of the image, and length of vectors or side length of matrices or tensors.
+            is_torus: whether the datablock is a torus, used for convolutions.
                 Takes either a tuple of bools of length D specifying whether each dimension is toroidal,
-                or simply True or False which sets all dimensions to that value. Defaults to True.
+                or simply True or False which sets all dimensions to that value.
         """
         self.D = D
         self.spatial_dims, self.k = parse_shape(data.shape, D)
@@ -124,31 +140,50 @@ class GeometricImage:
         )  # TODO: don't need to copy if data is already an immutable jnp array
 
     def copy(self: Self) -> Self:
+        """
+        Copy the geometric image.
+        """
         return self.__class__(self.data, self.parity, self.D, self.is_torus)
 
     # Getters, setters, basic info
 
     def hash(self: Self, indices: ArrayLike) -> tuple[jax.Array, ...]:
         """
-        Deals with torus by modding (with `np.remainder()`).
+        Converts an array of indices to their pixels on the torus by modding the indices with the
+        spatial dimensions.
 
         args:
-            indices: indices to apply the remainder to
+            indices: array of indices, shape (num_idx, D) to apply the remainder to
+
+        returns:
+            the pixel indices as a d-tuple of jax arrays
         """
         return hash(self.D, self.data, indices)
 
-    def __getitem__(self: Self, key) -> jnp.ndarray:
+    def __getitem__(self: Self, key: Any) -> jax.Array:
         """
         Accessor for data values. Now you can do image[key] where k are indices or array slices and it will just work
         Note that JAX does not throw errors for indexing out of bounds
+
         args:
-            key (index): JAX/numpy indexer, i.e. "0", "0,1,3", "4:, 2:3, 0" etc.
+            key: JAX/numpy indexer, i.e. "0", "0,1,3", "4:, 2:3, 0" etc.
+
+        returns:
+            data from the specified index or slice.
         """
         return self.data[key]
 
-    def __setitem__(self: Self, key, val) -> Self:
+    def __setitem__(self: Self, key: Any, val: Any) -> Self:
         """
-        Jax arrays are immutable, so this reconstructs the data object with copying, and is potentially slow
+        Set the jax array data to the specified value. Jax arrays are immutable, so this
+        reconstructs the data object with copying, and is potentially slow.
+
+        args:
+            key: index or slice to access data
+            val: value to set the data to
+
+        returns:
+            the geometric image
         """
         self.data = self.data.at[key].set(val)
         return self
@@ -156,14 +191,21 @@ class GeometricImage:
     def shape(self: Self) -> tuple[int, ...]:
         """
         Return the full shape of the data block
+
+        returns:
+            The shape of the data block
         """
         return self.data.shape
 
     def image_shape(self: Self, plus_Ns: Optional[tuple[int, ...]] = None) -> tuple[int, ...]:
         """
         Return the shape of the data block that is not the ktensor shape, but what comes before that.
+
         args:
-            plus_Ns (tuple of ints): d-length tuple, N to add to each spatial dim
+            plus_Ns: d-length tuple, N to add to each spatial dim
+
+        returns:
+            the shape of the image, modified by plus_Ns
         """
         plus_Ns = (0,) * self.D if (plus_Ns is None) else plus_Ns
         return tuple(N + plus_N for N, plus_N in zip(self.spatial_dims, plus_Ns))
@@ -171,16 +213,26 @@ class GeometricImage:
     def pixel_shape(self: Self) -> tuple[int, ...]:
         """
         Return the shape of the data block that is the ktensor, aka the pixel of the image.
+
+        returns:
+            the shape of the pixel
         """
         return self.k * (self.D,)
 
     def pixel_size(self: Self) -> int:
         """
         Get the size of the pixel shape, i.e. (D,D,D) = D**3
+
+        returns:
+            the size of the pixels
         """
         return self.D**self.k
 
     def __str__(self: Self) -> str:
+        """
+        returns:
+            the string representation of the GeometricImage
+        """
         return "<{} object in D={} with spatial_dims={}, k={}, parity={}, is_torus={}>".format(
             self.__class__,
             self.D,
@@ -197,13 +249,20 @@ class GeometricImage:
         """
         return it.product(*list(range(N) for N in self.spatial_dims))
 
-    def key_array(self: Self) -> jnp.ndarray:
+    def key_array(self: Self) -> jax.Array:
+        """
+        returns:
+            the pixel indices as a jax array
+        """
         # equivalent to the old pixels function
         return jnp.array([key for key in self.keys()], dtype=int)
 
-    def pixels(self: Self) -> Generator[jnp.ndarray]:
+    def pixels(self: Self) -> Generator[jax.Array]:
         """
         Iterate over the pixels of GeometricImage.
+
+        returns:
+            a generator of the pixels
         """
         for key in self.keys():
             yield self[key]
@@ -211,6 +270,9 @@ class GeometricImage:
     def items(self: Self) -> Generator[tuple[Any, jax.Array]]:
         """
         Iterate over the key, pixel pairs of GeometricImage.
+
+        returns:
+            a generator of pairs of the pixel index and its pixel
         """
         for key in self.keys():
             yield (key, self[key])
@@ -220,6 +282,12 @@ class GeometricImage:
     def __eq__(self: Self, other: object) -> bool:
         """
         Equality operator, must have same shape, parity, and data within the TINY=1e-5 tolerance.
+
+        args:
+            other: an object to compare to this GeometricImage
+
+        returns:
+            true if they are equal, false otherwise
         """
         if isinstance(other, GeometricImage):
             return (
@@ -237,8 +305,12 @@ class GeometricImage:
     def __add__(self: Self, other: Self) -> Self:
         """
         Addition operator for GeometricImages. Both must be the same size and parity. Returns a new GeometricImage.
+
         args:
-            other (GeometricImage): other image to add the the first one
+            other: other image to add the the first one
+
+        returns:
+            a new GeometricImage that is the sum of this one and the other one
         """
         assert self.D == other.D
         assert self.spatial_dims == other.spatial_dims
@@ -251,8 +323,12 @@ class GeometricImage:
     def __sub__(self: Self, other: Self) -> Self:
         """
         Subtraction operator for GeometricImages. Both must be the same size and parity. Returns a new GeometricImage.
+
         args:
-            other (GeometricImage): other image to add the the first one
+            other: other image to add the the first one
+
+        returns:
+            a new GeometricImage that is the difference of this GeometricImage and the other one
         """
         assert self.D == other.D
         assert self.spatial_dims == other.spatial_dims
@@ -266,8 +342,12 @@ class GeometricImage:
         """
         If other is a scalar, do scalar multiplication of the data. If it is another GeometricImage, do the tensor
         product at each pixel. Return the result as a new GeometricImage.
+
         args:
             other (GeometricImage or number): scalar or image to multiply by
+
+        returns:
+            a new GeometricImage that is the product of this GeometricImage with other
         """
         if isinstance(other, GeometricImage):
             assert self.D == other.D
@@ -286,14 +366,24 @@ class GeometricImage:
         """
         If other is a scalar, multiply the data by the scalar. This is necessary for doing scalar * image, and it
         should only be called in that case.
+
+        args:
+            other (GeometricImage or number): scalar or image to multiply by
+
+        returns:
+            a new GeometricImage that is the product of this GeometricImage with other
         """
         return self * other
 
     def transpose(self: Self, axes_permutation: Sequence[int]) -> Self:
         """
         Transposes the axes of the tensor, keeping the image axes in the front the same
+
         args:
-            axes_permutation (iterable of indices): new axes order
+            axes_permutation: new axes order
+
+        returns:
+            a new GeometricImage that has been transposed
         """
         idx_shift = len(self.image_shape())
         new_indices = tuple(
@@ -309,11 +399,23 @@ class GeometricImage:
         filter_image: Self,
         stride: Union[int, tuple[int, ...]] = 1,
         padding: Optional[tuple[tuple[int, int]]] = None,
-        lhs_dilation: Optional[tuple[int,...]] = None,
-        rhs_dilation: Union[int, tuple[int,...]] = 1,
+        lhs_dilation: Optional[tuple[int, ...]] = None,
+        rhs_dilation: Union[int, tuple[int, ...]] = 1,
     ) -> Self:
         """
-        See convolve for a description of this function.
+        See [convolve](functional_geometric_image.md#geometricconvolutions.geometric.functional_geometric_image.convolve)
+        for a description of this function.
+
+        args:
+            filter_image: the convolution filter, shape (out_c,in_c,spatial,tensor)
+            stride: convolution stride, defaults to (1,)*self.D
+            padding: either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs,
+                defaults to 'TORUS' if image.is_torus, else 'SAME'
+            lhs_dilation: amount of dilation to apply to image in each dimension D, also transposed conv
+            rhs_dilation: amount of dilation to apply to filter in each dimension D, defaults to 1
+
+        returns:
+            convolved_image of shape (batch,out_c,spatial,tensor)
         """
         convolved_array = convolve(
             self.D,
@@ -335,11 +437,16 @@ class GeometricImage:
     @functools.partial(jax.jit, static_argnums=[1, 2])
     def max_pool(self: Self, patch_len: int, use_norm: bool = True) -> Self:
         """
-         Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined
+        Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined
         by the norm of the pixel when use_norm is True. Note that for scalars, this will be the absolute value of
         the pixel. If you want to use the max instead, set use_norm to False (requires scalar images).
+
         args:
-            patch_len (int): the side length of the patches, must evenly divide all spatial dims
+            patch_len: the side length of the patches, must evenly divide all spatial dims
+            use_norm: whether to use norm to calculate the max
+
+        returns:
+            a new GeometricImage with the max pool applied
         """
         return self.__class__(
             max_pool(self.D, self.data, patch_len, use_norm),
@@ -354,8 +461,12 @@ class GeometricImage:
         Perform a average pooling operation where the length of the side of each patch is patch_len. This is
         equivalent to doing a convolution where each element of the filter is 1 over the number of pixels in the
         filter, the stride length is patch_len, and the padding is 'VALID'.
+
         args:
-            patch_len (int): the side length of the patches, must evenly divide self.N
+            patch_len: the side length of the patches, must evenly divide self.N
+
+        returns:
+            a new GeometricImage with the average pool applied
         """
         return self.__class__(
             average_pool(self.D, self.data, patch_len),
@@ -367,9 +478,14 @@ class GeometricImage:
     @functools.partial(jax.jit, static_argnums=1)
     def unpool(self: Self, patch_len: int) -> Self:
         """
-        Each pixel turns into a (patch_len,)*self.D patch of that pixel. Also called "Nearest Neighbor" unpooling
+        Each pixel turns into a (patch_len,)*self.D patch of that pixel. Also called
+        "Nearest Neighbor" unpooling.
+
         args:
-            patch_len (int): side length of the patch of our unpooled images
+            patch_len: side length of the patch of our unpooled images
+
+        returns:
+            a new GeometricImage with the unpool applied
         """
         grow_filter = GeometricImage(jnp.ones((patch_len,) * self.D), 0, self.D)
         return self.convolve_with(
@@ -381,22 +497,31 @@ class GeometricImage:
     def times_scalar(self: Self, scalar: float) -> Self:
         """
         Scale the data by a scalar, returning a new GeometricImage object. Alias of the multiplication operator.
+
         args:
-            scalar (number): number to scale everything by
+            scalar: number to scale everything by
+
+        returns:
+            a new GeometricImage scaled by the scalar
         """
         return self * scalar
 
     @jax.jit
     def norm(self: Self) -> Self:
         """
-        Calculate the norm pixel-wise. This becomes a 0 parity image.
-        returns: scalar image
+        Calculate the norm pixel-wise. This becomes a scalar image.
+
+        returns:
+            a new GeoemtricImage of all the pixels normed.
         """
         return self.__class__(norm(self.D, self.data), 0, self.D, self.is_torus)
 
     def normalize(self: Self) -> Self:
         """
         Normalize so that the max norm of each pixel is 1, and all other tensors are scaled appropriately
+
+        returns:
+            a new GeometricImage scaled by the max norm
         """
         max_norm = float(jnp.max(self.norm().data))
         if max_norm > TINY:
@@ -405,6 +530,15 @@ class GeometricImage:
             return self.times_scalar(1.0)
 
     def activation_function(self: Self, function: Callable[[jnp.ndarray], jnp.ndarray]) -> Self:
+        """
+        Apply the specified activation function to the GeometricImage
+
+        args:
+            function: the activation function
+
+        returns:
+            a new GeometricImage with the activation function applied
+        """
         assert (
             self.k == 0
         ), "Activation functions only implemented for k=0 tensors due to equivariance"
@@ -414,9 +548,13 @@ class GeometricImage:
     def contract(self: Self, i: int, j: int) -> Self:
         """
         Use einsum to perform a kronecker contraction on two dimensions of the tensor
+
         args:
-            i (int): first index of tensor
-            j (int): second index of tensor
+            i: first index of tensor
+            j: second index of tensor
+
+        returns:
+            a new GeometricImage contracted by those indices
         """
         assert self.k >= 2
         idx_shift = len(self.image_shape())
@@ -431,8 +569,12 @@ class GeometricImage:
     def multicontract(self: Self, indices: tuple[tuple[int]]) -> Self:
         """
         Use einsum to perform a kronecker contraction on two dimensions of the tensor
+
         args:
-            indices (tuple of tuples of ints): indices to contract
+            indices: indices to contract
+
+        returns:
+            a new GeometricImage contracted by those indices
         """
         assert self.k >= 2
         idx_shift = len(self.image_shape())
@@ -447,8 +589,12 @@ class GeometricImage:
         """
         Perform the Levi-Civita contraction. Outer product with the Levi-Civita Symbol, then perform D-1 contractions.
         Resulting image has k= self.k - self.D + 2
+
         args:
-            indices (int, or tuple, or list): indices of tensor to perform contractions on
+            indices: indices of tensor to perform contractions on
+
+        returns:
+            a new GeometricImage contracted by those indices
         """
         assert self.k >= (
             self.D - 1
@@ -472,9 +618,14 @@ class GeometricImage:
 
     def get_rotated_keys(self: Self, gg: np.ndarray) -> np.ndarray:
         """
+        Get the rotated keys of this GeometricImage by the rotation gg.
         Slightly messier than with GeometricFilter because self.N-1 / 2 might not be an integer, but should work
+
         args:
-            gg (jnp array-like): group operation
+            gg: a DxD matrix that rotates the tensor
+
+        returns:
+            the rotated keys
         """
         return get_rotated_keys(self.D, self.data, gg)
 
@@ -484,9 +635,13 @@ class GeometricImage:
         """
         Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the location of the
         pixels, then apply the action to the pixels themselves.
+
         args:
-            gg (group operation matrix): a DxD matrix that rotates the tensor
-            precision (jax.lax.Precision): precision level for einsum, for equality tests use Precision.HIGH
+            gg: a DxD matrix that rotates the tensor
+            precision: precision level for einsum, for equality tests use Precision.HIGH
+
+        returns:
+            a new GeometricImage that has been rotated
         """
         assert self.k < 14
         assert gg.shape == (self.D, self.D)
@@ -510,6 +665,20 @@ class GeometricImage:
         colorbar: bool = False,
         vector_scaling: float = 0.5,
     ) -> None:
+        """
+        Plot the geometric image.
+
+        args:
+            ax: matplotlib.pyplot Axes to plot this geometric image one
+            title: title of the plot
+            boxes: whether to plot boxes around each pixel
+            fill: whether to fill the pixels with an appropriate color
+            symbols: whether to fill the pixels with a symbol
+            vmin: min value to plot, everything below this is cut off. If none, will use actual min
+            vmax: max value to plot, everything above this is cut off. If none, will use actual max
+            colorbar: whether to plot a colorbar
+            vector_scaling: how much to scale the vectors
+        """
         # plot functions should fail gracefully
         if self.D != 2 and self.D != 3:
             print(
@@ -599,6 +768,9 @@ class GeometricImage:
 
 @register_pytree_node_class
 class GeometricFilter(GeometricImage):
+    """
+    A subclass of GeometricImage that enforces square, odd spatial dimensions.
+    """
 
     def __init__(
         self: Self,
@@ -607,6 +779,15 @@ class GeometricFilter(GeometricImage):
         D: int,
         is_torus: Union[bool, tuple[bool, ...]] = True,
     ) -> None:
+        """
+        Constructor for GeometricFilter.
+
+        args:
+            data: the image data of shape (spatial,tensor). Spatial dimensions must be square, odd
+            parity: parity of tensor, 0 for vector, 1 for pseudo-vector
+            D: dimension of the image
+            is_torus: which dimensions are toroidal
+        """
         super(GeometricFilter, self).__init__(data, parity, D, is_torus)
         assert (
             self.spatial_dims == (self.spatial_dims[0],) * self.D
@@ -616,6 +797,12 @@ class GeometricFilter(GeometricImage):
     def from_image(cls, geometric_image: GeometricImage) -> Self:
         """
         Constructor that copies a GeometricImage and returns a GeometricFilter
+
+        args:
+            geometric_image: the GeometricImage to copy
+
+        returns:
+            a new GeometricFilter copy
         """
         return cls(
             geometric_image.data,
@@ -625,6 +812,10 @@ class GeometricFilter(GeometricImage):
         )
 
     def __str__(self: Self) -> str:
+        """
+        returns:
+            the string representation of the GeometricFilter
+        """
         return "<geometric filter object in D={} with spatial_dims={}, k={}, parity={}, and is_torus={}>".format(
             self.D, self.spatial_dims, self.k, self.parity, self.is_torus
         )
@@ -632,6 +823,9 @@ class GeometricFilter(GeometricImage):
     def bigness(self: Self) -> float:
         """
         Gives an idea of size for a filter, sparser filters are smaller while less sparse filters are larger
+
+        returns:
+            the bigness value
         """
         norms = self.norm().data
         numerator = 0.0
@@ -644,6 +838,9 @@ class GeometricFilter(GeometricImage):
     def rectify(self: Self) -> Self:
         """
         Filters form an equivalence class up to multiplication by a scalar, so if its negative we want to flip the sign
+
+        returns:
+            a new GeometricImage that has been scaled
         """
         if self.k == 0:
             if jnp.sum(self.data) < 0:
@@ -669,6 +866,22 @@ class GeometricFilter(GeometricImage):
         colorbar: bool = False,
         vector_scaling: float = 0.33,
     ) -> None:
+        """
+        Plot the geometric filter. Has different default vmin, vmax, vector_scalings than
+        GeometricImage.
+
+        args:
+            ax: matplotlib.pyplot Axes to plot this geometric filter one
+            title: title of the plot
+            boxes: whether to plot boxes around each pixel
+            fill: whether to fill the pixels with an appropriate color
+            symbols: whether to fill the pixels with a symbol
+            vmin: min value to plot, everything below this is cut off. If none, will use -3 for
+                scalars and 0 otherwise.
+            vmax: max value to plot, everything above this is cut off. If none, will use 3
+            colorbar: whether to plot a colorbar
+            vector_scaling: how much to scale the vectors
+        """
         if self.k == 0:
             vmin = -3.0 if vmin is None else vmin
             vmax = 3.0 if vmax is None else vmax
@@ -682,6 +895,19 @@ class GeometricFilter(GeometricImage):
 
 
 def get_kronecker_delta_image(N: int, D: int, k: int) -> GeometricImage:
+    """
+    Get an image with a Kronecker Delta in every pixel.
+
+    TODO: This should not be able to create Kronecker Deltas that are not 2-tensors.
+
+    args:
+        N: the sidelength of the image
+        D: the dimension of the image
+        k: the tensor order
+
+    returns:
+        a new GeometricImage.
+    """
     return GeometricImage(
         jnp.stack([KroneckerDeltaSymbol.get(D, k) for _ in range(N**D)]).reshape(
             ((N,) * D + (D,) * k)

@@ -1,4 +1,7 @@
+from typing_extensions import Union
+
 import jax.numpy as jnp
+import jax
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
@@ -8,16 +11,19 @@ import geometricconvolutions.ml as ml
 
 
 # from: https://github.com/google/jax/issues/3171
-def time_series_idxs(past_steps, future_steps, delta_t, total_steps) -> tuple:
+def time_series_idxs(past_steps: int, future_steps: int, delta_t: int, total_steps: int) -> tuple:
     """
     Get the input and output indices to split a time series into overlapping sequences of past steps and
     future steps.
+
     args:
-        past_steps (int): number of historical steps to use in the model
-        future_steps (int): number of future steps of the output
-        delta_t (int): number of timesteps per model step, applies to past and future steps
-        total_steps (int): total number of timesteps that we are batching
-    returns: tuple of jnp.arrays of input and output idxs, 1st axis num sequences, 2nd axis actual sequences
+        past_steps: number of historical steps to use in the model
+        future_steps: number of future steps of the output
+        delta_t: number of timesteps per model step, applies to past and future steps
+        total_steps: total number of timesteps that we are batching
+
+    Returns:
+        tuple of jnp.arrays of input and output idxs, 1st axis num sequences, 2nd axis actual sequences
     """
     first_start = 0
     last_start = (
@@ -47,32 +53,35 @@ def time_series_idxs(past_steps, future_steps, delta_t, total_steps) -> tuple:
 
 def times_series_to_multi_images(
     D: int,
-    dynamic_fields: dict,
-    constant_fields: dict,
-    is_torus,
+    dynamic_fields: dict[tuple[int, int], jax.Array],
+    constant_fields: dict[tuple[int, int], jax.Array],
+    is_torus: Union[bool, tuple[bool, ...]],
     past_steps: int,
     future_steps: int,
     skip_initial: int = 0,
     delta_t: int = 1,
     downsample: int = 0,
-) -> tuple:
+) -> tuple[geom.BatchMultiImage, geom.BatchMultiImage]:
     """
     Given time series fields, convert them to input and output BatchMultiImages based on the number of past steps,
     future steps, and any subsampling/downsampling.
+
     args:
-        D (int): dimension of problem
-        dynamic_fields (dict of jnp.array): the fields to build MultiImages, dict with keys (k,parity) and values
+        D: dimension of problem
+        dynamic_fields: the fields to build MultiImages, dict with keys (k,parity) and values
             of array of shape (batch,time,spatial,tensor)
-        constant_fields (dict of jnp.array): fields constant over time, dict with keys (k,parity) and values
+        constant_fields: fields constant over time, dict with keys (k,parity) and values
             of array of shape (batch,spatial,tensor)
-        is_torus (bool or tuple of bools): whether the images are tori
-        past_steps (int): number of historical steps to use in the model
-        future_steps (int): number of future steps
-        skip_intial (int): number of initial time steps to skip, defaults to 0
-        delta_t (int): number of timesteps per model step, defaults to 1
-        downsample (int): number of times to downsample the image by average pooling, decreases by a factor
-            of 2, defaults to 0 times.
-    returns tuple of BatchMultiImages multi_image_X and \r_Y
+        is_torus: whether the images are tori
+        past_steps: number of historical steps to use in the model
+        future_steps: number of future steps
+        skip_initial: number of initial time steps to skip
+        delta_t: number of timesteps per model step
+        downsample: number of times to downsample the image by average pooling, decreases by a factor
+            of 2
+
+    returns:
+        tuple of BatchMultiImages multi_image_X and multi_image_Y
     """
     assert len(dynamic_fields.values()) != 0
 

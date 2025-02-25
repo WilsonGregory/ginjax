@@ -16,11 +16,15 @@ def timestep_smse_loss(
     """
     Returns loss for each timestep. Loss is summed over the channels, and mean over spatial dimensions
     and the batch.
+
     args:
         multi_image_x: predicted data
         multi_image_y: target data
-        n_steps (int): number of timesteps, all channels should be a multiple of this
-        reduce (str): how to reduce over the batch, one of mean or max, defaults to mean
+        n_steps: number of timesteps, all channels should be a multiple of this
+        reduce: how to reduce over the batch, one of mean or max
+
+    returns:
+        the loss array with shape (batch,n_steps) if reduce is None or (n_steps,)
     """
     assert reduce in {"mean", "max", None}
     spatial_size = np.multiply.reduce(multi_image_x.get_spatial_dims())
@@ -51,9 +55,13 @@ def smse_loss(
     """
     Sum of mean squared error loss. The sum is over the channels, the mean is over the spatial dimensions and
     the batch.
+
     args:
         multi_image_x: the input BatchMultiImage
         multi_image_y: the target BatchMultiImage
+
+    returns:
+        the loss value
     """
     spatial_size = np.multiply.reduce(multi_image_x.get_spatial_dims())
     return jnp.mean(
@@ -68,10 +76,14 @@ def normalized_smse_loss(
     Pointwise normalized loss. We find the norm of each channel at each spatial point of the true value
     and divide the tensor by that norm. Then we take the l2 loss, mean over the spatial dimensions, sum
     over the channels, then mean over the batch.
+
     args:
         multi_image_x: input BatchMultiImage
         multi_image_y: target BatchMultiImage
-        eps (float): ensure that we aren't dividing by 0 norm, defaults to 1e-5
+        eps: ensure that we aren't dividing by 0 norm
+
+    returns:
+        the loss value
     """
     spatial_size = np.multiply.reduce(multi_image_x.get_spatial_dims())
 

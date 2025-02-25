@@ -24,10 +24,24 @@ def handle_activation(
     D: int,
     key: ArrayLike,
 ) -> Callable[[Any], geom.MultiImage]:
+    """
+    Parse what activation function to use, return the appropriate callable
+
+    args:
+        activation_f: the type of activation, either a callable or a string name from ACTIVATION_REGISTRY
+        equivariant: whether to use an equivariant activation
+        input_keys: the layers input keys
+        D: dimension of the model
+        key: jax.random key
+
+    returns:
+        A layer that performs the specified activation function
+    """
     if equivariant:
         if activation_f is None:
             return lambda x: x
         elif isinstance(activation_f, str):
+            assert activation_f in ACTIVATION_REGISTRY
             return ml.VectorNeuronNonlinear(
                 input_keys, D, ACTIVATION_REGISTRY[activation_f], key=key
             )
@@ -37,6 +51,7 @@ def handle_activation(
         if activation_f is None:
             return ml.LayerWrapper(eqx.nn.Identity(), input_keys)
         elif isinstance(activation_f, str):
+            assert activation_f in ACTIVATION_REGISTRY
             return ml.LayerWrapper(ACTIVATION_REGISTRY[activation_f], input_keys)
         else:
             return ml.LayerWrapper(activation_f, input_keys)
@@ -59,6 +74,23 @@ def make_conv(
     """
     Factory for convolution layer which makes ConvContract if equivariant and makes a regular conv
     otherwise.
+
+    args:
+        D: dimension of the space
+        input_keys: MultiImage Signature of input
+        target_keys: MultiImage Signature of output
+        use_bias: whether to use a bias
+        equivariant: whether to use an equivariant layer or normal layer
+        invariant_filters: filters used for equivariant layer
+        kernel_size: sidelength(s) of kernel, only used for non-equivariant layer
+        stride: convolution stride
+        padding: convolution padding
+        lhs_dilation: left hand side dilation for transpose convolution
+        rhs_dilation: right hand side dilation for dilated convolutions
+        key: jax.random key
+
+    returns:
+        either ConvContract or a LayerWrapper around an equinox convolution
     """
     if equivariant:
         assert invariant_filters is not None
@@ -114,6 +146,15 @@ def make_conv(
 
 
 def count_params(model: eqx.Module) -> int:
+    """
+    Count the number of parameters in the model
+
+    args:
+        model: model to measure
+
+    returns:
+        number of parameters
+    """
     return sum(
         [
             0 if x is None else x.size
@@ -123,6 +164,11 @@ def count_params(model: eqx.Module) -> int:
 
 
 class ConvBlock(eqx.Module):
+    """
+    A convolution block consisting of a convolution, a nonlinearity, and a GroupNorm/BatchNorm.
+    Can be equivariant or not, in typical order or in preactivation order.
+    """
+
     conv: Union[ml.ConvContract, ml.LayerWrapper]
     group_norm: Optional[Union[ml.GroupNorm, ml.LayerWrapper]]
     batch_norm: Optional[ml.LayerWrapperAux]
@@ -136,7 +182,7 @@ class ConvBlock(eqx.Module):
 
     def __init__(
         self: Self,
-        D,
+        D: int,
         input_keys: geom.Signature,
         output_keys: geom.Signature,
         use_bias: Union[bool, str] = "auto",
@@ -148,8 +194,26 @@ class ConvBlock(eqx.Module):
         use_batch_norm: bool = False,
         preactivation_order: bool = False,
         key: Any = None,
-        **conv_kwargs,
-    ):
+        **conv_kwargs: Any,
+    ) -> None:
+        """
+        Constructor for ConvBlock
+
+        args:
+            D: the dimension of the space
+            input_keys: MultiImage Signature of input
+            output_keys: MultiImage Signature of output
+            use_bias: whether to use a bias
+            activation_f: the type of activation function
+            equivariant: whether it is equivariant
+            conv_filters: the invariant filters if it is equivariant
+            kernel_size: sidelength(s) of the kernel if not equivariant
+            use_group_norm: whether to use GroupNorm
+            use_batch_norm: whether to use BatchNorm, can only be for non-equivariant
+            preactivation_order: whether to use preactivation order
+            key: jax.random key
+            conv_kwargs: further key word args that will be passed to the convolution
+        """
         self.D = D
         self.equivariant = equivariant
         self.use_group_norm = use_group_norm
@@ -193,6 +257,16 @@ class ConvBlock(eqx.Module):
     def __call__(
         self: Self, x: geom.BatchMultiImage, batch_stats: Optional[eqx.nn.State] = None
     ) -> tuple[geom.BatchMultiImage, Optional[eqx.nn.State]]:
+        """
+        Layer callable
+
+        args:
+            x: the input
+            batch_stats: data for batch norm
+
+        returns:
+            the output MultiImage and batch stats
+        """
         if self.preactivation_order:
             if self.use_group_norm:
                 assert self.group_norm is not None
@@ -218,6 +292,11 @@ class ConvBlock(eqx.Module):
 
 
 class UNet(eqx.Module):
+    """
+    Implementation of the UNet: https://arxiv.org/abs/1505.04597.
+    This model defaults to the equivariant version, but can also be the non-equivariant version.
+    """
+
     embedding: list[ConvBlock]
     downsample_blocks: list[tuple[ml.MaxNormPool, list[ConvBlock]]]
     upsample_blocks: list[tuple[Union[ml.ConvContract, ml.LayerWrapper], list[ConvBlock]]]
@@ -230,7 +309,7 @@ class UNet(eqx.Module):
 
     def __init__(
         self: Self,
-        D,
+        D: int,
         input_keys: geom.Signature,
         output_keys: geom.Signature,
         depth: int,
@@ -245,7 +324,26 @@ class UNet(eqx.Module):
         use_group_norm: bool = False,
         use_batch_norm: bool = False,
         key: Any = None,
-    ):
+    ) -> None:
+        """
+        Constructor for the UNet.
+
+        args:
+            D: the dimension of the space
+            input_keys: the MultiImage Signature for the input
+            output_keys: the MultiImage Signature for the output
+            depth: the number of channelsat the highest level of the unet
+            num_downsamples: number of convolution blocks followed by a max pool
+            num_conv: number of convolutions per level
+            use_bias: whether to use a bias
+            activation_f: the activation function
+            equivariant: whether to be equivariant
+            conv_filters: the invariant filters for the equivariant version
+            kernel_size: sidelength(s) for the non-equivariant version
+            use_group_norm: whether to use GroupNorm
+            use_batch_norm: whether to use the BatchNorm, only for non-equivariant version
+            key: jax.random key
+        """
         assert num_conv > 0
         assert key is not None
 
@@ -402,6 +500,16 @@ class UNet(eqx.Module):
     def __call__(
         self: Self, x: geom.BatchMultiImage, batch_stats: Optional[eqx.nn.State] = None
     ) -> Union[geom.BatchMultiImage, tuple[geom.BatchMultiImage, Optional[eqx.nn.State]]]:
+        """
+        Callable function for UNet
+
+        args:
+            x: the input BatchMultiImage
+            batch_stats: batch stats for BatchNorm if present
+
+        returns:
+            the output BatchMultiImage and batch_stats
+        """
         if not self.equivariant:
             x = x.to_scalar_multi_image()
 
@@ -436,6 +544,10 @@ class UNet(eqx.Module):
 
 
 class DilResNet(eqx.Module):
+    """
+    The Dilated ResNet from https://arxiv.org/abs/2112.15275.
+    """
+
     encoder: list[ConvBlock]
     blocks: list[list[ConvBlock]]
     decoder: list[ConvBlock]
@@ -446,7 +558,7 @@ class DilResNet(eqx.Module):
 
     def __init__(
         self: Self,
-        D,
+        D: int,
         input_keys: geom.Signature,
         output_keys: geom.Signature,
         depth: int,
@@ -458,7 +570,24 @@ class DilResNet(eqx.Module):
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = False,
         key: Any = None,
-    ):
+    ) -> None:
+        """
+        Constructor for the DilatedResNet
+
+        args:
+            D: the dimension of the space
+            input_keys: the MultiImage Signature for the input
+            output_keys: the MultiImage Signature for the output
+            depth: the number of channelsat the highest level of the unet
+            num_blocks: number of resnet blocks
+            use_bias: whether to use a bias
+            activation_f: the activation function
+            equivariant: whether to be equivariant
+            conv_filters: the invariant filters for the equivariant version
+            kernel_size: sidelength(s) for the non-equivariant version
+            use_group_norm: whether to use GroupNorm
+            key: jax.random key
+        """
         self.D = D
         self.equivariant = equivariant
         self.output_keys = output_keys
@@ -545,7 +674,16 @@ class DilResNet(eqx.Module):
             ),
         ]
 
-    def __call__(self: Self, x: geom.BatchMultiImage):
+    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+        """
+        Callable for this layer
+
+        args:
+            x: the input BatchMultiImage
+
+        returns:
+            the output BatchMultiImage
+        """
         if not self.equivariant:
             x = x.to_scalar_multi_image()
 
@@ -572,6 +710,10 @@ class DilResNet(eqx.Module):
 
 
 class ResNet(eqx.Module):
+    """
+    A typical ResNet.
+    """
+
     encoder: list[ConvBlock]
     blocks: list[list[ConvBlock]]
     decoder: list[ConvBlock]
@@ -582,7 +724,7 @@ class ResNet(eqx.Module):
 
     def __init__(
         self: Self,
-        D,
+        D: int,
         input_keys: geom.Signature,
         output_keys: geom.Signature,
         depth: int,
@@ -596,7 +738,26 @@ class ResNet(eqx.Module):
         use_group_norm: bool = True,
         preactivation_order: bool = True,
         key: Any = None,
-    ):
+    ) -> None:
+        """
+        Constructor for the ResNet
+
+        args:
+            D: the dimension of the space
+            input_keys: the MultiImage Signature for the input
+            output_keys: the MultiImage Signature for the output
+            depth: the number of channelsat the highest level of the unet
+            num_blocks: number of resnet blocks
+            num_conv: number of convolutions per block
+            use_bias: whether to use a bias
+            activation_f: the activation function
+            equivariant: whether to be equivariant
+            conv_filters: the invariant filters for the equivariant version
+            kernel_size: sidelength(s) for the non-equivariant version
+            use_group_norm: whether to use GroupNorm
+            preactivation_order: whether to use preactivation order
+            key: jax.random key
+        """
         self.D = D
         self.equivariant = equivariant
         self.output_keys = output_keys
@@ -683,7 +844,16 @@ class ResNet(eqx.Module):
             ),
         ]
 
-    def __call__(self: Self, x: geom.BatchMultiImage):
+    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+        """
+        Callable for this layer
+
+        args:
+            x: the input BatchMultiImage
+
+        returns:
+            the output BatchMultiImage
+        """
         if not self.equivariant:
             x = x.to_scalar_multi_image()
 

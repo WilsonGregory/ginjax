@@ -10,7 +10,7 @@ build:
     python: "3.11"
   jobs:
     install:
-      - pip install GeometricConvolutions/.
+      - pip install .
 
 mkdocs:
   configuration: mkdocs.yml

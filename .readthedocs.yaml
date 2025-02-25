@@ -9,7 +9,7 @@ build:
   tools:
     python: "3.11"
   jobs:
-    install:
+    pre_install:
       - pip install .
 
 mkdocs:

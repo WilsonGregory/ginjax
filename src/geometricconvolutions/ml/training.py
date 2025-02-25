@@ -16,13 +16,30 @@ import geometricconvolutions.geometric as geom
 from geometricconvolutions.ml.stopping_conditions import StopCondition, ValLoss
 
 
-def save(filename, model):
+def save(filename: str, model: eqx.Module) -> None:
+    """
+    Save an equinox model.
+
+    args:
+        filename: the file to save the model to
+        model: the model to save
+    """
     # TODO: save batch stats
     with open(filename, "wb") as f:
         eqx.tree_serialise_leaves(f, model)
 
 
-def load(filename, model):
+def load(filename: str, model: eqx.Module) -> eqx.Module:
+    """
+    Load an equinox model.
+
+    args:
+        filename: the file to load the model from
+        model: the type of model we are loading, the parameter values will be set to the loaded ones
+
+    returns:
+        the loaded model
+    """
     with open(filename, "rb") as f:
         return eqx.tree_deserialise_leaves(f, model)
 
@@ -42,12 +59,15 @@ def get_batches(
     a list of length 2 where the first element is a list of the batches of the input data and the second
     element is the same batches of the output data. Automatically reshapes the batches to use with
     pmap based on the number of gpus found.
+
     args:
         multi_images: BatchMultiImages which all get simultaneously batched
         batch_size: length of the batch
         rand_key: key for the randomness. If None, the order won't be random
         devices: gpu/cpu devices to use, if None (default) then sets this to jax.devices()
-    returns: list of lists of batches (which are BatchMultiImages)
+
+    returns:
+        list of lists of batches (which are BatchMultiImages)
     """
     if isinstance(multi_images, geom.BatchMultiImage):
         multi_images = (multi_images,)
@@ -83,6 +103,7 @@ def autoregressive_step(
     Given the input MultiImage, the next step of the model, and the output, update the input
     and output to be fed into the model next. BatchMultiImages should have shape (batch,channels,spatial,tensor).
     Channels are c*past_steps + constant_steps where c is some positive integer.
+
     args:
         input: the input to the model
         one_step: the model output at this step, assumed to be a single time step
@@ -90,6 +111,9 @@ def autoregressive_step(
         past_steps: the number of past time steps that are fed into the model
         constant_fields: a map {key:n_constant_fields} for fields that don't depend on timestep
         future_steps: number of future steps that the model outputs, currently must be 1
+
+    returns:
+        the new input and output
     """
     assert (
         future_steps == 1
@@ -142,13 +166,16 @@ def autoregressive_map(
     """
     Given a model, perform an autoregressive step (future_steps) times, and return the output
     steps in a single BatchMultiImage.
+
     args:
         batch_model: model that operates of batches, probably a vmapped version of model.
         x: the input MultiImage to map
-        past_steps: the number of past steps input to the autoregressive map, default 1
-        future_steps: how many times to loop through the autoregression, default 1
         aux_data: auxilliary data to pass to the network
-        has_aux: whether net returns an aux_data, defaults to False
+        past_steps: the number of past steps input to the autoregressive map
+        future_steps: how many times to loop through the autoregression
+
+    returns:
+        the output map with number of steps equal to future steps, and the aux_data
     """
     assert callable(batch_model)
     out_x = x.empty()  # assume out matches D and is_torus
@@ -207,6 +234,7 @@ def evaluate(
             out_axes=(0, None, 0),
         )
         loss, _, out = compute_loss_pmap(inference_model, x, y, aux_data)
+        assert isinstance(out, geom.BatchMultiImage)
         return jnp.mean(loss, axis=0), out.merge_pmap()
     else:
         compute_loss_pmap = eqx.filter_pmap(
@@ -219,16 +247,28 @@ def evaluate(
         return jnp.mean(loss, axis=0)
 
 
-def loss_reducer(ls):
+def loss_reducer(ls: list[jax.Array]) -> jax.Array:
     """
     A reducer for map_loss_in_batches that takes the batch mean of the loss
+
+    args:
+        ls: list of losses
+
+    returns:
+        the mean of the losses
     """
     return jnp.mean(jnp.stack(ls), axis=0)
 
 
-def multi_image_reducer(ls):
+def multi_image_reducer(ls: list[geom.BatchMultiImage]) -> geom.BatchMultiImage:
     """
     If map data returns the mapped MultiImages, merge them togther
+
+    args:
+        ls: list of BatchMultiImages
+
+    returns:
+        a single concatenated BatchMultiImage
     """
     return functools.reduce(lambda carry, val: carry.concat(val), ls, ls[0].empty())
 
@@ -327,23 +367,26 @@ def train_step(
     ],
     model: eqx.Module,
     optim: optax.GradientTransformation,
-    opt_state,
+    opt_state: Any,
     x: geom.BatchMultiImage,
     y: geom.BatchMultiImage,
     aux_data: Optional[eqx.nn.State] = None,
-):
+) -> tuple[eqx.Module, Any, jax.Array, Optional[eqx.nn.State]]:
     """
     Perform one step and gradient update of the model. Uses filter_pmap to use multiple gpus.
+
     args:
         map_and_loss: map and loss function where the input is a model pytree, x, y, and
             aux_data, and returns a float loss and aux_data
-        model (equinox model pytree): the model
-        optim:
+        model: the model
+        optim: the optimizer
         opt_state:
         x: input data
         y: target data
         aux_data: auxilliary data for stateful layers
-    returns: model, opt_state, loss_value
+
+    returns:
+        model, opt_state, loss_value, aux_data
     """
     # NOTE: do not `jit` over `pmap` see (https://github.com/google/jax/issues/2926)
     loss_grad = eqx.filter_value_and_grad(map_and_loss, has_aux=True)
@@ -389,6 +432,7 @@ def train(
     parameters the minimize the map_and_loss function. The model is returned. This function automatically
     shards over the available gpus, so batch_size should be divisible by the number of gpus. If you only want
     to train on a single GPU, the script should be run with CUDA_VISIBLE_DEVICES=# for whatever gpu number.
+
     args:
         X: The X input data as a BatchMultiImage by k of (images, channels, (N,)*D, (D,)*k)
         Y: The Y target data as a BatchMultiImage by k of (images, channels, (N,)*D, (D,)*k)
@@ -404,10 +448,12 @@ def train(
             of (images, channels, (N,)*D, (D,)*k)
         validation_Y: target data for a validation data set as a BatchMultiImage by k
             of (images, channels, (N,)*D, (D,)*k)
-        save_model (str): if string, save model every 10 epochs, defaults to None
-        aux_data (eqx.nn.State): initial aux data passed in to map_and_loss when has_aux is true.
-        devices (list): gpu/cpu devices to use, if None (default) then it will use jax.devices()
-    returns: A tuple of best model in inference mode, aux_data, epoch loss, and val loss
+        save_model: if string, save model every 10 epochs, defaults to None
+        aux_data: initial aux data passed in to map_and_loss when has_aux is true.
+        devices: gpu/cpu devices to use, if None (default) then it will use jax.devices()
+
+    returns:
+        A tuple of best model in inference mode, aux_data, epoch loss, and val loss
     """
     if isinstance(stop_condition, ValLoss) and not (validation_X and validation_Y):
         raise ValueError("Stop condition is ValLoss, but no validation data provided.")
@@ -480,19 +526,21 @@ def benchmark(
 ) -> np.ndarray:
     """
     Method to benchmark multiple models as a particular benchmark over the specified range.
+
     args:
-        get_data (function): function that takes as its first argument the benchmark_value, and a rand_key
+        get_data: function that takes as its first argument the benchmark_value, and a rand_key
             as its second argument. It returns the data which later gets passed to model.
-        models (list of tuples): the elements of the tuple are (str) model_name, and (func) model.
+        models: the elements of the tuple are (str) model_name, and (func) model.
             Model is a function that takes data and a rand_key and returns either a single float score
             or an iterable of length num_results of float scores.
-        rand_key (jnp.random key): key for randomness
-        benchmark (str): the type of benchmarking to do
-        benchmark_range (iterable): iterable of the benchmark values to range over
-        benchmark_type (str): one of { BENCHMARK_DATA, BENCHMARK_MODEL, BENCHMARK_NONE }, says
-        num_trials (int): number of trials to run, defaults to 1
-        num_results (int): the number of results that will come out of the model function. If num_results is
+        rand_key: key for randomness
+        benchmark: the type of benchmarking to do
+        benchmark_range: iterable of the benchmark values to range over
+        benchmark_type: one of { BENCHMARK_DATA, BENCHMARK_MODEL, BENCHMARK_NONE }
+        num_trials: number of trials to run
+        num_results: the number of results that will come out of the model function. If num_results is
             greater than 1, it should be indexed by range(num_results)
+
     returns:
         an np.array of shape (trials, benchmark_range, models, num_results) with the results all filled in
     """

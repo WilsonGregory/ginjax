@@ -7,10 +7,21 @@ import equinox as eqx
 
 
 class StopCondition:
+    """
+    Base StopCondition.
+    """
+
     best_model: Optional[eqx.Module]
     verbose: int
 
     def __init__(self: Self, verbose: int = 0) -> None:
+        """
+        StopCondition constructor.
+
+        args:
+            verbose: verbose level, one of 0,1,2. 0 prints nothing, 1 prints every 10% of total
+                epochs, and 2 prints every epoch.
+        """
         assert verbose in {0, 1, 2}
         self.best_model = None
         self.verbose = verbose
@@ -42,9 +53,19 @@ class StopCondition:
 
 
 class EpochStop(StopCondition):
-    # Stop when enough epochs have passed.
+    """
+    Stop when enough epochs have passed.
+    """
 
     def __init__(self: Self, epochs: int, verbose: int = 0) -> None:
+        """
+        EpochStop constructor.
+
+        args:
+            epochs: epoch limit
+            verbose: verbose level, one of 0,1,2. 0 prints nothing, 1 prints every 10% of total
+                epochs, and 2 prints every epoch.
+        """
         super(EpochStop, self).__init__(verbose=verbose)
         self.epochs = epochs
 
@@ -56,6 +77,20 @@ class EpochStop(StopCondition):
         val_loss: Optional[ArrayLike],
         epoch_time: float,
     ) -> bool:
+        """
+        Stops if current_epoch is greater than or equal to the specified stop epoch, and log_status
+        depending on the level of verbose.
+
+        args:
+            model: the current model, saved every epoch
+            current_epoch: current epoch
+            train_loss: current training loss
+            val_loss: current valdiation loss
+            epoch_time: how long the epoch took
+
+        returns:
+            whether to stop
+        """
         self.best_model = model
 
         if self.verbose == 2 or (
@@ -67,9 +102,19 @@ class EpochStop(StopCondition):
 
 
 class TrainLoss(StopCondition):
-    # Stop when the training error stops improving after patience number of epochs.
+    """
+    Stop when the training error stops improving after patience number of epochs.
+    """
 
     def __init__(self: Self, patience: int = 0, min_delta: float = 0, verbose: int = 0) -> None:
+        """
+        TrainLoss constructor.
+
+        args:
+            patience: how many epochs of non-improvement to wait before stopping
+            min_delta: the minimum decrease to count as an improvement
+            verbose: the verbose level, one of 0,1. 0 don't log, 1 log on improvement.
+        """
         super(TrainLoss, self).__init__(verbose=verbose)
         self.patience = patience
         self.min_delta = min_delta
@@ -84,6 +129,20 @@ class TrainLoss(StopCondition):
         val_loss: Optional[ArrayLike],
         epoch_time: float,
     ) -> bool:
+        """
+        Stops if the training loss has not improved for a number of epochs equal to patience, and log_status
+        depending on the level of verbose.
+
+        args:
+            model: the current model, saved every epoch
+            current_epoch: current epoch
+            train_loss: current training loss
+            val_loss: current valdiation loss
+            epoch_time: how long the epoch took
+
+        returns:
+            whether to stop
+        """
         if train_loss is None or not isinstance(train_loss, float):
             return False
 
@@ -101,9 +160,19 @@ class TrainLoss(StopCondition):
 
 
 class ValLoss(StopCondition):
-    # Stop when the validation error stops improving after patience number of epochs.
+    """
+    Stop when the validation error stops improving after patience number of epochs.
+    """
 
     def __init__(self: Self, patience: int = 0, min_delta: float = 0, verbose: int = 0) -> None:
+        """
+        ValLoss constructor.
+
+        args:
+            patience: how many epochs of non-improvement to wait before stopping
+            min_delta: the minimum decrease to count as an improvement
+            verbose: the verbose level, one of 0,1. 0 don't log, 1 log on improvement.
+        """
         super(ValLoss, self).__init__(verbose=verbose)
         self.patience = patience
         self.min_delta = min_delta
@@ -118,6 +187,20 @@ class ValLoss(StopCondition):
         val_loss: Optional[ArrayLike],
         epoch_time: float,
     ) -> bool:
+        """
+        Stops if the val loss has not improved for a number of epochs equal to patience, and log_status
+        depending on the level of verbose.
+
+        args:
+            model: the current model, saved every epoch
+            current_epoch: current epoch
+            train_loss: current training loss
+            val_loss: current valdiation loss
+            epoch_time: how long the epoch took
+
+        returns:
+            whether to stop
+        """
         if val_loss is None or not isinstance(val_loss, float):
             return False
 

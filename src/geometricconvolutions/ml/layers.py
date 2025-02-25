@@ -22,12 +22,15 @@ def _group_norm_K1(
     https://github.com/microsoft/cliffordlayers/blob/main/cliffordlayers/nn/functional/batchnorm.py
 
     args:
-        D (int): the dimension of the space
-        image_block (jnp.array): data block of shape (batch,channels,spatial,tensor)
-        groups (int): the number of channel groups, must evenly divide channels
-        method (string): method used for the whitening, either 'eigh', or 'cholesky'. Note that
+        D: the dimension of the space
+        image_block: data block of shape (batch,channels,spatial,tensor)
+        groups: the number of channel groups, must evenly divide channels
+        method: method used for the whitening, either 'eigh', or 'cholesky'. Note that
             'cholesky' is not equivariant.
-        eps (float): to avoid non-invertible matrices, added to the covariance matrix
+        eps: to avoid non-invertible matrices, added to the covariance matrix
+
+    returns:
+        the whitened data, shape (batch,channels,spatial,tensor)
     """
     batch, in_c = image_block.shape[:2]
     spatial_dims, k = geom.parse_shape(image_block.shape[2:], D)
@@ -77,6 +80,10 @@ def _group_norm_K1(
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Layers ~~~~~~~~~~~~~~~~~~~~~~
 class ConvContract(eqx.Module):
+    """
+    A layer then performs the convolution followed by contraction.
+    """
+
     weights: dict[tuple[int, int], dict[tuple[int, int], jax.Array]]
     bias: dict[tuple[int, int], jax.Array]
     invariant_filters: geom.MultiImage
@@ -105,15 +112,20 @@ class ConvContract(eqx.Module):
         key: Any = None,
     ):
         """
-        Equivariant tensor convolution then contraction.
+        Constructor for equivariant tensor convolution then contraction.
+
         args:
             input_keys: A mapping of (k,p) to an integer representing the input channels
             target_keys: A mapping of (k,p) to an integer representing the output channels
             invariant_filters: A MultiImage of the invariant filters to build the convolution filters
             use_bias: One of 'auto', 'mean', or 'scalar', or True for 'auto' or False for no bias.
                 Mean uses a mean scale for every type, scalar uses a regular bias for scalars only
-                and auto does regular bias for scalars and mean for non-scalars. Defaults to auto.
-            For the rest of arguments, see convolve
+                and auto does regular bias for scalars and mean for non-scalars.
+            stride: convolution stride, defaults to (1,)*self.D
+            padding: either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs,
+                defaults to 'TORUS' if image.is_torus, else 'SAME'
+            lhs_dilation: amount of dilation to apply to image in each dimension D, also transposed conv
+            rhs_dilation: amount of dilation to apply to filter in each dimension D
         """
         self.input_keys = input_keys
         self.target_keys = target_keys
@@ -323,11 +335,18 @@ class ConvContract(eqx.Module):
         self: Self,
         input_multi_image: geom.BatchMultiImage,
         weights: dict[tuple[int, int], dict[tuple[int, int], jax.Array]],
-    ):
+    ) -> geom.BatchMultiImage:
         """
         Function to perform convolve_contract on an entire MultiImage by doing the pairwise convolutions
         individually. This is necessary when filters have unequal sizes, or the in_c or out_c are
         not all equal. Weights is passed as an argument to make it easier to test this function.
+
+        args:
+            input_multi_image: the input
+            weights: the weights used to combine the invariant filters
+
+        returns:
+            the convolved BatchMultiImage
         """
         out = input_multi_image.empty()
         for (in_k, in_p), images_block in input_multi_image.items():
@@ -359,7 +378,17 @@ class ConvContract(eqx.Module):
 
         return out
 
-    def __call__(self: Self, x: geom.BatchMultiImage):
+    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+        """
+        The callable, calls either fast_convolve or individual_convolve. Currently fast_convolve
+        is not used because it is not much faster.
+
+        args:
+            x: the input
+
+        returns:
+            the convolved BatchMultiImage, which is a new object
+        """
         if self.fast_mode:
             x = self.fast_convolve(x, self.weights)
         else:  # slow mode
@@ -386,6 +415,10 @@ class ConvContract(eqx.Module):
 
 
 class GroupNorm(eqx.Module):
+    """
+    Implementation of GroupNorm for equivariant and non-equivariant models.
+    """
+
     scale: dict[tuple[int, int], jax.Array]
     bias: dict[tuple[int, int], jax.Array]
     vanilla_norm: dict[tuple[int, int], eqx.nn.GroupNorm]
@@ -402,14 +435,14 @@ class GroupNorm(eqx.Module):
         eps: float = 1e-5,
     ) -> None:
         """
-        Implementation of group_norm. When num_groups=num_channels, this is equivalent to instance_norm. When
+        Constructor for GroupNorm. When num_groups=num_channels, this is equivalent to instance_norm. When
         num_groups=1, this is equivalent to layer_norm.
+
         args:
             input_keys: input key signature
-            D (int): dimension
-            groups (int): the number of channel groups for group_norm
-            eps (float): number to add to variance so we aren't dividing by 0
-            equivariant (bool): defaults to True
+            D: dimension
+            groups: the number of channel groups for group_norm
+            eps: number to add to variance so we aren't dividing by 0
         """
         self.D = D
         self.groups = groups
@@ -434,6 +467,15 @@ class GroupNorm(eqx.Module):
                 )
 
     def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+        """
+        Callable for GroupNorm,
+
+        args:
+            x: input BatchMultiImage
+
+        returns:
+            the output normed BatchMultiImage
+        """
         out_x = x.empty()
         for (k, p), image_block in x.items():
             if k == 0:
@@ -455,12 +497,31 @@ class GroupNorm(eqx.Module):
 
 
 class LayerNorm(GroupNorm):
+    """
+    LayerNorm, which is GroupNorm with a single group.
+    """
 
     def __init__(self: Self, input_keys: geom.Signature, D: int, eps: float = 1e-5) -> None:
+        """
+        Constructor for LayerNorm.
+
+        args:
+            input_keys: the input signature
+            D: the dimension
+            eps: number to add to variance so we aren't dividing by 0
+        """
         super(LayerNorm, self).__init__(input_keys, D, 1, eps)
 
 
 class VectorNeuronNonlinear(eqx.Module):
+    """
+    The vector nonlinearity in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
+    Basically use the channels of a vector to get a direction vector. Use the direction vector
+    to get an inner product with the input vector. The inner product is like the input to a
+    typical nonlinear activation, and it is used to scale the non-orthogonal part of the input
+    vector.
+    """
+
     weights: dict[tuple[int, int], jax.Array]
 
     eps: float = eqx.field(static=True)
@@ -476,15 +537,14 @@ class VectorNeuronNonlinear(eqx.Module):
         key: Any = None,
     ) -> None:
         """
-        The vector nonlinearity in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
-        Basically use the channels of a vector to get a direction vector. Use the direction vector
-        to get an inner product with the input vector. The inner product is like the input to a
-        typical nonlinear activation, and it is used to scale the non-orthogonal part of the input
-        vector.
+        Constructor for VectorNeuronNonlinear.
+
         args:
-            input_keys: the input keys to this layer
-            scalar_activation (func): nonlinearity used for scalar
-            eps (float): small value to avoid dividing by zero if the k_vec is close to 0, defaults to 1e-5
+            input_keys: the signature of the input BatchMultiImage
+            D: the dimension
+            scalar_activation: nonlinearity used for scalars
+            eps: small value to avoid dividing by zero if the k_vec is close to 0
+            key: jax.random key
         """
         self.eps = eps
         self.D = D
@@ -499,7 +559,16 @@ class VectorNeuronNonlinear(eqx.Module):
                     subkey, shape=(in_c, in_c), minval=-bound, maxval=bound
                 )
 
-    def __call__(self: Self, x: geom.BatchMultiImage):
+    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+        """
+        Callable for VectorNeuronNonlinearity
+
+        args:
+            x: the input
+
+        returns:
+            a new BatchMultiImage output
+        """
         out_x = x.empty()
         for (k, p), img_block in x.items():
 
@@ -530,14 +599,34 @@ class VectorNeuronNonlinear(eqx.Module):
 
 
 class MaxNormPool(eqx.Module):
+    """
+    Layer that performs that MaxPool based on the norm of the tensor.
+    """
+
     patch_len: int = eqx.field(static=True)
     use_norm: bool = eqx.field(static=True)
 
     def __init__(self: Self, patch_len: int, use_norm: bool = True) -> None:
+        """
+        Constructor for MaxNormPool.
+
+        args:
+            patch_len: sidelength of the patch
+            use_norm: whether to use norm to calculate the max
+        """
         self.patch_len = patch_len
         self.use_norm = use_norm
 
     def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+        """
+        Callable for MaxNormPool.
+
+        args:
+            x: the input to the layer
+
+        returns:
+            a new max normed output BatchMultiImage
+        """
         in_axes = (None, 0, None, None)
         vmap_max_pool = jax.vmap(jax.vmap(geom.max_pool, in_axes=in_axes), in_axes=in_axes)
 
@@ -549,12 +638,21 @@ class MaxNormPool(eqx.Module):
 
 
 class LayerWrapper(eqx.Module):
+    """
+    Wrapper class for any module which takes an image and converts it to taking and producing a
+    BatchMultiImage.
+    """
+
     modules: dict[tuple[int, int], Callable[..., Any]]
 
     def __init__(self: Self, module: Callable[..., Any], input_keys: geom.Signature) -> None:
         """
         Perform the module or callable (e.g., activation) on each layer of the input MultiImage.
         Since we only take input_keys, module should preserve the shape/tensor order and parity.
+
+        args:
+            module: module should have as input/output an image of shape (channels, spatial)
+            input_keys: actual input (and output) signature this module will process
         """
         self.modules = {}
         for (k, p), _ in input_keys:
@@ -564,6 +662,15 @@ class LayerWrapper(eqx.Module):
             self.modules[(k, p)] = module
 
     def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+        """
+        Callable for LayerWrapper.
+
+        args:
+            x: the input
+
+        returns:
+            a new BatchMultiImage
+        """
         out = x.__class__({}, x.D, x.is_torus)
         for (k, p), image in x.items():
             vmap_call = eqx.filter_vmap(self.modules[(k, p)], axis_name="batch")
@@ -573,12 +680,22 @@ class LayerWrapper(eqx.Module):
 
 
 class LayerWrapperAux(eqx.Module):
+    """
+    Wrapper class for any module which takes an image and aux data and converts it to taking and
+    producing a BatchMultiImage and aux data.
+    """
+
     modules: dict[tuple[int, int], Callable[..., Any]]
 
     def __init__(self: Self, module: Callable[..., Any], input_keys: geom.Signature):
         """
         Perform the module or callable (e.g., activation) on each layer of the input MultiImage.
         Since we only take input_keys, module should preserve the shape/tensor order and parity.
+
+        args:
+            module: module should have as input/output an image of shape (channels, spatial) and
+                aux data (likely batch_stats for BatchNorm).
+            input_keys: actual input (and output) signature this module will process
         """
         self.modules = {}
         for (k, p), _ in input_keys:
@@ -590,6 +707,16 @@ class LayerWrapperAux(eqx.Module):
     def __call__(
         self: Self, x: geom.BatchMultiImage, aux_data: Optional[eqx.nn.State]
     ) -> tuple[geom.BatchMultiImage, Optional[eqx.nn.State]]:
+        """
+        Callable for LayerWrapperAux.
+
+        args:
+            x: the input
+            aux_data: the aux_data, e.g. for BatchNorm
+
+        returns:
+            a new BatchMultiImage and the aux_data
+        """
         out = x.__class__({}, x.D, x.is_torus)
         for (k, p), image in x.items():
             vmap_call = eqx.filter_vmap(
@@ -603,6 +730,16 @@ class LayerWrapperAux(eqx.Module):
 
 @functools.partial(jax.jit, static_argnums=1)
 def average_pool_layer(input_multi_image: geom.MultiImage, patch_len: int) -> geom.MultiImage:
+    """
+    Perform an average pool on a MultiImage.
+
+    args:
+        input_multi_image: the input
+        patch_len: the sidelength of a patch
+
+    returns:
+        a new MultiImage
+    """
     out = input_multi_image.empty()
     vmap_avg_pool = jax.vmap(geom.average_pool, in_axes=(None, 0, None))
     for (k, parity), image_block in input_multi_image.items():
@@ -614,4 +751,14 @@ def average_pool_layer(input_multi_image: geom.MultiImage, patch_len: int) -> ge
 def batch_average_pool(
     input_multi_image: geom.BatchMultiImage, patch_len: int
 ) -> geom.BatchMultiImage:
+    """
+    Perform an average pool on a BatchMultiImage.
+
+    args:
+        input_multi_image: the input
+        patch_len: the sidelength of a patch
+
+    returns:
+        a new BatchMultiImage
+    """
     return jax.vmap(average_pool_layer, in_axes=(0, None))(input_multi_image, patch_len)

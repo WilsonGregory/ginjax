@@ -20,9 +20,13 @@ from geometricconvolutions.geometric.constants import LETTERS
 def parse_shape(shape: tuple[int, ...], D: int) -> tuple[tuple[int, ...], int]:
     """
     Given a geometric image shape and dimension D, return the sidelength tuple and tensor order k.
+
     args:
-        shape (shape tuple): the shape of the data of a single geoemtric image
-        D (int): dimension of the image
+        shape: the shape of the data of a single geometric image
+        D: dimension of the image
+
+    returns:
+        tuple of spatial dimensions, tensor order
     """
     assert isinstance(shape, tuple), f"parse_shape: Shape must be a tuple, but it is {type(shape)}"
     assert len(shape) >= D, f"parse_shape: Shape {shape} is shorter than D={D}"
@@ -31,11 +35,16 @@ def parse_shape(shape: tuple[int, ...], D: int) -> tuple[tuple[int, ...], int]:
 
 def hash(D: int, image: jax.Array, indices: ArrayLike) -> tuple[jax.Array]:
     """
-    Deals with torus by modding (with `np.remainder()`).
+    Converts an array of indices to their pixels on the torus by modding the indices with the
+    spatial dimensions.
+
     args:
-        D (int): dimension of hte image
-        image (jnp.array): image data
-        indices (jnp.array): array of indices, shape (num_idx, D) to apply the remainder to
+        D: dimension of the image
+        image: image data
+        indices: array of indices, shape (num_idx, D) to apply the remainder to
+
+    returns:
+        the pixel indices as a d-tuple of jax arrays
     """
     spatial_dims = jnp.array(parse_shape(image.shape, D)[0]).reshape((1, D))
     return tuple(jnp.remainder(indices, spatial_dims).transpose().astype(int))
@@ -52,11 +61,10 @@ def get_torus_expanded(
     just doing convolutions on the expanded image and will get the same result.
 
     args:
-        D (int): dimension of the image
-        image (jnp.array): image data, (batch,spatial,channels)
-        is_torus (tuple of bool): d-length tuple of bools specifying which spatial dimensions are toroidal
-        filter_spatial_dims (tuple of ints): the spatial dimensions of the filter
-        rhs_dilation (tuple of int): dilation to apply to each filter dimension D
+        image: image data, (batch,spatial,channels)
+        is_torus: d-length tuple of bools specifying which spatial dimensions are toroidal
+        filter_spatial_dims: d-length tuple of the spatial dimensions of the filter
+        rhs_dilation: dilation to apply to each filter dimension D
 
     Returns:
         The new expanded torus, and the appropriate padding_literal to use in convolve
@@ -89,10 +97,14 @@ def get_same_padding(
 ) -> tuple[tuple[int, int], ...]:
     """
     Calculate the padding for each dimension D necessary for 'SAME' padding, including rhs_dilation.
+
     args:
-        filter_spatial_dims (tuple of ints): filter spatial dimensions, length D tuple
-        rhs_dilation (tuple of ints): rhs (filter) dilation, length D tuple
-        pad_dims (tuple of bool): which dimensions to pad, defaults to None which is all dimensions
+        filter_spatial_dims: filter spatial dimensions, length D tuple
+        rhs_dilation: rhs (filter) dilation, length D tuple
+        pad_dims: d-tuple of dimensions to pad, default (None) is all dimensions
+
+    returns:
+        d-tuple of pairs of amount of pixels to pad
     """
     pad_dims = (True,) * len(filter_spatial_dims) if pad_dims is None else pad_dims
 
@@ -108,20 +120,26 @@ def get_same_padding(
 
 def pre_tensor_product_expand(
     D: int,
-    image_a: jnp.ndarray,
-    image_b: jnp.ndarray,
+    image_a: jax.Array,
+    image_b: jax.Array,
     a_offset: int = 0,
     b_offset: int = 0,
     dtype: Optional[jnp.dtype] = None,
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+) -> tuple[jax.Array, jax.Array]:
     """
     Rather than take a tensor product of two tensors, we can first take a tensor product of each with a tensor of
     ones with the shape of the other. Then we have two matching shapes, and we can then do whatever operations.
+
     args:
-        D (int): dimension of the image
-        image_a (GeometricImage like): one geometric image whose tensors we will later be doing tensor products on
-        image_b (GeometricImage like): other geometric image
-        dtype (dtype): if present, cast both outputs to dtype, defaults to None
+        D: dimension of the image
+        image_a: one geometric image whose tensors we will later be doing tensor products on
+        image_b: other geometric image
+        a_offset: number of axes of image_a prior to the spatial dims
+        b_offset: number of axes of image_b prior to the spatial dims
+        dtype: if present, cast both outputs to dtype
+
+    returns:
+        tuple of the expanded images
     """
     _, img_a_k = parse_shape(image_a.shape[a_offset:], D)
     _, img_b_k = parse_shape(image_b.shape[b_offset:], D)
@@ -159,14 +177,18 @@ def pre_tensor_product_expand(
     return image_a_expanded, image_b_expanded
 
 
-def conv_contract_image_expand(D: int, image: jnp.ndarray, filter_k: int) -> jnp.ndarray:
+def conv_contract_image_expand(D: int, image: jax.Array, filter_k: int) -> jax.Array:
     """
     For conv_contract, we will be immediately performing a contraction, so we don't need to fully expand
     each tensor, just the k image to the k+k' conv filter.
+
     args:
-        D (int): dimension of the space
-        image (jnp.array): image data, shape (in_c,spatial,tensor)
-        filter_k (int): the filter tensor order
+        D: dimension of the space
+        image: image data, shape (in_c,spatial,tensor)
+        filter_k: the filter tensor order
+
+    returns:
+        the expanded image data
     """
     _, img_k = parse_shape(image.shape[2:], D)
     k_prime = filter_k - img_k  # not to be confused with Coach Prime
@@ -177,19 +199,23 @@ def conv_contract_image_expand(D: int, image: jnp.ndarray, filter_k: int) -> jnp
 
 def mul(
     D: int,
-    image_a: jnp.ndarray,
-    image_b: jnp.ndarray,
+    image_a: jax.Array,
+    image_b: jax.Array,
     a_offset: int = 0,
     b_offset: int = 0,
-) -> jnp.ndarray:
+) -> jax.Array:
     """
     Multiplication operator between two images, implemented as a tensor product of the pixels.
+
     args:
-        D (int): dimension of the images
-        image_a (jnp.array): image data
-        image_b (jnp.array): image data
-        a_offset (int): number of axes before the spatial axes (batch, channels, etc.), default 0
-        b_offset (int): number of axes before the spatial axes (batch, channels, etc.), default 0
+        D: dimension of the images
+        image_a: image data
+        image_b: image data
+        a_offset: number of axes before the spatial axes (batch, channels, etc.)
+        b_offset: number of axes before the spatial axes (batch, channels, etc.)
+
+    returns:
+        the multiplied images
     """
     image_a_data, image_b_data = pre_tensor_product_expand(D, image_a, image_b, a_offset, b_offset)
     return image_a_data * image_b_data  # now that shapes match, do elementwise multiplication
@@ -209,6 +235,7 @@ def convolve(
 ) -> jax.Array:
     """
     Here is how this function works:
+
     1. Expand the geom_image to its torus shape, i.e. add filter.m cells all around the perimeter of the image
     2. Do the tensor product (with 1s) to each image.k, filter.k so that they are both image.k + filter.k tensors.
     That is if image.k=2, filter.k=1, do (D,D) => (D,D) x (D,) and (D,) => (D,D) x (D,) with tensors of 1s
@@ -217,23 +244,26 @@ def convolve(
     5. Put filter in HWIO (height, width, input, output). Input is 1, output is the vectorized tensor
     6. Plug all that stuff in to conv_general_dilated, and feature_group_count is the length of the vectorized
     tensor, and it is basically saying that each part of the vectorized tensor is treated separately in the filter.
-    It must be the case that channel = input * feature_group_count
+
+    It must be the case that channel = input * feature_group_count.
     See: https://jax.readthedocs.io/en/latest/notebooks/convolutions.html#id1 and
     https://www.tensorflow.org/xla/operation_semantics#conv_convolution
 
     args:
-        D (int): dimension of the images
-        image (jnp.array): image data, shape (batch,in_c,spatial,tensor)
-        filter_image (jnp.array): the convolution filter, shape (out_c,in_c,spatial,tensor)
-        is_torus (bool or tuple of bool): what dimensions of the image are toroidal
-        stride (tuple of ints): convolution stride, defaults to (1,)*self.D
-        padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs):
+        D: dimension of the images
+        image: image data, shape (batch,in_c,spatial,tensor)
+        filter_image: the convolution filter, shape (out_c,in_c,spatial,tensor)
+        is_torus: what dimensions of the image are toroidal
+        stride: convolution stride, defaults to (1,)*self.D
+        padding: either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs,
             defaults to 'TORUS' if image.is_torus, else 'SAME'
-        lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
-        rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
-        tensor_expand (bool): expand the tensor of image and filter to do tensor convolution, defaults to True.
+        lhs_dilation: amount of dilation to apply to image in each dimension D, also transposed conv
+        rhs_dilation: amount of dilation to apply to filter in each dimension D, defaults to 1
+        tensor_expand: expand the tensor of image and filter to do tensor convolution, defaults to True.
             If there is something more complicated going on (e.g. conv_contract), you can skip this step.
-    returns: (jnp.array) convolved_image, shape (batch,out_c,spatial,tensor)
+
+    returns:
+        convolved_image, shape (batch,out_c,spatial,tensor)
     """
     assert (D == 2) or (D == 3)
     assert image.shape[1] == filter_image.shape[1], (
@@ -281,28 +311,34 @@ def convolve(
 @eqx.filter_jit
 def convolve_ravel(
     D: int,
-    image: jnp.ndarray,
-    filter_image: jnp.ndarray,
+    image: jax.Array,
+    filter_image: jax.Array,
     is_torus: Union[tuple[bool, ...], bool],
     stride: Union[int, tuple[int, ...]] = 1,
     padding: Optional[Union[str, int, tuple[tuple[int, int], ...]]] = None,
     lhs_dilation: Optional[tuple[int, ...]] = None,
     rhs_dilation: Union[int, tuple[int, ...]] = 1,
-) -> jnp.ndarray:
+) -> jax.Array:
     """
     Raveled verson of convolution. Assumes the channels are all lined up correctly for the tensor
     convolution. This assumes that the feature_group_count is image in_c // filter in_c.
+
+    See [convolve](functional_geometric_image.md#geometricconvolutions.geometric.functional_geometric_image.convolve) for a full
+    description of this function.
+
     args:
-        D (int): dimension of the images
-        image (jnp.array): image data, shape (batch,spatial,tensor*in_c)
-        filter_image (jnp.array): the convolution filter, shape (spatial,in_c,tensor*out_c)
-        is_torus (bool or tuple of bool): what dimensions of the image are toroidal
-        stride (tuple of ints): convolution stride, defaults to (1,)*self.D
-        padding (either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs):
+        D: dimension of the images
+        image: image data, shape (batch,spatial,tensor*in_c)
+        filter_image: the convolution filter, shape (spatial,in_c,tensor*out_c)
+        is_torus: what dimensions of the image are toroidal
+        stride: convolution stride, defaults to (1,)*self.D
+        padding: either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs,
             defaults to 'TORUS' if image.is_torus, else 'SAME'
-        lhs_dilation (tuple of ints): amount of dilation to apply to image in each dimension D, also transposed conv
-        rhs_dilation (tuple of ints): amount of dilation to apply to filter in each dimension D, defaults to 1
-    returns: (jnp.array) convolved_image, shape (batch,out_c,spatial,tensor)
+        lhs_dilation: amount of dilation to apply to image in each dimension D, also transposed conv
+        rhs_dilation: amount of dilation to apply to filter in each dimension D, defaults to 1
+
+    returns:
+        convolved_image, shape (batch,spatial,tensor*out_c)
     """
     assert (D == 2) or (D == 3)
     assert (isinstance(is_torus, tuple) and len(is_torus) == D) or isinstance(is_torus, bool), (
@@ -378,12 +414,23 @@ def convolve_contract(
     """
     Given an input k image and a k+k' filter, take the tensor convolution that contract k times with one index
     each from the image and filter. This implementation is slightly more efficient then doing the convolution
-    and contraction separately by avoiding constructing the k+k+k' intermediate tensor. See convolve for a
-    full description of the convolution including the args.
+    and contraction separately by avoiding constructing the k+k+k' intermediate tensor. See
+    [convolve](functional_geometric_image.md#geometricconvolutions.geometric.functional_geometric_image.convolve) for a full
+    description of the convolution.
+
     args:
-        image (jnp.array): image data, shape (batch,in_c,spatial,tensor)
-        filter_image (jnp.array): filter data, shape (out_c,in_c,spatial,tensor)
-    returns: (jnp.array) output of shape (batch,out_c,spatial,tensor)
+        D: dimension of the images
+        image: image data, shape (batch,in_c,spatial,tensor)
+        filter_image: the convolution filter, shape (out_c,in_c,spatial,tensor)
+        is_torus: what dimensions of the image are toroidal
+        stride: convolution stride, defaults to (1,)*self.D
+        padding: either 'TORUS','VALID', 'SAME', or D length tuple of (upper,lower) pairs,
+            defaults to 'TORUS' if image.is_torus, else 'SAME'
+        lhs_dilation: amount of dilation to apply to image in each dimension D, also transposed conv
+        rhs_dilation: amount of dilation to apply to filter in each dimension D, defaults to 1
+
+    returns:
+        convolved_image, shape (batch,out_c,spatial,tensor)
     """
     _, img_k = parse_shape(image.shape[2:], D)
     _, filter_k = parse_shape(filter_image.shape[2:], D)
@@ -418,10 +465,14 @@ def get_contraction_indices(
     argument swappable_idxs to specify indices that can be swapped without changing the contraction. Suppose
     we have A * c1 where c1 is a k=2, parity=0 invariant conv_filter. In that case, we can contract on either of
     its indices and it won't change the result because transposing the axes is a group operation.
+
     args:
-        initial_k (int): the starting number of indices that we have
-        final_k (int): the final number of indices that we want to end up with
-        swappable_idxs (tuple of tuple pairs of ints): Indices that can swapped w/o changing the contraction
+        initial_k: the starting number of indices that we have
+        final_k: the final number of indices that we want to end up with
+        swappable_idxs: Indices that can swapped w/o changing the contraction
+
+    returns:
+        all the possible contraction indices
     """
     assert ((initial_k + final_k) % 2) == 0
     assert initial_k >= final_k
@@ -460,16 +511,20 @@ def get_contraction_indices(
 
 @functools.partial(jax.jit, static_argnums=[1, 2])
 def multicontract(
-    data: jnp.ndarray, indices: tuple[tuple[int, int], ...], idx_shift: int = 0
+    data: jax.Array, indices: tuple[tuple[int, int], ...], idx_shift: int = 0
 ) -> jax.Array:
     """
     Perform the Kronecker Delta contraction on the data. Must have at least 2 dimensions, and because we implement with
     einsum, must have at most 52 dimensions. Indices a tuple of pairs of indices, also tuples.
+
     args:
-        data (np.array-like): data to perform the contraction on
-        indices (tuple of tuples of ints): index pairs to perform the contractions on
-        idx_shift (int): indices are the tensor indices, so if data has spatial indices or channel/batch
+        data: data to perform the contraction on
+        indices: index pairs to perform the contractions on
+        idx_shift: indices are the tensor indices, so if data has spatial indices or channel/batch
             indices in the beginning we shift over by idx_shift
+
+    returns:
+        the contracted data
     """
     dimensions = len(data.shape)
     assert dimensions + len(indices) < 52
@@ -483,16 +538,20 @@ def multicontract(
     return jnp.einsum("".join(einstr), data)
 
 
-def get_rotated_keys(D: int, data: jnp.ndarray, gg: np.ndarray) -> np.ndarray:
+def get_rotated_keys(D: int, data: jax.Array, gg: np.ndarray) -> np.ndarray:
     """
     Get the rotated keys of data when it will be rotated by gg. Note that we rotate the key vector indices
     by the inverse of gg per the definition (this is done by key_array @ gg, rather than gg @ key_array).
     When the spatial_dims are not square, this gets a little tricky.
     The gg needs to be a concrete (numpy) array, not a traced jax array.
+
     args:
-        D (int): dimension of image
-        data (jnp.array): data array to be rotated
-        gg (jnp array-like): group operation
+        D: dimension of image
+        data: data array to be rotated
+        gg: group operation
+
+    returns:
+        the rotated keys
     """
     spatial_dims, _ = parse_shape(data.shape, D)
     rotated_spatial_dims = tuple(np.abs(gg @ np.array(spatial_dims)))
@@ -516,14 +575,18 @@ def times_group_element(
     """
     Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the location of the
     pixels, then apply the action to the pixels themselves.
+
     args:
-        D (int): dimension of the data
-        data (jnp.array): data block of image data to rotate
-        parity (int): parity of the data, 0 for even parity, 1 for odd parity
-        gg (group operation matrix): a DxD matrix that rotates the tensor. Note that you cannot vmap
+        D: dimension of the data
+        data: data block of image data to rotate, shape (spatial,tensor)
+        parity: parity of the data, 0 for even parity, 1 for odd parity
+        gg: a DxD matrix that rotates the tensor. Note that you cannot vmap
             by this argument because it needs to deal with concrete values
-        precision (jax.lax.Precision): eisnum precision, normally uses lower precision, use
+        precision: eisnum precision, normally uses lower precision, use
             jax.lax.Precision.HIGH for testing equality in unit tests
+
+    returns:
+        the rotated image data
     """
     spatial_dims, k = parse_shape(data.shape, D)
     sign, _ = jnp.linalg.slogdet(gg)
@@ -547,21 +610,24 @@ def times_group_element(
 
 
 def tensor_times_gg(
-    tensor: jnp.ndarray,
+    tensor: jax.Array,
     parity: int,
     gg: np.ndarray,
     precision: Optional[jax.lax.Precision] = None,
-) -> jnp.ndarray:
+) -> jax.Array:
     """
     Apply a group element of SO(2) or SO(3) to a single tensor.
+
     args:
-        D (int): dimension of the data
-        tensor (jnp.array): data of the tensor
-        parity (int): parity of the data, 0 for even parity, 1 for odd parity
-        gg (group operation matrix): a DxD matrix that rotates the tensor. Note that you cannot vmap
+        tensor: data of the tensor
+        parity: parity of the data, 0 for even parity, 1 for odd parity
+        gg: a DxD matrix that rotates the tensor. Note that you cannot vmap
             by this argument because it needs to deal with concrete values
-        precision (jax.lax.Precision): eisnum precision, normally uses lower precision, use
+        precision: eisnum precision, normally uses lower precision, use
             jax.lax.Precision.HIGH for testing equality in unit tests
+
+    returns:
+        rotated tensor data
     """
     k = len(tensor.shape)
     sign, _ = jnp.linalg.slogdet(gg)
@@ -583,11 +649,15 @@ def tensor_times_gg(
 def norm(idx_shift: int, data: jax.Array, keepdims: bool = False) -> jax.Array:
     """
     Perform the frobenius norm on each pixel tensor, returning a scalar image
+
     args:
-        idx_shift (int): the number of leading axes before the tensor, should be D for spatial plus
+        idx_shift: the number of leading axes before the tensor, should be D for spatial plus
             the batch and spatial axes if they
-        data (jnp.array): image data, shape (N,)*D + (D,)*k
-        keepdims (bool): passed to jnp.linalg.norm, defaults to False
+        data: image data, shape (spatial,tensor)
+        keepdims: passed to jnp.linalg.norm
+
+    returns:
+        the data of a scalar image after performing the norm
     """
     assert (
         idx_shift <= data.ndim
@@ -615,12 +685,16 @@ def max_pool(
     Perform a max pooling operation where the length of the side of each patch is patch_len. Max is
     determined by the value of comparator_image if present, then the norm of image_data if use_norm
     is true, then finally the image_data otherwise.
+
     args:
-        D (int): the dimension of the space
-        image_data (jnp.array): the image data, currently shape (N,)*D + (D,)*k
-        patch_len (int): the side length of the patches, must evenly divide all spatial dims
-        use_norm (bool): if true, use the norm (over the tensor) of the image as the comparator image
-        comparator_image (jnp.array): scalar image whose argmax is used to determine what value to use.
+        D: the dimension of the space
+        image_data: the image data, shape (spatial,tensor)
+        patch_len: the side length of the patches, must evenly divide all spatial dims
+        use_norm: if true, use the norm (over the tensor) of the image as the comparator image
+        comparator_image: scalar image whose argmax is used to determine what value to use.
+
+    returns:
+        the image data that has been max pooled, shape (spatial,tensor)
     """
     spatial_dims, k = parse_shape(image_data.shape, D)
     assert (comparator_image is not None) or use_norm or (k == 0)
@@ -666,10 +740,14 @@ def average_pool(D: int, image_data: jax.Array, patch_len: int) -> jax.Array:
     Perform a average pooling operation where the length of the side of each patch is patch_len. This is
     equivalent to doing a convolution where each element of the filter is 1 over the number of pixels in the
     filter, the stride length is patch_len, and the padding is 'VALID'.
+
     args:
-        D (int): dimension of data
-        image_data (jnp.array): image data, shape (h,w,tensor) or (h,w,d,tensor)
-        patch_len (int): the side length of the patches, must evenly divide the sidelength
+        D: dimension of data
+        image_data: image data, shape (spatial,tensor)
+        patch_len: the side length of the patches, must evenly divide the sidelength
+
+    returns:
+        the image data after being averaged pooled, shape (spatial, tensor)
     """
     spatial_dims, _ = parse_shape(image_data.shape, D)
     assert functools.reduce(lambda carry, N: carry and (N % patch_len == 0), spatial_dims, True)

@@ -40,7 +40,7 @@ markdown_extensions:
     - admonition
     - toc:
         permalink: "¤"  # Adds a clickable permalink to each section heading
-        toc_depth: 4
+        toc_depth: 5
 
 plugins:
     - search  # default search plugin; needs manually re-enabling when using any other plugins
@@ -59,18 +59,20 @@ plugins:
                     inherited_members: true  # Allow looking up inherited methods
                     show_root_heading: true  # actually display anything at all...
                     show_root_full_path: true  # display "diffrax.asdf" not just "asdf"
-                    show_if_no_docstring: true
+                    show_if_no_docstring: false # don't want to display attributes
                     show_signature_annotations: true
-                    show_source: false  # don't include source code
+                    show_source: true 
                     members_order: source  # order methods according to their order of definition in the source code, not alphabetical order
-                    heading_level: 4
-
-extra_css:
-  - stylesheets/extra.css
+                    heading_level: 3
+                    show_symbol_type_heading: true
+                    show_symbol_type_toc: true
 
 nav:
   - Home: index.md
   - Quickstart: quickstart.md
   - API: api/*
 
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
 

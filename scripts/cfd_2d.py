@@ -199,7 +199,7 @@ def plot_multi_image(
     actual_images = actual_multi_image_comp.to_images()
 
     img_arr = jnp.concatenate([test_multi_image_comp[(0, 0)], actual_multi_image_comp[(0, 0)]])
-    vmax = jnp.max(jnp.abs(img_arr))
+    vmax = float(jnp.max(jnp.abs(img_arr)))
     vmin = -1 * vmax
 
     nrows = 4 if show_power else 3

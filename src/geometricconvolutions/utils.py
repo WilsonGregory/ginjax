@@ -1,10 +1,15 @@
 import numpy as np
-import pylab as plt
+import matplotlib.pyplot as plt
+import matplotlib.axes
+import matplotlib.colors
+import matplotlib.figure
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Wedge
+from typing_extensions import Any, Optional, Union
 
+import jax
 import jax.numpy as jnp
-from jaxtyping import ArrayLike
+
 
 # Visualize the filters.
 
@@ -13,17 +18,44 @@ XOFF, YOFF = 0.15, -0.1
 TINY = 1.0e-5
 
 
-def setup_plot(figsize=(8, 6)):
+def setup_plot(figsize: tuple[int, int] = (8, 6)) -> matplotlib.axes.Axes:
+    """
+    Create a figure of figsize and return the axes.
+
+    args:
+        figsize: the specified figure size, (width,height)
+
+    returns:
+        the new axes
+    """
     return plt.figure(figsize=figsize).gca()
 
 
-def nobox(ax):
+def nobox(ax: matplotlib.axes.Axes) -> None:
+    """
+    Turn axes and xticks,yticks off.
+
+    args:
+        ax: the axis to edit
+    """
     ax.set_xticks([])
     ax.set_yticks([])
     ax.axis("off")
 
 
-def finish_plot(ax, title, xs, ys, D):
+def finish_plot(
+    ax: matplotlib.axes.Axes, title: str, xs: np.ndarray, ys: np.ndarray, D: int
+) -> None:
+    """
+    Set title, axis limits, equal aspect ratio, and no box.
+
+    args:
+        ax: the axis to edit
+        title: title of the plot
+        xs: x dimensions
+        ys: y dimensions
+        D: dimension of the space
+    """
     ax.set_title(title)
     if D == 2:
         ax.set_xlim(np.min(xs) - 0.55, np.max(xs) + 0.55)
@@ -35,7 +67,15 @@ def finish_plot(ax, title, xs, ys, D):
     nobox(ax)
 
 
-def plot_boxes(ax, xs, ys):
+def plot_boxes(ax: matplotlib.axes.Axes, xs: np.ndarray, ys: np.ndarray) -> None:
+    """
+    Plot the boxes for a geometric image.
+
+    args:
+        ax: the axis to plot on
+        xs: pixels in the x direction
+        ys: pixels in the y direction
+    """
     ax.plot(
         xs[None] + np.array([-0.5, -0.5, 0.5, 0.5, -0.5]).reshape((5, 1)),
         ys[None] + np.array([-0.5, 0.5, 0.5, -0.5, -0.5]).reshape((5, 1)),
@@ -45,7 +85,33 @@ def plot_boxes(ax, xs, ys):
     )
 
 
-def fill_boxes(ax, xs, ys, ws, vmin, vmax, cmap, zorder=-100, colorbar=False, alpha=1.0):
+def fill_boxes(
+    ax: matplotlib.axes.Axes,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    ws: np.ndarray,
+    vmin: float,
+    vmax: float,
+    cmap: Union[matplotlib.colors.Colormap, str],
+    zorder: int = -100,
+    colorbar: bool = False,
+    alpha: float = 1.0,
+) -> None:
+    """
+    Fill boxes with color according to the ws values.
+
+    args:
+        ax: the axis we are plotting on
+        xs: the x coordinates of the pixels
+        ys: the y coordinates of the pixels
+        ws: the values to determine the fill color
+        vmin: min value used for color
+        vmax: max value used for color
+        cmap: the color map
+        zorder: whether to put the color in front or behind other elements
+        colorbar: whether to include the colorbar
+        alpha: the opacity of the box fill
+    """
     plotted_img = ax.imshow(
         ws.reshape((np.max(xs) + 1, np.max(ys) + 1)).T,
         vmin=vmin,
@@ -59,19 +125,36 @@ def fill_boxes(ax, xs, ys, ws, vmin, vmax, cmap, zorder=-100, colorbar=False, al
 
 
 def plot_scalars(
-    ax,
-    spatial_dims,
-    xs,
-    ys,
-    ws,
-    boxes=True,
-    fill=True,
-    symbols=True,
-    vmin: ArrayLike = -2.0,
-    vmax: ArrayLike = 2.0,
-    cmap="BrBG",
-    colorbar=False,
-):
+    ax: matplotlib.axes.Axes,
+    spatial_dims: tuple[int, ...],
+    xs: np.ndarray,
+    ys: np.ndarray,
+    ws: np.ndarray,
+    boxes: bool = True,
+    fill: bool = True,
+    symbols: bool = True,
+    vmin: float = -2.0,
+    vmax: float = 2.0,
+    cmap: Union[matplotlib.colors.Colormap, str] = "BrBG",
+    colorbar: bool = False,
+) -> None:
+    """
+    Plot scalars from a scalar image.
+
+    args:
+        ax: the axis we are plotting on
+        spatial_dims: the spatial dimensions of the image
+        xs: the x coordinates of the pixels
+        ys: the y coordinates of the pixels
+        ws: the scalar pixel values
+        boxes: whether to plot the surrounding boxes
+        fill: whether to plot the color fill
+        symbols: whether to plot symbol representation of the scalar values
+        vmin: min value used for color
+        vmax: max value used for color
+        cmap: the color map
+        colorbar: whether to include the colorbar
+    """
     if boxes:
         plot_boxes(ax, xs, ys)
     if fill:
@@ -91,17 +174,32 @@ def plot_scalars(
 
 
 def plot_vectors(
-    ax,
-    xs,
-    ys,
-    ws,
-    boxes=True,
-    fill=True,
-    vmin: ArrayLike = 0.0,
-    vmax: ArrayLike = 2.0,
-    cmap="PuRd",
-    scaling=0.33,
-):
+    ax: matplotlib.axes.Axes,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    ws: np.ndarray,
+    boxes: bool = True,
+    fill: bool = True,
+    vmin: float = 0.0,
+    vmax: float = 2.0,
+    cmap: Union[matplotlib.colors.Colormap, str] = "PuRd",
+    scaling: float = 0.33,
+) -> None:
+    """
+    Plot vectors from a vector image.
+
+    args:
+        ax: the axis we are plotting on
+        xs: the x coordinates of the pixels
+        ys: the y coordinates of the pixels
+        ws: the scalar pixel values
+        boxes: whether to plot the surrounding boxes
+        fill: whether to plot the color fill
+        vmin: min value used for color
+        vmax: max value used for color
+        cmap: the color map
+        scaling: how much to scale the vectors
+    """
     if boxes:
         plot_boxes(ax, xs, ys)
     if fill:
@@ -127,7 +225,25 @@ def plot_vectors(
         )
 
 
-def plot_one_tensor(ax, x, y, T, zorder=0, scaling=0.33):
+def plot_one_tensor(
+    ax: matplotlib.axes.Axes,
+    x: float,
+    y: float,
+    T: np.ndarray,
+    zorder: int = 0,
+    scaling: float = 0.33,
+) -> None:
+    """
+    Plot a tensor a particular coordinate on the axis.
+
+    args:
+        ax: the axis we are plotting on
+        x: the pixel x coordinate
+        y: the pixel y coordinate
+        T: the tensor
+        zorder: whether to put this plot in front or behind other plots
+        scaling: how much to scale the tensor
+    """
     if np.abs(T[0, 0]) > TINY:
         # plot a double-headed arrow
         ax.arrow(
@@ -276,7 +392,19 @@ def plot_one_tensor(ax, x, y, T, zorder=0, scaling=0.33):
     ax.add_collection(p)
 
 
-def plot_tensors(ax, xs, ys, ws, boxes=True):
+def plot_tensors(
+    ax: matplotlib.axes.Axes, xs: np.ndarray, ys: np.ndarray, ws: np.ndarray, boxes: bool = True
+) -> None:
+    """
+    Plot a tensor image.
+
+    args:
+        ax: the axis to plot on
+        xs: the x coordinates of the pixels
+        ys: the y coordinates of the pixels
+        ws: the tensor values at the pixels
+        boxes: whether to also plot the boxes
+    """
     if boxes:
         plot_boxes(ax, xs, ys)
     for x, y, w in zip(xs, ys, ws):
@@ -285,13 +413,35 @@ def plot_tensors(ax, xs, ys, ws, boxes=True):
             plot_one_tensor(ax, x, y, w, zorder=100)
 
 
-def plot_nothing(ax):
+def plot_nothing(ax: matplotlib.axes.Axes) -> None:
+    """
+    Set the title to empty string and print no boxes.
+
+    args:
+        ax: the axis to plot nothing on
+    """
     ax.set_title(" ")
     nobox(ax)
-    return
 
 
-def plot_grid(images, names, n_cols, **kwargs):
+# avoid circular import by not specifying what images is a list of
+def plot_grid(
+    images: list, names: list[str], n_cols: int, **kwargs: bool
+) -> matplotlib.figure.Figure:
+    """
+    Plot a grid of GeometricImages. The grid will have columns equal to n_cols, and the number of
+    rows are calculated automatically. If there are extra spots in the grid, plot_nothing is called
+    on those spaces.
+
+    args:
+        images: images to plot in the grid
+        names: names of each image to plot as the title
+        n_cols: number of columns in the gride
+        kwargs: keyword arguments passed along to plot
+
+    returns:
+        the figure plotted
+    """
     n_rows = max(1, np.ceil(len(images) / n_cols).astype(int))
     assert len(images) <= n_cols * n_rows
     bar = 8.0  # figure width in inches?
@@ -320,12 +470,16 @@ def plot_grid(images, names, n_cols, **kwargs):
     return fig
 
 
-def power(img):
+def power(img: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
     """
     Compute the power of image
     From: https://bertvandenbroucke.netlify.app/2019/05/24/computing-a-power-spectrum-in-python/
+
     args:
-        img (jnp.array): scalar image data, shape (batch,channel,spatial)
+        img: scalar image data, shape (batch,channel,spatial)
+
+    returns:
+        tuple of k, P, N
     """
     # images are assumed to be scalar images
     spatial_dims = img.shape[2:]
@@ -373,14 +527,26 @@ def power(img):
 
 
 def plot_power(
-    fields,
-    labels,
-    ax,
-    title="",
-    xlabel="unnormalized wavenumber",
-    ylabel="unnormalized power",
-    hide_ticks=False,
-):
+    fields: list[jax.Array],
+    labels: Optional[list[str]],
+    ax: matplotlib.axes.Axes,
+    title: str = "",
+    xlabel: str = "unnormalized wavenumber",
+    ylabel: str = "unnormalized power",
+    hide_ticks: bool = False,
+) -> None:
+    """
+    Plot the power spectrum of each image onto the same plot.
+
+    args:
+        fields: list of fields to plot the power spectrum
+        labels: label for each field
+        ax: the axis to plot on
+        title: title of the plot
+        xlabel: the x axis label
+        ylabel: the y axis label
+        hide_ticks: whether to hide the ticks
+    """
 
     ks, Ps = [], []
     for field in fields:

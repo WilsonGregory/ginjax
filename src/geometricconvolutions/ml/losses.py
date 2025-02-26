@@ -50,23 +50,33 @@ def timestep_smse_loss(
 
 
 def smse_loss(
-    multi_image_x: geom.BatchMultiImage, multi_image_y: geom.BatchMultiImage
+    multi_image_x: geom.BatchMultiImage,
+    multi_image_y: geom.BatchMultiImage,
+    reduce: Optional[str] = "mean",
 ) -> jax.Array:
     """
-    Sum of mean squared error loss. The sum is over the channels, the mean is over the spatial dimensions and
-    the batch.
+    Sum of mean squared error loss. The sum is over the channels, the mean is over the spatial
+    dimensions. Mean is also taken over batch if reduce == 'mean', or it returns each loss if
+    reduce is None.
 
     args:
         multi_image_x: the input BatchMultiImage
         multi_image_y: the target BatchMultiImage
+        reduce: how to reduce over batch. Either "mean" or None.
 
     returns:
         the loss value
     """
+    assert reduce in {"mean", None}
     spatial_size = np.multiply.reduce(multi_image_x.get_spatial_dims())
-    return jnp.mean(
-        jnp.sum((multi_image_x.to_vector() - multi_image_y.to_vector()) ** 2 / spatial_size, axis=1)
+    loss_per_batch = jnp.sum(
+        (multi_image_x.to_vector() - multi_image_y.to_vector()) ** 2 / spatial_size, axis=1
     )
+
+    if reduce == "mean":
+        return jnp.mean(loss_per_batch)
+    else:
+        return loss_per_batch
 
 
 def normalized_smse_loss(

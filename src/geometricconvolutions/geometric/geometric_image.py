@@ -1,7 +1,7 @@
 import itertools as it
 import functools
 import numpy as np
-import matplotlib.pyplot as plt
+import matplotlib.axes
 from typing_extensions import Any, Callable, Generator, Optional, Self, Sequence, Union
 
 import jax
@@ -655,13 +655,13 @@ class GeometricImage:
 
     def plot(
         self: Self,
-        ax: Optional[Any] = None,
+        ax: Optional[matplotlib.axes.Axes] = None,
         title: str = "",
         boxes: bool = False,
         fill: bool = True,
         symbols: bool = False,
-        vmin: Optional[ArrayLike] = None,
-        vmax: Optional[ArrayLike] = None,
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
         colorbar: bool = False,
         vector_scaling: float = 0.5,
     ) -> None:
@@ -861,8 +861,8 @@ class GeometricFilter(GeometricImage):
         boxes: bool = True,
         fill: bool = True,
         symbols: bool = True,
-        vmin: Optional[ArrayLike] = None,
-        vmax: Optional[ArrayLike] = None,
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
         colorbar: bool = False,
         vector_scaling: float = 0.33,
     ) -> None:

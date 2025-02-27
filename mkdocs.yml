@@ -70,6 +70,7 @@ plugins:
 nav:
   - Home: index.md
   - Quickstart: quickstart.md
+  - Group and Invariant Filters: group_operators.ipynb
   - Examples: examples/
   - API: api/*
 

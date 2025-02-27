@@ -133,23 +133,26 @@ def get_unique_invariant_filters(
     )
     filter_matrix = group_average(basis).reshape(len(basis), -1)
 
-    # do the SVD
-    _, s, v = np.linalg.svd(filter_matrix)
-    sbig = s > TINY
-    if not np.any(sbig):
-        return []
+    # remove rows of all zeros
+    filter_matrix = filter_matrix[jnp.sum(jnp.abs(filter_matrix), axis=1) != 0.0]
+    # get the leading signs of each row
+    leading_signs = jnp.sign(
+        filter_matrix[(jnp.arange(len(filter_matrix)), jnp.argmax(filter_matrix != 0, axis=1))]
+    )
+    # set the leading signs to positive
+    filter_matrix = filter_matrix * leading_signs[:, None]
+    # get the unique rows
+    amps = jnp.unique(filter_matrix, axis=0)
 
-    # normalize the amplitudes so they max out at +/- 1.
-    amps = v[sbig] / jnp.max(jnp.abs(v[sbig]), axis=1, keepdims=True)
-    # make sure the amps are positive, generally
-    amps = jnp.round(amps, decimals=5) + 0.0
+    # set the amps to generally positive
     signs = jnp.sign(jnp.sum(amps, axis=1, keepdims=True))
     signs = jnp.where(
         signs == 0, jnp.ones(signs.shape), signs
     )  # if signs is 0, just want to multiply by 1
-    amps *= signs
-    # make sure that the zeros are zeros.
-    amps = jnp.round(amps, decimals=5) + 0.0
+    amps = amps * signs
+
+    # scale the largest value to 1
+    amps /= jnp.max(jnp.abs(amps), axis=1, keepdims=True)
 
     # order them
     filters = [GeometricFilter(aa.reshape(shape), parity, D) for aa in amps]

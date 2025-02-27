@@ -141,8 +141,8 @@ def get_unique_invariant_filters(
     )
     # set the leading signs to positive
     filter_matrix = filter_matrix * leading_signs[:, None]
-    # get the unique rows
-    amps = jnp.unique(filter_matrix, axis=0)
+    # jax unique has issues (https://github.com/jax-ml/jax/issues/17370), do it with numpy
+    amps = jnp.array(np.unique(np.array(filter_matrix), axis=0))
 
     # set the amps to generally positive
     signs = jnp.sign(jnp.sum(amps, axis=1, keepdims=True))

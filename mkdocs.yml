@@ -72,6 +72,7 @@ nav:
   - Quickstart: quickstart.md
   - Group and Invariant Filters: group_operators.ipynb
   - Examples: examples/
+  - Contribution: contribution.md
   - API: api/*
 
 extra_javascript:

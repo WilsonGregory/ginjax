@@ -71,6 +71,7 @@ nav:
   - Home: index.md
   - Quickstart: quickstart.md
   - Group and Invariant Filters: group_operators.ipynb
+  - Math Background: math.md
   - Examples: examples/
   - Contribution: contribution.md
   - API: api/*

@@ -350,9 +350,9 @@ def train_and_eval(
             # TODO: need to save batch_stats as well
             ml.save(f"{save_model}{model_name}_L{train_X.L}_e{epochs}_model.eqx", model)
     else:
-        model = ml.load(f"{save_model}{model_name}_L{train_X.L}_e{epochs}_model.eqx", model)
+        model = ml.load(f"{load_model}{model_name}_L{train_X.L}_e{epochs}_model.eqx", model)
 
-        key, subkey1, subkey2 = random.split(key)
+        key, subkey1, subkey2 = random.split(key, num=3)
         train_loss = ml.map_loss_in_batches(
             map_and_loss,
             model,
@@ -529,7 +529,7 @@ train_and_eval = partial(
     plot_component=args.plot_component,
 )
 
-key, *subkeys = random.split(key, num=9)
+key, *subkeys = random.split(key, num=13)
 model_list = [
     (
         "dil_resnet64",
@@ -548,6 +548,21 @@ model_list = [
         ),
     ),
     (
+        "dil_resnet_equiv20",
+        partial(
+            train_and_eval,
+            model=models.DilResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=20,
+                conv_filters=conv_filters,
+                key=subkeys[1],
+            ),
+            lr=1e-3,
+        ),
+    ),
+    (
         "dil_resnet_equiv48",
         partial(
             train_and_eval,
@@ -557,7 +572,7 @@ model_list = [
                 output_keys,
                 depth=48,
                 conv_filters=conv_filters,
-                key=subkeys[1],
+                key=subkeys[2],
             ),
             lr=1e-3,
         ),
@@ -573,9 +588,24 @@ model_list = [
                 depth=128,
                 equivariant=False,
                 kernel_size=3,
-                key=subkeys[2],
+                key=subkeys[3],
             ),
             lr=1e-3,
+        ),
+    ),
+    (
+        "resnet_equiv_groupnorm_42",
+        partial(
+            train_and_eval,
+            model=models.ResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=42,
+                conv_filters=conv_filters,
+                key=subkeys[4],
+            ),
+            lr=7e-4,
         ),
     ),
     (
@@ -588,7 +618,7 @@ model_list = [
                 output_keys,
                 depth=100,  # very slow at 100
                 conv_filters=conv_filters,
-                key=subkeys[3],
+                key=subkeys[5],
             ),
             lr=7e-4,
         ),
@@ -607,9 +637,25 @@ model_list = [
                 equivariant=False,
                 kernel_size=3,
                 use_group_norm=True,
-                key=subkeys[4],
+                key=subkeys[6],
             ),
             lr=8e-4,
+        ),
+    ),
+    (
+        "unetBase_equiv20",
+        partial(
+            train_and_eval,
+            model=models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=20,
+                conv_filters=conv_filters,
+                upsample_filters=upsample_filters,
+                key=subkeys[7],
+            ),
+            lr=6e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
         ),
     ),
     (
@@ -624,7 +670,7 @@ model_list = [
                 activation_f=jax.nn.gelu,
                 conv_filters=conv_filters,
                 upsample_filters=upsample_filters,
-                key=subkeys[5],
+                key=subkeys[8],
             ),
             lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
         ),
@@ -642,10 +688,27 @@ model_list = [
                 equivariant=False,
                 kernel_size=3,
                 use_batch_norm=True,
-                key=subkeys[6],
+                key=subkeys[9],
             ),
             lr=8e-4,
             has_aux=True,
+        ),
+    ),
+    (
+        "unet2015_equiv20",
+        partial(
+            train_and_eval,
+            model=models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=20,
+                use_bias=False,
+                conv_filters=conv_filters,
+                upsample_filters=upsample_filters,
+                key=subkeys[10],
+            ),
+            lr=7e-4,  # sometimes explodes for larger values
         ),
     ),
     (
@@ -660,7 +723,7 @@ model_list = [
                 use_bias=False,
                 conv_filters=conv_filters,
                 upsample_filters=upsample_filters,
-                key=subkeys[7],
+                key=subkeys[11],
             ),
             lr=3e-4,
         ),

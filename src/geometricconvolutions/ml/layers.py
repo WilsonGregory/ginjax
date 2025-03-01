@@ -401,7 +401,7 @@ class ConvContract(eqx.Module):
                     biased_x.append(k, p, image + self.bias[(k, p)])
                 elif ((k, p) != (0, 0) and self.use_bias == "auto") or self.use_bias == "mean":
                     mean_image = jnp.mean(
-                        image, axis=tuple(range(2, 2 + self.invariant_filters.D)), keepdims=True
+                        image, axis=tuple(range(1, 1 + self.invariant_filters.D)), keepdims=True
                     )
                     biased_x.append(
                         k,
@@ -576,8 +576,8 @@ class VectorNeuronNonlinear(eqx.Module):
                 out_x.append(k, p, self.scalar_activation(img_block))
             else:
                 # -> (out_c,spatial,tensor)
-                k_vec = jnp.einsum("ij,kj...->ki...", self.weights[(k, p)], img_block)
-                k_vec_normed = k_vec / (geom.norm(2 + self.D, k_vec, keepdims=True) + self.eps)
+                k_vec = jnp.einsum("ij,j...->i...", self.weights[(k, p)], img_block)
+                k_vec_normed = k_vec / (geom.norm(1 + self.D, k_vec, keepdims=True) + self.eps)
 
                 inner_prod = jnp.einsum(
                     f"...{geom.LETTERS[:k]},...{geom.LETTERS[:k]}->...", img_block, k_vec_normed

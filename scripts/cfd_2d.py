@@ -557,8 +557,6 @@ model_list = [
                 output_keys,
                 depth=20,
                 conv_filters=conv_filters,
-                use_bias=False,
-                activation_f=None,
                 key=subkeys[1],
             ),
             lr=1e-3,

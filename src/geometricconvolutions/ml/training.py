@@ -157,7 +157,7 @@ def autoregressive_step(
 
 
 def autoregressive_map(
-    batch_model: eqx.Module,
+    model: eqx.Module,
     x: geom.BatchMultiImage,
     aux_data: Optional[eqx.nn.State] = None,
     past_steps: int = 1,
@@ -168,7 +168,7 @@ def autoregressive_map(
     steps in a single BatchMultiImage.
 
     args:
-        batch_model: model that operates of batches, probably a vmapped version of model.
+        model: model that operates of batches, probably a vmapped version of model.
         x: the input MultiImage to map
         aux_data: auxilliary data to pass to the network
         past_steps: the number of past steps input to the autoregressive map
@@ -177,7 +177,12 @@ def autoregressive_map(
     returns:
         the output map with number of steps equal to future steps, and the aux_data
     """
-    assert callable(batch_model)
+    assert callable(model)
+    if aux_data is None:
+        batch_model = jax.vmap(model)
+    else:
+        batch_model = jax.vmap(model, in_axes=(0, None), out_axes=(0, None))
+
     out_x = x.empty()  # assume out matches D and is_torus
     for _ in range(future_steps):
         if aux_data is None:

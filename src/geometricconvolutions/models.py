@@ -564,7 +564,7 @@ class DilResNet(eqx.Module):
         depth: int,
         num_blocks: int = 4,
         use_bias: Union[bool, str] = "auto",
-        activation_f: Union[Callable, str] = jax.nn.relu,
+        activation_f: Optional[Union[Callable, str]] = jax.nn.relu,
         equivariant: bool = True,
         conv_filters: Optional[geom.MultiImage] = None,
         kernel_size: Optional[Union[int, Sequence[int]]] = None,

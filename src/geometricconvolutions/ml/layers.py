@@ -362,14 +362,14 @@ class ConvContract(eqx.Module):
 
                 convolve_contracted_imgs = geom.convolve_contract(
                     input_multi_image.D,
-                    images_block,  # add batch dim
+                    images_block[None],  # add batch dim
                     filter_block,
                     input_multi_image.is_torus,
                     self.stride,
                     self.padding,
                     self.lhs_dilation,
                     self.rhs_dilation,
-                )
+                )[0]
 
                 if (out_k, out_p) in out:  # it already has that key
                     out[(out_k, out_p)] = convolve_contracted_imgs + out[(out_k, out_p)]

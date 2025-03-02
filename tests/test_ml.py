@@ -102,7 +102,6 @@ class TestMachineLearning:
             )
 
     def testAutoregressiveStep(self):
-        batch = 10
         past_steps = 4
         N = 5
         D = 2
@@ -110,29 +109,27 @@ class TestMachineLearning:
         key = random.PRNGKey(0)
         key1, key2, key3, key4, key5, key6, key7 = random.split(key, 7)
 
-        data1 = random.normal(key1, shape=(batch, past_steps) + (N,) * D)
+        data1 = random.normal(key1, shape=(past_steps,) + (N,) * D)
 
-        input1 = geom.BatchMultiImage({(0, 0): data1}, D)
-        one_step1 = geom.BatchMultiImage(
-            {(0, 0): random.normal(key2, shape=(batch, 1) + (N,) * D)}, D
-        )
+        input1 = geom.MultiImage({(0, 0): data1}, D)
+        one_step1 = geom.MultiImage({(0, 0): random.normal(key2, shape=(1,) + (N,) * D)}, D)
 
         new_input, output = ml.training.autoregressive_step(
             input1, one_step1, input1.empty(), past_steps
         )
         assert jnp.allclose(
             new_input[(0, 0)],
-            jnp.concatenate([input1[(0, 0)][:, 1:], one_step1[(0, 0)]], axis=1),
+            jnp.concatenate([input1[(0, 0)][1:], one_step1[(0, 0)]]),
         )
         assert output == one_step1
 
-        data2 = random.normal(key3, shape=(batch, 2 * past_steps) + (N,) * D + (D,))
+        data2 = random.normal(key3, shape=(2 * past_steps,) + (N,) * D + (D,))
 
-        input2 = geom.BatchMultiImage({(0, 0): data1, (1, 0): data2}, D)
-        one_step2 = geom.BatchMultiImage(
+        input2 = geom.MultiImage({(0, 0): data1, (1, 0): data2}, D)
+        one_step2 = geom.MultiImage(
             {
-                (0, 0): random.normal(key4, shape=(batch, 1) + (N,) * D),
-                (1, 0): random.normal(key5, shape=(batch, 2) + (N,) * D + (D,)),
+                (0, 0): random.normal(key4, shape=(1,) + (N,) * D),
+                (1, 0): random.normal(key5, shape=(2,) + (N,) * D + (D,)),
             },
             D,
         )
@@ -142,35 +139,30 @@ class TestMachineLearning:
         )
         assert jnp.allclose(
             new_input[(0, 0)],
-            jnp.concatenate([input2[(0, 0)][:, 1:], one_step2[(0, 0)]], axis=1),
+            jnp.concatenate([input2[(0, 0)][1:], one_step2[(0, 0)]]),
         )
         assert output == one_step2
-        assert jnp.allclose(new_input[(1, 0)][:, : past_steps - 1], input2[(1, 0)][:, 1:past_steps])
-        assert jnp.allclose(new_input[(1, 0)][:, past_steps - 1], one_step2[(1, 0)][:, 0])
-        assert jnp.allclose(
-            new_input[(1, 0)][:, past_steps:-1], input2[(1, 0)][:, past_steps + 1 :]
-        )
-        assert jnp.allclose(new_input[(1, 0)][:, -1], one_step2[(1, 0)][:, 1])
+        assert jnp.allclose(new_input[(1, 0)][: past_steps - 1], input2[(1, 0)][1:past_steps])
+        assert jnp.allclose(new_input[(1, 0)][past_steps - 1], one_step2[(1, 0)][0])
+        assert jnp.allclose(new_input[(1, 0)][past_steps:-1], input2[(1, 0)][past_steps + 1 :])
+        assert jnp.allclose(new_input[(1, 0)][-1], one_step2[(1, 0)][1])
 
-        constant_field1 = random.normal(key6, shape=(batch, 1) + (N,) * D)
-        constant_field2 = random.normal(key7, shape=(batch, 1) + (N,) * D + (D,))
+        constant_field1 = random.normal(key6, shape=(1,) + (N,) * D)
+        constant_field2 = random.normal(key7, shape=(1,) + (N,) * D + (D,))
 
         input3 = input2.concat(
-            geom.BatchMultiImage({(0, 0): constant_field1, (1, 0): constant_field2}, D),
-            axis=1,
+            geom.MultiImage({(0, 0): constant_field1, (1, 0): constant_field2}, D)
         )
         new_input, output = ml.training.autoregressive_step(
             input3, one_step2, input3.empty(), past_steps, {(0, 0): 1, (1, 0): 1}
         )
         assert jnp.allclose(
             new_input[(0, 0)],
-            jnp.concatenate([input3[(0, 0)][:, 1:-1], one_step2[(0, 0)], constant_field1], axis=1),
+            jnp.concatenate([input3[(0, 0)][1:-1], one_step2[(0, 0)], constant_field1]),
         )
         assert output == one_step2
-        assert jnp.allclose(new_input[(1, 0)][:, : past_steps - 1], input3[(1, 0)][:, 1:past_steps])
-        assert jnp.allclose(new_input[(1, 0)][:, past_steps - 1], one_step2[(1, 0)][:, 0])
-        assert jnp.allclose(
-            new_input[(1, 0)][:, past_steps:-2], input3[(1, 0)][:, past_steps + 1 : -1]
-        )
-        assert jnp.allclose(new_input[(1, 0)][:, -2], one_step2[(1, 0)][:, 1])
-        assert jnp.allclose(new_input[(1, 0)][:, -1:], constant_field2)
+        assert jnp.allclose(new_input[(1, 0)][: past_steps - 1], input3[(1, 0)][1:past_steps])
+        assert jnp.allclose(new_input[(1, 0)][past_steps - 1], one_step2[(1, 0)][0])
+        assert jnp.allclose(new_input[(1, 0)][past_steps:-2], input3[(1, 0)][past_steps + 1 : -1])
+        assert jnp.allclose(new_input[(1, 0)][-2], one_step2[(1, 0)][1])
+        assert jnp.allclose(new_input[(1, 0)][-1:], constant_field2)

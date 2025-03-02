@@ -209,6 +209,11 @@ def get_invariant_filters_dict(
                 if n > maxn[(D, M)]:
                     maxn[(D, M)] = n
 
+    if allfilters == {}:
+        print(
+            f"WARNING get_invariant_filters_dict(Ms={Ms}, ks={ks}, parities={parities}, D={D}): No invariant filters."
+        )
+
     return allfilters, maxn
 
 
@@ -247,7 +252,7 @@ def get_invariant_filters(
     D: int,
     operators: Sequence[np.ndarray],
     scale: str = "normalize",
-) -> Optional[MultiImage]:
+) -> MultiImage:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and
     parities. Returns the filters as a single list.

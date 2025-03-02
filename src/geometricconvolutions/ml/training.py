@@ -50,7 +50,7 @@ def load(filename: str, model: eqx.Module) -> eqx.Module:
 def get_batches(
     multi_images: Union[Sequence[geom.BatchMultiImage], geom.BatchMultiImage],
     batch_size: int,
-    rand_key: ArrayLike,
+    rand_key: Optional[ArrayLike],
     devices: Optional[list[jax.Device]] = None,
 ) -> list[list[geom.BatchMultiImage]]:
     """
@@ -92,16 +92,16 @@ def get_batches(
 
 
 def autoregressive_step(
-    input: geom.BatchMultiImage,
-    one_step: geom.BatchMultiImage,
-    output: geom.BatchMultiImage,
+    input: geom.MultiImage,
+    one_step: geom.MultiImage,
+    output: geom.MultiImage,
     past_steps: int,
     constant_fields: dict[tuple[int, int], int] = {},
     future_steps: int = 1,
-) -> tuple[geom.BatchMultiImage, geom.BatchMultiImage]:
+) -> tuple[geom.MultiImage, geom.MultiImage]:
     """
     Given the input MultiImage, the next step of the model, and the output, update the input
-    and output to be fed into the model next. BatchMultiImages should have shape (batch,channels,spatial,tensor).
+    and output to be fed into the model next. MultiImages should have shape (channels,spatial,tensor).
     Channels are c*past_steps + constant_steps where c is some positive integer.
 
     args:
@@ -123,31 +123,26 @@ def autoregressive_step(
     new_output = output.empty()
     for key, step_data in one_step.items():
         k, parity = key
-        batch = step_data.shape[0]
-        img_shape = step_data.shape[2:]  # the shape of the image, spatial + tensor
-        exp_data = step_data.reshape((batch, -1, future_steps) + img_shape)
-        n_channels = exp_data.shape[1]  # number of channels for the key, not timesteps
+        img_shape = step_data.shape[1:]  # the shape of the image, spatial + tensor
+        exp_data = step_data.reshape((-1, future_steps) + img_shape)
+        n_channels = exp_data.shape[0]  # number of channels for the key, not timesteps
 
         if (key in constant_fields) and constant_fields[key]:
             n_const_fields = constant_fields[key]
-            const_fields = input[key][:, -n_const_fields:]
+            const_fields = input[key][-n_const_fields:]
         else:
             n_const_fields = 0
-            const_fields = jnp.zeros((batch, 0) + img_shape)
+            const_fields = jnp.zeros((0,) + img_shape)
 
-        exp_input = input[key][:, : (-n_const_fields or None)].reshape(
-            (batch, -1, past_steps) + img_shape
+        exp_input = input[key][: (-n_const_fields or None)].reshape((-1, past_steps) + img_shape)
+        next_input = jnp.concatenate([exp_input[:, 1:], exp_data], axis=1).reshape(
+            (-1,) + img_shape
         )
-        next_input = jnp.concatenate([exp_input[:, :, 1:], exp_data], axis=2).reshape(
-            (batch, -1) + img_shape
-        )
-        new_input.append(k, parity, jnp.concatenate([next_input, const_fields], axis=1))
+        new_input.append(k, parity, jnp.concatenate([next_input, const_fields], axis=0))
 
         if key in output:
-            exp_output = output[key].reshape((batch, n_channels, -1) + img_shape)
-            full_output = jnp.concatenate([exp_output, exp_data], axis=2).reshape(
-                (batch, -1) + img_shape
-            )
+            exp_output = output[key].reshape((n_channels, -1) + img_shape)
+            full_output = jnp.concatenate([exp_output, exp_data], axis=1).reshape((-1,) + img_shape)
         else:
             full_output = step_data
 
@@ -157,18 +152,18 @@ def autoregressive_step(
 
 
 def autoregressive_map(
-    batch_model: eqx.Module,
-    x: geom.BatchMultiImage,
+    model: eqx.Module,
+    x: geom.MultiImage,
     aux_data: Optional[eqx.nn.State] = None,
     past_steps: int = 1,
     future_steps: int = 1,
-) -> tuple[geom.BatchMultiImage, Optional[eqx.nn.State]]:
+) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
     """
     Given a model, perform an autoregressive step (future_steps) times, and return the output
-    steps in a single BatchMultiImage.
+    steps in a single MultiImage.
 
     args:
-        batch_model: model that operates of batches, probably a vmapped version of model.
+        model: model that operates on MultiImages
         x: the input MultiImage to map
         aux_data: auxilliary data to pass to the network
         past_steps: the number of past steps input to the autoregressive map
@@ -177,13 +172,14 @@ def autoregressive_map(
     returns:
         the output map with number of steps equal to future steps, and the aux_data
     """
-    assert callable(batch_model)
+    assert callable(model)
+
     out_x = x.empty()  # assume out matches D and is_torus
     for _ in range(future_steps):
         if aux_data is None:
-            learned_x = batch_model(x)
+            learned_x = model(x)
         else:
-            learned_x, aux_data = batch_model(x, aux_data)
+            learned_x, aux_data = model(x, aux_data)
 
         x, out_x = autoregressive_step(x, learned_x, out_x, past_steps)
 
@@ -282,7 +278,7 @@ def map_loss_in_batches(
     x: geom.BatchMultiImage,
     y: geom.BatchMultiImage,
     batch_size: int,
-    rand_key: ArrayLike,
+    rand_key: Optional[ArrayLike],
     devices: Optional[list[jax.Device]] = None,
     aux_data: Optional[eqx.nn.State] = None,
 ) -> jax.Array:
@@ -299,7 +295,7 @@ def map_loss_in_batches(
         x: input data
         y: target output data
         batch_size: effective batch_size, must be divisible by number of gpus
-        rand_key: rand key
+        rand_key: rand key passed to get_batches, on None order won't be randomized
         devices: the gpus that the code will run on
         aux_data: auxilliary data, such as batch stats. Passed to the function is has_aux is True.
 
@@ -323,7 +319,7 @@ def map_plus_loss_in_batches(
     x: geom.BatchMultiImage,
     y: geom.BatchMultiImage,
     batch_size: int,
-    rand_key: ArrayLike,
+    rand_key: Optional[ArrayLike],
     devices: Optional[list[jax.Device]] = None,
     aux_data: Optional[eqx.nn.State] = None,
 ) -> tuple[jax.Array, geom.BatchMultiImage]:
@@ -341,7 +337,7 @@ def map_plus_loss_in_batches(
         x: input data
         y: target output data
         batch_size: effective batch_size, must be divisible by number of gpus
-        rand_key: rand key
+        rand_key: rand key passed to get_batches, on none the order will not be randomized
         devices: the gpus that the code will run on
         aux_data: auxilliary data, such as batch stats. Passed to the function is has_aux is True.
 

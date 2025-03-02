@@ -255,8 +255,8 @@ class ConvBlock(eqx.Module):
         )
 
     def __call__(
-        self: Self, x: geom.BatchMultiImage, batch_stats: Optional[eqx.nn.State] = None
-    ) -> tuple[geom.BatchMultiImage, Optional[eqx.nn.State]]:
+        self: Self, x: geom.MultiImage, batch_stats: Optional[eqx.nn.State] = None
+    ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
         """
         Layer callable
 
@@ -498,17 +498,17 @@ class UNet(eqx.Module):
         )
 
     def __call__(
-        self: Self, x: geom.BatchMultiImage, batch_stats: Optional[eqx.nn.State] = None
-    ) -> Union[geom.BatchMultiImage, tuple[geom.BatchMultiImage, Optional[eqx.nn.State]]]:
+        self: Self, x: geom.MultiImage, batch_stats: Optional[eqx.nn.State] = None
+    ) -> Union[geom.MultiImage, tuple[geom.MultiImage, Optional[eqx.nn.State]]]:
         """
         Callable function for UNet
 
         args:
-            x: the input BatchMultiImage
+            x: the input MultiImage
             batch_stats: batch stats for BatchNorm if present
 
         returns:
-            the output BatchMultiImage and batch_stats
+            the output MultiImage and batch_stats
         """
         if not self.equivariant:
             x = x.to_scalar_multi_image()
@@ -516,18 +516,18 @@ class UNet(eqx.Module):
         for layer in self.embedding:
             x, batch_stats = layer(x, batch_stats)
 
-        residual_layers = []
+        residual_multi_images = []
         for max_pool_layer, conv_blocks in self.downsample_blocks:
-            residual_layers.append(x)
+            residual_multi_images.append(x)
             x = max_pool_layer(x)
             for layer in conv_blocks:
                 x, batch_stats = layer(x, batch_stats)
 
-        for (upsample_layer, conv_blocks), residual_idx in zip(
-            self.upsample_blocks, reversed(range(len(residual_layers)))
+        for (upsample_layer, conv_blocks), residual_multi_image in zip(
+            self.upsample_blocks, reversed(residual_multi_images)
         ):
-            upsample_x = upsample_layer(x)  # first layer in block is the upsample
-            x = upsample_x.concat(residual_layers[residual_idx], axis=1)
+            upsample_x = upsample_layer(x)
+            x = upsample_x.concat(residual_multi_image)
             for layer in conv_blocks:
                 x, batch_stats = layer(x, batch_stats)
 
@@ -535,12 +535,9 @@ class UNet(eqx.Module):
         if self.equivariant:
             out = x
         else:
-            out = geom.BatchMultiImage.from_scalar_multi_image(x, self.output_keys)
+            out = geom.MultiImage.from_scalar_multi_image(x, self.output_keys)
 
-        if self.use_batch_norm:
-            return out, batch_stats
-        else:
-            return out
+        return (out, batch_stats) if self.use_batch_norm else out
 
 
 class DilResNet(eqx.Module):
@@ -564,7 +561,7 @@ class DilResNet(eqx.Module):
         depth: int,
         num_blocks: int = 4,
         use_bias: Union[bool, str] = "auto",
-        activation_f: Union[Callable, str] = jax.nn.relu,
+        activation_f: Optional[Union[Callable, str]] = jax.nn.relu,
         equivariant: bool = True,
         conv_filters: Optional[geom.MultiImage] = None,
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
@@ -674,15 +671,15 @@ class DilResNet(eqx.Module):
             ),
         ]
 
-    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
         """
         Callable for this layer
 
         args:
-            x: the input BatchMultiImage
+            x: the input MultiImage
 
         returns:
-            the output BatchMultiImage
+            the output MultiImage
         """
         if not self.equivariant:
             x = x.to_scalar_multi_image()
@@ -704,7 +701,7 @@ class DilResNet(eqx.Module):
         if self.equivariant:
             out = x
         else:
-            out = geom.BatchMultiImage.from_scalar_multi_image(x, self.output_keys)
+            out = geom.MultiImage.from_scalar_multi_image(x, self.output_keys)
 
         return out
 
@@ -844,15 +841,15 @@ class ResNet(eqx.Module):
             ),
         ]
 
-    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
         """
         Callable for this layer
 
         args:
-            x: the input BatchMultiImage
+            x: the input MultiImage
 
         returns:
-            the output BatchMultiImage
+            the output MultiImage
         """
         if not self.equivariant:
             x = x.to_scalar_multi_image()
@@ -874,6 +871,6 @@ class ResNet(eqx.Module):
         if self.equivariant:
             out = x
         else:
-            out = geom.BatchMultiImage.from_scalar_multi_image(x, self.output_keys)
+            out = geom.MultiImage.from_scalar_multi_image(x, self.output_keys)
 
         return out

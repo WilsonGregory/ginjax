@@ -280,7 +280,13 @@ def map_and_loss(
     tuple[ArrayLike, Optional[eqx.nn.State], geom.BatchMultiImage],
     tuple[ArrayLike, Optional[eqx.nn.State]],
 ]:
-    out, aux_data = ml.autoregressive_map(
+    vmap_autoregressive = jax.vmap(
+        ml.autoregressive_map,
+        in_axes=(None, 0, None, None, None),
+        out_axes=(0, None),
+        axis_name="batch",
+    )
+    out, aux_data = vmap_autoregressive(
         model,
         multi_image_x,
         aux_data,
@@ -768,14 +774,18 @@ std_results = jnp.std(non_rollout_res, axis=0)
 print("Mean", mean_results, sep="\n")
 
 plot_mapping = {
-    "dil_resnet64": ("DilResNet", "blue", "o", "dashed"),
-    "dil_resnet_equiv48": ("DilResNet Equiv", "blue", "o", "solid"),
-    "resnet": ("ResNet", "red", "s", "dashed"),
-    "resnet_equiv_groupnorm_100": ("ResNet Equiv", "red", "s", "solid"),
-    "unetBase": ("UNet LayerNorm", "green", "P", "dashed"),
-    "unetBase_equiv48": ("UNet LayerNorm Equiv", "green", "P", "solid"),
-    "unet2015": ("UNet", "orange", "*", "dashed"),
-    "unet2015_equiv48": ("Unet Equiv", "orange", "*", "solid"),
+    "dil_resnet64": ("DilResNet64", "blue", "o", "dashed"),
+    "dil_resnet_equiv20": ("DilResNet20 (E)", "blue", "o", "dotted"),
+    "dil_resnet_equiv48": ("DilResNet48 (E)", "blue", "o", "solid"),
+    "resnet": ("ResNet128", "red", "s", "dashed"),
+    "resnet_equiv_groupnorm_42": ("ResNet42 (E)", "red", "s", "dotted"),
+    "resnet_equiv_groupnorm_100": ("ResNet100 (E)", "red", "s", "solid"),
+    "unetBase": ("UNet64 Norm", "green", "P", "dashed"),
+    "unetBase_equiv20": ("UNet20 Norm (E)", "green", "P", "dotted"),
+    "unetBase_equiv48": ("UNet48 Norm (E)", "green", "P", "solid"),
+    "unet2015": ("UNet64", "orange", "*", "dashed"),
+    "unet2015_equiv20": ("Unet20 (E)", "orange", "*", "dotted"),
+    "unet2015_equiv48": ("Unet48 (E)", "orange", "*", "solid"),
 }
 
 # print table

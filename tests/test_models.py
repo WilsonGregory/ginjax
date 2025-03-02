@@ -14,7 +14,6 @@ class TestModels:
         D = 2
         M = 3
         N = 5
-        batch = 3
         in_c = 3
         out_c = 4
         max_k = 2
@@ -24,6 +23,7 @@ class TestModels:
         key = random.PRNGKey(time.time_ns())
 
         conv_filters = geom.get_invariant_filters([M], ks, parities, D, geom.make_all_operators(D))
+        assert isinstance(conv_filters, geom.MultiImage)
 
         # power set (excluding empty set) of possible in_k, out_k and parity
         powerset = list(
@@ -33,13 +33,13 @@ class TestModels:
         )
         for in_ks_ps in powerset:
             for out_ks_ps in powerset:
-                input_keys = tuple((in_key, in_c) for in_key in in_ks_ps)
-                target_keys = tuple((out_key, out_c) for out_key in out_ks_ps)
+                input_keys = geom.Signature(tuple((in_key, in_c) for in_key in in_ks_ps))
+                target_keys = geom.Signature(tuple((out_key, out_c) for out_key in out_ks_ps))
 
                 key, *subkeys = random.split(key, num=len(input_keys) + 1)
                 multi_image = geom.MultiImage(
                     {
-                        (k, p): random.normal(subkeys[i], shape=(batch, in_c) + (N,) * D + (D,) * k)
+                        (k, p): random.normal(subkeys[i], shape=(in_c,) + (N,) * D + (D,) * k)
                         for i, ((k, p), _) in enumerate(input_keys)
                     },
                     D,

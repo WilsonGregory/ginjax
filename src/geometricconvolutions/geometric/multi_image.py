@@ -9,7 +9,11 @@ from jax.tree_util import register_pytree_node_class
 from jaxtyping import ArrayLike
 
 from geometricconvolutions.geometric.constants import TINY
-from geometricconvolutions.geometric.functional_geometric_image import norm, times_group_element
+from geometricconvolutions.geometric.functional_geometric_image import (
+    norm,
+    parse_shape,
+    times_group_element,
+)
 from geometricconvolutions.geometric.geometric_image import GeometricImage
 
 Signature = NewType("Signature", tuple[tuple[tuple[int, int], int], ...])
@@ -55,7 +59,7 @@ class MultiImage:
         return self.__class__({}, self.D, self.is_torus)
 
     @classmethod
-    def from_images(cls, images: Sequence[GeometricImage]) -> Optional[Self]:
+    def from_images(cls, images: Sequence[GeometricImage]) -> Self:
         """
         Construct a MultiImage from a sequence of GeometricImages.
 
@@ -66,9 +70,7 @@ class MultiImage:
             a new MultiImage
         """
         # We assume that all images have the same D and is_torus
-        if len(images) == 0:
-            return None
-
+        assert len(images) != 0, "MultiImage.from_images was passed an empty list of images."
         out = cls({}, images[0].D, images[0].is_torus)
         for image in images:
             out.append(image.k, image.parity, image.data.reshape((1,) + image.data.shape))
@@ -557,11 +559,9 @@ class BatchMultiImage(MultiImage):
             break
 
     @classmethod
-    def from_images(cls, images: Sequence[GeometricImage]) -> Optional[Self]:
+    def from_images(cls, images: Sequence[GeometricImage]) -> Self:
         # We assume that all images have the same D and is_torus
-        if len(images) == 0:
-            return None
-
+        assert len(images) != 0, "MultiImage.from_images was passed an empty list of images."
         out = cls({}, images[0].D, images[0].is_torus)
         for image in images:
             out.append(image.k, image.parity, image.data.reshape((1, 1) + image.data.shape))
@@ -647,14 +647,6 @@ class BatchMultiImage(MultiImage):
     @jax.vmap
     def to_vector(self: Self) -> jnp.ndarray:
         return super(BatchMultiImage, self).to_vector()
-
-    @jax.vmap
-    def to_scalar_multi_image(self: Self) -> Self:
-        return super(BatchMultiImage, self).to_scalar_multi_image()
-
-    @functools.partial(jax.vmap, in_axes=(0, None))
-    def from_scalar_multi_image(self: Self, layout: Signature) -> Self:
-        return super(BatchMultiImage, self).from_scalar_multi_image(layout)
 
     @classmethod
     @functools.partial(jax.vmap, in_axes=(None, 0, 0))

@@ -247,7 +247,7 @@ def get_invariant_filters(
     D: int,
     operators: Sequence[np.ndarray],
     scale: str = "normalize",
-) -> Optional[MultiImage]:
+) -> MultiImage:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and
     parities. Returns the filters as a single list.

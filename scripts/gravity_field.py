@@ -141,7 +141,7 @@ class Model(eqx.Module):
         key, subkey = random.split(key)
         self.last_layer = ml.ConvContract(mid_keys, target_keys, conv_filters, key=subkey)
 
-    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
         x = self.embedding(x)
 
         out_x = None
@@ -164,7 +164,7 @@ def map_and_loss(
     aux_data: Optional[eqx.nn.State] = None,
 ) -> tuple[jax.Array, Optional[eqx.nn.State]]:
     assert callable(model)
-    return ml.smse_loss(model(x), y), aux_data
+    return ml.smse_loss(jax.vmap(model)(x), y), aux_data
 
 
 def handleArgs(argv):

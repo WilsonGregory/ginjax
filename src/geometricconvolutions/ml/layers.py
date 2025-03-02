@@ -23,52 +23,50 @@ def _group_norm_K1(
 
     args:
         D: the dimension of the space
-        image_block: data block of shape (batch,channels,spatial,tensor)
+        image_block: data block of shape (channels,spatial,tensor)
         groups: the number of channel groups, must evenly divide channels
         method: method used for the whitening, either 'eigh', or 'cholesky'. Note that
             'cholesky' is not equivariant.
         eps: to avoid non-invertible matrices, added to the covariance matrix
 
     returns:
-        the whitened data, shape (batch,channels,spatial,tensor)
+        the whitened data, shape (channels,spatial,tensor)
     """
-    batch, in_c = image_block.shape[:2]
-    spatial_dims, k = geom.parse_shape(image_block.shape[2:], D)
+    in_c = len(image_block)
+    spatial_dims, k = geom.parse_shape(image_block.shape[1:], D)
     assert (
         k == 1
     ), f"ml::_group_norm_K1: Equivariant group_norm is not implemented for k>1, but k={k}"
     assert (in_c % groups) == 0  # groups must evenly divide the number of channels
     channels_per_group = in_c // groups
 
-    image_grouped = image_block.reshape((batch, groups, channels_per_group) + spatial_dims + (D,))
+    image_grouped = image_block.reshape((groups, channels_per_group) + spatial_dims + (D,))
 
-    mean = jnp.mean(image_grouped, axis=tuple(range(2, 3 + D)), keepdims=True)  # (B,G,1,(1,)*D,D)
-    centered_img = image_grouped - mean  # (B,G,in_c//G,spatial,tensor)
+    mean = jnp.mean(image_grouped, axis=tuple(range(1, 2 + D)), keepdims=True)  # (G,1,(1,)*D,D)
+    centered_img = image_grouped - mean  # (G,in_c//G,spatial,tensor)
 
-    X = centered_img.reshape((batch, groups, -1, D))  # (B,G,spatial*in_c//G,D)
-    cov = jnp.einsum("...ij,...ik->...jk", X, X) / X.shape[-2]  # biased cov, (B,G,D,D)
+    X = centered_img.reshape((groups, -1, D))  # (G,spatial*in_c//G,D)
+    cov = jnp.einsum("...ij,...ik->...jk", X, X) / X.shape[-2]  # biased cov, (G,D,D)
 
     if method == "eigh":
         # symmetrize_input=True seems to cause issues with autograd, and cov is already symmetric
-        eigvals, eigvecs = jnp.linalg.eigh(cov, symmetrize_input=False)
-        eigvals_invhalf = jnp.sqrt(1.0 / (eigvals + eps))
-        S_diag = jax.vmap(lambda S: jnp.diag(S))(eigvals_invhalf.reshape((-1, D))).reshape(
-            (batch, groups, D, D)
-        )
+        eigvals, eigvecs = jnp.linalg.eigh(cov, symmetrize_input=False)  # (G,D), (G,D,D)
+        eigvals_invhalf = jnp.sqrt(1.0 / (eigvals + eps))  # (G,D)
+        S_diag = jax.vmap(lambda S: jnp.diag(S))(eigvals_invhalf).reshape((groups, D, D))
         # do U S U^T, and multiply each vector in centered_img by the resulting matrix
         whitened_data = jnp.einsum(
             "...ij,...jk,...kl,...ml->...mi",
             eigvecs,
             S_diag,
-            eigvecs.transpose((0, 1, 3, 2)),
-            centered_img.reshape((batch, groups, -1, D)),
+            eigvecs.transpose((0, 2, 1)),
+            centered_img.reshape((groups, -1, D)),
         )
     elif method == "cholesky":
-        L = jax.lax.linalg.cholesky(cov, symmetrize_input=False)  # (batch*groups,D,D)
+        L = jax.lax.linalg.cholesky(cov, symmetrize_input=False)  # (groups,D,D)
         L = L + eps * jnp.eye(D).reshape((1, D, D))
         whitened_data = jax.lax.linalg.triangular_solve(
             L,
-            centered_img.reshape((batch * groups, -1) + (D,)),
+            centered_img.reshape((groups, -1, D)),
             left_side=False,
             lower=True,
         )
@@ -228,9 +226,9 @@ class ConvContract(eqx.Module):
 
     def fast_convolve(
         self: Self,
-        input_multi_image: geom.BatchMultiImage,
+        input_multi_image: geom.MultiImage,
         weights: dict[tuple[int, int], dict[tuple[int, int], jax.Array]],
-    ):
+    ) -> geom.MultiImage:
         """
         Convolve when all filter_spatial_dims, in_c, and out_c match, can do a single convolve
         instead of multiple between each type. Sadly, only ~20% speedup.
@@ -240,16 +238,15 @@ class ConvContract(eqx.Module):
         out_c = self.target_keys[0][1]
 
         one_img = next(iter(input_multi_image.values()))
-        spatial_dims, _ = geom.parse_shape(one_img.shape[2:], self.D)
-        batch = len(one_img)
+        spatial_dims, _ = geom.parse_shape(one_img.shape[1:], self.D)
         one_filter = next(iter(self.invariant_filters.values()))
         filter_spatial_dims, _ = geom.parse_shape(one_filter.shape[1:], self.D)
 
-        image_ravel = jnp.zeros((batch,) + spatial_dims + (0, in_c))
+        image_ravel = jnp.zeros(spatial_dims + (0, in_c))
         filter_ravel = jnp.zeros((in_c,) + filter_spatial_dims + (0, out_c))
         for (in_k, in_p), image_block in input_multi_image.items():
-            # (batch,in_c,spatial,tensor) -> (batch,spatial,-1,in_c)
-            img = jnp.moveaxis(image_block.reshape((batch, in_c) + spatial_dims + (-1,)), 1, -1)
+            # (in_c,spatial,tensor) -> (spatial,-1,in_c)
+            img = jnp.moveaxis(image_block.reshape((in_c,) + spatial_dims + (-1,)), 0, -1)
             image_ravel = jnp.concatenate([image_ravel, img], axis=-2)
 
             filter_ravel_in = jnp.zeros(
@@ -279,24 +276,24 @@ class ConvContract(eqx.Module):
             )
             filter_ravel = jnp.concatenate([filter_ravel, filter_ravel_in], axis=-2)
 
-        image_ravel = image_ravel.reshape((batch,) + spatial_dims + (-1,))
+        image_ravel = image_ravel.reshape(spatial_dims + (-1,))
         filter_ravel = jnp.moveaxis(filter_ravel, 0, self.D).reshape(
             filter_spatial_dims + (in_c, -1)
         )
 
         out = geom.convolve_ravel(
             self.D,
-            image_ravel,
+            image_ravel[None],  # add batch dim
             filter_ravel,
             input_multi_image.is_torus,
             self.stride,
             self.padding,
             self.lhs_dilation,
             self.rhs_dilation,
-        )
-        new_spatial_dims = out.shape[1 : 1 + self.D]
-        # (batch,spatial,tensor_sum*out_c) -> (batch,out_c,spatial,tensor_sum)
-        out = jnp.moveaxis(out.reshape((batch,) + new_spatial_dims + (-1, out_c)), -1, 1)
+        )[0]
+        new_spatial_dims = out.shape[: self.D]
+        # (spatial,tensor_sum*out_c) -> (out_c,spatial,tensor_sum)
+        out = jnp.moveaxis(out.reshape(new_spatial_dims + (-1, out_c)), -1, 0)
 
         out_k_sum = sum([self.D**out_k for (out_k, _), _ in self.target_keys])
         idx = 0
@@ -305,7 +302,7 @@ class ConvContract(eqx.Module):
             length = (self.D**in_k) * out_k_sum
             # break off all the channels related to this particular in_k
             out_per_in = out[..., idx : idx + length].reshape(
-                (batch, out_c) + new_spatial_dims + (self.D,) * in_k + (-1,)
+                (out_c,) + new_spatial_dims + (self.D,) * in_k + (-1,)
             )
 
             out_idx = 0
@@ -314,9 +311,9 @@ class ConvContract(eqx.Module):
                 # separate the different out_k parts for particular in_k
                 img_block = out_per_in[..., out_idx : out_idx + out_length]
                 img_block = img_block.reshape(
-                    (batch, out_c) + new_spatial_dims + (self.D,) * (in_k + out_k)
+                    (out_c,) + new_spatial_dims + (self.D,) * (in_k + out_k)
                 )
-                contracted_img = jnp.sum(img_block, axis=range(2 + self.D, 2 + self.D + in_k))
+                contracted_img = jnp.sum(img_block, axis=range(1 + self.D, 1 + self.D + in_k))
 
                 if (out_k, out_p) in out_multi_image:  # it already has that key
                     out_multi_image[(out_k, out_p)] = (
@@ -333,9 +330,9 @@ class ConvContract(eqx.Module):
 
     def individual_convolve(
         self: Self,
-        input_multi_image: geom.BatchMultiImage,
+        input_multi_image: geom.MultiImage,
         weights: dict[tuple[int, int], dict[tuple[int, int], jax.Array]],
-    ) -> geom.BatchMultiImage:
+    ) -> geom.MultiImage:
         """
         Function to perform convolve_contract on an entire MultiImage by doing the pairwise convolutions
         individually. This is necessary when filters have unequal sizes, or the in_c or out_c are
@@ -346,7 +343,7 @@ class ConvContract(eqx.Module):
             weights: the weights used to combine the invariant filters
 
         returns:
-            the convolved BatchMultiImage
+            the convolved MultiImage
         """
         out = input_multi_image.empty()
         for (in_k, in_p), images_block in input_multi_image.items():
@@ -378,7 +375,7 @@ class ConvContract(eqx.Module):
 
         return out
 
-    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
         """
         The callable, calls either fast_convolve or individual_convolve. Currently fast_convolve
         is not used because it is not much faster.
@@ -387,7 +384,7 @@ class ConvContract(eqx.Module):
             x: the input
 
         returns:
-            the convolved BatchMultiImage, which is a new object
+            the convolved MultiImage, which is a new object
         """
         if self.fast_mode:
             x = self.fast_convolve(x, self.weights)
@@ -403,11 +400,7 @@ class ConvContract(eqx.Module):
                     mean_image = jnp.mean(
                         image, axis=tuple(range(1, 1 + self.invariant_filters.D)), keepdims=True
                     )
-                    biased_x.append(
-                        k,
-                        p,
-                        image + mean_image * self.bias[(k, p)],
-                    )
+                    biased_x.append(k, p, image + mean_image * self.bias[(k, p)])
 
             return biased_x
         else:
@@ -466,7 +459,7 @@ class GroupNorm(eqx.Module):
                     f"ml::group_norm: Equivariant group_norm not implemented for k>1, but k={k}",
                 )
 
-    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
         """
         Callable for GroupNorm,
 
@@ -479,11 +472,11 @@ class GroupNorm(eqx.Module):
         out_x = x.empty()
         for (k, p), image_block in x.items():
             if k == 0:
-                whitened_data = jax.vmap(self.vanilla_norm[(k, p)])(image_block)  # normal norm
+                whitened_data = self.vanilla_norm[(k, p)](image_block)  # normal norm
             elif k == 1:
                 # save mean vec, allows for un-mean centering (?)
-                mean_vec = jnp.mean(image_block, axis=tuple(range(2, 2 + self.D)), keepdims=True)
-                assert mean_vec.shape == image_block.shape[:2] + (1,) * self.D + (self.D,) * k
+                mean_vec = jnp.mean(image_block, axis=tuple(range(1, 1 + self.D)), keepdims=True)
+                assert mean_vec.shape == (image_block.shape[0],) + (1,) * self.D + (self.D,) * k
                 whitened_data = _group_norm_K1(self.D, image_block, self.groups, eps=self.eps)
                 whitened_data = whitened_data * self.scale[(k, p)] + self.bias[(k, p)] * mean_vec
             else:  # k > 1
@@ -559,7 +552,7 @@ class VectorNeuronNonlinear(eqx.Module):
                     subkey, shape=(in_c, in_c), minval=-bound, maxval=bound
                 )
 
-    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
         """
         Callable for VectorNeuronNonlinearity
 
@@ -567,7 +560,7 @@ class VectorNeuronNonlinear(eqx.Module):
             x: the input
 
         returns:
-            a new BatchMultiImage output
+            a new MultiImage output
         """
         out_x = x.empty()
         for (k, p), img_block in x.items():
@@ -617,7 +610,7 @@ class MaxNormPool(eqx.Module):
         self.patch_len = patch_len
         self.use_norm = use_norm
 
-    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
         """
         Callable for MaxNormPool.
 
@@ -625,10 +618,10 @@ class MaxNormPool(eqx.Module):
             x: the input to the layer
 
         returns:
-            a new max normed output BatchMultiImage
+            a new max normed output MultiImage
         """
         in_axes = (None, 0, None, None)
-        vmap_max_pool = jax.vmap(jax.vmap(geom.max_pool, in_axes=in_axes), in_axes=in_axes)
+        vmap_max_pool = jax.vmap(geom.max_pool, in_axes=in_axes)
 
         out_x = x.empty()
         for (k, p), image_block in x.items():
@@ -640,7 +633,7 @@ class MaxNormPool(eqx.Module):
 class LayerWrapper(eqx.Module):
     """
     Wrapper class for any module which takes an image and converts it to taking and producing a
-    BatchMultiImage.
+    MultiImage.
     """
 
     modules: dict[tuple[int, int], Callable[..., Any]]
@@ -661,7 +654,7 @@ class LayerWrapper(eqx.Module):
             # case this should be perfectly fine though.
             self.modules[(k, p)] = module
 
-    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
         """
         Callable for LayerWrapper.
 
@@ -669,12 +662,11 @@ class LayerWrapper(eqx.Module):
             x: the input
 
         returns:
-            a new BatchMultiImage
+            a new MultiImage
         """
         out = x.__class__({}, x.D, x.is_torus)
         for (k, p), image in x.items():
-            vmap_call = eqx.filter_vmap(self.modules[(k, p)], axis_name="batch")
-            out.append(k, p, vmap_call(image))
+            out.append(k, p, self.modules[(k, p)](image))
 
         return out
 
@@ -682,7 +674,7 @@ class LayerWrapper(eqx.Module):
 class LayerWrapperAux(eqx.Module):
     """
     Wrapper class for any module which takes an image and aux data and converts it to taking and
-    producing a BatchMultiImage and aux data.
+    producing a MultiImage and aux data.
     """
 
     modules: dict[tuple[int, int], Callable[..., Any]]
@@ -705,8 +697,8 @@ class LayerWrapperAux(eqx.Module):
             self.modules[(k, p)] = module
 
     def __call__(
-        self: Self, x: geom.BatchMultiImage, aux_data: Optional[eqx.nn.State]
-    ) -> tuple[geom.BatchMultiImage, Optional[eqx.nn.State]]:
+        self: Self, x: geom.MultiImage, aux_data: Optional[eqx.nn.State]
+    ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
         """
         Callable for LayerWrapperAux.
 
@@ -715,14 +707,11 @@ class LayerWrapperAux(eqx.Module):
             aux_data: the aux_data, e.g. for BatchNorm
 
         returns:
-            a new BatchMultiImage and the aux_data
+            a new MultiImage and the aux_data
         """
         out = x.__class__({}, x.D, x.is_torus)
         for (k, p), image in x.items():
-            vmap_call = eqx.filter_vmap(
-                self.modules[(k, p)], in_axes=(0, None), out_axes=(0, None), axis_name="batch"
-            )
-            out_image, aux_data = vmap_call(image, aux_data)
+            out_image, aux_data = self.modules[(k, p)](image, aux_data)
             out.append(k, p, out_image)
 
         return out, aux_data

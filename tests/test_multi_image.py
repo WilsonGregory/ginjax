@@ -733,45 +733,6 @@ class TestBatchmulti_image:
         )
         assert multi_image4.size() == (3 * (N**D + 4 * N**D * D + 2 * N**D * D + 3 * N**D * D * D))
 
-    def testToFromScalarMultiImage(self):
-        D = 2
-        N = 5
-
-        L = 1
-        multi_image_example = geom.BatchMultiImage(
-            {
-                (0, 0): jnp.ones((L, 1) + (N,) * D),
-                (1, 0): jnp.ones((L, 1) + (N,) * D + (D,)),
-                (2, 0): jnp.ones((L, 1) + (N,) * D + (D, D)),
-            },
-            D,
-        )
-
-        scalar_multi_image = multi_image_example.to_scalar_multi_image()
-
-        assert len(scalar_multi_image.keys()) == 1
-        assert next(iter(scalar_multi_image.keys())) == (0, 0)
-        assert jnp.allclose(scalar_multi_image[(0, 0)], jnp.ones((1, 1 + D + D * D) + (N,) * D))
-
-        key = random.PRNGKey(0)
-        key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
-        L = 5
-        rand_multi_image = geom.BatchMultiImage(
-            {
-                (0, 0): random.normal(subkey1, shape=((L, 3) + (N,) * D)),
-                (1, 0): random.normal(subkey2, shape=((L, 1) + (N,) * D + (D,))),
-                (1, 1): random.normal(subkey3, shape=((L, 2) + (N,) * D + (D,))),
-                (2, 0): random.normal(subkey4, shape=((L, 1) + (N,) * D + (D, D))),
-            },
-            D,
-        )
-
-        scalar_multi_image2 = rand_multi_image.to_scalar_multi_image()
-        assert list(scalar_multi_image2.keys()) == [(0, 0)]
-        assert rand_multi_image == rand_multi_image.to_scalar_multi_image().from_scalar_multi_image(
-            rand_multi_image.get_signature()
-        )
-
     def testTimesGroupElement(self):
         N = 5
         batch = 4

@@ -379,7 +379,6 @@ class TestPropositions:
 
     def testLayerNormEquivariance(self):
         N = 3
-        batch = 3
         channels = 2
         prec = jax.lax.Precision.HIGHEST
         key = random.PRNGKey(time.time_ns())
@@ -391,10 +390,10 @@ class TestPropositions:
             input_keys = tuple(((k, v), channels) for k, v in it.product(ks, parities))
 
             data = {
-                (k, parity): random.normal(subkey, shape=((batch, channels) + (N,) * D + (D,) * k))
+                (k, parity): random.normal(subkey, shape=((channels,) + (N,) * D + (D,) * k))
                 for subkey, ((k, parity), _) in zip(subkeys, input_keys)
             }
-            multi_image = geom.BatchMultiImage(data, D)
+            multi_image = geom.MultiImage(data, D)
             layer_norm = ml.LayerNorm(multi_image.get_signature(), D, eps=0)
 
             # assert that layer norm (group_norm with groups=1) is equivariant
@@ -408,29 +407,23 @@ class TestPropositions:
         Show that Layer Norm does center and scale the vectors.
         """
         N = 3
-        batch = 3
         channels = 2
         key = random.PRNGKey(time.time_ns())
         for D in [2, 3]:
             key, subkey = random.split(key)
-            image_block = random.normal(subkey, shape=(batch, channels) + (N,) * D + (D,))
+            image_block = random.normal(subkey, shape=(channels,) + (N,) * D + (D,))
 
             whitened_data = ml.layers._group_norm_K1(D, image_block, 1, eps=0)
 
             # mean centered
-            mean = jnp.mean(whitened_data, axis=tuple(range(1, whitened_data.ndim)))
-            assert jnp.allclose(mean, jnp.zeros(mean.shape), atol=1e-3, rtol=1e-3)
+            assert jnp.allclose(jnp.mean(whitened_data), 0, atol=geom.TINY, rtol=geom.TINY)
 
             # identity covariance
-            cov = jax.vmap(lambda data: jnp.cov(data, rowvar=False, bias=True))(
-                whitened_data.reshape((batch, -1, D))
-            )
-            eye = jnp.tensordot(jnp.ones(batch), jnp.eye(D), axes=0)  # (batch, D, D)
-            assert jnp.allclose(cov, eye, atol=1e-2, rtol=1e-2), f"{cov}"
+            cov = jnp.cov(whitened_data.reshape((-1, D)), rowvar=False, bias=True)
+            assert jnp.allclose(cov, jnp.eye(D), atol=1e-2, rtol=1e-2), f"{cov}"
 
     def testVNNonlinearEquivariance(self):
         N = 5
-        batch = 3
         in_c = 10
         prec = jax.lax.Precision.HIGHEST
         key = random.PRNGKey(0)
@@ -441,10 +434,10 @@ class TestPropositions:
             key, *subkeys = random.split(key, num=(len(ks) * len(parities)) + 1)
 
             data = {
-                (k, parity): random.normal(subkey, shape=((batch, in_c) + (N,) * D + (D,) * k))
+                (k, parity): random.normal(subkey, shape=((in_c,) + (N,) * D + (D,) * k))
                 for subkey, (k, parity) in zip(subkeys, it.product(ks, parities))
             }
-            multi_image = geom.BatchMultiImage(data, D)
+            multi_image = geom.MultiImage(data, D)
 
             key, subkey = random.split(key)
             vn_nonlinear = ml.VectorNeuronNonlinear(

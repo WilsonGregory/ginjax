@@ -561,7 +561,7 @@ class BatchMultiImage(MultiImage):
     @classmethod
     def from_images(cls, images: Sequence[GeometricImage]) -> Self:
         # We assume that all images have the same D and is_torus
-
+        assert len(images) != 0, "MultiImage.from_images was passed an empty list of images."
         out = cls({}, images[0].D, images[0].is_torus)
         for image in images:
             out.append(image.k, image.parity, image.data.reshape((1, 1) + image.data.shape))

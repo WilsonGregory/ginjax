@@ -504,11 +504,11 @@ class UNet(eqx.Module):
         Callable function for UNet
 
         args:
-            x: the input BatchMultiImage
+            x: the input MultiImage
             batch_stats: batch stats for BatchNorm if present
 
         returns:
-            the output BatchMultiImage and batch_stats
+            the output MultiImage and batch_stats
         """
         if not self.equivariant:
             x = x.to_scalar_multi_image()
@@ -846,10 +846,10 @@ class ResNet(eqx.Module):
         Callable for this layer
 
         args:
-            x: the input BatchMultiImage
+            x: the input MultiImage
 
         returns:
-            the output BatchMultiImage
+            the output MultiImage
         """
         if not self.equivariant:
             x = x.to_scalar_multi_image()

@@ -209,6 +209,11 @@ def get_invariant_filters_dict(
                 if n > maxn[(D, M)]:
                     maxn[(D, M)] = n
 
+    if allfilters == {}:
+        print(
+            f"WARNING get_invariant_filters_dict(Ms={Ms}, ks={ks}, parities={parities}, D={D}): No invariant filters."
+        )
+
     return allfilters, maxn
 
 

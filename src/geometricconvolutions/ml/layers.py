@@ -464,10 +464,10 @@ class GroupNorm(eqx.Module):
         Callable for GroupNorm,
 
         args:
-            x: input BatchMultiImage
+            x: input MultiImage
 
         returns:
-            the output normed BatchMultiImage
+            the output normed MultiImage
         """
         out_x = x.empty()
         for (k, p), image_block in x.items():
@@ -533,7 +533,7 @@ class VectorNeuronNonlinear(eqx.Module):
         Constructor for VectorNeuronNonlinear.
 
         args:
-            input_keys: the signature of the input BatchMultiImage
+            input_keys: the signature of the input MultiImage
             D: the dimension
             scalar_activation: nonlinearity used for scalars
             eps: small value to avoid dividing by zero if the k_vec is close to 0

@@ -14,9 +14,10 @@ import optax
 
 import geometricconvolutions.geometric as geom
 from geometricconvolutions.ml.stopping_conditions import StopCondition, ValLoss
+import geometricconvolutions.models as models
 
 
-def save(filename: str, model: eqx.Module) -> None:
+def save(filename: str, model: models.MultiImageModule) -> None:
     """
     Save an equinox model.
 
@@ -29,7 +30,7 @@ def save(filename: str, model: eqx.Module) -> None:
         eqx.tree_serialise_leaves(f, model)
 
 
-def load(filename: str, model: eqx.Module) -> eqx.Module:
+def load(filename: str, model: models.MultiImageModule) -> models.MultiImageModule:
     """
     Load an equinox model.
 
@@ -152,7 +153,7 @@ def autoregressive_step(
 
 
 def autoregressive_map(
-    model: eqx.Module,
+    model: models.MultiImageModule,
     x: geom.MultiImage,
     aux_data: Optional[eqx.nn.State] = None,
     past_steps: int = 1,
@@ -176,25 +177,31 @@ def autoregressive_map(
 
     out_x = x.empty()  # assume out matches D and is_torus
     for _ in range(future_steps):
-        if aux_data is None:
-            learned_x = model(x)
-        else:
-            learned_x, aux_data = model(x, aux_data)
-
+        learned_x, aux_data = model(x, aux_data)
         x, out_x = autoregressive_step(x, learned_x, out_x, past_steps)
 
     return out_x, aux_data
 
 
 def evaluate(
-    model: eqx.Module,
+    model: models.MultiImageModule,
     map_and_loss: Union[
         Callable[
-            [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, Optional[eqx.nn.State]],
+            [
+                models.MultiImageModule,
+                geom.BatchMultiImage,
+                geom.BatchMultiImage,
+                Optional[eqx.nn.State],
+            ],
             tuple[jax.Array, Optional[eqx.nn.State]],
         ],
         Callable[
-            [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, Optional[eqx.nn.State]],
+            [
+                models.MultiImageModule,
+                geom.BatchMultiImage,
+                geom.BatchMultiImage,
+                Optional[eqx.nn.State],
+            ],
             tuple[jax.Array, Optional[eqx.nn.State], geom.BatchMultiImage],
         ],
     ],
@@ -271,10 +278,15 @@ def multi_image_reducer(ls: list[geom.BatchMultiImage]) -> geom.BatchMultiImage:
 
 def map_loss_in_batches(
     map_and_loss: Callable[
-        [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, Optional[eqx.nn.State]],
+        [
+            models.MultiImageModule,
+            geom.BatchMultiImage,
+            geom.BatchMultiImage,
+            Optional[eqx.nn.State],
+        ],
         tuple[jax.Array, Optional[eqx.nn.State]],
     ],
-    model: eqx.Module,
+    model: models.MultiImageModule,
     x: geom.BatchMultiImage,
     y: geom.BatchMultiImage,
     batch_size: int,
@@ -312,10 +324,15 @@ def map_loss_in_batches(
 
 def map_plus_loss_in_batches(
     map_and_loss: Callable[
-        [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, Optional[eqx.nn.State]],
+        [
+            models.MultiImageModule,
+            geom.BatchMultiImage,
+            geom.BatchMultiImage,
+            Optional[eqx.nn.State],
+        ],
         tuple[jax.Array, Optional[eqx.nn.State], geom.BatchMultiImage],
     ],
-    model: eqx.Module,
+    model: models.MultiImageModule,
     x: geom.BatchMultiImage,
     y: geom.BatchMultiImage,
     batch_size: int,
@@ -358,16 +375,21 @@ def map_plus_loss_in_batches(
 
 def train_step(
     map_and_loss: Callable[
-        [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, Optional[eqx.nn.State]],
+        [
+            models.MultiImageModule,
+            geom.BatchMultiImage,
+            geom.BatchMultiImage,
+            Optional[eqx.nn.State],
+        ],
         tuple[jax.Array, Optional[eqx.nn.State]],
     ],
-    model: eqx.Module,
+    model: models.MultiImageModule,
     optim: optax.GradientTransformation,
     opt_state: Any,
     x: geom.BatchMultiImage,
     y: geom.BatchMultiImage,
     aux_data: Optional[eqx.nn.State] = None,
-) -> tuple[eqx.Module, Any, jax.Array, Optional[eqx.nn.State]]:
+) -> tuple[models.MultiImageModule, Any, jax.Array, Optional[eqx.nn.State]]:
     """
     Perform one step and gradient update of the model. Uses filter_pmap to use multiple gpus.
 
@@ -409,10 +431,15 @@ def train(
     X: geom.BatchMultiImage,
     Y: geom.BatchMultiImage,
     map_and_loss: Callable[
-        [eqx.Module, geom.BatchMultiImage, geom.BatchMultiImage, Optional[eqx.nn.State]],
+        [
+            models.MultiImageModule,
+            geom.BatchMultiImage,
+            geom.BatchMultiImage,
+            Optional[eqx.nn.State],
+        ],
         tuple[jax.Array, Optional[eqx.nn.State]],
     ],
-    model: eqx.Module,
+    model: models.MultiImageModule,
     rand_key: ArrayLike,
     stop_condition: StopCondition,
     batch_size: int,
@@ -422,7 +449,9 @@ def train(
     save_model: Optional[str] = None,
     devices: Optional[list[jax.Device]] = None,
     aux_data: Optional[eqx.nn.State] = None,
-) -> tuple[eqx.Module, Optional[eqx.nn.State], Optional[ArrayLike], Optional[ArrayLike]]:
+) -> tuple[
+    models.MultiImageModule, Optional[eqx.nn.State], Optional[ArrayLike], Optional[ArrayLike]
+]:
     """
     Method to train the model. It uses stochastic gradient descent (SGD) with the optimizer to learn the
     parameters the minimize the map_and_loss function. The model is returned. This function automatically

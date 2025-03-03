@@ -163,7 +163,29 @@ def count_params(model: eqx.Module) -> int:
     )
 
 
-class ConvBlock(eqx.Module):
+class MultiImageModule(eqx.Module):
+    """
+    A model that takes as input and output a MultiImage and aux_data. The models that inherit from
+    this class will also take and return aux_data even if they do not use it.
+    """
+
+    def __call__(
+        self: Self, x: geom.MultiImage, aux_data: Optional[eqx.nn.State] = None
+    ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
+        """
+        Layer callable
+
+        args:
+            x: the input
+            aux_data: data used for stuff like batch norm
+
+        returns:
+            the output MultiImage and aux_data
+        """
+        return x, aux_data
+
+
+class ConvBlock(MultiImageModule):
     """
     A convolution block consisting of a convolution, a nonlinearity, and a GroupNorm/BatchNorm.
     Can be equivariant or not, in typical order or in preactivation order.
@@ -291,7 +313,7 @@ class ConvBlock(eqx.Module):
         return x, batch_stats
 
 
-class UNet(eqx.Module):
+class UNet(MultiImageModule):
     """
     Implementation of the UNet: https://arxiv.org/abs/1505.04597.
     This model defaults to the equivariant version, but can also be the non-equivariant version.
@@ -499,7 +521,7 @@ class UNet(eqx.Module):
 
     def __call__(
         self: Self, x: geom.MultiImage, batch_stats: Optional[eqx.nn.State] = None
-    ) -> Union[geom.MultiImage, tuple[geom.MultiImage, Optional[eqx.nn.State]]]:
+    ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
         """
         Callable function for UNet
 
@@ -537,10 +559,10 @@ class UNet(eqx.Module):
         else:
             out = geom.MultiImage.from_scalar_multi_image(x, self.output_keys)
 
-        return (out, batch_stats) if self.use_batch_norm else out
+        return out, batch_stats
 
 
-class DilResNet(eqx.Module):
+class DilResNet(MultiImageModule):
     """
     The Dilated ResNet from https://arxiv.org/abs/2112.15275.
     """
@@ -671,15 +693,18 @@ class DilResNet(eqx.Module):
             ),
         ]
 
-    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
+    def __call__(
+        self: Self, x: geom.MultiImage, aux_data: Optional[eqx.nn.State] = None
+    ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
         """
         Callable for this layer
 
         args:
             x: the input MultiImage
+            aux_data: unused, needed for compliance
 
         returns:
-            the output MultiImage
+            the output MultiImage, aux_data
         """
         if not self.equivariant:
             x = x.to_scalar_multi_image()
@@ -703,10 +728,10 @@ class DilResNet(eqx.Module):
         else:
             out = geom.MultiImage.from_scalar_multi_image(x, self.output_keys)
 
-        return out
+        return out, aux_data
 
 
-class ResNet(eqx.Module):
+class ResNet(MultiImageModule):
     """
     A typical ResNet.
     """
@@ -841,15 +866,18 @@ class ResNet(eqx.Module):
             ),
         ]
 
-    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
+    def __call__(
+        self: Self, x: geom.MultiImage, aux_data: Optional[eqx.nn.State] = None
+    ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
         """
         Callable for this layer
 
         args:
             x: the input MultiImage
+            aux_data: unused, needed for compliance
 
         returns:
-            the output MultiImage
+            the output MultiImage and aux_data
         """
         if not self.equivariant:
             x = x.to_scalar_multi_image()
@@ -873,4 +901,4 @@ class ResNet(eqx.Module):
         else:
             out = geom.MultiImage.from_scalar_multi_image(x, self.output_keys)
 
-        return out
+        return out, aux_data

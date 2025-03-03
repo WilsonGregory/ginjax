@@ -8,8 +8,8 @@ import geometricconvolutions.geometric as geom
 
 
 def timestep_smse_loss(
-    multi_image_x: geom.BatchMultiImage,
-    multi_image_y: geom.BatchMultiImage,
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
     n_steps: int,
     reduce: Optional[str] = "mean",
 ) -> jax.Array:
@@ -18,15 +18,22 @@ def timestep_smse_loss(
     and the batch.
 
     args:
-        multi_image_x: predicted data
-        multi_image_y: target data
+        multi_image_x: predicted data, image_blocks are shape (batch,channels,spatial,tensor)
+        multi_image_y: target data, image_blocks are shape (batch,channels,spatial,tensor)
         n_steps: number of timesteps, all channels should be a multiple of this
         reduce: how to reduce over the batch, one of mean or max
 
     returns:
         the loss array with shape (batch,n_steps) if reduce is None or (n_steps,)
     """
-    assert reduce in {"mean", "max", None}
+    reduce_options = {"mean", "max", None}
+    assert (
+        reduce in reduce_options
+    ), f"timestep_smse_loss: reduce={reduce} must be one of {reduce_options}"
+    assert (
+        multi_image_x.get_n_leading() == multi_image_x.get_n_leading() == 2
+    ), "timestep_smse_loss: MultiImages must have batch and channel axes"
+
     spatial_size = np.multiply.reduce(multi_image_x.get_spatial_dims())
     batch = multi_image_x.get_L()
     loss_per_step = jnp.zeros((batch, n_steps))
@@ -50,8 +57,8 @@ def timestep_smse_loss(
 
 
 def smse_loss(
-    multi_image_x: geom.BatchMultiImage,
-    multi_image_y: geom.BatchMultiImage,
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
     reduce: Optional[str] = "mean",
 ) -> jax.Array:
     """
@@ -60,18 +67,24 @@ def smse_loss(
     reduce is None.
 
     args:
-        multi_image_x: the input BatchMultiImage
-        multi_image_y: the target BatchMultiImage
+        multi_image_x: predicted data, image_blocks are shape (batch,channels,spatial,tensor)
+        multi_image_y: target data, image_blocks are shape (batch,channels,spatial,tensor)
         reduce: how to reduce over batch. Either "mean" or None.
 
     returns:
         the loss value
     """
-    assert reduce in {"mean", None}
+    reduce_options = {"mean", None}
+    assert reduce in reduce_options, f"smse_loss: reduce={reduce} must be one of {reduce_options}"
+    assert (
+        multi_image_x.get_n_leading() == multi_image_x.get_n_leading() == 2
+    ), "smse_loss: MultiImages must have batch and channel axes"
+
     spatial_size = np.multiply.reduce(multi_image_x.get_spatial_dims())
-    loss_per_batch = jnp.sum(
-        (multi_image_x.to_vector() - multi_image_y.to_vector()) ** 2 / spatial_size, axis=1
-    )
+    loss_per_batch = jnp.zeros(multi_image_x.get_L())
+    for image_a, image_b in zip(multi_image_x.values(), multi_image_y.values()):
+        loss = jnp.sum((image_a - image_b) ** 2, axis=tuple(range(1, image_a.ndim))) / spatial_size
+        loss_per_batch = loss_per_batch + loss
 
     if reduce == "mean":
         return jnp.mean(loss_per_batch)
@@ -80,7 +93,7 @@ def smse_loss(
 
 
 def normalized_smse_loss(
-    multi_image_x: geom.BatchMultiImage, multi_image_y: geom.BatchMultiImage, eps: float = 1e-5
+    multi_image_x: geom.MultiImage, multi_image_y: geom.MultiImage, eps: float = 1e-5
 ) -> jax.Array:
     """
     Pointwise normalized loss. We find the norm of each channel at each spatial point of the true value
@@ -88,8 +101,8 @@ def normalized_smse_loss(
     over the channels, then mean over the batch.
 
     args:
-        multi_image_x: input BatchMultiImage
-        multi_image_y: target BatchMultiImage
+        multi_image_x: predicted data, image_blocks are shape (batch,channels,spatial,tensor)
+        multi_image_y: target data, image_blocks are shape (batch,channels,spatial,tensor)
         eps: ensure that we aren't dividing by 0 norm
 
     returns:

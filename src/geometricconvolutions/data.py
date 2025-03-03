@@ -61,7 +61,7 @@ def times_series_to_multi_images(
     skip_initial: int = 0,
     delta_t: int = 1,
     downsample: int = 0,
-) -> tuple[geom.BatchMultiImage, geom.BatchMultiImage]:
+) -> tuple[geom.MultiImage, geom.MultiImage]:
     """
     Given time series fields, convert them to input and output BatchMultiImages based on the number of past steps,
     future steps, and any subsampling/downsampling.
@@ -106,11 +106,11 @@ def times_series_to_multi_images(
         for k, v in dynamic_fields.items()
     }
 
-    multi_image_X = geom.BatchMultiImage(input_dynamic_fields, D, is_torus).concat(
-        geom.BatchMultiImage(input_constant_fields, D, is_torus),
+    multi_image_X = geom.MultiImage(input_dynamic_fields, D, is_torus).concat(
+        geom.MultiImage(input_constant_fields, D, is_torus),
         axis=1,
     )
-    multi_image_Y = geom.BatchMultiImage(output_dynamic_fields, D, is_torus)
+    multi_image_Y = geom.MultiImage(output_dynamic_fields, D, is_torus)
 
     for _ in range(downsample):
         multi_image_X = ml.batch_average_pool(multi_image_X, 2)

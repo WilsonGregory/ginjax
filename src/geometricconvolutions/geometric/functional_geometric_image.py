@@ -453,7 +453,7 @@ def convolve_contract(
 def get_contraction_indices(
     initial_k: int,
     final_k: int,
-    swappable_idxs: tuple[tuple[tuple[int, int], ...], ...] = (),
+    swappable_idxs: tuple[tuple[int, int], ...] = (),
 ) -> list[tuple[tuple[int, int], ...]]:
     """
     Get all possible unique indices for multicontraction. Returns a list of indices. The indices are a tuple of tuples

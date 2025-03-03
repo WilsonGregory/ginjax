@@ -737,9 +737,7 @@ def average_pool_layer(input_multi_image: geom.MultiImage, patch_len: int) -> ge
     return out
 
 
-def batch_average_pool(
-    input_multi_image: geom.BatchMultiImage, patch_len: int
-) -> geom.BatchMultiImage:
+def batch_average_pool(input_multi_image: geom.MultiImage, patch_len: int) -> geom.MultiImage:
     """
     Perform an average pool on a BatchMultiImage.
 

@@ -25,7 +25,17 @@ class MultiImage:
     The MultiImage holds a collection of geometric images of any tensor orders and parities, with
     possibly multiple channels. This is the primary class used for machine learning because each
     layer maps multiple different tensor orders/parities to multiple different tensor orders/parities.
+
+    The data of a MultiImage is held in a dictionary whose keys are (k,parity) tuples and whose
+    values are jax arrays of shape (channels,spatial,tensor). However, there could be a variable
+    number of axes of channels, from 0 to whatever. The most common options are 1 (channels) or 2
+    (batch,channels). The number of leading axes must be the same for all (k,parity). This setup
+    allows you to easily vmap a MultiImage, which vmaps over those axes for each image type.
     """
+
+    D: int
+    is_torus: tuple[bool, ...]
+    data: dict[tuple[int, int], jax.Array]
 
     # Constructors
 
@@ -59,7 +69,7 @@ class MultiImage:
         return self.__class__({}, self.D, self.is_torus)
 
     @classmethod
-    def from_images(cls, images: Sequence[GeometricImage]) -> Self:
+    def from_images(cls, images: Sequence[GeometricImage], n_lead_axes: int = 1, axis=0) -> Self:
         """
         Construct a MultiImage from a sequence of GeometricImages.
 
@@ -73,7 +83,12 @@ class MultiImage:
         assert len(images) != 0, "MultiImage.from_images was passed an empty list of images."
         out = cls({}, images[0].D, images[0].is_torus)
         for image in images:
-            out.append(image.k, image.parity, image.data.reshape((1,) + image.data.shape))
+            out.append(
+                image.k,
+                image.parity,
+                image.data.reshape((1,) * n_lead_axes + image.data.shape),
+                axis=axis,
+            )
 
         return out
 
@@ -332,18 +347,15 @@ class MultiImage:
 
     def to_images(self: Self) -> list[GeometricImage]:
         """
-        Convert this MultiImage to a list of GeometricImages. Should only be used in MultiImage
-        of vmapped BatchMultiImage.
+        Convert this MultiImage to a list of GeometricImages.
 
         returns:
             the list of new GeometricImages
         """
         images = []
-        for image_block in self.values():
-            for image in image_block:
-                images.append(
-                    GeometricImage(image, 0, self.D, self.is_torus)
-                )  # for now, assume 0 parity
+        for (k, parity), image_block in self.items():
+            for image in image_block.reshape((-1,) + self.get_spatial_dims() + (self.D,) * k):
+                images.append(GeometricImage(image, parity, self.D, self.is_torus))
 
         return images
 
@@ -426,20 +438,33 @@ class MultiImage:
         vmap_rotate = jax.vmap(times_group_element, in_axes=(None, 0, None, None, None))
         out = self.empty()
         for (k, parity), image_block in self.items():
-            out.append(k, parity, vmap_rotate(self.D, image_block, parity, gg, precision))
+            rotated_img_block = vmap_rotate(
+                self.D,
+                image_block.reshape((-1,) + self.get_spatial_dims() + (self.D,) * k),
+                parity,
+                gg,
+                precision,
+            )
+            out.append(k, parity, rotated_img_block.reshape(image_block.shape))
 
         return out
 
     def norm(self: Self) -> Self:
         """
-        Apply norm to all types of geometric images in this multi image, and make them a channel
+        Apply norm to all types of geometric images in this multi image, and make them a channel.
+        The channels will be concatenated along the axis immediately prior to the spatial axes.
+        If there are no channel axes, this function will break an assert.
 
         returns:
             a new MultiImage with one channel per input channel per type of input image
         """
+        n_lead_axes = self.get_n_leading()
+        assert n_lead_axes > 0, "MultiImage::norm: must have at least one channel axis."
+
         out = self.empty()
-        for image_block in self.values():
-            out.append(0, 0, norm(self.D + 1, image_block))  # norm is even parity
+        for (k, _), image_block in self.items():
+            # norm is even parity
+            out.append(0, 0, norm(n_lead_axes + self.D, image_block), axis=n_lead_axes - 1)
 
         return out
 
@@ -486,24 +511,129 @@ class MultiImage:
         returns:
             the signature tuple
         """
-        k, p = next(iter(self.data.keys()))
-        leading_axes = self[k, p].ndim - self.D - k
+        leading_axes = self.get_n_leading()
         return Signature(
             tuple((k_p, img.shape[leading_axes - 1]) for k_p, img in self.data.items())
         )
 
-    def device_replicate(self: Self, sharding: jax.sharding.PositionalSharding) -> Self:
+    def get_n_leading(self: Self) -> int:
         """
-        Put the MultiImage on particular devices according to the sharding and num_devices
-        args:
-            sharding: jax positional sharding to be reshaped
+        Get the number of leading axes prior to spatial and tensor. This number is guaranteed to
+        be the same for all image blocks in the multi image.
 
         returns:
-            a new MultiImage that has been sharded
+            the number of leading axes
         """
-        return self.__class__(
-            jax.device_put(self.data, sharding.replicate()), self.D, self.is_torus
+        for (k, _), image_block in self.items():
+            return image_block.ndim - (self.D + k)
+
+        return 0
+
+    # The below functions make the most sense when working with batch axes.
+
+    def get_L(self: Self) -> int:
+        """
+        Get the length of the first axis of the first image block in the MultiImage. If this is a
+        batch axis, it should be the same for all image blocks, but if it is a channel it need not
+        be.
+
+        returns:
+            the batch size
+        """
+        if len(self.values()) == 0:
+            return 0
+
+        return len(next(iter(self.values())))
+
+    def reshape_pmap(self: Self, devices: list[jax.Device], axis: int = 0) -> Self:
+        """
+        Reshape the batch to allow pmap to work. E.g., if shape is (batch,1,N,N) and num_devices=2, then
+        reshape to (2,batch/2,1,N,N). Axis specifies the axis to be split.
+
+        args:
+            devices: list of gpus or cpu that we are using
+            axis: the axis to reshape, assumed that its the first axis
+
+        returns:
+            a new MultiImage that has been shaped appropriately for the pmap
+        """
+        num_devices = len(devices)
+        assert self.get_L() % num_devices == 0, (
+            f"BatchMultiImage::reshape_pmap: length of devices must evenly "
+            f"divide the total batch size, but got batch_size: {self.get_L()}, devices: {devices}"
         )
+
+        out = self.empty()
+        for (k, parity), image in self.items():
+            new_shape = (
+                image.shape[:axis]
+                + (num_devices, self.get_L() // num_devices)
+                + image.shape[axis + 1 :]
+            )
+            out.append(k, parity, image.reshape(new_shape))
+
+        return out
+
+    def merge_axes(self: Self, axes: Sequence[int]) -> Self:
+        """
+        Given a contiguous sequence of axes, merge them together using reshape(-1).
+
+        args:
+            axes: a contiguous sequence of axes to merge together
+
+        returns:
+            a new MultiImage that has been merged again
+        """
+        assert len(axes) > 1
+        first = axes[0]
+        last = axes[-1]
+        out = self.empty()
+        for (k, parity), image_block in self.items():
+            new_shape = image_block.shape[:first] + (-1,) + image_block.shape[last + 1 :]
+            out.append(k, parity, image_block.reshape(new_shape))
+
+        return out
+
+    def get_subset(self: Self, idxs: jax.Array) -> Self:
+        """
+        Select a subset of the batch, picking the indices idxs
+
+        args:
+            idxs (jnp.array): array of indices to select the subset
+
+        returns:
+            a new MultiImage that only has that subset
+        """
+        assert isinstance(idxs, jnp.ndarray), "MultiImage::get_subset arg idxs must be a jax array"
+        assert len(
+            idxs.shape
+        ), "MultiImage::get_subset arg idxs must be a jax array, e.g. jnp.array([0])"
+        return self.__class__(
+            {k: image_block[idxs] for k, image_block in self.items()},
+            self.D,
+            self.is_torus,
+        )
+
+    def get_one(self: Self, idx: int = 0, keepdims=True) -> Self:
+        """
+        Get a single MultiImage along the first axis. If keepdims is true, that axis is still there
+        as a 1, otherwise it is removed. This makes the most sense when the first axis is the batch
+        dimension.
+
+        args:
+            idx: index of the single batch we are getting
+
+        returns:
+            a new BatchMultiImage that is only that batch
+        """
+        if keepdims:
+            return self.get_subset(jnp.array([idx]))
+        else:
+            return self.__class__(
+                {k: image_block[idx] for k, image_block in self.items()},
+                self.D,
+                self.is_torus,
+            )
 
     # JAX helpers
     def tree_flatten(self):
@@ -526,202 +656,41 @@ class MultiImage:
         return cls(*children, **aux_data)
 
 
-@register_pytree_node_class
-class BatchMultiImage(MultiImage):
-    """
-    The BatchMultiImage is like a MultiImage, but it has batches of channels of geometric images at
-    any tensor order and parity. This class may be removed in the future, and only MultiImage will
-    capture all its functionality.
-    """
+# @register_pytree_node_class
+# class BatchMultiImage(MultiImage):
+#     """
+#     The BatchMultiImage is like a MultiImage, but it has batches of channels of geometric images at
+#     any tensor order and parity. This class may be removed in the future, and only MultiImage will
+#     capture all its functionality.
+#     """
 
-    # Constructors
+#     # Constructors
 
-    def __init__(
-        self: Self,
-        data: dict[tuple[int, int], jax.Array],
-        D: int,
-        is_torus: Union[bool, tuple[bool, ...]] = True,
-    ) -> None:
-        """
-        Construct a BatchMultiImage
+#     def __init__(
+#         self: Self,
+#         data: dict[tuple[int, int], jax.Array],
+#         D: int,
+#         is_torus: Union[bool, tuple[bool, ...]] = True,
+#     ) -> None:
+#         """
+#         Construct a BatchMultiImage
 
-        args:
-            data: dictionary by (k,parity) of jnp.array
-            D: dimension of the image, and length of vectors or side length of matrices or tensors.
-            is_torus: whether the datablock is a torus, used for convolutions.
-        """
-        super(BatchMultiImage, self).__init__(data, D, is_torus)
+#         args:
+#             data: dictionary by (k,parity) of jnp.array
+#             D: dimension of the image, and length of vectors or side length of matrices or tensors.
+#             is_torus: whether the datablock is a torus, used for convolutions.
+#         """
+#         super(BatchMultiImage, self).__init__(data, D, is_torus)
 
-        self.L = None
-        for image_block in data.values():  # if empty, this won't get set
-            if isinstance(image_block, jnp.ndarray):
-                self.L = len(image_block)  # shape (batch, channels, (N,)*D, (D,)*k)
-            break
+#         self.L = None
+#         for image_block in data.values():  # if empty, this won't get set
+#             if isinstance(image_block, jnp.ndarray):
+#                 self.L = len(image_block)  # shape (batch, channels, (N,)*D, (D,)*k)
+#             break
 
-    @classmethod
-    def from_images(cls, images: Sequence[GeometricImage]) -> Self:
-        # We assume that all images have the same D and is_torus
-        assert len(images) != 0, "MultiImage.from_images was passed an empty list of images."
-        out = cls({}, images[0].D, images[0].is_torus)
-        for image in images:
-            out.append(image.k, image.parity, image.data.reshape((1, 1) + image.data.shape))
+#     def get_component(self: Self, component: Union[int, slice], future_steps: int = 1) -> Self:
+#         return self._get_component(component, future_steps)
 
-        batch_image_block = list(out.values())[0]
-        out.L = batch_image_block.shape[0]
-
-        return out
-
-    def get_L(self: Self) -> int:
-        """
-        Get the batch size. This will return the wrong value if the batch is vmapped.
-
-        returns:
-            the batch size
-        """
-        if len(self.values()) == 0:
-            return 0
-
-        return len(next(iter(self.values())))
-
-    def get_subset(self: Self, idxs: jax.Array) -> Self:
-        """
-        Select a subset of the batch, picking the indices idxs
-
-        args:
-            idxs (jnp.array): array of indices to select the subset
-
-        returns:
-            a new BatchMultiImage that only has that subset
-        """
-        assert isinstance(
-            idxs, jnp.ndarray
-        ), "BatchMultiImage::get_subset arg idxs must be a jax array"
-        assert len(
-            idxs.shape
-        ), "BatchMultiImage::get_subset arg idxs must be a jax array, e.g. jnp.array([0])"
-        return self.__class__(
-            {k: image_block[idxs] for k, image_block in self.items()},
-            self.D,
-            self.is_torus,
-        )
-
-    def get_one(self: Self, idx: int = 0) -> Self:
-        """
-        Get a single MultiImage as a BatchMultiImage.
-
-        args:
-            idx: index of the single batch we are getting
-
-        returns:
-            a new BatchMultiImage that is only that batch
-        """
-        return self.get_subset(jnp.array([idx]))
-
-    def get_one_batch_multi_image(self: Self, idx: int = 0) -> MultiImage:
-        """
-        Get a single MultiImage as a MultiImage and not a BatchMultiImage
-
-        args:
-            idx (int): the index along the batch to get as a MultiImage.
-
-        returns:
-            a new MultiImage that is that single one
-        """
-        return MultiImage(
-            {k: image_block[idx] for k, image_block in self.items()},
-            self.D,
-            self.is_torus,
-        )
-
-    def times_group_element(
-        self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision] = None
-    ) -> Self:
-        return self._times_group_element(gg, precision)
-
-    @functools.partial(jax.vmap, in_axes=(0, None, None))
-    def _times_group_element(
-        self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision]
-    ) -> Self:
-        return super(BatchMultiImage, self).times_group_element(gg, precision)
-
-    @jax.vmap
-    def to_vector(self: Self) -> jnp.ndarray:
-        return super(BatchMultiImage, self).to_vector()
-
-    @classmethod
-    @functools.partial(jax.vmap, in_axes=(None, 0, 0))
-    def from_vector(cls, vector: jax.Array, multi_image: Self) -> Self:
-        return super().from_vector(vector, multi_image)
-
-    @jax.vmap
-    def norm(self: Self) -> Self:
-        return super(BatchMultiImage, self).norm()
-
-    def get_component(self: Self, component: Union[int, slice], future_steps: int = 1) -> Self:
-        return self._get_component(component, future_steps)
-
-    @functools.partial(jax.vmap, in_axes=(0, None, None))
-    def _get_component(self: Self, component: Union[int, slice], future_steps: int) -> Self:
-        return super(BatchMultiImage, self).get_component(component, future_steps)
-
-    def device_put(self: Self, sharding: jax.sharding.PositionalSharding) -> Self:
-        """
-        Put the BatchMultiImage on particular devices according to the sharding
-
-        args:
-            sharding: jax positional sharding to be reshaped
-
-        returns:
-            a new BatchMultiImage that is sharded
-        """
-        num_devices = sharding.shape[0]
-        # number of batches must device evenly into number of devices
-        assert (self.get_L() % num_devices) == 0
-
-        new_data = {}
-        for key, image_block in self.items():
-            sharding_shape = (num_devices,) + (1,) * len(image_block.shape[1:])
-            new_data[key] = jax.device_put(image_block, sharding.reshape(sharding_shape))
-
-        return self.__class__(new_data, self.D, self.is_torus)
-
-    def reshape_pmap(self: Self, devices: list[jax.Device]) -> Self:
-        """
-        Reshape the batch to allow pmap to work. E.g., if shape is (batch,1,N,N) and num_devices=2, then
-        reshape to (2,batch/2,1,N,N)
-
-        args:
-            devices: list of gpus or cpu that we are using
-
-        returns:
-            a new BatchMultiImage that has been shaped appropriately for the pmap
-        """
-        assert self.get_L() % len(devices) == 0, (
-            f"BatchMultiImage::reshape_pmap: length of devices must evenly "
-            f"divide the total batch size, but got batch_size: {self.get_L()}, devices: {devices}"
-        )
-
-        num_devices = len(devices)
-
-        out = self.empty()
-        for (k, parity), image in self.items():
-            out.append(
-                k,
-                parity,
-                image.reshape((num_devices, self.get_L() // num_devices) + image.shape[1:]),
-            )
-
-        return out
-
-    def merge_pmap(self: Self) -> Self:
-        """
-        Take the output BatchMultiImage of a pmap and recombine the batch.
-
-        returns:
-            a new BatchMultiImage that has been merged again
-        """
-        out = self.empty()
-        for (k, parity), image_block in self.items():
-            out.append(k, parity, image_block.reshape((-1,) + image_block.shape[2:]))
-
-        return out
+#     @functools.partial(jax.vmap, in_axes=(0, None, None))
+#     def _get_component(self: Self, component: Union[int, slice], future_steps: int) -> Self:
+#         return super(BatchMultiImage, self).get_component(component, future_steps)

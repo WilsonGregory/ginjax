@@ -42,9 +42,7 @@ def get_gravity_field_image(N, D, point_position, point_mass):
     return geom.GeometricImage(jnp.array(field), 0, D, is_torus=False)
 
 
-def get_data(
-    N, D, num_points, rand_key, num_images=1
-) -> tuple[geom.BatchMultiImage, geom.BatchMultiImage]:
+def get_data(N, D, num_points, rand_key, num_images=1) -> tuple[geom.MultiImage, geom.MultiImage]:
     rand_key, subkey = random.split(rand_key)
     planets = random.uniform(subkey, shape=(num_points,))
     planets = planets / jnp.max(planets)
@@ -68,8 +66,8 @@ def get_data(
         masses.append(geom.GeometricImage(jnp.array(point_mass), 0, D, is_torus=False))
         gravity_fields.append(gravity_field)
 
-    masses_images = geom.BatchMultiImage.from_images(masses)
-    gravity_field_images = geom.BatchMultiImage.from_images(gravity_fields)
+    masses_images = geom.MultiImage.from_images(masses, n_lead_axes=2)
+    gravity_field_images = geom.MultiImage.from_images(gravity_fields, n_lead_axes=2)
     assert masses_images is not None
     assert gravity_field_images is not None
 
@@ -161,12 +159,11 @@ class Model(models.MultiImageModule):
 
 def map_and_loss(
     model: models.MultiImageModule,
-    x: geom.BatchMultiImage,
-    y: geom.BatchMultiImage,
+    x: geom.MultiImage,
+    y: geom.MultiImage,
     aux_data: Optional[eqx.nn.State] = None,
 ) -> tuple[jax.Array, Optional[eqx.nn.State]]:
     pred_y, aux_data = jax.vmap(model, in_axes=(0, None), out_axes=(0, None))(x, aux_data)
-    assert isinstance(pred_y, geom.BatchMultiImage)
     return ml.smse_loss(pred_y, y), aux_data
 
 

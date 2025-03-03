@@ -17,6 +17,7 @@ import equinox as eqx
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
+import geometricconvolutions.models as models
 
 # Generate data for the gravity problem
 
@@ -76,15 +77,14 @@ def get_data(
 
 
 def plot_results(
-    model: eqx.Module,
-    multi_image_x: geom.BatchMultiImage,
-    multi_image_y: geom.BatchMultiImage,
+    model: models.MultiImageModule,
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
     axs: list,
     titles: list[str],
 ):
     assert len(axs) == len(titles)
-    assert callable(model)
-    learned_x = model(multi_image_x).to_images()[0]
+    learned_x = model(multi_image_x)[0].to_images()[0]
     x = multi_image_x.to_images()[0]
     y = multi_image_y.to_images()[0]
     images = [x, y, learned_x, y - learned_x]
@@ -99,7 +99,7 @@ def plot_results(
         image.plot(ax, title, vmin=vmin, vmax=vmax)
 
 
-class Model(eqx.Module):
+class Model(models.MultiImageModule):
     embedding: ml.ConvContract
     first_layers: list[ml.ConvContract]
     second_layers: list[ml.ConvContract]
@@ -141,7 +141,9 @@ class Model(eqx.Module):
         key, subkey = random.split(key)
         self.last_layer = ml.ConvContract(mid_keys, target_keys, conv_filters, key=subkey)
 
-    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
+    def __call__(
+        self: Self, x: geom.MultiImage, aux_data: Optional[eqx.nn.State] = None
+    ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
         x = self.embedding(x)
 
         out_x = None
@@ -154,17 +156,18 @@ class Model(eqx.Module):
         for layer in self.second_layers:
             out_x = layer(x) if out_x is None else out_x + layer(x)
 
-        return self.last_layer(x)
+        return self.last_layer(x), aux_data
 
 
 def map_and_loss(
-    model: eqx.Module,
+    model: models.MultiImageModule,
     x: geom.BatchMultiImage,
     y: geom.BatchMultiImage,
     aux_data: Optional[eqx.nn.State] = None,
 ) -> tuple[jax.Array, Optional[eqx.nn.State]]:
-    assert callable(model)
-    return ml.smse_loss(jax.vmap(model)(x), y), aux_data
+    pred_y, aux_data = jax.vmap(model, in_axes=(0, None), out_axes=(0, None))(x, aux_data)
+    assert isinstance(pred_y, geom.BatchMultiImage)
+    return ml.smse_loss(pred_y, y), aux_data
 
 
 def handleArgs(argv):

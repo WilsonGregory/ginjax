@@ -270,15 +270,15 @@ def plot_timestep_power(
 
 @eqx.filter_jit
 def map_and_loss(
-    model: eqx.Module,
+    model: models.MultiImageModule,
     multi_image_x: geom.BatchMultiImage,
     multi_image_y: geom.BatchMultiImage,
     aux_data: Optional[eqx.nn.State] = None,
     future_steps: int = 1,
     return_map: bool = False,
 ) -> Union[
-    tuple[ArrayLike, Optional[eqx.nn.State], geom.BatchMultiImage],
-    tuple[ArrayLike, Optional[eqx.nn.State]],
+    tuple[jax.Array, Optional[eqx.nn.State], geom.BatchMultiImage],
+    tuple[jax.Array, Optional[eqx.nn.State]],
 ]:
     vmap_autoregressive = jax.vmap(
         ml.autoregressive_map,
@@ -293,6 +293,7 @@ def map_and_loss(
         multi_image_x[(1, 0)].shape[1],  # past_steps
         future_steps,
     )
+    assert isinstance(out, geom.BatchMultiImage)
 
     loss = ml.timestep_smse_loss(out, multi_image_y, future_steps)
     loss = loss[0] if future_steps == 1 else loss
@@ -304,7 +305,7 @@ def train_and_eval(
     data: tuple[geom.BatchMultiImage, ...],
     key: ArrayLike,
     model_name: str,
-    model: eqx.Module,
+    model: models.MultiImageModule,
     lr: float,
     batch_size: int,
     epochs: int,

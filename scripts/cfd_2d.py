@@ -5,7 +5,7 @@ import numpy as np
 from functools import partial
 import matplotlib.pyplot as plt
 import h5py
-from typing import Any, Callable, Optional, Union
+from typing import Optional, Union
 
 import jax.numpy as jnp
 import jax

@@ -127,6 +127,21 @@ class TestMultiImage:
         multi_image5 = geom.MultiImage(multi_image1.data, D, False)
         assert multi_image1 != multi_image5
 
+    def testGetSpatialDims(self):
+        D = 2
+        N = 5
+
+        multi_image = geom.MultiImage({}, D)
+        assert multi_image.get_spatial_dims() == ()
+
+        multi_image = geom.MultiImage({(0, 0): jnp.ones((1,) + (N,) * D)}, D)
+        assert multi_image.get_spatial_dims() == (N,) * D
+
+        multi_image = geom.MultiImage(
+            {(1, 0): jnp.ones((1,) + (N,) * D + (D,)), (1, 1): jnp.ones((1,) + (N,) * D + (D,))}, D
+        )
+        assert multi_image.get_spatial_dims() == (N,) * D
+
     def testAppend(self):
         key = random.PRNGKey(time.time_ns())
         D = 2
@@ -454,6 +469,7 @@ class TestMultiImage:
             operators = geom.make_all_operators(D)
 
             for gg in operators:
+                print(gg)
                 rotated_multi_image = multi_image.times_group_element(gg)
 
                 for (k, parity), img_block in multi_image.items():
@@ -563,6 +579,37 @@ class TestMultiImage:
         assert jnp.allclose(images[11].data, multi_image[(2, 0)][2])
         assert images[11].parity == 0
 
+    def testGetSignature(self):
+        D = 2
+        N = 5
+
+        multi_image = geom.MultiImage({}, D)
+        assert multi_image.get_signature() == geom.Signature(())
+
+        multi_image = geom.MultiImage({(0, 0): jnp.ones((1,) + (N,) * D)}, D)
+        assert multi_image.get_signature() == geom.Signature((((0, 0), 1),))
+
+        multi_image = geom.MultiImage(
+            {(1, 0): jnp.ones((2,) + (N,) * D + (D,)), (1, 1): jnp.ones((5,) + (N,) * D + (D,))}, D
+        )
+        assert multi_image.get_signature() == geom.Signature((((1, 0), 2), ((1, 1), 5)))
+
+    def testGetNLeading(self):
+        D = 2
+        N = 5
+
+        multi_image = geom.MultiImage({}, D)
+        assert multi_image.get_n_leading() == 0
+
+        multi_image = geom.MultiImage({(0, 0): jnp.ones((N,) * D)}, D)
+        assert multi_image.get_n_leading() == 0
+
+        multi_image = geom.MultiImage({(0, 0): jnp.ones((5,) + (N,) * D)}, D)
+        assert multi_image.get_n_leading() == 1
+
+        multi_image = geom.MultiImage({(0, 0): jnp.ones((5, 3) + (N,) * D)}, D)
+        assert multi_image.get_n_leading() == 2
+
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Test TestBatchMultiImage
@@ -570,6 +617,9 @@ class TestMultiImage:
 
 
 class TestBatchMultiImage:
+    """
+    For testing when the first axis of a MultiImage is a batch axis
+    """
 
     def testConstructor(self):
         key = random.PRNGKey(time.time_ns())
@@ -607,6 +657,27 @@ class TestBatchMultiImage:
         assert multi_image3[(1, 0)].shape == (5, 3, N, N, D)
         assert multi_image3.is_torus == (True,) * D
 
+    def testGetSpatialDims(self):
+        D = 2
+        N = 5
+        batch = 4
+        channels = 3
+
+        multi_image = geom.MultiImage({}, D)
+        assert multi_image.get_spatial_dims() == ()
+
+        multi_image = geom.MultiImage({(0, 0): jnp.ones((batch, channels) + (N,) * D)}, D)
+        assert multi_image.get_spatial_dims() == (N,) * D
+
+        multi_image = geom.MultiImage(
+            {
+                (1, 0): jnp.ones((1,) + (N,) * D + (D,)),
+                (1, 1): jnp.ones((batch, channels) + (N,) * D + (D,)),
+            },
+            D,
+        )
+        assert multi_image.get_spatial_dims() == (N,) * D
+
     def testGetSubset(self):
         key = random.PRNGKey(time.time_ns())
         D = 2
@@ -634,7 +705,7 @@ class TestBatchMultiImage:
         with pytest.raises(AssertionError):
             multi_image1.get_subset(jnp.array(0))
 
-    def testGetOneBatchMultiImage(self):
+    def testGetOneKeepDimsFalse(self):
         key = random.PRNGKey(time.time_ns())
         D = 2
         N = 5
@@ -658,7 +729,8 @@ class TestBatchMultiImage:
         assert jnp.allclose(multi_image1[(1, 0)][idx], multi_image3[(1, 0)])
 
     def testAppend(self):
-        # For Batchmulti_image, append should probably only be used while it is vmapped to a multi_image
+        # For MultiImage with batch dimension, append should probably only be used while it is
+        # vmapped to a multi_image
         key = random.PRNGKey(time.time_ns())
         D = 2
         N = 5

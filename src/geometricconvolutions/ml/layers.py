@@ -715,37 +715,3 @@ class LayerWrapperAux(eqx.Module):
             out.append(k, p, out_image)
 
         return out, aux_data
-
-
-@functools.partial(jax.jit, static_argnums=1)
-def average_pool_layer(input_multi_image: geom.MultiImage, patch_len: int) -> geom.MultiImage:
-    """
-    Perform an average pool on a MultiImage.
-
-    args:
-        input_multi_image: the input
-        patch_len: the sidelength of a patch
-
-    returns:
-        a new MultiImage
-    """
-    out = input_multi_image.empty()
-    vmap_avg_pool = jax.vmap(geom.average_pool, in_axes=(None, 0, None))
-    for (k, parity), image_block in input_multi_image.items():
-        out.append(k, parity, vmap_avg_pool(input_multi_image.D, image_block, patch_len))
-
-    return out
-
-
-def batch_average_pool(input_multi_image: geom.MultiImage, patch_len: int) -> geom.MultiImage:
-    """
-    Perform an average pool on a BatchMultiImage.
-
-    args:
-        input_multi_image: the input
-        patch_len: the sidelength of a patch
-
-    returns:
-        a new BatchMultiImage
-    """
-    return jax.vmap(average_pool_layer, in_axes=(0, None))(input_multi_image, patch_len)

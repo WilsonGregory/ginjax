@@ -6,12 +6,12 @@ from collections.abc import ItemsView, KeysView, ValuesView
 import jax
 import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class
-from jaxtyping import ArrayLike
+import equinox as eqx
 
 from geometricconvolutions.geometric.constants import TINY
 from geometricconvolutions.geometric.functional_geometric_image import (
+    average_pool,
     norm,
-    parse_shape,
     times_group_element,
 )
 from geometricconvolutions.geometric.geometric_image import GeometricImage
@@ -75,6 +75,8 @@ class MultiImage:
 
         args:
             images: the GeometricImages
+            n_lead_axes: number of leading axes to append
+            axis: what axis to append to
 
         returns:
             a new MultiImage
@@ -239,8 +241,8 @@ class MultiImage:
 
     def append(self: Self, k: int, parity: int, image_block: jax.Array, axis: int = 0) -> Self:
         """
-        Append an image block at (k,parity). It will be concatenated along axis=0, so channel for
-        MultiImage and vmapped BatchMultiImage, and batch for normal BatchMultiImage
+        Append an image block at (k,parity). It will be concatenated along the specified axis which
+        must be one of the leading axes.
 
         args:
             k: the tensor order
@@ -251,8 +253,11 @@ class MultiImage:
         returns:
             this MultiImage, now updated
         """
+        n_leading_axes = self.get_n_leading()
+        assert (self.data == {}) or (
+            axis < n_leading_axes
+        ), f"axis={axis} must be one of {n_leading_axes} n_leading_axes"
         parity = parity % 2
-        # will this work for BatchMultiImage?
         if (
             k > 0
         ):  # very light shape checking, other problematic cases should be caught in concatenate
@@ -468,6 +473,22 @@ class MultiImage:
 
         return out
 
+    def average_pool(self: Self, patch_len: int) -> Self:
+        out = self.empty()
+        vmap_avg_pool = jax.vmap(average_pool, in_axes=(None, 0, None))
+        n_leading_axes = self.get_n_leading()
+        for (k, parity), image_block in self.items():
+            img_pooled = vmap_avg_pool(
+                self.D, image_block.reshape((-1,) + image_block.shape[n_leading_axes:]), patch_len
+            )
+            out.append(
+                k,
+                parity,
+                img_pooled.reshape((image_block.shape[:n_leading_axes] + img_pooled.shape[1:])),
+            )
+
+        return out
+
     def get_component(self: Self, component: Union[int, slice], future_steps: int = 1) -> Self:
         """
         Given a MultiImage with data with shape (channels*future_steps,spatial,tensor), combine all
@@ -484,13 +505,15 @@ class MultiImage:
             a new MultiImage with a single scalar geometric image corresponding to the chosen
                 component.
         """
+        assert (
+            self.get_n_leading() == 1
+        ), f"MultiImage::get_component: must have exactly 1 leading axis"
         spatial_dims = self.get_spatial_dims()
 
         data = None
         for (k, _), img in self.items():
-            exp_data = img.reshape(
-                (-1, future_steps) + spatial_dims + (self.D,) * k
-            )  # (c,time,spatial,tensor)
+            # (c,time,spatial,tensor)
+            exp_data = img.reshape((-1, future_steps) + spatial_dims + (self.D,) * k)
             exp_data = jnp.moveaxis(exp_data, 0, 1 + self.D)  # (time,spatial,c,tensor)
             exp_data = exp_data.reshape(
                 (future_steps,) + spatial_dims + (-1,)
@@ -503,10 +526,29 @@ class MultiImage:
         component_data = jnp.moveaxis(component_data, -1, 0).reshape((-1,) + spatial_dims)
         return self.__class__({(0, 0): component_data}, self.D, self.is_torus)
 
+    @eqx.filter_vmap
+    def batch_get_component(
+        self: Self, component: Union[int, slice], future_steps: int = 1
+    ) -> Self:
+        """
+        Batched version of get_component, when the first axis of the image blocks is a batch axis.
+        This style of function can be written for any function, but ideally we just write the
+        original function to handle leading axes correctly. In this case, it was a pain.
+
+         args:
+            component: which component to select
+            future_steps: the number of future timesteps of this MultiImage
+
+        returns:
+            a new MultiImage with a single scalar geometric image corresponding to the chosen
+                component.
+        """
+        return self.get_component(component, future_steps)
+
     def get_signature(self: Self) -> Signature:
         """
-        Get a tuple of ( ((k,p),channels), ((k,p),channels), ...). This works for MultiImages and
-        BatchMultiImages.
+        Get a tuple of ( ((k,p),channels), ((k,p),channels), ...). Channels is the last axis prior
+        to the spatial dimensions.
 
         returns:
             the signature tuple
@@ -559,7 +601,7 @@ class MultiImage:
         """
         num_devices = len(devices)
         assert self.get_L() % num_devices == 0, (
-            f"BatchMultiImage::reshape_pmap: length of devices must evenly "
+            f"MultiImage::reshape_pmap: length of devices must evenly "
             f"divide the total batch size, but got batch_size: {self.get_L()}, devices: {devices}"
         )
 
@@ -596,7 +638,7 @@ class MultiImage:
 
     def get_subset(self: Self, idxs: jax.Array) -> Self:
         """
-        Select a subset of the batch, picking the indices idxs
+        Select a subset of the leading axes, picking the indices idxs
 
         args:
             idxs (jnp.array): array of indices to select the subset
@@ -624,7 +666,7 @@ class MultiImage:
             idx: index of the single batch we are getting
 
         returns:
-            a new BatchMultiImage that is only that batch
+            a new MultiImage that is only that batch
         """
         if keepdims:
             return self.get_subset(jnp.array([idx]))
@@ -654,43 +696,3 @@ class MultiImage:
         Helper function to define GeometricImage as a pytree so jax.jit handles it correctly.
         """
         return cls(*children, **aux_data)
-
-
-# @register_pytree_node_class
-# class BatchMultiImage(MultiImage):
-#     """
-#     The BatchMultiImage is like a MultiImage, but it has batches of channels of geometric images at
-#     any tensor order and parity. This class may be removed in the future, and only MultiImage will
-#     capture all its functionality.
-#     """
-
-#     # Constructors
-
-#     def __init__(
-#         self: Self,
-#         data: dict[tuple[int, int], jax.Array],
-#         D: int,
-#         is_torus: Union[bool, tuple[bool, ...]] = True,
-#     ) -> None:
-#         """
-#         Construct a BatchMultiImage
-
-#         args:
-#             data: dictionary by (k,parity) of jnp.array
-#             D: dimension of the image, and length of vectors or side length of matrices or tensors.
-#             is_torus: whether the datablock is a torus, used for convolutions.
-#         """
-#         super(BatchMultiImage, self).__init__(data, D, is_torus)
-
-#         self.L = None
-#         for image_block in data.values():  # if empty, this won't get set
-#             if isinstance(image_block, jnp.ndarray):
-#                 self.L = len(image_block)  # shape (batch, channels, (N,)*D, (D,)*k)
-#             break
-
-#     def get_component(self: Self, component: Union[int, slice], future_steps: int = 1) -> Self:
-#         return self._get_component(component, future_steps)
-
-#     @functools.partial(jax.vmap, in_axes=(0, None, None))
-#     def _get_component(self: Self, component: Union[int, slice], future_steps: int) -> Self:
-#         return super(BatchMultiImage, self).get_component(component, future_steps)

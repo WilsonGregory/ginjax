@@ -2,7 +2,6 @@ import time
 import math
 import functools
 from typing import Any, Callable, Optional, Sequence, Union
-from typing_extensions import Self
 import numpy as np
 
 import jax
@@ -62,7 +61,7 @@ def get_batches(
     pmap based on the number of gpus found.
 
     args:
-        multi_images: BatchMultiImages which all get simultaneously batched
+        multi_images: MultiImages which all get simultaneously batched
         batch_size: length of the batch
         rand_key: key for the randomness. If None, the order won't be random
         devices: gpu/cpu devices to use, if None (default) then sets this to jax.devices()
@@ -201,10 +200,10 @@ def evaluate(
     return_map: bool = False,
 ) -> Union[jax.Array, tuple[jax.Array, geom.MultiImage]]:
     """
-    Runs map_and_loss for the entire x, y, splitting into batches if the BatchMultiImage is larger than
+    Runs map_and_loss for the entire x, y, splitting into batches if the MultiImage is larger than
     the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
     to split those over batches for memory reasons. Automatically pmaps over multiple gpus, so the number
-    of gpus must evenly divide batch_size as well as as any remainder of the BatchMultiImage.
+    of gpus must evenly divide batch_size as well as as any remainder of the MultiImage.
 
     args:
         model: the model to run through map_and_loss
@@ -216,7 +215,7 @@ def evaluate(
         return_map: whether to also return the map of x
 
     Returns:
-        Average loss over the entire BatchMultiImage
+        Average loss over the entire MultiImage
     """
     inference_model = eqx.nn.inference_mode(model)
     if return_map:
@@ -257,10 +256,10 @@ def multi_image_reducer(ls: list[geom.MultiImage]) -> geom.MultiImage:
     If map data returns the mapped MultiImages, merge them togther
 
     args:
-        ls: list of BatchMultiImages
+        ls: list of MultiImages
 
     returns:
-        a single concatenated BatchMultiImage
+        a single concatenated MultiImage
     """
     return functools.reduce(lambda carry, val: carry.concat(val), ls, ls[0].empty())
 
@@ -279,10 +278,10 @@ def map_loss_in_batches(
     aux_data: Optional[eqx.nn.State] = None,
 ) -> jax.Array:
     """
-    Runs map_and_loss for the entire x, y, splitting into batches if the BatchMultiImage is larger than
+    Runs map_and_loss for the entire x, y, splitting into batches if the MultiImage is larger than
     the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
     to split those over batches for memory reasons. Automatically pmaps over multiple gpus, so the number
-    of gpus must evenly divide batch_size as well as as any remainder of the BatchMultiImage.
+    of gpus must evenly divide batch_size as well as as any remainder of the MultiImage.
 
     args:
         map_and_loss: function that takes in model, X_batch, Y_batch, and
@@ -321,10 +320,10 @@ def map_plus_loss_in_batches(
 ) -> tuple[jax.Array, geom.MultiImage]:
     """
     This is like `map_loss_in_batches`, but it returns the mapped images in additon to just the loss.
-    Runs map_and_loss for the entire x, y, splitting into batches if the BatchMultiImage is larger than
+    Runs map_and_loss for the entire x, y, splitting into batches if the MultiImage is larger than
     the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
     to split those over batches for memory reasons. Automatically pmaps over multiple gpus, so the number
-    of gpus must evenly divide batch_size as well as as any remainder of the BatchMultiImage.
+    of gpus must evenly divide batch_size as well as as any remainder of the MultiImage.
 
     args:
         map_and_loss: function that takes in model, X_batch, Y_batch, and
@@ -338,7 +337,7 @@ def map_plus_loss_in_batches(
         aux_data: auxilliary data, such as batch stats. Passed to the function is has_aux is True.
 
     Returns:
-        Average loss over the entire BatchMultiImage, and the mapped entire BatchMultiImage
+        Average loss over the entire MultiImage, and the mapped entire MultiImage
     """
     X_batches, Y_batches = get_batches((x, y), batch_size, rand_key, devices)
     losses = []
@@ -428,8 +427,8 @@ def train(
     to train on a single GPU, the script should be run with CUDA_VISIBLE_DEVICES=# for whatever gpu number.
 
     args:
-        X: The X input data as a BatchMultiImage by k of (images, channels, (N,)*D, (D,)*k)
-        Y: The Y target data as a BatchMultiImage by k of (images, channels, (N,)*D, (D,)*k)
+        X: The X input data as a MultiImage by k of (images, channels, (N,)*D, (D,)*k)
+        Y: The Y target data as a MultiImage by k of (images, channels, (N,)*D, (D,)*k)
         map_and_loss: function that takes in model, X_batch, Y_batch, and aux_data and
             returns the loss and aux_data.
         model: Model pytree
@@ -438,9 +437,9 @@ def train(
             at a time
         batch_size: the size of each mini-batch in SGD
         optimizer: optimizer
-        validation_X: input data for a validation data set as a BatchMultiImage by k
+        validation_X: input data for a validation data set as a MultiImage by k
             of (images, channels, (N,)*D, (D,)*k)
-        validation_Y: target data for a validation data set as a BatchMultiImage by k
+        validation_Y: target data for a validation data set as a MultiImage by k
             of (images, channels, (N,)*D, (D,)*k)
         save_model: if string, save model every 10 epochs, defaults to None
         aux_data: initial aux data passed in to map_and_loss when has_aux is true.

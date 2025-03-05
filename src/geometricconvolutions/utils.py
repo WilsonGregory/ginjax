@@ -539,7 +539,7 @@ def plot_power(
     Plot the power spectrum of each image onto the same plot.
 
     args:
-        fields: list of fields to plot the power spectrum
+        fields: list of fields to plot the power spectrum, shape (batch,channel,spatial)
         labels: label for each field
         ax: the axis to plot on
         title: title of the plot

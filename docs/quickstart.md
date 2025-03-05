@@ -1,6 +1,5 @@
-## Quick Start
+## Basic Features
 
-### Basic Features
 See the script `quick_start.py` for this example in code form.
 
 First our imports. Geometric Convolutions is built in JAX. The majority of the model code resides in geometric.

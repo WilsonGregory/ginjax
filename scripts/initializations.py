@@ -115,7 +115,7 @@ class Model(eqx.Module):
                     )
                 )
 
-    def __call__(self: Self, x: geom.BatchMultiImage) -> geom.BatchMultiImage:
+    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
         print("in:", jnp.var(x[(0, 0)]), jnp.mean(x[(0, 0)]))
         # print(jnp.cov(x[(0, 0)][:, :3, :3].reshape((-1, 9)), rowvar=False).reshape((9, 3, 3)))
         for name, layer in self.layers:
@@ -147,7 +147,7 @@ key, subkey = random.split(key)
 
 data = random.normal(subkey, shape=(in_c,) + (N,) * D)
 
-input_x = geom.BatchMultiImage({(0, 0): data}, D, is_torus=False)
+input_x = geom.MultiImage({(0, 0): data}, D, is_torus=False)
 target_keys = (((0, 0), in_c),)
 
 # start with basic 3x3 scalar, vector, and 2nd order tensor images

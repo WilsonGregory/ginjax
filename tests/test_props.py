@@ -330,7 +330,7 @@ class TestPropositions:
             for parity in [0, 1]:
                 for k in [0, 1, 2, 3]:
                     key, subkey = random.split(key)
-                    multi_image = geom.BatchMultiImage(
+                    multi_image = geom.MultiImage(
                         {
                             (k, parity): random.normal(
                                 subkey, shape=(batch, channels) + (N,) * D + (D,) * k

@@ -12,7 +12,6 @@ from .layers import (
     MaxNormPool as MaxNormPool,
     LayerWrapper as LayerWrapper,
     LayerWrapperAux as LayerWrapperAux,
-    batch_average_pool as batch_average_pool,
 )
 
 from .stopping_conditions import (

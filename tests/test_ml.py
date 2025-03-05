@@ -16,12 +16,8 @@ class TestMachineLearning:
         D = 2
         k = 0
 
-        X = geom.BatchMultiImage(
-            {(k, 0): random.normal(key, shape=((10, 1) + (N,) * D + (D,) * k))}, D
-        )
-        Y = geom.BatchMultiImage(
-            {(k, 0): random.normal(key, shape=((10, 1) + (N,) * D + (D,) * k))}, D
-        )
+        X = geom.MultiImage({(k, 0): random.normal(key, shape=((10, 1) + (N,) * D + (D,) * k))}, D)
+        Y = geom.MultiImage({(k, 0): random.normal(key, shape=((10, 1) + (N,) * D + (D,) * k))}, D)
 
         batch_size = 2
         X_batches, Y_batches = ml.get_batches(
@@ -35,14 +31,14 @@ class TestMachineLearning:
                 == (num_devices, batch_size, 1) + (N,) * D + (D,) * k
             )
 
-        X = geom.BatchMultiImage(
+        X = geom.MultiImage(
             {
                 (0, 0): random.normal(key, shape=((20, 1) + (N,) * D + (D,) * 0)),
                 (1, 0): random.normal(key, shape=((20, 1) + (N,) * D + (D,) * 1)),
             },
             D,
         )
-        Y = geom.BatchMultiImage(
+        Y = geom.MultiImage(
             {
                 (0, 0): random.normal(key, shape=((20, 1) + (N,) * D + (D,) * 0)),
                 (1, 0): random.normal(key, shape=((20, 1) + (N,) * D + (D,) * 1)),
@@ -68,14 +64,14 @@ class TestMachineLearning:
                 == (num_devices, batch_size, 1) + (N,) * D + (D,) * 1
             )
 
-        X = geom.BatchMultiImage(
+        X = geom.MultiImage(
             {
                 (0, 0): random.normal(key, shape=((20, 2) + (N,) * D + (D,) * 0)),
                 (1, 0): random.normal(key, shape=((20, 1) + (N,) * D + (D,) * 1)),
             },
             D,
         )
-        Y = geom.BatchMultiImage(
+        Y = geom.MultiImage(
             {
                 (0, 0): random.normal(key, shape=((20, 2) + (N,) * D + (D,) * 0)),
                 (1, 0): random.normal(key, shape=((20, 1) + (N,) * D + (D,) * 1)),

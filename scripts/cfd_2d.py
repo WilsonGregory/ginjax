@@ -56,7 +56,7 @@ def get_data(
     past_steps: int,
     rollout_steps: int,
     normalize: bool = True,
-) -> tuple[geom.BatchMultiImage, ...]:
+) -> tuple[geom.MultiImage, ...]:
     density, pressure, velocity = read_one_h5(filename, n_train + n_val + n_test)
 
     if normalize:
@@ -166,8 +166,8 @@ def get_data(
 
 
 def plot_multi_image(
-    test_multi_image: geom.BatchMultiImage,
-    actual_multi_image: geom.BatchMultiImage,
+    test_multi_image: geom.MultiImage,
+    actual_multi_image: geom.MultiImage,
     save_loc: str,
     future_steps: int,
     component: int = 0,
@@ -188,12 +188,14 @@ def plot_multi_image(
             "actual {title} {col}"
         minimal: if minimal, no titles, colorbars, or axes labels
     """
-    test_multi_image_comp = test_multi_image.get_component(
-        component, future_steps
-    ).get_one_batch_multi_image()
-    actual_multi_image_comp = actual_multi_image.get_component(
-        component, future_steps
-    ).get_one_batch_multi_image()
+    if test_multi_image.get_n_leading() == 2:
+        test_multi_image = test_multi_image.get_one(keepdims=False)
+
+    if actual_multi_image.get_n_leading() == 2:
+        actual_multi_image = actual_multi_image.get_one(keepdims=False)
+
+    test_multi_image_comp = test_multi_image.get_component(component, future_steps)
+    actual_multi_image_comp = actual_multi_image.get_component(component, future_steps)
 
     test_images = test_multi_image_comp.to_images()
     actual_images = actual_multi_image_comp.to_images()
@@ -245,7 +247,7 @@ def plot_multi_image(
 
 
 def plot_timestep_power(
-    multi_images: list[geom.BatchMultiImage],
+    multi_images: list[geom.MultiImage],
     labels: list[str],
     save_loc: str,
     future_steps: int,
@@ -256,7 +258,7 @@ def plot_timestep_power(
     for i, ax in enumerate(axes):
         utils.plot_power(
             [
-                multi_image.get_component(component, future_steps)[(0, 0)][:, i : i + 1]
+                multi_image.batch_get_component(component, future_steps)[(0, 0)][:, i : i + 1]
                 for multi_image in multi_images
             ],
             labels,
@@ -271,13 +273,13 @@ def plot_timestep_power(
 @eqx.filter_jit
 def map_and_loss(
     model: models.MultiImageModule,
-    multi_image_x: geom.BatchMultiImage,
-    multi_image_y: geom.BatchMultiImage,
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
     aux_data: Optional[eqx.nn.State] = None,
     future_steps: int = 1,
     return_map: bool = False,
 ) -> Union[
-    tuple[jax.Array, Optional[eqx.nn.State], geom.BatchMultiImage],
+    tuple[jax.Array, Optional[eqx.nn.State], geom.MultiImage],
     tuple[jax.Array, Optional[eqx.nn.State]],
 ]:
     vmap_autoregressive = jax.vmap(
@@ -293,7 +295,6 @@ def map_and_loss(
         multi_image_x[(1, 0)].shape[1],  # past_steps
         future_steps,
     )
-    assert isinstance(out, geom.BatchMultiImage)
 
     loss = ml.timestep_smse_loss(out, multi_image_y, future_steps)
     loss = loss[0] if future_steps == 1 else loss
@@ -302,7 +303,7 @@ def map_and_loss(
 
 
 def train_and_eval(
-    data: tuple[geom.BatchMultiImage, ...],
+    data: tuple[geom.MultiImage, ...],
     key: ArrayLike,
     model_name: str,
     model: models.MultiImageModule,
@@ -355,9 +356,9 @@ def train_and_eval(
 
         if save_model is not None:
             # TODO: need to save batch_stats as well
-            ml.save(f"{save_model}{model_name}_L{train_X.L}_e{epochs}_model.eqx", model)
+            ml.save(f"{save_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model)
     else:
-        model = ml.load(f"{load_model}{model_name}_L{train_X.L}_e{epochs}_model.eqx", model)
+        model = ml.load(f"{load_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model)
 
         key, subkey1, subkey2 = random.split(key, num=3)
         train_loss = ml.map_loss_in_batches(
@@ -408,7 +409,7 @@ def train_and_eval(
         plot_multi_image(
             rollout_multi_image.get_one(),
             test_rollout_Y.get_one(),
-            f"{images_dir}{model_name}_L{train_X.L}_e{epochs}_rollout.png",
+            f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}_rollout.png",
             future_steps=rollout_steps,
             component=plot_component,
             show_power=True,
@@ -417,7 +418,7 @@ def train_and_eval(
         plot_timestep_power(
             [rollout_multi_image, test_rollout_Y],
             ["test", "actual"],
-            f"{images_dir}{model_name}_L{train_X.L}_e{epochs}_{components[plot_component]}_power_spectrum.png",
+            f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}_{components[plot_component]}_power_spectrum.png",
             future_steps=rollout_steps,
             component=plot_component,
             title=f"{components[plot_component]}",

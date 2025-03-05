@@ -260,7 +260,7 @@ class TestMisc:
         num_windows = (
             timesteps - past_steps - future_steps + 1
         )  # sliding window per original trajectory
-        assert isinstance(X, geom.BatchMultiImage) and isinstance(Y, geom.BatchMultiImage)
+        assert isinstance(X, geom.MultiImage) and isinstance(Y, geom.MultiImage)
         assert list(X.keys()) == [(0, 0), (1, 0)]
         assert X[(0, 0)].shape == ((batch * num_windows, past_steps) + (N,) * D)
         assert X[(1, 0)].shape == ((batch * num_windows, past_steps) + (N,) * D + (D,))

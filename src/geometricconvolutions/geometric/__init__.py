@@ -23,7 +23,6 @@ from .geometric_image import (
 from .multi_image import (
     Signature as Signature,
     MultiImage as MultiImage,
-    BatchMultiImage as BatchMultiImage,
 )
 
 from .constants import (

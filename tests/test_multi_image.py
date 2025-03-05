@@ -127,6 +127,21 @@ class TestMultiImage:
         multi_image5 = geom.MultiImage(multi_image1.data, D, False)
         assert multi_image1 != multi_image5
 
+    def testGetSpatialDims(self):
+        D = 2
+        N = 5
+
+        multi_image = geom.MultiImage({}, D)
+        assert multi_image.get_spatial_dims() == ()
+
+        multi_image = geom.MultiImage({(0, 0): jnp.ones((1,) + (N,) * D)}, D)
+        assert multi_image.get_spatial_dims() == (N,) * D
+
+        multi_image = geom.MultiImage(
+            {(1, 0): jnp.ones((1,) + (N,) * D + (D,)), (1, 1): jnp.ones((1,) + (N,) * D + (D,))}, D
+        )
+        assert multi_image.get_spatial_dims() == (N,) * D
+
     def testAppend(self):
         key = random.PRNGKey(time.time_ns())
         D = 2
@@ -521,27 +536,103 @@ class TestMultiImage:
             .reshape((2 * timesteps,) + (N,) * D),
         )
 
+    def testToImages(self):
+        N = 5
+        D = 2
+        channels = 3
+        key = random.PRNGKey(0)
+        subkey1, subkey2, subkey3, subkey4 = random.split(key, num=4)
+        multi_image = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(channels,) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(channels,) + (N,) * D + (D,)),
+                (1, 1): random.normal(subkey3, shape=(channels,) + (N,) * D + (D,)),
+                (2, 0): random.normal(subkey4, shape=(channels,) + (N,) * D + (D, D)),
+            },
+            D,
+        )
+
+        images = multi_image.to_images()
+        assert jnp.allclose(images[0].data, multi_image[(0, 0)][0])
+        assert images[0].parity == 0
+        assert jnp.allclose(images[1].data, multi_image[(0, 0)][1])
+        assert images[1].parity == 0
+        assert jnp.allclose(images[2].data, multi_image[(0, 0)][2])
+        assert images[2].parity == 0
+        assert jnp.allclose(images[3].data, multi_image[(1, 0)][0])
+        assert images[3].parity == 0
+        assert jnp.allclose(images[4].data, multi_image[(1, 0)][1])
+        assert images[4].parity == 0
+        assert jnp.allclose(images[5].data, multi_image[(1, 0)][2])
+        assert images[5].parity == 0
+        assert jnp.allclose(images[6].data, multi_image[(1, 1)][0])
+        assert images[6].parity == 1
+        assert jnp.allclose(images[7].data, multi_image[(1, 1)][1])
+        assert images[7].parity == 1
+        assert jnp.allclose(images[8].data, multi_image[(1, 1)][2])
+        assert images[8].parity == 1
+        assert jnp.allclose(images[9].data, multi_image[(2, 0)][0])
+        assert images[9].parity == 0
+        assert jnp.allclose(images[10].data, multi_image[(2, 0)][1])
+        assert images[10].parity == 0
+        assert jnp.allclose(images[11].data, multi_image[(2, 0)][2])
+        assert images[11].parity == 0
+
+    def testGetSignature(self):
+        D = 2
+        N = 5
+
+        multi_image = geom.MultiImage({}, D)
+        assert multi_image.get_signature() == geom.Signature(())
+
+        multi_image = geom.MultiImage({(0, 0): jnp.ones((1,) + (N,) * D)}, D)
+        assert multi_image.get_signature() == geom.Signature((((0, 0), 1),))
+
+        multi_image = geom.MultiImage(
+            {(1, 0): jnp.ones((2,) + (N,) * D + (D,)), (1, 1): jnp.ones((5,) + (N,) * D + (D,))}, D
+        )
+        assert multi_image.get_signature() == geom.Signature((((1, 0), 2), ((1, 1), 5)))
+
+    def testGetNLeading(self):
+        D = 2
+        N = 5
+
+        multi_image = geom.MultiImage({}, D)
+        assert multi_image.get_n_leading() == 0
+
+        multi_image = geom.MultiImage({(0, 0): jnp.ones((N,) * D)}, D)
+        assert multi_image.get_n_leading() == 0
+
+        multi_image = geom.MultiImage({(0, 0): jnp.ones((5,) + (N,) * D)}, D)
+        assert multi_image.get_n_leading() == 1
+
+        multi_image = geom.MultiImage({(0, 0): jnp.ones((5, 3) + (N,) * D)}, D)
+        assert multi_image.get_n_leading() == 2
+
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Test Batchmulti_image
+# Test TestBatchMultiImage
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 
-class TestBatchmulti_image:
+class TestBatchMultiImage:
+    """
+    For testing when the first axis of a MultiImage is a batch axis
+    """
 
     def testConstructor(self):
         key = random.PRNGKey(time.time_ns())
         D = 2
         N = 5
 
-        multi_image1 = geom.BatchMultiImage({}, D, False)
+        multi_image1 = geom.MultiImage({}, D, False)
         assert multi_image1.D == D
         assert multi_image1.is_torus == (False,) * D
         for _, _ in multi_image1.items():
             assert False  # its empty, so this won't ever be called
 
         k = 0
-        multi_image2 = geom.BatchMultiImage(
+        multi_image2 = geom.MultiImage(
             {(k, 0): random.normal(key, shape=((10, 1) + (N,) * D + (D,) * k))},
             D,
             False,
@@ -565,13 +656,34 @@ class TestBatchmulti_image:
         assert multi_image3[(1, 0)].shape == (5, 3, N, N, D)
         assert multi_image3.is_torus == (True,) * D
 
+    def testGetSpatialDims(self):
+        D = 2
+        N = 5
+        batch = 4
+        channels = 3
+
+        multi_image = geom.MultiImage({}, D)
+        assert multi_image.get_spatial_dims() == ()
+
+        multi_image = geom.MultiImage({(0, 0): jnp.ones((batch, channels) + (N,) * D)}, D)
+        assert multi_image.get_spatial_dims() == (N,) * D
+
+        multi_image = geom.MultiImage(
+            {
+                (1, 0): jnp.ones((1,) + (N,) * D + (D,)),
+                (1, 1): jnp.ones((batch, channels) + (N,) * D + (D,)),
+            },
+            D,
+        )
+        assert multi_image.get_spatial_dims() == (N,) * D
+
     def testGetSubset(self):
         key = random.PRNGKey(time.time_ns())
         D = 2
         N = 5
         k = 1
 
-        multi_image1 = geom.BatchMultiImage(
+        multi_image1 = geom.MultiImage(
             {(k, 0): random.normal(key, shape=((100, 1) + (N,) * D + (D,) * k))},
             D,
             False,
@@ -580,43 +692,44 @@ class TestBatchmulti_image:
         multi_image2 = multi_image1.get_subset(jnp.array([3]))
         assert multi_image2.D == multi_image1.D
         assert multi_image2.is_torus == multi_image1.is_torus
-        assert multi_image2.L == 1
+        assert multi_image2.get_L() == 1
         assert multi_image2[(k, 0)].shape == (1, 1, N, N, D)
         assert jnp.allclose(multi_image2[(k, 0)][0], multi_image1[(k, 0)][3])
 
         multi_image3 = multi_image1.get_subset(jnp.array([3, 23, 4, 17]))
-        assert multi_image3.L == 4
+        assert multi_image3.get_L() == 4
         assert multi_image3[(k, 0)].shape == (4, 1, N, N, D)
         assert jnp.allclose(multi_image3[(k, 0)], multi_image1[(k, 0)][jnp.array([3, 23, 4, 17])])
 
         with pytest.raises(AssertionError):
             multi_image1.get_subset(jnp.array(0))
 
-    def testGetOneBatchMultiImage(self):
+    def testGetOneKeepDimsFalse(self):
         key = random.PRNGKey(time.time_ns())
         D = 2
         N = 5
         k = 1
 
-        multi_image1 = geom.BatchMultiImage(
+        multi_image1 = geom.MultiImage(
             {(k, 0): random.normal(key, shape=((100, 1) + (N,) * D + (D,) * k))},
             D,
             False,
         )
 
-        multi_image2 = multi_image1.get_one_batch_multi_image()
+        multi_image2 = multi_image1.get_one(keepdims=False)
         assert isinstance(multi_image2, geom.MultiImage)
         assert multi_image2[(1, 0)].shape == (1, N, N, D)
         assert jnp.allclose(multi_image1[(1, 0)][0], multi_image2[(1, 0)])
 
         idx = 12
-        multi_image3 = multi_image1.get_one_batch_multi_image(idx)
+        multi_image3 = multi_image1.get_one(idx, keepdims=False)
         assert isinstance(multi_image2, geom.MultiImage)
         assert multi_image3[(1, 0)].shape == (1, N, N, D)
         assert jnp.allclose(multi_image1[(1, 0)][idx], multi_image3[(1, 0)])
 
     def testAppend(self):
-        # For Batchmulti_image, append should probably only be used while it is vmapped to a multi_image
+        # For MultiImage with batch dimension, append should probably only be used while it is
+        # vmapped to a multi_image
         key = random.PRNGKey(time.time_ns())
         D = 2
         N = 5
@@ -658,7 +771,7 @@ class TestBatchmulti_image:
 
         key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
 
-        multi_image1 = geom.BatchMultiImage(
+        multi_image1 = geom.MultiImage(
             {
                 (1, 0): random.normal(subkey1, shape=((5, 10) + (N,) * D + (D,) * 1)),
                 (2, 0): random.normal(subkey2, shape=((5, 3) + (N,) * D + (D,) * 2)),
@@ -666,7 +779,7 @@ class TestBatchmulti_image:
             D,
             True,
         )
-        multi_image2 = geom.BatchMultiImage(
+        multi_image2 = geom.MultiImage(
             {
                 (1, 0): random.normal(subkey3, shape=((7, 10) + (N,) * D + (D,) * 1)),
                 (2, 0): random.normal(subkey4, shape=((7, 3) + (N,) * D + (D,) * 2)),
@@ -685,12 +798,12 @@ class TestBatchmulti_image:
         )
 
         key, subkey5, subkey6 = random.split(key, 3)
-        multi_image4 = geom.BatchMultiImage(
+        multi_image4 = geom.MultiImage(
             {(1, 0): random.normal(subkey5, shape=((5, 10) + (N,) * D + (D,) * 1))},
             D,
             True,
         )
-        multi_image5 = geom.BatchMultiImage(
+        multi_image5 = geom.MultiImage(
             {(1, 0): random.normal(subkey6, shape=((5, 2) + (N,) * D + (D,) * 1))},
             D,
             True,
@@ -710,19 +823,19 @@ class TestBatchmulti_image:
         N = 5
 
         # empty multi_image
-        multi_image1 = geom.BatchMultiImage({}, D)
+        multi_image1 = geom.MultiImage({}, D)
         assert multi_image1.size() == 0
 
         # basic scalar multi_image
-        multi_image2 = geom.BatchMultiImage({(0, 0): jnp.ones((1, 1) + (N,) * D)}, D)
+        multi_image2 = geom.MultiImage({(0, 0): jnp.ones((1, 1) + (N,) * D)}, D)
         assert multi_image2.size() == N**D
 
         # multi_image with channels
-        multi_image3 = geom.BatchMultiImage({(0, 0): jnp.ones((2, 4) + (N,) * D)}, D)
+        multi_image3 = geom.MultiImage({(0, 0): jnp.ones((2, 4) + (N,) * D)}, D)
         assert multi_image3.size() == (2 * 4 * N**D)
 
         # more complex multi_image
-        multi_image4 = geom.BatchMultiImage(
+        multi_image4 = geom.MultiImage(
             {
                 (0, 0): jnp.ones((3, 1) + (N,) * D),
                 (1, 0): jnp.ones((3, 4) + (N,) * D + (D,)),
@@ -744,7 +857,7 @@ class TestBatchmulti_image:
         )
         key = random.PRNGKey(0)
         for D in [2, 3]:
-            multi_image = geom.BatchMultiImage({}, D)
+            multi_image = geom.MultiImage({}, D)
 
             for parity in [0, 1]:
                 for k in [0, 1, 2, 3]:
@@ -774,7 +887,7 @@ class TestBatchmulti_image:
 
         # norm of scalars, pseudo scalars, and vectors
         key, subkey1, subkey2, subkey3 = random.split(key, 4)
-        multi_image = geom.BatchMultiImage(
+        multi_image = geom.MultiImage(
             {
                 (0, 0): random.normal(subkey1, shape=(batch, channels) + (N,) * D),
                 (0, 1): random.normal(subkey2, shape=(batch, channels) + (N,) * D),
@@ -806,7 +919,7 @@ class TestBatchmulti_image:
             key, 9
         )
 
-        multi_image1 = geom.BatchMultiImage(
+        multi_image1 = geom.MultiImage(
             {
                 (0, 0): random.normal(subkey1, shape=((batch, channels) + (N,) * D + (D,) * 0)),
                 (1, 0): random.normal(subkey2, shape=((batch, channels) + (N,) * D + (D,) * 1)),
@@ -815,7 +928,7 @@ class TestBatchmulti_image:
             True,
         )
 
-        multi_image2 = geom.BatchMultiImage(
+        multi_image2 = geom.MultiImage(
             {
                 (0, 0): random.normal(subkey3, shape=((batch, channels) + (N,) * D + (D,) * 0)),
                 (1, 0): random.normal(subkey4, shape=((batch, channels) + (N,) * D + (D,) * 1)),
@@ -825,7 +938,7 @@ class TestBatchmulti_image:
         )
 
         multi_image3 = multi_image1 + multi_image2
-        multi_image4 = geom.BatchMultiImage(
+        multi_image4 = geom.MultiImage(
             {
                 (0, 0): multi_image1[(0, 0)] + multi_image2[(0, 0)],
                 (1, 0): multi_image1[(1, 0)] + multi_image2[(1, 0)],
@@ -837,12 +950,12 @@ class TestBatchmulti_image:
         assert multi_image3 == multi_image4
 
         # mismatched multi_image types
-        multi_image5 = geom.BatchMultiImage(
+        multi_image5 = geom.MultiImage(
             {(0, 0): random.normal(subkey5, shape=((batch, channels) + (N,) * D + (D,) * 0))},
             D,
             True,
         )
-        multi_image6 = geom.BatchMultiImage(
+        multi_image6 = geom.MultiImage(
             {(1, 0): random.normal(subkey6, shape=((batch, channels) + (N,) * D + (D,) * 1))},
             D,
             True,
@@ -888,7 +1001,7 @@ class TestBatchmulti_image:
 
         key, subkey1, subkey2 = random.split(key, 3)
 
-        multi_image1 = geom.BatchMultiImage(
+        multi_image1 = geom.MultiImage(
             {
                 (0, 0): random.normal(subkey1, shape=(batch, channels) + (N,) * D),
                 (1, 0): random.normal(subkey2, shape=(batch, channels) + (N,) * D + (D,)),

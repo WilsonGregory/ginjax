@@ -3,8 +3,6 @@ from __future__ import annotations
 import sys
 import argparse
 import time
-import itertools as it
-import numpy as np
 import matplotlib.pyplot as plt
 from typing_extensions import Optional, Self
 
@@ -22,56 +20,53 @@ import geometricconvolutions.models as models
 # Generate data for the gravity problem
 
 
-def get_gravity_vector(position1, position2, mass):
-    r_vec = position1 - position2
-    r_squared = np.linalg.norm(r_vec) ** 3
-    return (mass / r_squared) * r_vec
+def get_gravity_field(
+    N: int, D: int, point_position: jax.Array, point_mass: jax.Array
+) -> jax.Array:
+    # (N,)*D + (D,)
+    positions = jnp.stack(jnp.meshgrid(*(jnp.arange(N),) * D, indexing="ij"), axis=-1)
+    r_vec = point_position.reshape((1,) * D + (D,)) - positions
+    r_squared = jnp.linalg.norm(r_vec, axis=-1, keepdims=True) ** 3
+    # at the pixel where the planet is, set it to 0 rather than dividing by 0
+    gravity_field = jnp.where(
+        r_squared == 0, jnp.zeros_like(r_squared), (point_mass / r_squared) * r_vec
+    )
+    assert isinstance(gravity_field, jax.Array)
+    return gravity_field
 
 
-def get_gravity_field_image(N, D, point_position, point_mass):
-    field = np.zeros((N,) * D + (D,))
+def get_mass_gravity_fields(
+    N: int, D: int, planets: jax.Array, rand_key: ArrayLike
+) -> tuple[geom.MultiImage, geom.MultiImage]:
+    # Sample uniformly the cells
+    indices = jnp.stack(jnp.meshgrid(*(jnp.arange(N),) * D, indexing="ij"), axis=-1)
+    location_choices = random.choice(
+        rand_key, indices.reshape((-1, D)), shape=(num_points,), replace=False, axis=0
+    )
 
-    # this could all be vectorized
-    for position in it.product(range(N), repeat=D):
-        position = np.array(position)
-        if np.all(position == point_position):
-            continue
+    vmap_gravity_field = jax.vmap(get_gravity_field, in_axes=(None, None, 0, 0))
+    gravity_field = jnp.sum(vmap_gravity_field(N, D, location_choices, planets), axis=0)
 
-        field[tuple(position)] = get_gravity_vector(point_position, position, point_mass)
+    # likely a nice jax way of doing this, but this works
+    point_mass = jnp.zeros((N,) * D)
+    for (x, y), mass in zip(location_choices, planets):
+        point_mass = point_mass.at[x, y].set(mass)
 
-    return geom.GeometricImage(jnp.array(field), 0, D, is_torus=False)
-
-
-def get_data(N, D, num_points, rand_key, num_images=1) -> tuple[geom.MultiImage, geom.MultiImage]:
-    rand_key, subkey = random.split(rand_key)
-    planets = random.uniform(subkey, shape=(num_points,))
-    planets = planets / jnp.max(planets)
-
-    masses = []
-    gravity_fields = []
-    for _ in range(num_images):
-        point_mass = np.zeros((N, N))
-        gravity_field = geom.GeometricImage.zeros(N=N, k=1, parity=0, D=D, is_torus=False)
-
-        # Sample uniformly the cells
-        rand_key, subkey = random.split(rand_key)
-        possible_locations = np.array(list(it.product(range(N), repeat=D)))
-        location_choices = random.choice(
-            subkey, possible_locations, shape=(num_points,), replace=False, axis=0
-        )
-        for (x, y), mass in zip(location_choices, planets):
-            point_mass[x, y] = mass
-            gravity_field = gravity_field + get_gravity_field_image(N, D, np.array([x, y]), mass)
-
-        masses.append(geom.GeometricImage(jnp.array(point_mass), 0, D, is_torus=False))
-        gravity_fields.append(gravity_field)
-
-    masses_images = geom.MultiImage.from_images(masses, n_lead_axes=2)
-    gravity_field_images = geom.MultiImage.from_images(gravity_fields, n_lead_axes=2)
-    assert masses_images is not None
-    assert gravity_field_images is not None
-
+    masses_images = geom.MultiImage({(0, 0): point_mass[None]}, D, is_torus=False)
+    gravity_field_images = geom.MultiImage({(1, 0): gravity_field[None]}, D, is_torus=False)
     return masses_images, gravity_field_images
+
+
+def get_data(
+    N: int, D: int, num_points: int, rand_key: ArrayLike, num_images: int = 1
+) -> tuple[geom.MultiImage, geom.MultiImage]:
+    rand_key, subkey = random.split(rand_key)
+    planets = random.uniform(subkey, shape=(num_images, num_points))
+    planets = planets / jnp.max(planets, axis=1, keepdims=True)
+
+    return jax.vmap(get_mass_gravity_fields, in_axes=(None, None, 0, 0))(
+        N, D, planets, random.split(rand_key, num=num_images)
+    )
 
 
 def plot_results(
@@ -228,7 +223,7 @@ else:
     optimizer = optax.adam(
         optax.exponential_decay(
             args.lr,
-            transition_steps=int(train_X.get_L() / args.batch),
+            transition_steps=int(num_train_images / args.batch),
             decay_rate=0.995,
         )
     )

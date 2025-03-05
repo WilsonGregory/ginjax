@@ -3,8 +3,6 @@ from __future__ import annotations
 import sys
 import argparse
 import time
-import itertools as it
-import numpy as np
 import matplotlib.pyplot as plt
 from typing_extensions import Optional, Self
 
@@ -29,6 +27,7 @@ def get_gravity_field(
     positions = jnp.stack(jnp.meshgrid(*(jnp.arange(N),) * D, indexing="ij"), axis=-1)
     r_vec = point_position.reshape((1,) * D + (D,)) - positions
     r_squared = jnp.linalg.norm(r_vec, axis=-1, keepdims=True) ** 3
+    # at the pixel where the planet is, set it to 0 rather than dividing by 0
     gravity_field = jnp.where(
         r_squared == 0, jnp.zeros_like(r_squared), (point_mass / r_squared) * r_vec
     )
@@ -53,8 +52,8 @@ def get_mass_gravity_fields(
     for (x, y), mass in zip(location_choices, planets):
         point_mass = point_mass.at[x, y].set(mass)
 
-    masses_images = geom.MultiImage({(0, 0): jnp.array(point_mass)}, D, is_torus=False)
-    gravity_field_images = geom.MultiImage({(1, 0): gravity_field}, D, is_torus=False)
+    masses_images = geom.MultiImage({(0, 0): point_mass[None]}, D, is_torus=False)
+    gravity_field_images = geom.MultiImage({(1, 0): gravity_field[None]}, D, is_torus=False)
     return masses_images, gravity_field_images
 
 
@@ -62,10 +61,10 @@ def get_data(
     N: int, D: int, num_points: int, rand_key: ArrayLike, num_images: int = 1
 ) -> tuple[geom.MultiImage, geom.MultiImage]:
     rand_key, subkey = random.split(rand_key)
-    planets = random.uniform(subkey, shape=(num_points,))
-    planets = planets / jnp.max(planets)
+    planets = random.uniform(subkey, shape=(num_images, num_points))
+    planets = planets / jnp.max(planets, axis=1, keepdims=True)
 
-    return jax.vmap(get_mass_gravity_fields, in_axes=(None, None, None, 0))(
+    return jax.vmap(get_mass_gravity_fields, in_axes=(None, None, 0, 0))(
         N, D, planets, random.split(rand_key, num=num_images)
     )
 

@@ -469,7 +469,6 @@ class TestMultiImage:
             operators = geom.make_all_operators(D)
 
             for gg in operators:
-                print(gg)
                 rotated_multi_image = multi_image.times_group_element(gg)
 
                 for (k, parity), img_block in multi_image.items():

@@ -6,6 +6,9 @@ on:
     paths:
       - joss/**
       - .github/workflows/draft-pdf.yml
+    branches-ignore: 
+      # main has branch protections, so it will amend the other branch before completing the PR
+      - main
 
 jobs:
   paper:

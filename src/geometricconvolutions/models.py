@@ -371,8 +371,7 @@ class UNet(MultiImageModule):
 
         self.output_keys = output_keys
         if equivariant:
-            key_union = {k_p for k_p, _ in input_keys}.union({k_p for k_p, _ in output_keys})
-            mid_keys = geom.Signature(tuple((k_p, depth) for k_p in key_union))
+            mid_keys = geom.signature_union(input_keys, output_keys, depth)
             assert not use_batch_norm, "UNet::init Batch Norm cannot be used with equivariant model"
         else:
             mid_keys = geom.Signature((((0, 0), depth),))
@@ -612,8 +611,7 @@ class DilResNet(MultiImageModule):
         self.output_keys = output_keys
 
         if equivariant:
-            key_union = {k_p for k_p, _ in input_keys}.union({k_p for k_p, _ in output_keys})
-            mid_keys = geom.Signature(tuple((k_p, depth) for k_p in key_union))
+            mid_keys = geom.signature_union(input_keys, output_keys, depth)
         else:
             mid_keys = geom.Signature((((0, 0), depth),))
             # use these keys along the way, then for the final output use self.output_keys
@@ -785,8 +783,7 @@ class ResNet(MultiImageModule):
         self.output_keys = output_keys
 
         if equivariant:
-            key_union = {k_p for k_p, _ in input_keys}.union({k_p for k_p, _ in output_keys})
-            mid_keys = geom.Signature(tuple((k_p, depth) for k_p in key_union))
+            mid_keys = geom.signature_union(input_keys, output_keys, depth)
         else:
             mid_keys = geom.Signature((((0, 0), depth),))
             # use these keys along the way, then for the final output use self.output_keys
@@ -902,3 +899,60 @@ class ResNet(MultiImageModule):
             out = geom.MultiImage.from_scalar_multi_image(x, self.output_keys)
 
         return out, aux_data
+
+
+class ModelWrapper(MultiImageModule):
+    """
+    This wraps a typical CNN so that it is a MultiImage model. This model will take an input
+    MultiImage, convert it to a jax array, feed it through the model, then convert it to the
+    appropriate output MultiImage at the end.
+    """
+
+    D: int
+    model: eqx.Module
+    output_keys: geom.Signature
+    output_is_torus: Union[bool, tuple[bool, ...]]
+    pass_aux_data: bool
+
+    def __init__(
+        self: Self,
+        D: int,
+        model: eqx.Module,
+        output_keys: geom.Signature,
+        output_is_torus: Union[bool, tuple[bool, ...]],
+        pass_aux_data: bool = False,
+    ) -> None:
+        """
+        Construct the model wrapper.
+
+        args:
+            D: the dimension of the space
+            model: a vanilla cnn model, should input and output images of shape (channels,spatial)
+            output_keys: signature for the output MultiImage
+            output_is_torus: toroidal structure of the output MultiImage
+            pass_aux_data: whether the model expects and outputs aux_data
+        """
+        self.D = D
+        assert callable(model)
+        self.model = model
+        self.output_keys = output_keys
+        self.output_is_torus = output_is_torus
+        self.pass_aux_data = pass_aux_data  # pass the AUX, bro
+
+    def __call__(
+        self: Self, x: geom.MultiImage, aux_data: Optional[eqx.nn.State] = None
+    ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
+        x_array = x.to_scalar_multi_image()[(0, 0)]
+        assert callable(self.model)
+        if self.pass_aux_data:
+            out, aux_data = self.model(x_array, aux_data)
+        else:
+            out = self.model(x_array)
+
+        out_multi_image = geom.MultiImage(
+            {(0, 0): out},
+            self.D,
+            self.output_is_torus,
+        ).from_scalar_multi_image(self.output_keys)
+
+        return out_multi_image, aux_data

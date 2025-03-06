@@ -22,6 +22,7 @@ from .geometric_image import (
 
 from .multi_image import (
     Signature as Signature,
+    signature_union as signature_union,
     MultiImage as MultiImage,
 )
 

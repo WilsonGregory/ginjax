@@ -19,6 +19,11 @@ from geometricconvolutions.geometric.geometric_image import GeometricImage
 Signature = NewType("Signature", tuple[tuple[tuple[int, int], int], ...])
 
 
+def signature_union(signature_a: Signature, signature_b: Signature, num_channels: int) -> Signature:
+    key_union = {k_p for k_p, _ in signature_a}.union({k_p for k_p, _ in signature_b})
+    return Signature(tuple((k_p, num_channels) for k_p in key_union))
+
+
 @register_pytree_node_class
 class MultiImage:
     """
@@ -386,13 +391,17 @@ class MultiImage:
             a new scalar MultiImage with # of channels equal to D^k1 + D^k2 + ... for all the ki
         """
         out = self.empty()
+        n_batch_axes = self.get_n_leading() - 1
+        assert (
+            n_batch_axes >= 0
+        ), "MultiImage::to_scalar_multi_image: assume that there is at least a channels axis"
         for (k, _), image in self.items():
-            transpose_idxs = (
-                (0,) + tuple(range(1 + self.D, 1 + self.D + k)) + tuple(range(1, 1 + self.D))
-            )
-            out.append(
-                0, 0, image.transpose(transpose_idxs).reshape((-1,) + image.shape[1 : 1 + self.D])
-            )
+            # (...,c,spatial,tensor) -> (...,spatial,c,tensor)
+            image = jnp.moveaxis(image, n_batch_axes, -(1 + k))
+            # (...,spatial,c*tensor)
+            image = image.reshape(image.shape[: n_batch_axes + self.D] + (-1,))
+            # (...,c*tensor,spatial)
+            out.append(0, 0, jnp.moveaxis(image, -1, n_batch_axes), axis=n_batch_axes)
 
         return out
 
@@ -407,21 +416,21 @@ class MultiImage:
             a new MultiImage with the same signature as layout
         """
         assert list(self.keys()) == [(0, 0)]
-        spatial_dims = self[(0, 0)].shape[1:]
+        spatial_dims = self.get_spatial_dims()
+        n_batch_axes = self.get_n_leading() - 1
 
         out = self.empty()
         idx = 0
+        # (...,c*tensor,spatial) -> (...,spatial,c*tensor)
+        image = jnp.moveaxis(self[(0, 0)], n_batch_axes, -1)
         for (k, parity), num_channels in layout:
             length = num_channels * (self.D**k)
-            # reshape, it is (num_channels*(D**k), spatial_dims) -> (num_channels, (D,)*k, spatial_dims)
-            reshaped_data = self[(0, 0)][idx : idx + length].reshape(
-                (num_channels,) + (self.D,) * k + spatial_dims
+            # (...,spatial,num_channels*(D**k)) -> (...,spatial,num_channels,tensor)
+            reshaped_data = image[..., idx : idx + length].reshape(
+                image.shape[:n_batch_axes] + spatial_dims + (num_channels,) + (self.D,) * k
             )
-            # tranpose (num_channels, (D,)*k, spatial_dims) -> (num_channels, spatial_dims, (D,)*k)
-            transposed_data = reshaped_data.transpose(
-                (0,) + tuple(range(1 + k, 1 + k + self.D)) + tuple(range(1, 1 + k))
-            )
-            out.append(k, parity, transposed_data)
+            # (...,num_channels,spatial,tensor). Can append on any axis cause its always the first
+            out.append(k, parity, jnp.moveaxis(reshaped_data, -(1 + k), n_batch_axes))
             idx += length
 
         return out

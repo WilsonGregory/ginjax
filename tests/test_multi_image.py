@@ -1025,3 +1025,45 @@ class TestBatchMultiImage:
         # try to multiply two multi_images together
         with pytest.raises(AssertionError):
             assert multi_image1 * multi_image1
+
+    def testToFromScalarMultiImage(self):
+        D = 2
+        batch = 4
+        N = 5
+
+        multi_image_example = geom.MultiImage(
+            {
+                (0, 0): jnp.ones((batch, 4) + (N,) * D),
+                (1, 0): jnp.ones((batch, 2) + (N,) * D + (D,)),
+                (2, 0): jnp.ones((batch, 1) + (N,) * D + (D, D)),
+            },
+            D,
+        )
+
+        scalar_multi_image = multi_image_example.to_scalar_multi_image()
+        print(scalar_multi_image[(0, 0)].shape)
+
+        assert len(scalar_multi_image.keys()) == 1
+        assert next(iter(scalar_multi_image.keys())) == (0, 0)
+        assert jnp.allclose(
+            scalar_multi_image[(0, 0)],
+            jnp.ones((batch, 4 + 2 * D + D * D) + (N,) * D),
+        )
+
+        key = random.PRNGKey(0)
+        key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
+        rand_multi_image = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=((batch, 3) + (N,) * D)),
+                (1, 0): random.normal(subkey2, shape=((batch, 1) + (N,) * D + (D,))),
+                (1, 1): random.normal(subkey3, shape=((batch, 2) + (N,) * D + (D,))),
+                (2, 0): random.normal(subkey4, shape=((batch, 1) + (N,) * D + (D, D))),
+            },
+            D,
+        )
+
+        scalar_multi_image2 = rand_multi_image.to_scalar_multi_image()
+        assert list(scalar_multi_image2.keys()) == [(0, 0)]
+        assert rand_multi_image == rand_multi_image.to_scalar_multi_image().from_scalar_multi_image(
+            rand_multi_image.get_signature()
+        )

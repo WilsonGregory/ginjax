@@ -70,88 +70,62 @@ def get_data(
             velocity[: (n_train + n_val)]
         )  # this one I am not so sure about
 
+    # (batch,2,timesteps,spatial)
+    density_pressure = jnp.concatenate([density[:, None], pressure[:, None]], axis=1)
+    # (batch,2*timesteps,spatial)
+    density_pressure = density_pressure.reshape(
+        (len(density_pressure), -1) + density_pressure.shape[3:]
+    )
+
     is_torus = True
+    total_steps = 21
+    constant_fields = geom.MultiImage({}, D, is_torus)
+
     start = 0
     stop = n_train
-    train_X, train_Y = gc_data.times_series_to_multi_images(
-        D,
-        {(0, 0): density[start:stop], (1, 0): velocity[start:stop]},
-        {},
-        is_torus,
+    train_X, train_Y = gc_data.batch_time_series(
+        geom.MultiImage(
+            {(0, 0): density_pressure[start:stop], (1, 0): velocity[start:stop]}, D, is_torus
+        ),
+        constant_fields,
+        total_steps,
         past_steps,
         1,
     )
-    train_pressure_X, train_pressure_Y = gc_data.times_series_to_multi_images(
-        D,
-        {(0, 0): pressure[start:stop]},
-        {},
-        is_torus,
-        past_steps,
-        1,
-    )
-    train_X = train_X.concat(train_pressure_X, axis=1)
-    train_Y = train_Y.concat(train_pressure_Y, axis=1)
 
     start = start + n_train
     stop = start + n_val
-    val_X, val_Y = gc_data.times_series_to_multi_images(
-        D,
-        {(0, 0): density[start:stop], (1, 0): velocity[start:stop]},
-        {},
-        is_torus,
+    val_X, val_Y = gc_data.batch_time_series(
+        geom.MultiImage(
+            {(0, 0): density_pressure[start:stop], (1, 0): velocity[start:stop]}, D, is_torus
+        ),
+        constant_fields,
+        total_steps,
         past_steps,
         1,
     )
-    val_pressure_X, val_pressure_Y = gc_data.times_series_to_multi_images(
-        D,
-        {(0, 0): pressure[start:stop]},
-        {},
-        is_torus,
-        past_steps,
-        1,
-    )
-    val_X = val_X.concat(val_pressure_X, axis=1)
-    val_Y = val_Y.concat(val_pressure_Y, axis=1)
 
     start = start + n_val
     stop = start + n_test
-    test_X, test_Y = gc_data.times_series_to_multi_images(
-        D,
-        {(0, 0): density[start:stop], (1, 0): velocity[start:stop]},
-        {},
-        is_torus,
+    test_X, test_Y = gc_data.batch_time_series(
+        geom.MultiImage(
+            {(0, 0): density_pressure[start:stop], (1, 0): velocity[start:stop]}, D, is_torus
+        ),
+        constant_fields,
+        total_steps,
         past_steps,
         1,
     )
-    test_pressure_X, test_pressure_Y = gc_data.times_series_to_multi_images(
-        D,
-        {(0, 0): pressure[start:stop]},
-        {},
-        is_torus,
-        past_steps,
-        1,
-    )
-    test_X = test_X.concat(test_pressure_X, axis=1)
-    test_Y = test_Y.concat(test_pressure_Y, axis=1)
 
-    test_rollout_X, test_rollout_Y = gc_data.times_series_to_multi_images(
-        D,
-        {(0, 0): density[start:stop], (1, 0): velocity[start:stop]},
-        {},
-        is_torus,
+    test_rollout_X, test_rollout_Y = gc_data.batch_time_series(
+        geom.MultiImage(
+            {(0, 0): density_pressure[start:stop], (1, 0): velocity[start:stop]}, D, is_torus
+        ),
+        constant_fields,
+        total_steps,
         past_steps,
         rollout_steps,
     )
-    test_rollout_pressure_X, test_rollout_pressure_Y = gc_data.times_series_to_multi_images(
-        D,
-        {(0, 0): pressure[start:stop]},
-        {},
-        is_torus,
-        past_steps,
-        rollout_steps,
-    )
-    test_rollout_X = test_rollout_X.concat(test_rollout_pressure_X, axis=1)
-    test_rollout_Y = test_rollout_Y.concat(test_rollout_pressure_Y, axis=1)
 
     return (
         train_X,

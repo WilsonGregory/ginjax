@@ -51,11 +51,58 @@ def time_series_idxs(past_steps: int, future_steps: int, delta_t: int, total_ste
     return in_idxs, out_idxs
 
 
+def batch_time_series(
+    dynamic_fields: geom.MultiImage,
+    constant_fields: geom.MultiImage,
+    total_steps: int,
+    past_steps: int,
+    future_steps: int,
+    skip_initial: int = 0,
+    delta_t: int = 1,
+    downsample: int = 0,
+) -> tuple[geom.MultiImage, geom.MultiImage]:
+    """
+    Given time series fields batch an initial batch dimension, convert them to input and output
+    MultiImages based on the number of past steps, future steps, and any subsampling/downsampling.
+
+    args:
+        dynamic_fields: the dynamic fields, shape (batch,channels*time,spatial,tensor)
+        constant_fields: the constant fields, shape (batch,channels,spatial,tensor)
+        total_steps: total number of timesteps we are working with
+        past_steps: number of historical steps to use in the model
+        future_steps: number of future steps
+        skip_initial: number of initial time steps to skip
+        delta_t: number of timesteps per model step
+        downsample: number of times to downsample the image by average pooling, decreases by a factor
+            of 2
+
+    returns:
+        tuple of MultiImages multi_image_X and multi_image_Y
+    """
+    vmap_f = jax.vmap(times_series_to_multi_images, in_axes=(0, 0) + (None,) * 6)
+    multi_image_x, multi_image_y = vmap_f(
+        dynamic_fields,
+        constant_fields,
+        total_steps,
+        past_steps,
+        future_steps,
+        skip_initial,
+        delta_t,
+        downsample,
+    )
+    for key, image in multi_image_x.items():
+        multi_image_x[key] = image.reshape((-1,) + image.shape[2:])
+
+    for key, image in multi_image_y.items():
+        multi_image_y[key] = image.reshape((-1,) + image.shape[2:])
+
+    return multi_image_x, multi_image_y
+
+
 def times_series_to_multi_images(
-    D: int,
-    dynamic_fields: dict[tuple[int, int], jax.Array],
-    constant_fields: dict[tuple[int, int], jax.Array],
-    is_torus: Union[bool, tuple[bool, ...]],
+    dynamic_fields: geom.MultiImage,
+    constant_fields: geom.MultiImage,
+    total_steps: int,
     past_steps: int,
     future_steps: int,
     skip_initial: int = 0,
@@ -67,12 +114,9 @@ def times_series_to_multi_images(
     future steps, and any subsampling/downsampling.
 
     args:
-        D: dimension of problem
-        dynamic_fields: the fields to build MultiImages, dict with keys (k,parity) and values
-            of array of shape (batch,time,spatial,tensor)
-        constant_fields: fields constant over time, dict with keys (k,parity) and values
-            of array of shape (batch,spatial,tensor)
-        is_torus: whether the images are tori
+        dynamic_fields: the dynamic fields, shape (channels*time,spatial,tensor)
+        constant_fields: the constant fields, shape (channels,spatial,tensor)
+        total_steps: total number of timesteps we are working with
         past_steps: number of historical steps to use in the model
         future_steps: number of future steps
         skip_initial: number of initial time steps to skip
@@ -85,35 +129,47 @@ def times_series_to_multi_images(
     """
     assert len(dynamic_fields.values()) != 0
 
-    dynamic_fields = {k: v[:, skip_initial:] for k, v in dynamic_fields.items()}
-    t_steps = next(iter(dynamic_fields.values())).shape[1]  # time steps, also total steps
-    # add a time dimension to force and fill it with copies
-    constant_fields = {
-        k: jnp.full((len(v), t_steps) + v.shape[1:], v[:, None]) for k, v in constant_fields.items()
-    }
-
-    input_idxs, output_idxs = time_series_idxs(past_steps, future_steps, delta_t, t_steps)
-    input_dynamic_fields = {
-        k: v[:, input_idxs].reshape((-1, past_steps) + v.shape[2:])
-        for k, v in dynamic_fields.items()
-    }
-    input_constant_fields = {
-        k: v[:, input_idxs].reshape((-1, past_steps) + v.shape[2:])[:, :1]
-        for k, v in constant_fields.items()
-    }
-    output_dynamic_fields = {
-        k: v[:, output_idxs].reshape((-1, future_steps) + v.shape[2:])
-        for k, v in dynamic_fields.items()
-    }
-
-    multi_image_X = geom.MultiImage(input_dynamic_fields, D, is_torus).concat(
-        geom.MultiImage(input_constant_fields, D, is_torus),
-        axis=1,
+    spatial_dims = dynamic_fields.get_spatial_dims()
+    D = dynamic_fields.D
+    input_idxs, output_idxs = time_series_idxs(
+        past_steps, future_steps, delta_t, total_steps - skip_initial
     )
-    multi_image_Y = geom.MultiImage(output_dynamic_fields, D, is_torus)
+
+    multi_image_x = dynamic_fields.empty()
+    multi_image_y = dynamic_fields.empty()
+    for (k, parity), image in dynamic_fields.items():
+        image = image.reshape((-1, total_steps) + spatial_dims + (D,) * k)
+        image = image[:, skip_initial:]
+        n_channels = len(image)
+
+        input_image = image[:, input_idxs].reshape(
+            (n_channels,) + (-1, past_steps) + spatial_dims + (D,) * k
+        )
+        output_image = image[:, output_idxs].reshape(
+            (n_channels,) + (-1, future_steps) + spatial_dims + (D,) * k
+        )
+
+        multi_image_x.append(
+            k,
+            parity,
+            jnp.moveaxis(input_image, 1, 0).reshape(
+                (-1, n_channels * past_steps) + spatial_dims + (D,) * k
+            ),
+        )
+        multi_image_y.append(
+            k,
+            parity,
+            jnp.moveaxis(output_image, 1, 0).reshape(
+                (-1, n_channels * future_steps) + spatial_dims + (D,) * k
+            ),
+        )
+
+    batch = len(next(iter(multi_image_x.values())))
+    for (k, parity), image in constant_fields.items():
+        multi_image_x.append(k, parity, jnp.full((batch,) + image.shape, image), axis=1)
 
     for _ in range(downsample):
-        multi_image_X = multi_image_X.average_pool(2)
-        multi_image_Y = multi_image_Y.average_pool(2)
+        multi_image_x = multi_image_x.average_pool(2)
+        multi_image_y = multi_image_y.average_pool(2)
 
-    return multi_image_X, multi_image_Y
+    return multi_image_x, multi_image_y

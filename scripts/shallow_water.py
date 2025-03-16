@@ -23,6 +23,18 @@ import geometricconvolutions.models as models
 def read_orography(
     D: int, is_torus: Union[bool, tuple[bool, ...]], root_dir: str, file: str = "orographyT63.nc"
 ) -> geom.MultiImage:
+    """
+    Read the orography data from the file and construct a multi image from it.
+
+    args:
+        D: dimension of the space
+        is_torus: toroidal structure of the image
+        root_dir: root directory of the orography file
+        file: filename of the orography file
+
+    returns:
+        A multi image of the orography data, shape (1,spatial).
+    """
     orography = xr.open_mfdataset(root_dir + "/" + file)
     # loads as (96,192), swap to (192,96)
     orography_arr = jax.device_put(jnp.array(orography["orog"].to_numpy()), jax.devices("cpu")[0]).T
@@ -32,6 +44,28 @@ def read_orography(
 def read_one_seed(
     data_dir: str, data_class: str, seed: str
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """
+    Read all the runs of one seed and combine them into blocks of data. The runs from the directory
+    data_dir/data_class/seed/ will be read and made into uv, pres, vor, and lat data blocks. If
+    there is an `all_data.npy` file in that directory, that is loaded. Otherwise, the separate
+    mfd_datasets are loaded, then saved to an `all_data.npy` file. This will allow the data to be
+    loaded much quicker on the next run.
+
+    Note that the data is stored as (lat,lon) or (96,192), but we swap it to (lon,lat) or (192,96)
+    because multi images are expected to by an (x,y) grid.
+
+    args:
+        data_dir: the data directory, probably something/ShallowWater-2D
+        data_class: one of "train", "valid", or "test"
+        seed: the particular seed we are reading, probably
+
+    returns:
+        The jax data arrays, uv, pres, vor, and lats. Their shapes are as follows:
+        uv: (batch,timesteps,spatial,D)
+        pres: (batch,timesteps,spatial)
+        vor: (batch,timesteps,spatial)
+        lats: (96,)
+    """
     target_file = f"{data_dir}/{data_class}/{seed}/all_data.npy"
     if "all_data.npy" in os.listdir(f"{data_dir}/{data_class}/{seed}/"):
         dataset = jnp.load(target_file, allow_pickle=True).item()
@@ -86,12 +120,20 @@ def read_all_seeds(
     data_dir: str, n_trajectories: int, data_class: str
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """
-    Given a specified dataset, load the data into layers where the layer_X has a channel per image in the
-    lookback window, and the layer_Y has just the single next image.
+    Given a specific dataset and data class (train, valid, or test), read seeds until we get to
+    n_trajectories, and then return the data.
+
     args:
         data_dir: directory of the data
         n_trajectories: number of trajectories
         data_class: type of data, either train, valid, or test
+
+    returns:
+        The jax data arrays, uv, pres, vor, and lats. Their shapes are as follows:
+        uv: (batch,timesteps,spatial,D)
+        pres: (batch,timesteps,spatial)
+        vor: (batch,timesteps,spatial)
+        lats: (96,)
     """
     all_seeds = sorted(os.listdir(f"{data_dir}/{data_class}/"))
     all_seeds = filter(lambda path: "seed=" in path, all_seeds)
@@ -137,11 +179,18 @@ def make_constant_fields(
     include_metric_tensor: bool,
 ) -> geom.MultiImage:
     """
+    Build the constant fields from orography and latitudes depending on the arguments.
 
     args:
-        orography: the mountains array
+        orography: a multi image of the mountains, shape (1,spatial)
+        lats: array of the latitudes in degrees, (96,)
+        is_torus: toroidal structure of the images
+        spatial_dims: spatial dimensions of the images
         include_lats: whether to include the raw latitude values
         include_metric_tensor: whether to include the metric tensor as an input field
+
+    returns:
+        a multi image of the constant fields, shape (channels,spatial,tensor).
     """
     constant_fields = geom.MultiImage({}, D, is_torus)
     if orography is not None:
@@ -158,7 +207,7 @@ def make_constant_fields(
     return constant_fields
 
 
-def get_data_layers(
+def get_data_multi_images(
     uv: jax.Array,
     pres: jax.Array,
     vor: jax.Array,
@@ -172,19 +221,23 @@ def get_data_layers(
     is_torus: Union[bool, tuple[bool, ...]] = (True, False),
 ) -> tuple[geom.MultiImage, geom.MultiImage]:
     """
-    Given a specified dataset, load the data into layers where the layer_X has a channel per image in the
-    lookback window, and the layer_Y has just the single next image.
+    Construct the multi images from the data.
+
     args:
+        uv: velocity data array, shape (batch,timesteps,spatial,tensor)
+        pres: pressure data array, shape (batch,timesteps,spatial,tensor)
+        vor: vorticity data array, shape (batch,timesteps,spatial,tensor)
+        constant_fields: fields that do not vary by timestep, shape (channels,spatial,tensor)
         pres_vor_form: use pressure/vorticity form instead
+        total_steps: the number of timesteps
         past_steps: the lookback window, how many steps we look back to predict the next one
         future_steps: the number of steps in the future to compare against
         skip_initial: how many initial timesteps to skip
         subsample: timesteps are 6 simulation hours, can subsample for longer timesteps
-        is_torus: whether to create the layers on the torus
-        normstats: means and std to normalize the fields (in an equivariant way)
-        orography: the mountains array
-        include_lats: whether to include the raw latitude values
-        include_metric_tensor: whether to include the metric tensor as an input field
+        is_torus: toroidal structure of the images
+
+    returns:
+        the input and output multi images
     """
     # add the batch dimension
     batch_const_fields = constant_fields.empty()
@@ -193,7 +246,7 @@ def get_data_layers(
 
     if pres_vor_form:
         multi_image = geom.MultiImage({(0, 0): pres, (0, 1): vor, (1, 0): uv}, D, is_torus)
-        layer_X, layer_Y = gc_data.batch_time_series(
+        multi_image_x, multi_image_y = gc_data.batch_time_series(
             multi_image,
             batch_const_fields,
             total_steps,
@@ -202,10 +255,10 @@ def get_data_layers(
             skip_initial,
             subsample,
         )
-        del layer_X.data[(0, 1)]  # remove vorticity from input
+        del multi_image_x.data[(0, 1)]  # remove vorticity from input
     else:
         multi_image = geom.MultiImage({(0, 0): pres, (1, 0): uv}, D, is_torus)
-        layer_X, layer_Y = gc_data.batch_time_series(
+        multi_image_x, multi_image_y = gc_data.batch_time_series(
             multi_image,
             batch_const_fields,
             total_steps,
@@ -215,7 +268,7 @@ def get_data_layers(
             subsample,
         )
 
-    return layer_X, layer_Y
+    return multi_image_x, multi_image_y
 
 
 def get_data(
@@ -245,6 +298,7 @@ def get_data(
 ]:
     """
     Get train, val, and test data sets.
+
     args:
         data_dir: directory of data
         n_train: number of training trajectories
@@ -257,6 +311,10 @@ def get_data(
         subsample: timesteps are 6 simulation hours, can subsample for longer timesteps
         include_lats: include the raw latitudes as a scalar field
         include_metric_tensor: include the metric tensor as an input field
+
+    returns:
+        train, val, test one step, and test rollout input and output multi images. Also a
+        dictionary specifying what constant fields there are of each image type.
     """
     train_uv, train_pres, train_vor, lats = read_all_seeds(data_dir, n_train, "train")
     val_uv, val_pres, val_vor, _ = read_all_seeds(data_dir, n_val, "valid")
@@ -289,7 +347,7 @@ def get_data(
         orography, lats, is_torus, spatial_dims, include_lats, include_metric_tensor
     )
 
-    train_X, train_Y = get_data_layers(
+    train_X, train_Y = get_data_multi_images(
         train_uv,
         train_pres,
         train_vor,
@@ -301,7 +359,7 @@ def get_data(
         subsample=subsample,
         is_torus=is_torus,
     )
-    val_X, val_Y = get_data_layers(
+    val_X, val_Y = get_data_multi_images(
         val_uv,
         val_pres,
         val_vor,
@@ -313,7 +371,7 @@ def get_data(
         subsample=subsample,
         is_torus=is_torus,
     )
-    test_single_X, test_single_Y = get_data_layers(
+    test_single_X, test_single_Y = get_data_multi_images(
         test_uv,
         test_pres,
         test_vor,
@@ -325,7 +383,7 @@ def get_data(
         subsample=subsample,
         is_torus=is_torus,
     )
-    test_rollout_X, test_rollout_Y = get_data_layers(
+    test_rollout_X, test_rollout_Y = get_data_multi_images(
         test_uv,
         test_pres,
         test_vor,
@@ -415,7 +473,6 @@ def train_and_eval(
         test_rollout_Y,
     ) = data
     batch_stats = eqx.nn.State(model) if has_aux else None
-    # map_and_loss = partial(map_and_loss, constant_fields=constant_fields)
 
     print(f"Model params: {models.count_params(model):,}")
 

@@ -195,7 +195,7 @@ def get_data_layers(
         multi_image = geom.MultiImage({(0, 0): pres, (0, 1): vor, (1, 0): uv}, D, is_torus)
         layer_X, layer_Y = gc_data.batch_time_series(
             multi_image,
-            constant_fields,
+            batch_const_fields,
             total_steps,
             past_steps,
             future_steps,
@@ -207,7 +207,7 @@ def get_data_layers(
         multi_image = geom.MultiImage({(0, 0): pres, (1, 0): uv}, D, is_torus)
         layer_X, layer_Y = gc_data.batch_time_series(
             multi_image,
-            constant_fields,
+            batch_const_fields,
             total_steps,
             past_steps,
             future_steps,

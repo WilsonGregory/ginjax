@@ -241,6 +241,131 @@ class TestMisc:
     def testTimeSeriesToMultiImages(self):
         key = random.PRNGKey(time.time_ns())
         D = 2
+        timesteps = 20
+        N = 5
+        past_steps = 4
+        future_steps = 1
+
+        # test basic dynamic fields
+        key, subkey1, subkey2 = random.split(key, 3)
+        dynamic_fields = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(timesteps,) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(timesteps,) + (N,) * D + (D,)),
+            },
+            D,
+        )
+        constant_fields = geom.MultiImage({}, D)
+
+        X, Y = gc_data.times_series_to_multi_images(
+            dynamic_fields, constant_fields, timesteps, past_steps, future_steps
+        )
+        num_windows = (
+            timesteps - past_steps - future_steps + 1
+        )  # sliding window per original trajectory
+        assert isinstance(X, geom.MultiImage) and isinstance(Y, geom.MultiImage)
+        assert list(X.keys()) == [(0, 0), (1, 0)]
+        assert X[(0, 0)].shape == ((num_windows, past_steps) + (N,) * D)
+        assert X[(1, 0)].shape == ((num_windows, past_steps) + (N,) * D + (D,))
+        assert jnp.allclose(X[(0, 0)][0], dynamic_fields[(0, 0)][:past_steps])
+        assert jnp.allclose(X[(1, 0)][0], dynamic_fields[(1, 0)][:past_steps])
+
+        assert Y[(0, 0)].shape == ((num_windows, future_steps) + (N,) * D)
+        assert Y[(1, 0)].shape == ((num_windows, future_steps) + (N,) * D + (D,))
+        assert jnp.allclose(
+            Y[(0, 0)][0],
+            dynamic_fields[(0, 0)][past_steps : past_steps + future_steps],
+        )
+        assert jnp.allclose(
+            Y[(1, 0)][0],
+            dynamic_fields[(1, 0)][past_steps : past_steps + future_steps],
+        )
+
+        # test with a constant fields
+        key, subkey3, subkey4 = random.split(key, num=3)
+        constant_fields = geom.MultiImage(
+            {
+                (1, 0): random.normal(subkey3, shape=(1,) + (N,) * D + (D,)),
+                (2, 0): random.normal(subkey4, shape=(1,) + (N,) * D + (D, D)),
+            },
+            D,
+        )
+
+        X2, Y2 = gc_data.times_series_to_multi_images(
+            dynamic_fields, constant_fields, timesteps, past_steps, future_steps
+        )
+        assert list(X2.keys()) == [(0, 0), (1, 0), (2, 0)]
+        assert X2[(0, 0)].shape == ((num_windows, past_steps) + (N,) * D)
+        assert X2[(1, 0)].shape == ((num_windows, past_steps + 1) + (N,) * D + (D,))
+        assert X2[(2, 0)].shape == ((num_windows, 1) + (N,) * D + (D, D))
+        assert jnp.allclose(X2[(0, 0)][0, :past_steps], dynamic_fields[(0, 0)][:past_steps])
+        assert jnp.allclose(X2[(1, 0)][0, :past_steps], dynamic_fields[(1, 0)][:past_steps])
+        assert jnp.allclose(X2[(1, 0)][0, past_steps], constant_fields[(1, 0)])
+        assert jnp.allclose(X2[(2, 0)][0], constant_fields[(2, 0)])
+
+        assert Y2[(0, 0)].shape == ((num_windows, future_steps) + (N,) * D)
+        assert Y2[(1, 0)].shape == ((num_windows, future_steps) + (N,) * D + (D,))
+        assert jnp.allclose(
+            Y2[(0, 0)][0],
+            dynamic_fields[(0, 0)][past_steps : past_steps + future_steps],
+        )
+        assert jnp.allclose(
+            Y2[(1, 0)][0],
+            dynamic_fields[(1, 0)][past_steps : past_steps + future_steps],
+        )
+
+        # test with constant fields with multiple channels
+        key, subkey5 = random.split(key)
+        constant_fields = geom.MultiImage(
+            {(1, 0): random.normal(subkey5, shape=(3,) + (N,) * D + (D,))}, D
+        )
+
+        X3, Y3 = gc_data.times_series_to_multi_images(
+            dynamic_fields, constant_fields, timesteps, past_steps, future_steps
+        )
+        assert list(X3.keys()) == [(0, 0), (1, 0)]
+        assert X3[(0, 0)].shape == ((num_windows, past_steps) + (N,) * D)
+        assert X3[(1, 0)].shape == ((num_windows, past_steps + 3) + (N,) * D + (D,))
+        assert jnp.allclose(X3[(0, 0)][0, :past_steps], dynamic_fields[(0, 0)][:past_steps])
+        assert jnp.allclose(X3[(1, 0)][0, :past_steps], dynamic_fields[(1, 0)][:past_steps])
+        assert jnp.allclose(X3[(1, 0)][0, past_steps:], constant_fields[(1, 0)])
+        assert Y3[(0, 0)].shape == ((num_windows, future_steps) + (N,) * D)
+        assert Y3[(1, 0)].shape == ((num_windows, future_steps) + (N,) * D + (D,))
+
+        # test with multiple channels of timestep fields
+        key, subkey6, subkey7 = random.split(key, 3)
+        data1 = random.normal(subkey6, shape=(timesteps,) + (N,) * D)
+        data2 = random.normal(subkey7, shape=(timesteps,) + (N,) * D)
+        dynamic_fields = geom.MultiImage(
+            {(0, 0): jnp.stack([data1, data2]).reshape((2 * timesteps,) + (N,) * D)}, D
+        )
+        constant_fields = geom.MultiImage({}, D)
+
+        X4, Y4 = gc_data.times_series_to_multi_images(
+            dynamic_fields, constant_fields, timesteps, past_steps, future_steps
+        )
+        assert list(X4.keys()) == [(0, 0)]
+        assert X4[(0, 0)].shape == ((num_windows, 2 * past_steps) + (N,) * D)
+        assert jnp.allclose(
+            X4[(0, 0)][0].reshape((2, past_steps) + (N,) * D)[0], data1[:past_steps]
+        )
+        assert jnp.allclose(
+            X4[(0, 0)][0].reshape((2, past_steps) + (N,) * D)[1], data2[:past_steps]
+        )
+
+        assert Y4[(0, 0)].shape == ((num_windows, 2 * future_steps) + (N,) * D)
+        assert jnp.allclose(
+            Y4[(0, 0)][0].reshape((2, future_steps) + (N,) * D)[0],
+            data1[past_steps : past_steps + future_steps],
+        )
+        assert jnp.allclose(
+            Y4[(0, 0)][0].reshape((2, future_steps) + (N,) * D)[1],
+            data2[past_steps : past_steps + future_steps],
+        )
+
+    def testBatchTimeSeries(self):
+        key = random.PRNGKey(time.time_ns())
+        D = 2
         batch = 5
         timesteps = 20
         N = 5
@@ -249,13 +374,17 @@ class TestMisc:
 
         # test basic dynamic fields
         key, subkey1, subkey2 = random.split(key, 3)
-        dynamic_fields = {
-            (0, 0): random.normal(subkey1, shape=(batch, timesteps) + (N,) * D),
-            (1, 0): random.normal(subkey2, shape=(batch, timesteps) + (N,) * D + (D,)),
-        }
+        dynamic_fields = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(batch, timesteps) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(batch, timesteps) + (N,) * D + (D,)),
+            },
+            D,
+        )
+        constant_fields = geom.MultiImage({}, D)
 
-        X, Y = gc_data.times_series_to_multi_images(
-            D, dynamic_fields, {}, False, past_steps, future_steps
+        X, Y = gc_data.batch_time_series(
+            dynamic_fields, constant_fields, timesteps, past_steps, future_steps
         )
         num_windows = (
             timesteps - past_steps - future_steps + 1
@@ -280,15 +409,12 @@ class TestMisc:
 
         # test with a constant fields
         key, subkey3 = random.split(key)
-        constant_fields = {(1, 0): random.normal(subkey3, shape=(batch,) + (N,) * D + (D,))}
+        constant_fields = geom.MultiImage(
+            {(1, 0): random.normal(subkey3, shape=(batch, 1) + (N,) * D + (D,))}, D
+        )
 
-        X2, Y2 = gc_data.times_series_to_multi_images(
-            D,
-            dynamic_fields,
-            constant_fields,
-            False,
-            past_steps,
-            future_steps,
+        X2, Y2 = gc_data.batch_time_series(
+            dynamic_fields, constant_fields, timesteps, past_steps, future_steps
         )
         assert list(X.keys()) == [(0, 0), (1, 0)]
         assert X2[(0, 0)].shape == ((batch * num_windows, past_steps) + (N,) * D)

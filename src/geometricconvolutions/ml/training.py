@@ -102,7 +102,7 @@ def autoregressive_step(
     """
     Given the input MultiImage, the next step of the model, and the output, update the input
     and output to be fed into the model next. MultiImages should have shape (channels,spatial,tensor).
-    Channels are c*past_steps + constant_steps where c is some positive integer.
+    Channels are c*past_steps + constant_fields where c is some positive integer.
 
     args:
         input: the input to the model
@@ -134,6 +134,7 @@ def autoregressive_step(
             n_const_fields = 0
             const_fields = jnp.zeros((0,) + img_shape)
 
+        # get dynamic fields that were the input (c,past_steps,spatial,tensor)
         exp_input = input[key][: (-n_const_fields or None)].reshape((-1, past_steps) + img_shape)
         next_input = jnp.concatenate([exp_input[:, 1:], exp_data], axis=1).reshape(
             (-1,) + img_shape
@@ -157,6 +158,7 @@ def autoregressive_map(
     aux_data: Optional[eqx.nn.State] = None,
     past_steps: int = 1,
     future_steps: int = 1,
+    constant_fields: dict[tuple[int, int], int] = {},
 ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
     """
     Given a model, perform an autoregressive step (future_steps) times, and return the output
@@ -168,6 +170,7 @@ def autoregressive_map(
         aux_data: auxilliary data to pass to the network
         past_steps: the number of past steps input to the autoregressive map
         future_steps: how many times to loop through the autoregression
+        constant_fields: data structure which explains which fields are constant fields
 
     returns:
         the output map with number of steps equal to future steps, and the aux_data
@@ -177,7 +180,7 @@ def autoregressive_map(
     out_x = x.empty()  # assume out matches D and is_torus
     for _ in range(future_steps):
         learned_x, aux_data = model(x, aux_data)
-        x, out_x = autoregressive_step(x, learned_x, out_x, past_steps)
+        x, out_x = autoregressive_step(x, learned_x, out_x, past_steps, constant_fields)
 
     return out_x, aux_data
 

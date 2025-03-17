@@ -1,4 +1,3 @@
-import sys
 import os
 import time
 import argparse
@@ -6,6 +5,7 @@ import numpy as np
 from functools import partial
 import xarray as xr
 from typing_extensions import Optional, Union
+import wandb
 
 import jax.numpy as jnp
 import jax
@@ -18,6 +18,7 @@ import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
 import geometricconvolutions.data as gc_data
 import geometricconvolutions.models as models
+import geometricconvolutions.utils as utils
 
 
 def read_orography(
@@ -461,6 +462,7 @@ def train_and_eval(
     verbose: int = 1,
     plot_component: int = 0,
     constant_fields: dict[tuple[int, int], int] = {},
+    is_wandb: bool = False,
 ) -> tuple[Optional[ArrayLike], ...]:
     (
         train_X,
@@ -498,6 +500,7 @@ def train_and_eval(
             validation_X=val_X,
             validation_Y=val_Y,
             aux_data=batch_stats,
+            is_wandb=is_wandb,
         )
 
         if save_model is not None:
@@ -553,51 +556,8 @@ def train_and_eval(
     return train_loss, val_loss, test_loss, *test_rollout_loss
 
 
-def handleArgs(argv):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("data", help="the data .hdf5 file", type=str)
-    parser.add_argument("-e", "--epochs", help="number of epochs to run", type=int, default=50)
-    parser.add_argument("-batch", help="batch size", type=int, default=8)
-    parser.add_argument("-n_train", help="number of training trajectories", type=int, default=100)
-    parser.add_argument(
-        "-n_val",
-        help="number of validation trajectories, defaults to batch",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "-n_test",
-        help="number of testing trajectories, defaults to batch",
-        type=int,
-        default=None,
-    )
-    parser.add_argument("-t", "--n_trials", help="number of trials to run", type=int, default=1)
-    parser.add_argument("-seed", help="the random number seed", type=int, default=None)
-    parser.add_argument(
-        "-s", "--save_model", help="file name to save the params", type=str, default=None
-    )
-    parser.add_argument(
-        "-l", "--load_model", help="file name to load params from", type=str, default=None
-    )
-    parser.add_argument(
-        "-images_dir",
-        help="directory to save images, or None to not save",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        help="verbose argument passed to trainer",
-        type=int,
-        default=1,
-    )
-    parser.add_argument(
-        "--normalize",
-        help="normalize input data, equivariantly",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
+def handleArgs() -> argparse.Namespace:
+    parser = utils.get_common_parser()
     parser.add_argument(
         "--include_lats",
         help="include the latitudes as a scalar field input",
@@ -634,12 +594,16 @@ def handleArgs(argv):
         type=int,
         default=1,
     )
+    # need do to --wandb to activate, also need --wandb-entity your_wandb_name_here
+    parser.add_argument(
+        "--wandb-project", help="the wandb project", type=str, default="shallow-water"
+    )
 
     return parser.parse_args()
 
 
 # Main
-args = handleArgs(sys.argv)
+args = handleArgs()
 
 D = 2
 
@@ -675,26 +639,26 @@ upsample_filters = geom.get_invariant_filters(
     Ms=[2], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions
 )
 
-train_and_eval = partial(
-    train_and_eval,
-    batch_size=args.batch,
-    epochs=args.epochs,
-    rollout_steps=args.rollout_steps,
-    save_model=args.save_model,
-    load_model=args.load_model,
-    images_dir=args.images_dir,
-    verbose=args.verbose,
-    plot_component=args.plot_component,
-    constant_fields=constant_fields,
-)
+train_kwargs = {
+    "batch_size": args.batch,
+    "epochs": args.epochs,
+    "rollout_steps": args.rollout_steps,
+    "save_model": args.save_model,
+    "load_model": args.load_model,
+    "images_dir": args.images_dir,
+    "verbose": args.verbose,
+    "plot_component": args.plot_component,
+    "constant_fields": constant_fields,
+    "is_wandb": args.wandb,
+}
 
 key, *subkeys = random.split(key, num=13)
 models_ls = [
     (
         "dil_resnet64",
-        partial(
-            train_and_eval,
-            model=models.DilResNet(
+        train_and_eval,
+        {
+            "model": models.DilResNet(
                 D,
                 input_keys,
                 output_keys,
@@ -703,14 +667,15 @@ models_ls = [
                 kernel_size=3,
                 key=subkeys[0],
             ),
-            lr=2e-3,
-        ),
+            "lr": 2e-3,
+            **train_kwargs,
+        },
     ),
     (
         "dil_resnet_equiv20",
-        partial(
-            train_and_eval,
-            model=models.DilResNet(
+        train_and_eval,
+        {
+            "model": models.DilResNet(
                 D,
                 input_keys,
                 output_keys,
@@ -718,14 +683,15 @@ models_ls = [
                 conv_filters=conv_filters,
                 key=subkeys[1],
             ),
-            lr=1e-3,
-        ),
+            "lr": 1e-3,
+            **train_kwargs,
+        },
     ),
     # (
     #     "dil_resnet_equiv48",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.DilResNet(
+    #     train_and_eval,
+    #     {
+    #         "model": models.DilResNet(
     #             D,
     #             input_keys,
     #             output_keys,
@@ -733,14 +699,15 @@ models_ls = [
     #             conv_filters=conv_filters,
     #             key=subkeys[2],
     #         ),
-    #         lr=1e-3,
-    #     ),
+    #         "lr": 1e-3,
+    #         **train_kwargs,
+    #     },
     # ),
     # (
     #     "resnet",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.ResNet(
+    #     train_and_eval,
+    #     {
+    #         "model": models.ResNet(
     #             D,
     #             input_keys,
     #             output_keys,
@@ -749,14 +716,15 @@ models_ls = [
     #             kernel_size=3,
     #             key=subkeys[3],
     #         ),
-    #         lr=1e-3,
-    #     ),
+    #         "lr": 1e-3,
+    #         **train_kwargs,
+    #     },
     # ),
     # (
     #     "resnet_equiv_groupnorm_42",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.ResNet(
+    #     train_and_eval,
+    #     {
+    #         "model": models.ResNet(
     #             D,
     #             input_keys,
     #             output_keys,
@@ -764,14 +732,15 @@ models_ls = [
     #             conv_filters=conv_filters,
     #             key=subkeys[4],
     #         ),
-    #         lr=7e-4,
-    #     ),
+    #         "lr": 7e-4,
+    #         **train_kwargs,
+    #     },
     # ),
     # (
     #     "resnet_equiv_groupnorm_100",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.ResNet(
+    #     train_and_eval,
+    #     {
+    #         "model": models.ResNet(
     #             D,
     #             input_keys,
     #             output_keys,
@@ -779,14 +748,15 @@ models_ls = [
     #             conv_filters=conv_filters,
     #             key=subkeys[5],
     #         ),
-    #         lr=7e-4,
-    #     ),
+    #         "lr": 7e-4,
+    #         **train_kwargs,
+    #     },
     # ),
     # (
     #     "unetBase",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.UNet(
+    #     train_and_eval,
+    #     {
+    #         "model": models.UNet(
     #             D,
     #             input_keys,
     #             output_keys,
@@ -798,14 +768,15 @@ models_ls = [
     #             use_group_norm=True,
     #             key=subkeys[6],
     #         ),
-    #         lr=8e-4,
-    #     ),
+    #         "lr": 8e-4,
+    #         **train_kwargs,
+    #     },
     # ),
     # (
     #     "unetBase_equiv20",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.UNet(
+    #     train_and_eval,
+    #     {
+    #         "model": models.UNet(
     #             D,
     #             input_keys,
     #             output_keys,
@@ -814,14 +785,15 @@ models_ls = [
     #             upsample_filters=upsample_filters,
     #             key=subkeys[7],
     #         ),
-    #         lr=6e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-    #     ),
+    #         "lr": 6e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+    #         **train_kwargs,
+    #     },
     # ),
     # (
     #     "unetBase_equiv48",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.UNet(
+    #     train_and_eval,
+    #     {
+    #         "model": models.UNet(
     #             D,
     #             input_keys,
     #             output_keys,
@@ -831,14 +803,15 @@ models_ls = [
     #             upsample_filters=upsample_filters,
     #             key=subkeys[8],
     #         ),
-    #         lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-    #     ),
+    #         "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+    #         **train_kwargs,
+    #     },
     # ),
     # (
     #     "unet2015",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.UNet(
+    #     train_and_eval,
+    #     {
+    #         "model": models.UNet(
     #             D,
     #             input_keys,
     #             output_keys,
@@ -849,15 +822,16 @@ models_ls = [
     #             use_batch_norm=True,
     #             key=subkeys[9],
     #         ),
-    #         lr=8e-4,
-    #         has_aux=True,
-    #     ),
+    #         "lr": 8e-4,
+    #         "has_aux": True,
+    #         **train_kwargs,
+    #     },
     # ),
     # (
     #     "unet2015_equiv20",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.UNet(
+    #     train_and_eval,
+    #     {
+    #         "model": models.UNet(
     #             D,
     #             input_keys,
     #             output_keys,
@@ -867,14 +841,15 @@ models_ls = [
     #             upsample_filters=upsample_filters,
     #             key=subkeys[10],
     #         ),
-    #         lr=7e-4,  # sometimes explodes for larger values
-    #     ),
+    #         "lr": 7e-4,  # sometimes explodes for larger values
+    #         **train_kwargs,
+    #     },
     # ),
     # (
     #     "unet2015_equiv48",
-    #     partial(
-    #         train_and_eval,
-    #         model=models.UNet(
+    #     train_and_eval,
+    #     {
+    #         "model": models.UNet(
     #             D,
     #             input_keys,
     #             output_keys,
@@ -884,8 +859,9 @@ models_ls = [
     #             upsample_filters=upsample_filters,
     #             key=subkeys[11],
     #         ),
-    #         lr=3e-4,
-    #     ),
+    #         "lr": 3e-4,
+    #         **train_kwargs,
+    #     },
     # ),
 ]
 
@@ -899,6 +875,9 @@ results = ml.benchmark(
     benchmark_type=ml.BENCHMARK_NONE,
     num_results=4,
     num_trials=args.n_trials,
+    is_wandb=args.wandb,
+    wandb_project=args.wandb_project,
+    wandb_entity=args.wandb_entity,
 )
 
 print(results)

@@ -1,4 +1,3 @@
-import sys
 import time
 import argparse
 import numpy as np
@@ -291,6 +290,7 @@ def train_and_eval(
     has_aux: bool = False,
     verbose: int = 1,
     plot_component: int = 0,
+    is_wandb: bool = False,
 ) -> tuple[Optional[ArrayLike], ...]:
     (
         train_X,
@@ -326,6 +326,7 @@ def train_and_eval(
             validation_X=val_X,
             validation_Y=val_Y,
             aux_data=batch_stats,
+            is_wandb=is_wandb,
         )
 
         if save_model is not None:
@@ -401,51 +402,8 @@ def train_and_eval(
     return train_loss, val_loss, test_loss, *test_rollout_loss
 
 
-def handleArgs(argv):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("data", help="the data .hdf5 file", type=str)
-    parser.add_argument("-e", "--epochs", help="number of epochs to run", type=int, default=50)
-    parser.add_argument("-batch", help="batch size", type=int, default=8)
-    parser.add_argument("-n_train", help="number of training trajectories", type=int, default=100)
-    parser.add_argument(
-        "-n_val",
-        help="number of validation trajectories, defaults to batch",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "-n_test",
-        help="number of testing trajectories, defaults to batch",
-        type=int,
-        default=None,
-    )
-    parser.add_argument("-t", "--n_trials", help="number of trials to run", type=int, default=1)
-    parser.add_argument("-seed", help="the random number seed", type=int, default=None)
-    parser.add_argument(
-        "-s", "--save_model", help="file name to save the params", type=str, default=None
-    )
-    parser.add_argument(
-        "-l", "--load_model", help="file name to load params from", type=str, default=None
-    )
-    parser.add_argument(
-        "-images_dir",
-        help="directory to save images, or None to not save",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        help="verbose argument passed to trainer",
-        type=int,
-        default=1,
-    )
-    parser.add_argument(
-        "--normalize",
-        help="normalize input data, equivariantly",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
+def handleArgs() -> argparse.Namespace:
+    parser = utils.get_common_parser()
     parser.add_argument(
         "--plot_component",
         help="which component to plot, one of 0-3",
@@ -459,12 +417,14 @@ def handleArgs(argv):
         type=int,
         default=5,
     )
+    # need do to --wandb to activate, also need --wandb-entity your_wandb_name_here
+    parser.add_argument("--wandb-project", help="the wandb project", type=str, default="cfd-2d")
 
     return parser.parse_args()
 
 
 # Main
-args = handleArgs(sys.argv)
+args = handleArgs()
 
 D = 2
 N = 128
@@ -499,25 +459,25 @@ upsample_filters = geom.get_invariant_filters(
 assert conv_filters is not None
 assert upsample_filters is not None
 
-train_and_eval = partial(
-    train_and_eval,
-    batch_size=args.batch,
-    epochs=args.epochs,
-    rollout_steps=args.rollout_steps,
-    save_model=args.save_model,
-    load_model=args.load_model,
-    images_dir=args.images_dir,
-    verbose=args.verbose,
-    plot_component=args.plot_component,
-)
+train_kwargs = {
+    "batch_size": args.batch,
+    "epochs": args.epochs,
+    "rollout_steps": args.rollout_steps,
+    "save_model": args.save_model,
+    "load_model": args.load_model,
+    "images_dir": args.images_dir,
+    "verbose": args.verbose,
+    "plot_component": args.plot_component,
+    "is_wandb": args.wandb,
+}
 
 key, *subkeys = random.split(key, num=13)
 model_list = [
     (
         "dil_resnet64",
-        partial(
-            train_and_eval,
-            model=models.DilResNet(
+        train_and_eval,
+        {
+            "model": models.DilResNet(
                 D,
                 input_keys,
                 output_keys,
@@ -526,14 +486,15 @@ model_list = [
                 kernel_size=3,
                 key=subkeys[0],
             ),
-            lr=2e-3,
-        ),
+            "lr": 2e-3,
+            **train_kwargs,
+        },
     ),
     (
         "dil_resnet_equiv20",
-        partial(
-            train_and_eval,
-            model=models.DilResNet(
+        train_and_eval,
+        {
+            "model": models.DilResNet(
                 D,
                 input_keys,
                 output_keys,
@@ -541,14 +502,15 @@ model_list = [
                 conv_filters=conv_filters,
                 key=subkeys[1],
             ),
-            lr=1e-3,
-        ),
+            "lr": 1e-3,
+            **train_kwargs,
+        },
     ),
     (
         "dil_resnet_equiv48",
-        partial(
-            train_and_eval,
-            model=models.DilResNet(
+        train_and_eval,
+        {
+            "model": models.DilResNet(
                 D,
                 input_keys,
                 output_keys,
@@ -556,14 +518,15 @@ model_list = [
                 conv_filters=conv_filters,
                 key=subkeys[2],
             ),
-            lr=1e-3,
-        ),
+            "lr": 1e-3,
+            **train_kwargs,
+        },
     ),
     (
         "resnet",
-        partial(
-            train_and_eval,
-            model=models.ResNet(
+        train_and_eval,
+        {
+            "model": models.ResNet(
                 D,
                 input_keys,
                 output_keys,
@@ -572,14 +535,15 @@ model_list = [
                 kernel_size=3,
                 key=subkeys[3],
             ),
-            lr=1e-3,
-        ),
+            "lr": 1e-3,
+            **train_kwargs,
+        },
     ),
     (
         "resnet_equiv_groupnorm_42",
-        partial(
-            train_and_eval,
-            model=models.ResNet(
+        train_and_eval,
+        {
+            "model": models.ResNet(
                 D,
                 input_keys,
                 output_keys,
@@ -587,14 +551,15 @@ model_list = [
                 conv_filters=conv_filters,
                 key=subkeys[4],
             ),
-            lr=7e-4,
-        ),
+            "lr": 7e-4,
+            **train_kwargs,
+        },
     ),
     (
         "resnet_equiv_groupnorm_100",
-        partial(
-            train_and_eval,
-            model=models.ResNet(
+        train_and_eval,
+        {
+            "model": models.ResNet(
                 D,
                 input_keys,
                 output_keys,
@@ -602,14 +567,15 @@ model_list = [
                 conv_filters=conv_filters,
                 key=subkeys[5],
             ),
-            lr=7e-4,
-        ),
+            "lr": 7e-4,
+            **train_kwargs,
+        },
     ),
     (
         "unetBase",
-        partial(
-            train_and_eval,
-            model=models.UNet(
+        train_and_eval,
+        {
+            "model": models.UNet(
                 D,
                 input_keys,
                 output_keys,
@@ -621,14 +587,15 @@ model_list = [
                 use_group_norm=True,
                 key=subkeys[6],
             ),
-            lr=8e-4,
-        ),
+            "lr": 8e-4,
+            **train_kwargs,
+        },
     ),
     (
         "unetBase_equiv20",
-        partial(
-            train_and_eval,
-            model=models.UNet(
+        train_and_eval,
+        {
+            "model": models.UNet(
                 D,
                 input_keys,
                 output_keys,
@@ -637,14 +604,15 @@ model_list = [
                 upsample_filters=upsample_filters,
                 key=subkeys[7],
             ),
-            lr=6e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-        ),
+            "lr": 6e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+            **train_kwargs,
+        },
     ),
     (
         "unetBase_equiv48",
-        partial(
-            train_and_eval,
-            model=models.UNet(
+        train_and_eval,
+        {
+            "model": models.UNet(
                 D,
                 input_keys,
                 output_keys,
@@ -654,14 +622,15 @@ model_list = [
                 upsample_filters=upsample_filters,
                 key=subkeys[8],
             ),
-            lr=4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-        ),
+            "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+            **train_kwargs,
+        },
     ),
     (
         "unet2015",
-        partial(
-            train_and_eval,
-            model=models.UNet(
+        train_and_eval,
+        {
+            "model": models.UNet(
                 D,
                 input_keys,
                 output_keys,
@@ -672,15 +641,16 @@ model_list = [
                 use_batch_norm=True,
                 key=subkeys[9],
             ),
-            lr=8e-4,
-            has_aux=True,
-        ),
+            "lr": 8e-4,
+            "has_aux": True,
+            **train_kwargs,
+        },
     ),
     (
         "unet2015_equiv20",
-        partial(
-            train_and_eval,
-            model=models.UNet(
+        train_and_eval,
+        {
+            "model": models.UNet(
                 D,
                 input_keys,
                 output_keys,
@@ -690,14 +660,15 @@ model_list = [
                 upsample_filters=upsample_filters,
                 key=subkeys[10],
             ),
-            lr=7e-4,  # sometimes explodes for larger values
-        ),
+            "lr": 7e-4,  # sometimes explodes for larger values
+            **train_kwargs,
+        },
     ),
     (
         "unet2015_equiv48",
-        partial(
-            train_and_eval,
-            model=models.UNet(
+        train_and_eval,
+        {
+            "model": models.UNet(
                 D,
                 input_keys,
                 output_keys,
@@ -707,24 +678,13 @@ model_list = [
                 upsample_filters=upsample_filters,
                 key=subkeys[11],
             ),
-            lr=3e-4,
-        ),
+            "lr": 3e-4,
+            **train_kwargs,
+        },
     ),
 ]
 
 key, subkey = random.split(key)
-
-# # Use this for benchmarking over different learning rates
-# results = ml.benchmark(
-#     lambda _: data,
-#     model_list,
-#     subkey,
-#     "lr",
-#     [2e-4, 4e-4, 6e-4],
-#     benchmark_type=ml.BENCHMARK_MODEL,
-#     num_trials=args.n_trials,
-#     num_results=3 + args.rollout_steps,
-# )
 
 # Use this for benchmarking the models with known learning rates.
 results = ml.benchmark(
@@ -736,6 +696,9 @@ results = ml.benchmark(
     benchmark_type=ml.BENCHMARK_NONE,
     num_trials=args.n_trials,
     num_results=3 + args.rollout_steps,
+    is_wandb=args.wandb,
+    wandb_project=args.wandb_project,
+    wandb_entity=args.wandb_entity,
 )
 
 rollout_res = results[..., 3:]

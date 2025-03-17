@@ -3,6 +3,7 @@ import math
 import functools
 from typing import Any, Callable, Optional, Sequence, Union
 import numpy as np
+import wandb
 
 import jax
 import jax.numpy as jnp
@@ -420,6 +421,7 @@ def train(
     save_model: Optional[str] = None,
     devices: Optional[list[jax.Device]] = None,
     aux_data: Optional[eqx.nn.State] = None,
+    is_wandb: bool = False,
 ) -> tuple[
     models.MultiImageModule, Optional[eqx.nn.State], Optional[ArrayLike], Optional[ArrayLike]
 ]:
@@ -447,6 +449,7 @@ def train(
         save_model: if string, save model every 10 epochs, defaults to None
         aux_data: initial aux data passed in to map_and_loss when has_aux is true.
         devices: gpu/cpu devices to use, if None (default) then it will use jax.devices()
+        is_wandb: whether wandb experiment tracking has been initiated and should be logged to
 
     returns:
         A tuple of best model in inference mode, aux_data, epoch loss, and val loss
@@ -482,6 +485,7 @@ def train(
 
         epoch_loss = epoch_loss / len(X_batches)
         epoch += 1
+        log = {"train/loss": epoch_loss}
 
         # We evaluate the validation loss in batches for memory reasons.
         if validation_X and validation_Y:
@@ -496,6 +500,10 @@ def train(
                 aux_data=aux_data,
             )
             val_loss = epoch_val_loss
+            log["val/loss"] = val_loss
+
+        if is_wandb:
+            wandb.log(log)
 
         if save_model and ((epoch % 10) == 0):
             save(save_model, model)
@@ -512,13 +520,16 @@ BENCHMARK_NONE = "benchmark_none"
 
 def benchmark(
     get_data: Callable[[Any], tuple[geom.MultiImage, ...]],
-    models: list[tuple[str, Callable]],
+    models: list[tuple[str, Callable, dict]],
     rand_key: ArrayLike,
     benchmark: str,
     benchmark_range: Sequence,
     benchmark_type: str = BENCHMARK_DATA,
     num_trials: int = 1,
     num_results: int = 1,
+    is_wandb: bool = False,
+    wandb_project: str = "",
+    wandb_entity: str = "",
 ) -> np.ndarray:
     """
     Method to benchmark multiple models as a particular benchmark over the specified range.
@@ -526,8 +537,9 @@ def benchmark(
     args:
         get_data: function that takes as its first argument the benchmark_value, and a rand_key
             as its second argument. It returns the data which later gets passed to model.
-        models: the elements of the tuple are (str) model_name, and (func) model.
-            Model is a function that takes data and a rand_key and returns either a single float score
+        models: the elements of the tuple are (str) model_name, (func) model, and a dict of keyword
+            arguments to pass to model. Model is a function that takes data, a rand_key, the
+            model_name, and remaining keyword arguments and returns either a single float score
             or an iterable of length num_results of float scores.
         rand_key: key for randomness
         benchmark: the type of benchmarking to do
@@ -536,6 +548,9 @@ def benchmark(
         num_trials: number of trials to run
         num_results: the number of results that will come out of the model function. If num_results is
             greater than 1, it should be indexed by range(num_results)
+        is_wandb: whether wandb experiment tracking is enabled
+        wandb_project: the string name of the wandb project
+        wandb_entity: the wandb user
 
     returns:
         an np.array of shape (trials, benchmark_range, models, num_results) with the results all filled in
@@ -550,21 +565,38 @@ def benchmark(
         for j, benchmark_val in enumerate(benchmark_range):
 
             data_kwargs = {benchmark: benchmark_val} if benchmark_type == BENCHMARK_DATA else {}
-            model_kwargs = {benchmark: benchmark_val} if benchmark_type == BENCHMARK_MODEL else {}
 
             rand_key, subkey = random.split(rand_key)
             data = get_data(subkey, **data_kwargs)
 
-            for k, (model_name, model) in enumerate(models):
+            for k, (model_name, model, model_kwargs) in enumerate(models):
                 print(f"trial {i} {benchmark}: {benchmark_val} {model_name}")
+                name = f"{model_name}_{benchmark}{benchmark_val}_t{i}"
+
+                if benchmark_type == BENCHMARK_MODEL:
+                    model_kwargs = {**model_kwargs, benchmark: benchmark_val}
+
+                if is_wandb:
+                    wandb.init(
+                        project=wandb_project,
+                        entity=wandb_entity,
+                        name=name,
+                        settings=wandb.Settings(start_method="fork"),
+                    )
+                    type_list = [str, int, float, bool]
+                    wandb.config.update(
+                        {
+                            key: val if (type(val) in type_list or val is None) else type(val)
+                            for key, val in model_kwargs.items()
+                        }
+                    )
+                    wandb.config.update({"model_name": model_name})
 
                 rand_key, subkey = random.split(rand_key)
-                res = model(
-                    data,
-                    subkey,
-                    f"{model_name}_{benchmark}{benchmark_val}_t{i}",
-                    **model_kwargs,
-                )
+                res = model(data, subkey, name, **model_kwargs)
+
+                if is_wandb:
+                    wandb.finish()
 
                 if num_results > 1:
                     for q in range(num_results):

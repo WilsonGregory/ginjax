@@ -686,18 +686,6 @@ model_list = [
 
 key, subkey = random.split(key)
 
-# # Use this for benchmarking over different learning rates
-# results = ml.benchmark(
-#     lambda _: data,
-#     model_list,
-#     subkey,
-#     "lr",
-#     [2e-4, 4e-4, 6e-4],
-#     benchmark_type=ml.BENCHMARK_MODEL,
-#     num_trials=args.n_trials,
-#     num_results=3 + args.rollout_steps,
-# )
-
 # Use this for benchmarking the models with known learning rates.
 results = ml.benchmark(
     lambda _: data,

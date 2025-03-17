@@ -652,19 +652,6 @@ train_kwargs = {
     "is_wandb": args.wandb,
 }
 
-# train_and_eval = partial(
-#     train_and_eval,
-#     batch_size=args.batch,
-#     epochs=args.epochs,
-#     rollout_steps=args.rollout_steps,
-#     save_model=args.save_model,
-#     load_model=args.load_model,
-#     images_dir=args.images_dir,
-#     verbose=args.verbose,
-#     plot_component=args.plot_component,
-#     constant_fields=constant_fields,
-# )
-
 key, *subkeys = random.split(key, num=13)
 models_ls = [
     (

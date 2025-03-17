@@ -5,6 +5,7 @@ import matplotlib.colors
 import matplotlib.figure
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Wedge
+import argparse
 from typing_extensions import Any, Optional, Union
 
 import jax
@@ -575,3 +576,48 @@ def plot_power(
             labelbottom=False,
             labelleft=False,
         )
+
+
+def get_common_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+
+    # Data arguments
+    parser.add_argument("--data", help="the data .hdf5 file", type=str, default=None)
+    parser.add_argument("--n_train", help="number of training trajectories", type=int, default=1)
+    parser.add_argument("--n_val", help="number of validation trajectories", type=int, default=None)
+    parser.add_argument("--n_test", help="number of testing trajectories", type=int, default=None)
+    parser.add_argument(
+        "--normalize",
+        help="normalize input data",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+
+    # training arguments
+    parser.add_argument("-e", "--epochs", help="number of epochs to run", type=int, default=50)
+    parser.add_argument("-b", "--batch", help="batch size", type=int, default=8)
+    parser.add_argument("-t", "--n_trials", help="number of trials to run", type=int, default=1)
+    parser.add_argument("--seed", help="the random number seed", type=int, default=None)
+    parser.add_argument(
+        "-v", "--verbose", help="verbose argument passed to trainer", type=int, default=1
+    )
+    parser.add_argument(
+        "-s", "--save_model", help="file name to save the params", type=str, default=None
+    )
+    parser.add_argument(
+        "-l", "--load_model", help="file name to load params from", type=str, default=None
+    )
+    parser.add_argument(
+        "--images_dir", help="directory to save images, or None to not save", type=str, default=None
+    )
+
+    # wandb arguments
+    parser.add_argument(
+        "--wandb",
+        help="whether to use wandb on this run",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--wandb-entity", help="the wandb user", type=str)
+
+    return parser

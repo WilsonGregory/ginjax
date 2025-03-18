@@ -12,12 +12,18 @@ authors:
     orcid: 0000-0002-5511-0683
     corresponding: true
     affiliation: 1 
+  - name: Soledad Villar
+    affiliation: "1, 2, 3"
   - name: Kaze W. K. Wong
     affiliation: 1
 affiliations:
  - name: Department of Applied Mathematics and Statistics, Johns Hopkins University, Baltimore, MD, USA
    index: 1
-date: 18 February 2025
+ - name: Center for Computational Mathematics, Flatiron Institute, New York, NY, USA
+   index: 2
+ - name: Mathematical Institute for Data Science, Johns Hopkins University, Baltimore, MD, USA
+   index: 3
+date: 17 March 2025
 bibliography: paper.bib
 ---
 
@@ -31,10 +37,14 @@ We implement this by _geometric convolutions_ [@gregory2024ginet] which use tens
 This additionally enables us to perform functions on geometric images, or images where each pixel is a higher order tensor. 
 These images appear as discretizations of fields in physics, such as velocity fields, vorticity fields, magnetic fields, polarization fields, and so on. 
 
-This package includes basic functionality to create, manipulate, and plot geometric images using JAX [@jax2018github]. 
-It also provides equivariant neural network layers such as convolutions, activation functions, group norms, and others using the Equinox framework [@kidger2021equinox]. 
-These layers ingest a special data structure, the `MultiImage`, that allows combining geometric images or any tensor order or parity into a single model. 
-Finally, the package provides full-fledged versions of popular models such as the UNet or ResNet to allow researchers to quickly train and test on their own data sets with standard tools in the JAX ecosystem.
+The key features and use cases are summarized below.
+
+## Key Features
+
+1. Create, visualize and perform mathematical operations on geometric images, including powerful `jax` [@jax2018github] features such as vmap.
+2. Combine geometric images of any tensor order or parity into a single `MultiImage` data structure.
+3. Build `equinox` [@kidger2021equinox] neural networks with our custom equivariant layers that process `MultiImages`.
+4. _Or_, use one of our off-the-shelf models (UNet, ResNet, etc.) to start processing your geometric image datasets right away.
 
 # Statement of need
 
@@ -51,18 +61,27 @@ To produce geometric images of smaller tensor order, the tensor contraction can 
 Convolution and contraction are combined into a single operation to form linear layers. 
 By restricting the convolution filters $C$ to rotation and reflection invariant filters, we can create linear layers which are rotation-, reflection-, and translation-equivariant.
 
-The space of equivariant machine learning software is largely still in its infancy, and this is currently the only package implementing geometric convolutions.
-However, there are alternative methods for solving $O(d)$-equivariant image problems.
+\[package name\] targets two main use cases:
+
+## As a drop-in replacement for CNNs
+
+We define equivariant versions for all the common CNN operations including convolutions, activation functions, group norms, pooling, and unpooling.
+Each of these layers require keeping track of the tensor order and parity of each geometric image, so we define a special data structure, the `MultiImage`, for these equivariant layers to operate on.
+We can then easily turn a non-equivariant CNN into an equivariant CNN by replacing the layers and converting the input to a `MultiImage`.
+For practitioners, we also provide full fledged model implementations such as the UNet, ResNet, and Dilated ResNet.
+
+This package is the only one implementing geometric convolutions, but there are alternative methods for solving $O(d)$-equivariant image problems.
 One such package is [escnn](https://github.com/QUVA-Lab/escnn) which uses Steerable CNNs [@cohen2016steerablecnns;@wweiler2021steerable].
 Steerable CNNs use irreducible representations to derive a basis for $O(d)$-equivariant layers, but it is not straightforward to apply on higher order tensor images.
-The escnn package is built with pytorch, although there is a JAX port [escnn_jax](https://github.com/emilemathieu/escnn_jax).
 
-Another alternative method is are those based on Clifford Algebras, in particular [@brandstetter2023clifford].
+Other alternative methods are those based on Clifford Algebras, in particular [@brandstetter2023clifford].
 This method has been implemented in the [Clifford Layers](https://github.com/microsoft/cliffordlayers) package.
-Like escnn, this method is also built with pytorch rather than JAX. Additionally, Clifford based methods can process vectors and pseudovectors, but cannot handle higher order tensors.
+Clifford based methods can process vectors and pseudovectors, but cannot handle higher order tensors.
+Additionally, both these methods are built with pytorch, rather than `jax`.
 
-Implementing our library in JAX allows us to easily build and optimize machine learning models with Equinox and Optax [@deepmind2020jax].
-For equivariance researchers, we provide all the common operations on geometric images such as addition, scaling, convolution, contraction, transposition, norms plus visualization methods.
-For practitioners, we provide both equivariant layers for building models, and full fledged model implementations such as the UNet, ResNet, and Dilated ResNet.
+## For designing and understanding geometric images
+For equivariance researchers, we provide all the common operations on geometric images such as addition, scaling, convolution, contraction, transposition, norms, rotations, and reflections.
+This makes it easy to generate group invariant images and experiment with equivariant functions.
+We also provide visualization methods to easily follow along the operations.
 
 # References

@@ -5,7 +5,6 @@ import numpy as np
 from functools import partial
 import xarray as xr
 from typing_extensions import Optional, Union
-import wandb
 
 import jax.numpy as jnp
 import jax
@@ -22,7 +21,11 @@ import geometricconvolutions.utils as utils
 
 
 def read_orography(
-    D: int, is_torus: Union[bool, tuple[bool, ...]], root_dir: str, file: str = "orographyT63.nc"
+    D: int,
+    is_torus: Union[bool, tuple[bool, ...]],
+    normalize: bool,
+    root_dir: str,
+    file: str = "orographyT63.nc",
 ) -> geom.MultiImage:
     """
     Read the orography data from the file and construct a multi image from it.
@@ -30,6 +33,7 @@ def read_orography(
     args:
         D: dimension of the space
         is_torus: toroidal structure of the image
+        normalize: whether to normalize so it matches the other scalar fields
         root_dir: root directory of the orography file
         file: filename of the orography file
 
@@ -39,12 +43,15 @@ def read_orography(
     orography = xr.open_mfdataset(root_dir + "/" + file)
     # loads as (96,192), swap to (192,96)
     orography_arr = jax.device_put(jnp.array(orography["orog"].to_numpy()), jax.devices("cpu")[0]).T
+    if normalize:
+        orography_arr = (orography_arr - jnp.mean(orography_arr)) / jnp.std(orography_arr)
+
     return geom.MultiImage({(0, 0): orography_arr.reshape((1, 192, 96))}, D, is_torus)
 
 
 def read_one_seed(
     data_dir: str, data_class: str, seed: str
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """
     Read all the runs of one seed and combine them into blocks of data. The runs from the directory
     data_dir/data_class/seed/ will be read and made into uv, pres, vor, and lat data blocks. If
@@ -74,30 +81,30 @@ def read_one_seed(
         v = jax.device_put(dataset["v"], jax.devices("cpu")[0])  # velocity in y direction
         pres = jax.device_put(dataset["pres"], jax.devices("cpu")[0])  # pressure scalar
         vor = jax.device_put(dataset["vor"], jax.devices("cpu")[0])  # vorticity pseudoscalar
+        div = jax.device_put(dataset["div"], jax.devices("cpu")[0])  # divergence scalar
 
         lat = jax.device_put(dataset["lat"], jax.devices("cpu")[0])  # latitude degrees
         # lon = jax.device_put(dataset["lon"], jax.devices("cpu")[0])  # longitude degrees
-        # div = jax.device_put(dataset["div"], jax.devices("cpu")[0])  # divergence
     else:
         datals = os.path.join(data_dir, data_class, seed, "run*", "output.nc")
         dataset = xr.open_mfdataset(datals, concat_dim="b", combine="nested", parallel=True)  # dict
         # all have shape (batch, timesteps, lev, lat, lon) = (25,88,1,96,192)
         # u: zonal velocity, in x direction
         u = jax.device_put(jnp.array(dataset["u"].to_numpy()), jax.devices("cpu")[0])
-        # v: meridonial velocity, in y direction
+        # v: meridonal velocity, in y direction
         v = jax.device_put(jnp.array(dataset["v"].to_numpy()), jax.devices("cpu")[0])
         # pressure scalar, does not have lev dim
         pres = jax.device_put(jnp.array(dataset["pres"].to_numpy()), jax.devices("cpu")[0])
         # vorticity pseudoscalar
         vor = jax.device_put(jnp.array(dataset["vor"].to_numpy()), jax.devices("cpu")[0])
+        # divergence scalar
+        div = jax.device_put(jnp.array(dataset["div"].to_numpy()), jax.devices("cpu")[0])
 
         # all have shape (96,)
         # latitudes
         lat = jax.device_put(jnp.array(dataset["lat"].to_numpy()), jax.devices("cpu")[0])
         # longitudes
         lon = jax.device_put(jnp.array(dataset["lon"].to_numpy()), jax.devices("cpu")[0])
-        # divergence?
-        div = jax.device_put(jnp.array(dataset["div"].to_numpy()), jax.devices("cpu")[0])
 
         jnp.save(
             target_file,
@@ -112,14 +119,15 @@ def read_one_seed(
     v = jnp.moveaxis(v, -2, -1)
     pres = jnp.moveaxis(pres, -2, -1)
     vor = jnp.moveaxis(vor, -2, -1)
+    div = jnp.moveaxis(div, -2, -1)
 
     uv = jnp.stack([u[:, :, 0, ...], v[:, :, 0, ...]], axis=-1)
-    return uv, pres, vor[:, :, 0, ...], lat
+    return uv, pres, vor[:, :, 0, ...], div[:, :, 0, ...], lat
 
 
 def read_all_seeds(
     data_dir: str, n_trajectories: int, data_class: str
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """
     Given a specific dataset and data class (train, valid, or test), read seeds until we get to
     n_trajectories, and then return the data.
@@ -134,6 +142,7 @@ def read_all_seeds(
         uv: (batch,timesteps,spatial,D)
         pres: (batch,timesteps,spatial)
         vor: (batch,timesteps,spatial)
+        div: (batch,timesteps,spatial)
         lats: (96,)
     """
     all_seeds = sorted(os.listdir(f"{data_dir}/{data_class}/"))
@@ -145,13 +154,15 @@ def read_all_seeds(
     all_uv = jnp.zeros((0, total_steps) + spatial_dims + (D,))
     all_pres = jnp.zeros((0, total_steps) + spatial_dims)
     all_vor = jnp.zeros((0, total_steps) + spatial_dims)
+    all_div = jnp.zeros((0, total_steps) + spatial_dims)
     lats = jnp.zeros(96)  # assume lats are the same for all the data
     for seed in all_seeds:
-        uv, pres, vor, lats = read_one_seed(data_dir, data_class, seed)
+        uv, pres, vor, div, lats = read_one_seed(data_dir, data_class, seed)
 
         all_uv = jnp.concatenate([all_uv, uv])
         all_pres = jnp.concatenate([all_pres, pres])
         all_vor = jnp.concatenate([all_vor, vor])
+        all_div = jnp.concatenate([all_div, div])
 
         if len(all_uv) >= n_trajectories:
             break
@@ -167,8 +178,9 @@ def read_all_seeds(
     all_uv = all_uv[:n_trajectories]
     all_pres = all_pres[:n_trajectories]
     all_vor = all_vor[:n_trajectories]
+    all_div = all_div[:n_trajectories]
 
-    return all_uv, all_pres, all_vor, lats
+    return all_uv, all_pres, all_vor, all_div, lats
 
 
 def make_constant_fields(
@@ -176,8 +188,10 @@ def make_constant_fields(
     lats: jax.Array,
     is_torus: Union[bool, tuple[bool, ...]],
     spatial_dims: tuple[int, ...],
+    normalize: bool,
     include_lats: bool,
     include_metric_tensor: bool,
+    include_coriolis: bool,
 ) -> geom.MultiImage:
     """
     Build the constant fields from orography and latitudes depending on the arguments.
@@ -187,17 +201,35 @@ def make_constant_fields(
         lats: array of the latitudes in degrees, (96,)
         is_torus: toroidal structure of the images
         spatial_dims: spatial dimensions of the images
+        normalize: whether to normalize in an equivariant way
         include_lats: whether to include the raw latitude values
         include_metric_tensor: whether to include the metric tensor as an input field
+        include_coriolis: include the coriolis pseudoscalar field
 
     returns:
         a multi image of the constant fields, shape (channels,spatial,tensor).
     """
+    # make it (1,192,96)
+    lats_field = jnp.full((1,) + spatial_dims, lats[None, None])
+
     constant_fields = geom.MultiImage({}, D, is_torus)
+
     if orography is not None:
         constant_fields = orography
+    if include_coriolis:
+        # add the coriolis as a pseudoscalar field.
+        # From https://speedyweather.github.io/SpeedyWeather.jl/dev/ringgrids/#Indexing-RingGrids
+        rotation = 7.29e-5  # this will get scaled away anyways
+        coriolis = 2 * rotation * jnp.sin((jnp.pi / 180) * lats_field)
+        if normalize:
+            coriolis = coriolis / jnp.std(coriolis)
+
+        constant_fields.append(0, 1, coriolis)
     if include_lats:
-        constant_fields.append(0, 0, jnp.full((1,) + spatial_dims, lats[None, None]))
+        if normalize:
+            constant_fields.append(0, 0, (lats_field - jnp.mean(lats_field)) / jnp.std(lats_field))
+        else:
+            constant_fields.append(0, 0, lats_field)
     if include_metric_tensor:
         sin_squared_lats = (jnp.sin((jnp.pi / 180) * lats) ** 2).reshape((96, 1, 1))
         bottom = sin_squared_lats * jnp.array([[0, 0], [0, 1]]).reshape((1, 2, 2))
@@ -212,6 +244,7 @@ def get_data_multi_images(
     uv: jax.Array,
     pres: jax.Array,
     vor: jax.Array,
+    div: jax.Array,
     constant_fields: geom.MultiImage,
     pres_vor_form: bool,
     total_steps: int,
@@ -228,6 +261,7 @@ def get_data_multi_images(
         uv: velocity data array, shape (batch,timesteps,spatial,tensor)
         pres: pressure data array, shape (batch,timesteps,spatial,tensor)
         vor: vorticity data array, shape (batch,timesteps,spatial,tensor)
+        div: divergence data array, shape (batch,timesteps,spatial,tensor)
         constant_fields: fields that do not vary by timestep, shape (channels,spatial,tensor)
         pres_vor_form: use pressure/vorticity form instead
         total_steps: the number of timesteps
@@ -279,11 +313,13 @@ def get_data(
     n_test: int,
     past_steps: int,
     rollout_steps: int,
-    normalize: int = 0,
+    normalize: bool = False,
     pres_vor_form: bool = False,
     subsample: int = 1,
     include_lats: bool = False,
     include_metric_tensor: bool = False,
+    include_coriolis: bool = False,
+    include_orography: bool = False,
 ) -> tuple[
     tuple[
         geom.MultiImage,
@@ -307,19 +343,21 @@ def get_data(
         n_test: number of testing trajectories
         past_steps: length of the lookback to predict the next step
         rollout_steps: number of steps of rollout to compare against
-        normalize: whether normalize the pressure/vorticity, 0 No, 1 single_value, 2 pixelwise
+        normalize: whether normalize in an equivariant way
         pres_vor_form: use pressure/vorticity form instead, defaults to False
         subsample: timesteps are 6 simulation hours, can subsample for longer timesteps
         include_lats: include the raw latitudes as a scalar field
         include_metric_tensor: include the metric tensor as an input field
+        include_coriolis: include the coriolis pseudoscalar field
+        include_orography: include the orography field
 
     returns:
-        train, val, test one step, and test rollout input and output multi images. Also a
-        dictionary specifying what constant fields there are of each image type.
+        train, val, test one step, and test rollout input and output multi images. Also a multi
+        image of the constant fields.
     """
-    train_uv, train_pres, train_vor, lats = read_all_seeds(data_dir, n_train, "train")
-    val_uv, val_pres, val_vor, _ = read_all_seeds(data_dir, n_val, "valid")
-    test_uv, test_pres, test_vor, _ = read_all_seeds(data_dir, n_test, "test")
+    train_uv, train_pres, train_vor, train_div, lats = read_all_seeds(data_dir, n_train, "train")
+    val_uv, val_pres, val_vor, val_div, _ = read_all_seeds(data_dir, n_val, "valid")
+    test_uv, test_pres, test_vor, test_div, _ = read_all_seeds(data_dir, n_test, "test")
 
     if normalize:
         pres_mean = jnp.mean(jnp.concatenate([train_pres, val_pres]))
@@ -333,6 +371,12 @@ def get_data(
         val_vor = val_vor / vor_std
         test_vor = test_vor / vor_std
 
+        div_mean = jnp.mean(jnp.concatenate([train_div, val_div]))
+        div_std = jnp.std(jnp.concatenate([train_div, val_div]))
+        train_div = (train_div - div_mean) / div_std
+        val_div = (val_div - div_mean) / div_std
+        test_div = (test_div - div_mean) / div_std
+
         uv_std = jnp.std(jnp.concatenate([train_uv, val_uv]))
         train_uv = train_uv / uv_std
         val_uv = val_uv / uv_std
@@ -343,15 +387,23 @@ def get_data(
     total_steps = train_uv.shape[1]
     spatial_dims = train_uv.shape[2:4]
 
-    orography = read_orography(D, is_torus, data_dir)
+    orography = read_orography(D, is_torus, normalize, data_dir)
     constant_fields = make_constant_fields(
-        orography, lats, is_torus, spatial_dims, include_lats, include_metric_tensor
+        orography,
+        lats,
+        is_torus,
+        spatial_dims,
+        normalize,
+        include_lats,
+        include_metric_tensor,
+        include_coriolis,
     )
 
     train_X, train_Y = get_data_multi_images(
         train_uv,
         train_pres,
         train_vor,
+        train_div,
         constant_fields,
         pres_vor_form,
         total_steps,
@@ -364,6 +416,7 @@ def get_data(
         val_uv,
         val_pres,
         val_vor,
+        val_div,
         constant_fields,
         pres_vor_form,
         total_steps,
@@ -376,6 +429,7 @@ def get_data(
         test_uv,
         test_pres,
         test_vor,
+        test_div,
         constant_fields,
         pres_vor_form,
         total_steps,
@@ -388,6 +442,7 @@ def get_data(
         test_uv,
         test_pres,
         test_vor,
+        test_div,
         constant_fields,
         pres_vor_form,
         total_steps,
@@ -423,8 +478,6 @@ def map_and_loss(
     tuple[jax.Array, Optional[eqx.nn.State], geom.MultiImage],
     tuple[jax.Array, Optional[eqx.nn.State]],
 ]:
-    assert (0, 1) not in multi_image_y, "Cannot handle pressure/vorticity form yet"
-
     vmap_autoregressive = jax.vmap(
         ml.autoregressive_map,
         in_axes=(None, 0, None, None, None, None),
@@ -558,6 +611,7 @@ def train_and_eval(
 
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
+    parser.add_argument("--past_steps", help="number of historical timesteps", type=int, default=2)
     parser.add_argument(
         "--include_lats",
         help="include the latitudes as a scalar field input",
@@ -569,6 +623,18 @@ def handleArgs() -> argparse.Namespace:
         help="include the metric tensor as an input tensor field",
         action=argparse.BooleanOptionalAction,
         default=False,
+    )
+    parser.add_argument(
+        "--include_coriolis",
+        help="include the coriolis pseudoscalar field",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--include_orography",
+        help="include the orography map",
+        action=argparse.BooleanOptionalAction,
+        default=True,
     )
     parser.add_argument(
         "--plot_component",
@@ -607,7 +673,6 @@ args = handleArgs()
 
 D = 2
 
-past_steps = 2  # how many steps to look back to predict the next step
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
 
 # an attempt to reduce recompilation, but I don't think it actually is working
@@ -619,13 +684,15 @@ data, constant_fields = get_data(
     args.n_train,
     n_val,
     n_test,
-    past_steps,
+    args.past_steps,
     args.rollout_steps,
     args.normalize,
     args.pres_vor_form,
     args.subsample,
     args.include_lats,
     args.include_metric_tensor,
+    args.include_coriolis,
+    args.include_orography,
 )
 
 input_keys = data[0].get_signature()
@@ -667,7 +734,27 @@ models_ls = [
                 kernel_size=3,
                 key=subkeys[0],
             ),
-            "lr": 2e-3,
+            "lr": 1e-3,
+            **train_kwargs,
+        },
+    ),
+    (
+        "dil_resnet64_groupaveraged",
+        train_and_eval,
+        {
+            "model": models.GroupAverage(
+                models.DilResNet(
+                    D,
+                    input_keys,
+                    output_keys,
+                    depth=64,
+                    equivariant=False,
+                    kernel_size=3,
+                    key=subkeys[0],
+                ),
+                group_actions,
+            ),
+            "lr": 1e-3,
             **train_kwargs,
         },
     ),
@@ -878,6 +965,7 @@ results = ml.benchmark(
     is_wandb=args.wandb,
     wandb_project=args.wandb_project,
     wandb_entity=args.wandb_entity,
+    args=vars(args),
 )
 
 print(results)

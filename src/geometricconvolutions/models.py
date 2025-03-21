@@ -1,3 +1,4 @@
+import numpy as np
 from typing import Any, Callable, Optional, Sequence, Union
 from typing_extensions import Self
 
@@ -956,3 +957,48 @@ class ModelWrapper(MultiImageModule):
         ).from_scalar_multi_image(self.output_keys)
 
         return out_multi_image, aux_data
+
+
+class GroupAverage(MultiImageModule):
+    """
+    Model that takes in a different model and peforms group averaging to make it an equivariant
+    model. Can either always average, so that it is equivariant during training as well, or only
+    average at inference time to test whether training a non-equivariant model, then group
+    averaging helps. This will reveal whether to data set is indeed an equivariant data set.
+    """
+
+    model: MultiImageModule
+    # static to prevent this from being converted to a traced jax array
+    operators: list[np.ndarray] = eqx.field(static=True)
+    always_average: bool
+    inference: bool
+
+    def __init__(
+        self: Self,
+        model: MultiImageModule,
+        operators: list[np.ndarray],
+        always_average: bool = False,
+        inference: bool = False,
+    ) -> None:
+        self.model = model
+        self.operators = operators
+        self.always_average = always_average
+        self.inference = inference
+
+    def __call__(
+        self: Self, x: geom.MultiImage, aux_data: Optional[eqx.nn.State] = None
+    ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
+
+        if (self.always_average or self.inference) and len(self.operators) > 0:
+            sum_image = None
+            out_aux = None
+            for gg in self.operators:
+                out_image, out_aux = self.model(x.times_group_element(gg), aux_data)
+                rot_out_image = out_image.times_group_element(gg.T)
+                sum_image = rot_out_image if sum_image is None else sum_image + rot_out_image
+
+            assert sum_image is not None
+            return sum_image / len(self.operators), out_aux
+
+        else:
+            return self.model(x, aux_data)

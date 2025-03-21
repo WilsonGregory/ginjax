@@ -97,7 +97,7 @@ def autoregressive_step(
     one_step: geom.MultiImage,
     output: geom.MultiImage,
     past_steps: int,
-    constant_fields: dict[tuple[int, int], int] = {},
+    constant_fields_dict: dict[tuple[int, int], int] = {},
     future_steps: int = 1,
 ) -> tuple[geom.MultiImage, geom.MultiImage]:
     """
@@ -110,7 +110,7 @@ def autoregressive_step(
         one_step: the model output at this step, assumed to be a single time step
         output: the full output that we are building up
         past_steps: the number of past time steps that are fed into the model
-        constant_fields: a map {key:n_constant_fields} for fields that don't depend on timestep
+        constant_fields_dict: a map {key:n_constant_fields} for fields that don't depend on timestep
         future_steps: number of future steps that the model outputs, currently must be 1
 
     returns:
@@ -122,35 +122,42 @@ def autoregressive_step(
 
     new_input = input.empty()
     new_output = output.empty()
-    for key, step_data in one_step.items():
-        k, parity = key
+    constant_fields = input.empty()
+    for (k, parity), step_data in one_step.items():
         img_shape = step_data.shape[1:]  # the shape of the image, spatial + tensor
         exp_data = step_data.reshape((-1, future_steps) + img_shape)
         n_channels = exp_data.shape[0]  # number of channels for the key, not timesteps
 
-        if (key in constant_fields) and constant_fields[key]:
-            n_const_fields = constant_fields[key]
-            const_fields = input[key][-n_const_fields:]
+        if ((k, parity) in constant_fields_dict) and constant_fields_dict[(k, parity)] > 0:
+            n_const_fields = constant_fields_dict[(k, parity)]
+            constant_fields.append(k, parity, input[(k, parity)][-n_const_fields:])
+            dynamic_input = input[(k, parity)][:-n_const_fields]
         else:
-            n_const_fields = 0
-            const_fields = jnp.zeros((0,) + img_shape)
+            dynamic_input = input[(k, parity)]
 
         # get dynamic fields that were the input (c,past_steps,spatial,tensor)
-        exp_input = input[key][: (-n_const_fields or None)].reshape((-1, past_steps) + img_shape)
-        next_input = jnp.concatenate([exp_input[:, 1:], exp_data], axis=1).reshape(
-            (-1,) + img_shape
+        exp_input = dynamic_input.reshape((-1, past_steps) + img_shape)
+        new_input.append(
+            k,
+            parity,
+            jnp.concatenate([exp_input[:, 1:], exp_data], axis=1).reshape((-1,) + img_shape),
         )
-        new_input.append(k, parity, jnp.concatenate([next_input, const_fields], axis=0))
 
-        if key in output:
-            exp_output = output[key].reshape((n_channels, -1) + img_shape)
+        if (k, parity) in output:
+            exp_output = output[(k, parity)].reshape((n_channels, -1) + img_shape)
             full_output = jnp.concatenate([exp_output, exp_data], axis=1).reshape((-1,) + img_shape)
         else:
             full_output = step_data
 
         new_output.append(k, parity, full_output)
 
-    return new_input, new_output
+    # add constant fields which don't have dynamic fields
+    for (k, parity), length in constant_fields_dict.items():
+        if (k, parity) not in new_input:
+            assert len(input[(k, parity)]) == length  # entire image type must be a constant field
+            constant_fields.append(k, parity, input[(k, parity)])
+
+    return new_input.concat(constant_fields), new_output
 
 
 def autoregressive_map(
@@ -530,6 +537,7 @@ def benchmark(
     is_wandb: bool = False,
     wandb_project: str = "",
     wandb_entity: str = "",
+    args: dict = {},
 ) -> np.ndarray:
     """
     Method to benchmark multiple models as a particular benchmark over the specified range.
@@ -551,6 +559,7 @@ def benchmark(
         is_wandb: whether wandb experiment tracking is enabled
         wandb_project: the string name of the wandb project
         wandb_entity: the wandb user
+        args: args to add the the wandb config
 
     returns:
         an np.array of shape (trials, benchmark_range, models, num_results) with the results all filled in
@@ -583,6 +592,7 @@ def benchmark(
                         name=name,
                         settings=wandb.Settings(start_method="fork"),
                     )
+                    wandb.config.update(args)
                     type_list = [str, int, float, bool]
                     wandb.config.update(
                         {

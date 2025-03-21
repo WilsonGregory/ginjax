@@ -162,3 +162,17 @@ class TestMachineLearning:
         assert jnp.allclose(new_input[(1, 0)][past_steps:-2], input3[(1, 0)][past_steps + 1 : -1])
         assert jnp.allclose(new_input[(1, 0)][-2], one_step2[(1, 0)][1])
         assert jnp.allclose(new_input[(1, 0)][-1:], constant_field2)
+
+        # test when there is a field which is only constant
+        input4 = input1.concat(
+            geom.MultiImage({(0, 0): constant_field1, (1, 0): constant_field2}, D)
+        )
+        new_input, output = ml.training.autoregressive_step(
+            input4, one_step1, input4.empty(), past_steps, {(0, 0): 1, (1, 0): 1}
+        )
+        assert jnp.allclose(
+            new_input[(0, 0)],
+            jnp.concatenate([input4[(0, 0)][1:-1], one_step1[(0, 0)], constant_field1]),
+        )
+        assert jnp.allclose(new_input[(1, 0)], constant_field2)
+        assert output == one_step1

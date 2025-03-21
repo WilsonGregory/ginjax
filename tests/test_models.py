@@ -1,10 +1,13 @@
 import time
 import itertools as it
 
+import jax.numpy as jnp
 from jax import random
+import equinox as eqx
 
 import geometricconvolutions.geometric as geom
 import geometricconvolutions.ml as ml
+import geometricconvolutions.models as models
 
 
 class TestModels:
@@ -55,3 +58,71 @@ class TestModels:
                 assert conv.fast_convolve(multi_image, conv.weights) == conv.individual_convolve(
                     multi_image, conv.weights
                 )
+
+    def testGroupAverageIsEquivariant(self):
+        D = 2
+        N = 16
+        c = 5
+        key = random.PRNGKey(0)
+        operators = geom.make_all_operators(D)
+
+        key, subkey1, subkey2 = random.split(key, num=3)
+        multi_image_x = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(c,) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(c,) + (N,) * D + (D,)),
+            },
+            D,
+        )
+
+        key, subkey1, subkey2 = random.split(key, num=3)
+        multi_image_y = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(1,) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(1,) + (N,) * D + (D,)),
+            },
+            D,
+        )
+
+        key, subkey = random.split(key)
+        always_model = models.GroupAverage(
+            models.ResNet(
+                D,
+                multi_image_x.get_signature(),
+                multi_image_y.get_signature(),
+                depth=c,
+                num_blocks=4,
+                equivariant=False,
+                kernel_size=3,
+                key=subkey,
+            ),
+            operators,
+            always_average=True,
+        )
+
+        for gg in operators:
+            first, _ = always_model(multi_image_x.times_group_element(gg))
+            second = always_model(multi_image_x)[0].times_group_element(gg)
+            assert first.__eq__(second, rtol=1e-3, atol=1e-3)
+
+        key, subkey = random.split(key)
+        model = models.GroupAverage(
+            models.ResNet(
+                D,
+                multi_image_x.get_signature(),
+                multi_image_y.get_signature(),
+                depth=c,
+                num_blocks=4,
+                equivariant=False,
+                kernel_size=3,
+                key=subkey,
+            ),
+            operators,
+        )
+        inference_model = eqx.nn.inference_mode(model)
+        assert isinstance(inference_model, models.MultiImageModule)
+
+        for gg in operators:
+            first, _ = inference_model(multi_image_x.times_group_element(gg))
+            second = inference_model(multi_image_x)[0].times_group_element(gg)
+            assert first.__eq__(second, rtol=1e-3, atol=1e-3)

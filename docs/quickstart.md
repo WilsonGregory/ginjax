@@ -2,12 +2,12 @@
 
 See the script `quick_start.py` for this example in code form.
 
-First our imports. Geometric Convolutions is built in JAX. The majority of the model code resides in geometric.
+First our imports. GINet is built in JAX. The majority of the model code resides in geometric.
 ```
 import jax.numpy as jnp
 import jax.random as random
 
-import geometricconvolutions.geometric as geom
+import ginet.geometric as geom
 ```
 
 First we construct our image. Suppose you have some data that forms a 3 by 3 vector image, so N=3, D=2, and k=1. Currently only D=2 or D=3 images are valid, and the side lengths must all be equal. The parity is how the image responds when it is reflected. Normal images have parity 0, an image of pseudovectors like angular velocity will have parity 1.

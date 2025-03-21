@@ -1,4 +1,4 @@
-# Geometric Convolutions
+# GINet
 
 **Equivariant geometric convolutions for machine learning on tensor images**
 
@@ -10,7 +10,7 @@ This is the documentation for the package [https://github.com/WilsonGregory/Geom
 
 ## Installation
 
-- Install using pip: `pip install geometricconvolutions`.
+- Install using pip: `pip install ginet`.
 - Alternatively, you can install this repo as an editable install using pip.
   - Clone the repository `git clone https://github.com/WilsonGregory/GeometricConvolutions.git`
   - Navigate to the GeometricConvolutions directory `cd GeometricConvolutions`

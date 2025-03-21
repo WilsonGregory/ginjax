@@ -3,8 +3,7 @@ from typing_extensions import Union
 import jax.numpy as jnp
 import jax
 
-import geometricconvolutions.geometric as geom
-import geometricconvolutions.ml as ml
+import ginet.geometric as geom
 
 # ------------------------------------------------------------------------------
 # Functions for parsing time series data

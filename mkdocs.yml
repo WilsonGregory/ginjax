@@ -1,4 +1,4 @@
-site_name: GI-Net
+site_name: GINet
 site_description: Equivariant geometric convolutions for vector or tensor images
 site_author: Wilson Gregory
 repo_url: https://github.com/WilsonGregory/GeometricConvolutions

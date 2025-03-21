@@ -2,8 +2,8 @@ import time
 import itertools as it
 import pytest
 
-import geometricconvolutions.geometric as geom
-import geometricconvolutions.ml as ml
+import ginet.geometric as geom
+import ginet.ml as ml
 import jax.numpy as jnp
 from jax import random, vmap
 import jax.lax

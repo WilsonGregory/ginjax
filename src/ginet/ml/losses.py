@@ -4,7 +4,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-import geometricconvolutions.geometric as geom
+import ginet.geometric as geom
 
 
 def timestep_smse_loss(

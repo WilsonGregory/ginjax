@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as random
 
-import geometricconvolutions.geometric as geom
+import ginet.geometric as geom
 
 key = random.PRNGKey(0)
 D = 2

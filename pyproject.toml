@@ -1,6 +1,6 @@
 [project]
-name = "geometricconvolutions"
-version = "0.1.3"
+name = "ginet"
+version = "0.1.4"
 author = [
     { name = "Wilson Gregory", email = "wilson.g.gregory@gmail.com"},
     { name = "David Hogg"}
@@ -46,9 +46,9 @@ exclude = [
 ]
 
 [tool.uv.sources]
-geometricconvolutions = { workspace = true }
+ginet = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "geometricconvolutions",
+    "ginet",
 ]

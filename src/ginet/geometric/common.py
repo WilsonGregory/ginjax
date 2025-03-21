@@ -8,10 +8,10 @@ import jax.numpy as jnp
 import jax.lax
 import jax
 
-from geometricconvolutions.geometric.constants import TINY
-from geometricconvolutions.geometric.geometric_image import GeometricImage, GeometricFilter
-from geometricconvolutions.geometric.multi_image import MultiImage
-from geometricconvolutions.geometric.functional_geometric_image import times_group_element
+from ginet.geometric.constants import TINY
+from ginet.geometric.geometric_image import GeometricImage, GeometricFilter
+from ginet.geometric.multi_image import MultiImage
+from ginet.geometric.functional_geometric_image import times_group_element
 
 # ------------------------------------------------------------------------------
 # PART 1: Make and test a complete group

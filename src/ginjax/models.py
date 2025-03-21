@@ -8,8 +8,8 @@ import jax.random as random
 from jaxtyping import ArrayLike
 import equinox as eqx
 
-import ginet.geometric as geom
-import ginet.ml as ml
+import ginjax.geometric as geom
+import ginjax.ml as ml
 
 ACTIVATION_REGISTRY = {
     "relu": jax.nn.relu,

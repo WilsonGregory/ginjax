@@ -13,11 +13,11 @@ from jaxtyping import ArrayLike
 import optax
 import equinox as eqx
 
-import ginet.geometric as geom
-import ginet.ml as ml
-import ginet.data as gc_data
-import ginet.models as models
-import ginet.utils as utils
+import ginjax.geometric as geom
+import ginjax.ml as ml
+import ginjax.data as gc_data
+import ginjax.models as models
+import ginjax.utils as utils
 
 
 def read_orography(

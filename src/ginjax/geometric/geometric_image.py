@@ -9,8 +9,8 @@ import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class
 from jaxtyping import ArrayLike
 
-from ginet.geometric.constants import LeviCivitaSymbol, KroneckerDeltaSymbol, TINY
-from ginet.geometric.functional_geometric_image import (
+from ginjax.geometric.constants import LeviCivitaSymbol, KroneckerDeltaSymbol, TINY
+from ginjax.geometric.functional_geometric_image import (
     average_pool,
     convolve,
     get_rotated_keys,
@@ -22,7 +22,7 @@ from ginet.geometric.functional_geometric_image import (
     parse_shape,
     times_group_element,
 )
-import ginet.utils as utils
+import ginjax.utils as utils
 
 
 @register_pytree_node_class
@@ -403,7 +403,7 @@ class GeometricImage:
         rhs_dilation: Union[int, tuple[int, ...]] = 1,
     ) -> Self:
         """
-        See [convolve](functional_geometric_image.md#ginet.geometric.functional_geometric_image.convolve)
+        See [convolve](functional_geometric_image.md#ginjax.geometric.functional_geometric_image.convolve)
         for a description of this function.
 
         args:

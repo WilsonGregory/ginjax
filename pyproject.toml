@@ -1,5 +1,5 @@
 [project]
-name = "ginet"
+name = "ginjax"
 version = "0.1.4"
 author = [
     { name = "Wilson Gregory", email = "wilson.g.gregory@gmail.com"},
@@ -46,9 +46,9 @@ exclude = [
 ]
 
 [tool.uv.sources]
-ginet = { workspace = true }
+ginjax = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "ginet",
+    "ginjax",
 ]

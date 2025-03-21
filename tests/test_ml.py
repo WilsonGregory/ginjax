@@ -2,8 +2,8 @@ import jax.numpy as jnp
 from jax import random
 import jax
 
-import ginet.geometric as geom
-import ginet.ml as ml
+import ginjax.geometric as geom
+import ginjax.ml as ml
 
 
 class TestMachineLearning:

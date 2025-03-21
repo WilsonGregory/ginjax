@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import jax.random as random
 import matplotlib.pyplot as plt
 
-import ginet.geometric as geom
+import ginjax.geometric as geom
 
 key = random.PRNGKey(0)
 key, subkey = random.split(key)

@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import jax
 import jax.random as random
 
-import ginet.data as gc_data
+import ginjax.data as gc_data
 
 
 def read_one_h5(filename: str) -> tuple:

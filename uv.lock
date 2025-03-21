@@ -511,7 +511,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ginet"
+name = "ginjax"
 version = "0.1.4"
 source = { editable = "." }
 dependencies = [
@@ -537,7 +537,7 @@ docs = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "ginet" },
+    { name = "ginjax" },
 ]
 
 [package.metadata]
@@ -560,7 +560,7 @@ requires-dist = [
 provides-extras = ["docs"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "ginet", editable = "." }]
+dev = [{ name = "ginjax", editable = "." }]
 
 [[package]]
 name = "gitdb"

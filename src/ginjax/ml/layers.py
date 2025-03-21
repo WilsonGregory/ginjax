@@ -8,7 +8,7 @@ import jax.random as random
 from jaxtyping import ArrayLike
 import equinox as eqx
 
-import ginet.geometric as geom
+import ginjax.geometric as geom
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Helpers ~~~~~~~~~~~~~~~~~~~~~~

@@ -12,9 +12,9 @@ from jax.typing import ArrayLike
 import equinox as eqx
 import optax
 
-import ginet.geometric as geom
-from ginet.ml.stopping_conditions import StopCondition, ValLoss
-import ginet.models as models
+import ginjax.geometric as geom
+from ginjax.ml.stopping_conditions import StopCondition, ValLoss
+import ginjax.models as models
 
 
 def save(filename: str, model: models.MultiImageModule) -> None:

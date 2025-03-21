@@ -13,9 +13,9 @@ from jax.typing import ArrayLike
 import optax
 import equinox as eqx
 
-import ginet.geometric as geom
-import ginet.ml as ml
-import ginet.models as models
+import ginjax.geometric as geom
+import ginjax.ml as ml
+import ginjax.models as models
 
 # Generate data for the gravity problem
 

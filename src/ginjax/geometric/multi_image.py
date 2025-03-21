@@ -8,13 +8,13 @@ import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class
 import equinox as eqx
 
-from ginet.geometric.constants import TINY
-from ginet.geometric.functional_geometric_image import (
+from ginjax.geometric.constants import TINY
+from ginjax.geometric.functional_geometric_image import (
     average_pool,
     norm,
     times_group_element,
 )
-from ginet.geometric.geometric_image import GeometricImage
+from ginjax.geometric.geometric_image import GeometricImage
 
 Signature = NewType("Signature", tuple[tuple[tuple[int, int], int], ...])
 

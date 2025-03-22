@@ -2,7 +2,7 @@ import math
 import time
 import numpy as np
 
-import geometricconvolutions.geometric as geom
+import ginjax.geometric as geom
 import pytest
 import jax.numpy as jnp
 from jax import random

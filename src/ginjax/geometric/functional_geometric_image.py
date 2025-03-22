@@ -14,7 +14,7 @@ import jax.numpy as jnp
 from jaxtyping import ArrayLike
 import equinox as eqx
 
-from geometricconvolutions.geometric.constants import LETTERS
+from ginjax.geometric.constants import LETTERS
 
 
 def parse_shape(shape: tuple[int, ...], D: int) -> tuple[tuple[int, ...], int]:
@@ -323,7 +323,7 @@ def convolve_ravel(
     Raveled verson of convolution. Assumes the channels are all lined up correctly for the tensor
     convolution. This assumes that the feature_group_count is image in_c // filter in_c.
 
-    See [convolve](functional_geometric_image.md#geometricconvolutions.geometric.functional_geometric_image.convolve) for a full
+    See [convolve](functional_geometric_image.md#ginjax.geometric.functional_geometric_image.convolve) for a full
     description of this function.
 
     args:
@@ -415,7 +415,7 @@ def convolve_contract(
     Given an input k image and a k+k' filter, take the tensor convolution that contract k times with one index
     each from the image and filter. This implementation is slightly more efficient then doing the convolution
     and contraction separately by avoiding constructing the k+k+k' intermediate tensor. See
-    [convolve](functional_geometric_image.md#geometricconvolutions.geometric.functional_geometric_image.convolve) for a full
+    [convolve](functional_geometric_image.md#ginjax.geometric.functional_geometric_image.convolve) for a full
     description of the convolution.
 
     args:

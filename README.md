@@ -1,4 +1,4 @@
-# Geometric Convolutions
+# ginjax
 
 <a href="https://geometricconvolutions.readthedocs.io/en/latest/">
 <img src="https://badgen.net/badge/Read/the doc/blue" alt="doc"/>
@@ -26,7 +26,7 @@ See our readthedocs for <a href="https://geometricconvolutions.readthedocs.io/en
 
 ## Installation
 
-- Install using pip: `pip install geometricconvolutions`.
+- Install using pip: `pip install ginjax`.
 - Alternatively, you can install this repo as an editable install using pip.
   - Clone the repository `git clone https://github.com/WilsonGregory/GeometricConvolutions.git`
   - Navigate to the GeometricConvolutions directory `cd GeometricConvolutions`

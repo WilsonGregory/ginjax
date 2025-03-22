@@ -13,11 +13,11 @@ from jaxtyping import ArrayLike
 import optax
 import equinox as eqx
 
-import geometricconvolutions.geometric as geom
-import geometricconvolutions.ml as ml
-import geometricconvolutions.utils as utils
-import geometricconvolutions.data as gc_data
-import geometricconvolutions.models as models
+import ginjax.geometric as geom
+import ginjax.ml as ml
+import ginjax.utils as utils
+import ginjax.data as gc_data
+import ginjax.models as models
 
 
 def read_one_h5(filename: str, num_trajectories: int) -> tuple:

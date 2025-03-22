@@ -12,9 +12,9 @@ import jax
 from jax.typing import ArrayLike
 import equinox as eqx
 
-import geometricconvolutions.geometric as geom
-import geometricconvolutions.ml as ml
-import geometricconvolutions.models as models
+import ginjax.geometric as geom
+import ginjax.ml as ml
+import ginjax.models as models
 
 
 class MLP(eqx.Module):
@@ -26,7 +26,7 @@ class MLP(eqx.Module):
         num_layers: int = 1,
         activation_f: Optional[Callable] = None,
         key: Optional[ArrayLike] = None,
-    ) -> Self:
+    ) -> None:
         D = conv_filters.D
 
         self.layers = []

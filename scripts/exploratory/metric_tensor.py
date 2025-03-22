@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as random
 
-import geometricconvolutions.geometric as geom
+import ginjax.geometric as geom
 
 key = random.PRNGKey(0)
 D = 2
@@ -46,25 +46,25 @@ print(
 inv_filters = geom.get_invariant_filters_list([3], [1], [0], D, operators, scale="one")
 print(len(inv_filters))
 
-filter1 = geom.GeometricImage(inv_filters[0].data, inv_filters[0].parity, D, False, metric)
-rot_90 = operators[5]
+# filter1 = geom.GeometricImage(inv_filters[0].data, inv_filters[0].parity, D, False, metric)
+# rot_90 = operators[5]
 
-print("filter1")
-print(filter1.data)
-rot_filter1 = filter1.times_group_element(rot_90, jax.lax.Precision.HIGHEST)
-print(rot_filter1.data)
+# print("filter1")
+# print(filter1.data)
+# rot_filter1 = filter1.times_group_element(rot_90, jax.lax.Precision.HIGHEST)
+# print(rot_filter1.data)
 
-H_inv_filter1 = geom.GeometricImage(
-    jnp.einsum("ij,...j->...i", H_inv, filter1.data),
-    filter1.parity,
-    D,
-    filter1.is_torus,
-    filter1.metric,
-)
-print("H_inv_filter1")
-print(H_inv_filter1.data)
-rot_H_inv_filter1 = H_inv_filter1.times_group_element(rot_90, jax.lax.Precision.HIGHEST)
-print(rot_H_inv_filter1.data)
+# H_inv_filter1 = geom.GeometricImage(
+#     jnp.einsum("ij,...j->...i", H_inv, filter1.data),
+#     filter1.parity,
+#     D,
+#     filter1.is_torus,
+#     filter1.metric,
+# )
+# print("H_inv_filter1")
+# print(H_inv_filter1.data)
+# rot_H_inv_filter1 = H_inv_filter1.times_group_element(rot_90, jax.lax.Precision.HIGHEST)
+# print(rot_H_inv_filter1.data)
 
 # key, subkey = random.split(key)
 # N = 3

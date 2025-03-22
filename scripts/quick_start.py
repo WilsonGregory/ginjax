@@ -2,8 +2,7 @@ import jax.numpy as jnp
 import jax.random as random
 import matplotlib.pyplot as plt
 
-import geometricconvolutions.geometric as geom
-import geometricconvolutions.utils as utils
+import ginjax.geometric as geom
 
 key = random.PRNGKey(0)
 key, subkey = random.split(key)
@@ -18,7 +17,7 @@ data = random.normal(subkey, shape=((N,) * D + (D,) * k))
 # We can form a GeometricImage from this data by specifying to data, the parity, and D. N and k are inferred from data.
 image = geom.GeometricImage(data, parity=0, D=2)
 
-# We can visualize this image with the plotting tools in utils:
+# We can visualize this image with the plot function:
 image.plot()
 
 # Now we can do various operations on this geometric image

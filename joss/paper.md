@@ -1,5 +1,5 @@
 ---
-title: 'GeometricConvolutions: E(d)-Equivariant CNN for Tensor Images'
+title: 'ginjax: E(d)-Equivariant CNN for Tensor Images'
 tags:
   - Python
   - Jax

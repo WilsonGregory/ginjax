@@ -6,8 +6,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as random
 
-import geometricconvolutions.geometric as geom
-import geometricconvolutions.data as gc_data
+import ginjax.geometric as geom
+import ginjax.data as gc_data
 
 
 class TestMisc:

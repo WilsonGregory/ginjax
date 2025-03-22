@@ -5,9 +5,9 @@ import jax.numpy as jnp
 from jax import random
 import equinox as eqx
 
-import geometricconvolutions.geometric as geom
-import geometricconvolutions.ml as ml
-import geometricconvolutions.models as models
+import ginjax.geometric as geom
+import ginjax.ml as ml
+import ginjax.models as models
 
 
 class TestModels:

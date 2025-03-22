@@ -1,8 +1,8 @@
 site_name: ginjax
 site_description: Equivariant geometric convolutions for vector or tensor images
 site_author: Wilson Gregory
-repo_url: https://github.com/WilsonGregory/GeometricConvolutions
-repo_name: WilsonGregory/GeometricConvolutions
+repo_url: https://github.com/WilsonGregory/ginjax
+repo_name: WilsonGregory/ginjax
 
 theme:
     name: material

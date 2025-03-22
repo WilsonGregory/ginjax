@@ -1,6 +1,6 @@
 [project]
 name = "ginjax"
-version = "0.1.4"
+version = "0.1.5"
 author = [
     { name = "Wilson Gregory", email = "wilson.g.gregory@gmail.com"},
     { name = "David Hogg"}
@@ -9,7 +9,7 @@ license = { file = "LICENSE" }
 description = "Package for building Convolutional Neural Networks on images of tensors."
 readme = "README.md"
 requires-python = ">=3.10"
-url = {repository = "https://github.com/WilsonGregory/GeometricConvolutions"}
+url = {repository = "https://github.com/WilsonGregory/ginjax"}
 dependencies = [
     "equinox>=0.11.11",
     "imageio>=2.37.0",

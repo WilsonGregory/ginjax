@@ -83,8 +83,8 @@ def read_one_seed(
         vor = jax.device_put(dataset["vor"], jax.devices("cpu")[0])  # vorticity pseudoscalar
         div = jax.device_put(dataset["div"], jax.devices("cpu")[0])  # divergence scalar
 
-        lat = jax.device_put(dataset["lat"], jax.devices("cpu")[0])  # latitude degrees
-        # lon = jax.device_put(dataset["lon"], jax.devices("cpu")[0])  # longitude degrees
+        lat_degrees = jax.device_put(dataset["lat"], jax.devices("cpu")[0])  # latitude degrees
+        # lon_degrees = jax.device_put(dataset["lon"], jax.devices("cpu")[0])  # longitude degrees
     else:
         datals = os.path.join(data_dir, data_class, seed, "run*", "output.nc")
         dataset = xr.open_mfdataset(datals, concat_dim="b", combine="nested", parallel=True)  # dict
@@ -102,13 +102,21 @@ def read_one_seed(
 
         # all have shape (96,)
         # latitudes
-        lat = jax.device_put(jnp.array(dataset["lat"].to_numpy()), jax.devices("cpu")[0])
+        lat_degrees = jax.device_put(jnp.array(dataset["lat"].to_numpy()), jax.devices("cpu")[0])
         # longitudes
-        lon = jax.device_put(jnp.array(dataset["lon"].to_numpy()), jax.devices("cpu")[0])
+        lon_degrees = jax.device_put(jnp.array(dataset["lon"].to_numpy()), jax.devices("cpu")[0])
 
         jnp.save(
             target_file,
-            {"u": u, "v": v, "pres": pres, "vor": vor, "lat": lat, "lon": lon, "div": div},
+            {
+                "u": u,
+                "v": v,
+                "pres": pres,
+                "vor": vor,
+                "lat": lat_degrees,
+                "lon": lon_degrees,
+                "div": div,
+            },
         )
 
     # Data is loaded with shape (96,192), or (latitude,longitude) or (y,x). This means that the
@@ -120,6 +128,9 @@ def read_one_seed(
     pres = jnp.moveaxis(pres, -2, -1)
     vor = jnp.moveaxis(vor, -2, -1)
     div = jnp.moveaxis(div, -2, -1)
+
+    lat = (lat_degrees * jnp.pi) / 180
+    # lon = (lon_degrees * jnp.pi) / 180
 
     uv = jnp.stack([u[:, :, 0, ...], v[:, :, 0, ...]], axis=-1)
     return uv, pres, vor[:, :, 0, ...], div[:, :, 0, ...], lat
@@ -186,6 +197,7 @@ def read_all_seeds(
 def make_constant_fields(
     orography: Optional[geom.MultiImage],
     lats: jax.Array,
+    lons: jax.Array,
     is_torus: Union[bool, tuple[bool, ...]],
     spatial_dims: tuple[int, ...],
     normalize: bool,
@@ -198,7 +210,7 @@ def make_constant_fields(
 
     args:
         orography: a multi image of the mountains, shape (1,spatial)
-        lats: array of the latitudes in degrees, (96,)
+        lats: array of the latitudes in radians, (96,)
         is_torus: toroidal structure of the images
         spatial_dims: spatial dimensions of the images
         normalize: whether to normalize in an equivariant way
@@ -211,6 +223,7 @@ def make_constant_fields(
     """
     # make it (1,192,96)
     lats_field = jnp.full((1,) + spatial_dims, lats[None, None])
+    lons_field = jnp.full((1,) + spatial_dims, lons[None, ..., None])
 
     constant_fields = geom.MultiImage({}, D, is_torus)
 
@@ -220,18 +233,26 @@ def make_constant_fields(
         # add the coriolis as a pseudoscalar field.
         # From https://speedyweather.github.io/SpeedyWeather.jl/dev/ringgrids/#Indexing-RingGrids
         rotation = 7.29e-5  # this will get scaled away anyways
-        coriolis = 2 * rotation * jnp.sin((jnp.pi / 180) * lats_field)
+        coriolis = 2 * rotation * jnp.sin(lats_field)
         if normalize:
             coriolis = coriolis / jnp.std(coriolis)
 
-        constant_fields.append(0, 1, coriolis)
+        constant_fields.append(0, 0, coriolis)
     if include_lats:
         if normalize:
-            constant_fields.append(0, 0, (lats_field - jnp.mean(lats_field)) / jnp.std(lats_field))
+            # constant_fields.append(0, 0, (lats_field - jnp.mean(lats_field)) / jnp.std(lats_field))
+            # constant_fields.append(0, 0, (lons_field - jnp.mean(lons_field)) / jnp.std(lons_field))
+
+            lon_lats = jnp.stack([lons_field, lats_field], axis=-1)
+            constant_fields.append(1, 0, lon_lats / jnp.std(lon_lats))
         else:
-            constant_fields.append(0, 0, lats_field)
+            # constant_fields.append(0, 0, lats_field)
+            # constant_fields.append(0, 0, lons_field)
+
+            constant_fields.append(1, 0, jnp.stack([lons_field, lats_field], axis=-1))
+
     if include_metric_tensor:
-        sin_squared_lats = (jnp.sin((jnp.pi / 180) * lats) ** 2).reshape((96, 1, 1))
+        sin_squared_lats = (jnp.sin(lats) ** 2).reshape((96, 1, 1))
         bottom = sin_squared_lats * jnp.array([[0, 0], [0, 1]]).reshape((1, 2, 2))
         top = jnp.ones((96, 1, 1)) * jnp.array([[1, 0], [0, 0]]).reshape((1, 2, 2))
         metric = (top + bottom).reshape((1, 1, 96, 2, 2))  # (96,2,2) -> (1,1,96,2,2)
@@ -306,6 +327,31 @@ def get_data_multi_images(
     return multi_image_x, multi_image_y
 
 
+def get_torch_harmonics_data(
+    file: str, n_trajectories: int
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    dataset = jnp.load(file, allow_pickle=True).item()
+    # shape (b,timesteps,huv,lats,lons)
+    huv = jax.device_put(dataset["huv"], jax.devices("cpu")[0])  # height, u, v
+    lat = jax.device_put(dataset["lat"], jax.devices("cpu")[0])  # (96,), as radians
+    lon = jax.device_put(dataset["lon"], jax.devices("cpu")[0])  # (192,) as radians
+
+    pres = huv[:, :, 0, ...]
+    u = huv[:, :, 1, ...]
+    v = huv[:, :, 2, ...]
+
+    # Data is loaded with shape (96,192), or (latitude,longitude) or (y,x). This means that the
+    # normal way we think of arrays, by rows then columns it will be layed out like a typical map.
+    # However, this is backwards of when we think of accessing elements [x,y] where the x-coordinate
+    # is the first and the y-coordinate is second. So we will flip them.
+    u = jnp.moveaxis(u, -2, -1)[:n_trajectories]
+    v = jnp.moveaxis(v, -2, -1)[:n_trajectories]
+    pres = jnp.moveaxis(pres, -2, -1)[:n_trajectories]
+
+    uv = jnp.stack([u, v], axis=-1)
+    return uv, pres, lat, lon
+
+
 def get_data(
     data_dir: str,
     n_train: int,
@@ -355,9 +401,25 @@ def get_data(
         train, val, test one step, and test rollout input and output multi images. Also a multi
         image of the constant fields.
     """
-    train_uv, train_pres, train_vor, train_div, lats = read_all_seeds(data_dir, n_train, "train")
-    val_uv, val_pres, val_vor, val_div, _ = read_all_seeds(data_dir, n_val, "valid")
-    test_uv, test_pres, test_vor, test_div, _ = read_all_seeds(data_dir, n_test, "test")
+    uv, pres, lats, lons = get_torch_harmonics_data(data_dir, n_train + n_val + n_test)
+    train_uv = uv[:n_train]
+    train_pres = pres[:n_train]
+    train_vor = None  # for now
+    train_div = None
+
+    val_uv = uv[n_train : n_train + n_val]
+    val_pres = pres[n_train : n_train + n_val]
+    val_vor = None
+    val_div = None
+
+    test_uv = uv[n_train + n_val :]
+    test_pres = pres[n_train + n_val :]
+    test_vor = None
+    test_div = None
+
+    # train_uv, train_pres, train_vor, train_div, lats = read_all_seeds(data_dir, n_train, "train")
+    # val_uv, val_pres, val_vor, val_div, _ = read_all_seeds(data_dir, n_val, "valid")
+    # test_uv, test_pres, test_vor, test_div, _ = read_all_seeds(data_dir, n_test, "test")
 
     if normalize:
         pres_mean = jnp.mean(jnp.concatenate([train_pres, val_pres]))
@@ -366,16 +428,16 @@ def get_data(
         val_pres = (val_pres - pres_mean) / pres_std
         test_pres = (test_pres - pres_mean) / pres_std
 
-        vor_std = jnp.std(jnp.concatenate([train_vor, val_vor]))
-        train_vor = train_vor / vor_std
-        val_vor = val_vor / vor_std
-        test_vor = test_vor / vor_std
+        # vor_std = jnp.std(jnp.concatenate([train_vor, val_vor]))
+        # train_vor = train_vor / vor_std
+        # val_vor = val_vor / vor_std
+        # test_vor = test_vor / vor_std
 
-        div_mean = jnp.mean(jnp.concatenate([train_div, val_div]))
-        div_std = jnp.std(jnp.concatenate([train_div, val_div]))
-        train_div = (train_div - div_mean) / div_std
-        val_div = (val_div - div_mean) / div_std
-        test_div = (test_div - div_mean) / div_std
+        # div_mean = jnp.mean(jnp.concatenate([train_div, val_div]))
+        # div_std = jnp.std(jnp.concatenate([train_div, val_div]))
+        # train_div = (train_div - div_mean) / div_std
+        # val_div = (val_div - div_mean) / div_std
+        # test_div = (test_div - div_mean) / div_std
 
         uv_std = jnp.std(jnp.concatenate([train_uv, val_uv]))
         train_uv = train_uv / uv_std
@@ -387,10 +449,14 @@ def get_data(
     total_steps = train_uv.shape[1]
     spatial_dims = train_uv.shape[2:4]
 
-    orography = read_orography(D, is_torus, normalize, data_dir)
+    orography = None
+    if include_orography:
+        orography = read_orography(D, is_torus, normalize, data_dir)
+
     constant_fields = make_constant_fields(
         orography,
         lats,
+        lons,
         is_torus,
         spatial_dims,
         normalize,
@@ -488,7 +554,8 @@ def map_and_loss(
         model,
         multi_image_x,
         aux_data,
-        multi_image_x[(1, 0)].shape[1],  # past_steps
+        2,  # TODO: fix this
+        # multi_image_x[(1, 0)].shape[1],  # past_steps
         future_steps,
         constant_fields,
     )
@@ -560,7 +627,30 @@ def train_and_eval(
             # TODO: need to save batch_stats as well
             ml.save(f"{save_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model)
     else:
-        model = ml.load(f"{load_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model)
+        tmp_model = ml.load(
+            f"{load_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model
+        )
+
+        sorted_operators = np.stack(geom.make_all_operators(D))[[0, 5, 3, 6, 1, 2, 7, 4]]
+        # names = [
+        #     'Identity',
+        #     r'Rot $90^{}$'.format('{\circ}'),
+        #     r'Rot $180^{}$'.format('{\circ}'),
+        #     r'Rot $270^{}$'.format('{\circ}'),
+        #     'Flip X',
+        #     'Flip Y',
+        #     r'Rot $90^{}$, Flip X'.format('{\circ}'),
+        #     r'Rot $270^{}$, Flip X'.format('{\circ}'),
+        # ]
+
+        ops = [
+            sorted_operators[0],
+            sorted_operators[1],
+            sorted_operators[2],
+            sorted_operators[3],
+        ]  # only identiy, flip x
+        print(ops)
+        model = models.GroupAverage(tmp_model, ops)
 
         key, subkey1, subkey2 = random.split(key, num=3)
         train_loss = ml.map_loss_in_batches(
@@ -581,6 +671,9 @@ def train_and_eval(
             subkey2,
             aux_data=batch_stats,
         )
+
+        print("train:", train_loss)
+        print("val:", val_loss)
 
     key, subkey = random.split(key)
     test_loss = ml.map_loss_in_batches(
@@ -722,7 +815,7 @@ train_kwargs = {
 key, *subkeys = random.split(key, num=13)
 models_ls = [
     (
-        "dil_resnet64",
+        "dil_resnet64_metrictensor",
         train_and_eval,
         {
             "model": models.DilResNet(
@@ -738,42 +831,42 @@ models_ls = [
             **train_kwargs,
         },
     ),
-    (
-        "dil_resnet64_groupaveraged",
-        train_and_eval,
-        {
-            "model": models.GroupAverage(
-                models.DilResNet(
-                    D,
-                    input_keys,
-                    output_keys,
-                    depth=64,
-                    equivariant=False,
-                    kernel_size=3,
-                    key=subkeys[0],
-                ),
-                group_actions,
-            ),
-            "lr": 1e-3,
-            **train_kwargs,
-        },
-    ),
-    (
-        "dil_resnet_equiv20",
-        train_and_eval,
-        {
-            "model": models.DilResNet(
-                D,
-                input_keys,
-                output_keys,
-                depth=20,
-                conv_filters=conv_filters,
-                key=subkeys[1],
-            ),
-            "lr": 1e-3,
-            **train_kwargs,
-        },
-    ),
+    # (
+    #     "dil_resnet64_groupaveraged",
+    #     train_and_eval,
+    #     {
+    #         "model": models.GroupAverage(
+    #             models.DilResNet(
+    #                 D,
+    #                 input_keys,
+    #                 output_keys,
+    #                 depth=64,
+    #                 equivariant=False,
+    #                 kernel_size=3,
+    #                 key=subkeys[0],
+    #             ),
+    #             group_actions,
+    #         ),
+    #         "lr": 1e-3,
+    #         **train_kwargs,
+    #     },
+    # ),
+    # (
+    #     "dil_resnet_equiv20",
+    #     train_and_eval,
+    #     {
+    #         "model": models.DilResNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=20,
+    #             conv_filters=conv_filters,
+    #             key=subkeys[1],
+    #         ),
+    #         "lr": 1e-3,
+    #         **train_kwargs,
+    #     },
+    # ),
     # (
     #     "dil_resnet_equiv48",
     #     train_and_eval,

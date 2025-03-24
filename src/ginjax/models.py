@@ -997,6 +997,7 @@ class GroupAverage(MultiImageModule):
                 rot_out_image = out_image.times_group_element(gg.T)
                 sum_image = rot_out_image if sum_image is None else sum_image + rot_out_image
 
+            print(len(self.operators))
             assert sum_image is not None
             return sum_image / len(self.operators), out_aux
 

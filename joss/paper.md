@@ -12,12 +12,13 @@ authors:
     orcid: 0000-0002-5511-0683
     corresponding: true
     affiliation: 1 
+  - name: Kaze W. K. Wong
+    affiliation: 1
   - name: David W. Hogg
     affiliation: "2, 3, 4"
   - name: Soledad Villar
     affiliation: "1, 5, 6"
-  - name: Kaze W. K. Wong
-    affiliation: 1
+  
 affiliations:
  - name: Department of Applied Mathematics and Statistics, Johns Hopkins University, Baltimore, MD, USA
    index: 1

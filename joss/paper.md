@@ -12,18 +12,27 @@ authors:
     orcid: 0000-0002-5511-0683
     corresponding: true
     affiliation: 1 
+  - name: David W. Hogg
+    affiliation: "2, 3, 4"
   - name: Soledad Villar
-    affiliation: "1, 2, 3"
+    affiliation: "1, 5, 6"
   - name: Kaze W. K. Wong
     affiliation: 1
 affiliations:
  - name: Department of Applied Mathematics and Statistics, Johns Hopkins University, Baltimore, MD, USA
    index: 1
- - name: Center for Computational Mathematics, Flatiron Institute, New York, NY, USA
+ - name: Center for Cosmology and Particle Physics, Department of Physics, New York University, New York, NY, USA
    index: 2
- - name: Mathematical Institute for Data Science, Johns Hopkins University, Baltimore, MD, USA
+ - name: Max-Planck-Institut f\"ur Astronomie, Heidelberg, Germany
    index: 3
-date: 17 March 2025
+ - name: Center for Computational Astrophysics, Flatiron Institute, New York, NY, USA
+   index: 4
+ - name: Center for Computational Mathematics, Flatiron Institute, New York, NY, USA
+   index: 5
+ - name: Mathematical Institute for Data Science, Johns Hopkins University, Baltimore, MD, USA
+   index: 6
+ 
+date: 25 March 2025
 bibliography: paper.bib
 ---
 

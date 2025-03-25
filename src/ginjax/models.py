@@ -346,6 +346,7 @@ class UNet(MultiImageModule):
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = False,
         use_batch_norm: bool = False,
+        mid_keys: Optional[geom.Signature] = None,
         key: Any = None,
     ) -> None:
         """
@@ -365,6 +366,7 @@ class UNet(MultiImageModule):
             kernel_size: sidelength(s) for the non-equivariant version
             use_group_norm: whether to use GroupNorm
             use_batch_norm: whether to use the BatchNorm, only for non-equivariant version
+            mid_keys: types of images and number of channels for the mid layers, as a baseline
             key: jax.random key
         """
         assert num_conv > 0
@@ -372,10 +374,14 @@ class UNet(MultiImageModule):
 
         self.output_keys = output_keys
         if equivariant:
-            mid_keys = geom.signature_union(input_keys, output_keys, depth)
+            if mid_keys is None:
+                mid_keys = geom.signature_union(input_keys, output_keys, depth)
+
             assert not use_batch_norm, "UNet::init Batch Norm cannot be used with equivariant model"
         else:
-            mid_keys = geom.Signature((((0, 0), depth),))
+            if mid_keys is None:
+                mid_keys = geom.Signature((((0, 0), depth),))
+
             # use these keys along the way, then for the final output use self.output_keys
             input_keys_size = sum(in_c * (D**k) for (k, _), in_c in input_keys)
             input_keys = geom.Signature((((0, 0), input_keys_size),))
@@ -588,6 +594,7 @@ class DilResNet(MultiImageModule):
         conv_filters: Optional[geom.MultiImage] = None,
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = False,
+        mid_keys: Optional[geom.Signature] = None,
         key: Any = None,
     ) -> None:
         """
@@ -605,6 +612,7 @@ class DilResNet(MultiImageModule):
             conv_filters: the invariant filters for the equivariant version
             kernel_size: sidelength(s) for the non-equivariant version
             use_group_norm: whether to use GroupNorm
+            mid_keys: types of images and number of channels for the mid layers, as a baseline
             key: jax.random key
         """
         self.D = D
@@ -612,9 +620,12 @@ class DilResNet(MultiImageModule):
         self.output_keys = output_keys
 
         if equivariant:
-            mid_keys = geom.signature_union(input_keys, output_keys, depth)
+            if mid_keys is None:
+                mid_keys = geom.signature_union(input_keys, output_keys, depth)
         else:
-            mid_keys = geom.Signature((((0, 0), depth),))
+            if mid_keys is None:
+                mid_keys = geom.Signature((((0, 0), depth),))
+
             # use these keys along the way, then for the final output use self.output_keys
             input_keys = geom.Signature(
                 (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
@@ -758,6 +769,7 @@ class ResNet(MultiImageModule):
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = True,
         preactivation_order: bool = True,
+        mid_keys: Optional[geom.Signature] = None,
         key: Any = None,
     ) -> None:
         """
@@ -777,6 +789,7 @@ class ResNet(MultiImageModule):
             kernel_size: sidelength(s) for the non-equivariant version
             use_group_norm: whether to use GroupNorm
             preactivation_order: whether to use preactivation order
+            mid_keys: types of images and number of channels for the mid layers, as a baseline
             key: jax.random key
         """
         self.D = D
@@ -784,9 +797,12 @@ class ResNet(MultiImageModule):
         self.output_keys = output_keys
 
         if equivariant:
-            mid_keys = geom.signature_union(input_keys, output_keys, depth)
+            if mid_keys is None:
+                mid_keys = geom.signature_union(input_keys, output_keys, depth)
         else:
-            mid_keys = geom.Signature((((0, 0), depth),))
+            if mid_keys is None:
+                mid_keys = geom.Signature((((0, 0), depth),))
+
             # use these keys along the way, then for the final output use self.output_keys
             input_keys = geom.Signature(
                 (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
@@ -997,7 +1013,6 @@ class GroupAverage(MultiImageModule):
                 rot_out_image = out_image.times_group_element(gg.T)
                 sum_image = rot_out_image if sum_image is None else sum_image + rot_out_image
 
-            print(len(self.operators))
             assert sum_image is not None
             return sum_image / len(self.operators), out_aux
 

@@ -237,19 +237,14 @@ def make_constant_fields(
         if normalize:
             coriolis = coriolis / jnp.std(coriolis)
 
-        constant_fields.append(0, 0, coriolis)
+        constant_fields.append(0, 1, coriolis)
     if include_lats:
         if normalize:
-            # constant_fields.append(0, 0, (lats_field - jnp.mean(lats_field)) / jnp.std(lats_field))
-            # constant_fields.append(0, 0, (lons_field - jnp.mean(lons_field)) / jnp.std(lons_field))
-
-            lon_lats = jnp.stack([lons_field, lats_field], axis=-1)
-            constant_fields.append(1, 0, lon_lats / jnp.std(lon_lats))
+            constant_fields.append(0, 0, (lats_field - jnp.mean(lats_field)) / jnp.std(lats_field))
+            constant_fields.append(0, 0, (lons_field - jnp.mean(lons_field)) / jnp.std(lons_field))
         else:
-            # constant_fields.append(0, 0, lats_field)
-            # constant_fields.append(0, 0, lons_field)
-
-            constant_fields.append(1, 0, jnp.stack([lons_field, lats_field], axis=-1))
+            constant_fields.append(0, 0, lats_field)
+            constant_fields.append(0, 0, lons_field)
 
     if include_metric_tensor:
         sin_squared_lats = (jnp.sin(lats) ** 2).reshape((96, 1, 1))
@@ -333,8 +328,8 @@ def get_torch_harmonics_data(
     dataset = jnp.load(file, allow_pickle=True).item()
     # shape (b,timesteps,huv,lats,lons)
     huv = jax.device_put(dataset["huv"], jax.devices("cpu")[0])  # height, u, v
-    lat = jax.device_put(dataset["lat"], jax.devices("cpu")[0])  # (96,), as radians
-    lon = jax.device_put(dataset["lon"], jax.devices("cpu")[0])  # (192,) as radians
+    lat = jax.device_put(dataset["lat"], jax.devices("cpu")[0])  # (96,), as radians pi/2 to -pi/2
+    lon = jax.device_put(dataset["lon"], jax.devices("cpu")[0])  # (192,) as radians 0 to 2pi
 
     pres = huv[:, :, 0, ...]
     u = huv[:, :, 1, ...]
@@ -627,30 +622,7 @@ def train_and_eval(
             # TODO: need to save batch_stats as well
             ml.save(f"{save_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model)
     else:
-        tmp_model = ml.load(
-            f"{load_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model
-        )
-
-        sorted_operators = np.stack(geom.make_all_operators(D))[[0, 5, 3, 6, 1, 2, 7, 4]]
-        # names = [
-        #     'Identity',
-        #     r'Rot $90^{}$'.format('{\circ}'),
-        #     r'Rot $180^{}$'.format('{\circ}'),
-        #     r'Rot $270^{}$'.format('{\circ}'),
-        #     'Flip X',
-        #     'Flip Y',
-        #     r'Rot $90^{}$, Flip X'.format('{\circ}'),
-        #     r'Rot $270^{}$, Flip X'.format('{\circ}'),
-        # ]
-
-        ops = [
-            sorted_operators[0],
-            sorted_operators[1],
-            sorted_operators[2],
-            sorted_operators[3],
-        ]  # only identiy, flip x
-        print(ops)
-        model = models.GroupAverage(tmp_model, ops)
+        model = ml.load(f"{load_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model)
 
         key, subkey1, subkey2 = random.split(key, num=3)
         train_loss = ml.map_loss_in_batches(
@@ -674,6 +646,46 @@ def train_and_eval(
 
         print("train:", train_loss)
         print("val:", val_loss)
+
+        sorted_operators = np.stack(geom.make_all_operators(D))[[0, 5, 3, 6, 1, 2, 7, 4]]
+        # names = [
+        #     'Identity',
+        #     r'Rot $90^{}$'.format('{\circ}'),
+        #     r'Rot $180^{}$'.format('{\circ}'),
+        #     r'Rot $270^{}$'.format('{\circ}'),
+        #     'Flip over X',
+        #     'Flip over Y',
+        #     r'Rot $90^{}$, Flip X'.format('{\circ}'),
+        #     r'Rot $270^{}$, Flip X'.format('{\circ}'),
+        # ]
+
+        ops = [sorted_operators[0], sorted_operators[2], sorted_operators[4], sorted_operators[5]]
+        print(ops)
+        ga_model = models.GroupAverage(model, ops)
+
+        key, subkey1, subkey2 = random.split(key, num=3)
+        train_loss = ml.map_loss_in_batches(
+            map_and_loss_f,
+            ga_model,
+            train_X,
+            train_Y,
+            batch_size,
+            subkey1,
+            aux_data=batch_stats,
+        )
+        val_loss = ml.map_loss_in_batches(
+            map_and_loss_f,
+            ga_model,
+            val_X,
+            val_Y,
+            batch_size,
+            subkey2,
+            aux_data=batch_stats,
+        )
+
+        print("ga train:", train_loss)
+        print("ga val:", val_loss)
+        exit()
 
     key, subkey = random.split(key)
     test_loss = ml.map_loss_in_batches(
@@ -791,7 +803,8 @@ data, constant_fields = get_data(
 input_keys = data[0].get_signature()
 output_keys = data[1].get_signature()
 
-group_actions = geom.make_all_operators(D)
+# group_actions = geom.make_all_operators(D)
+group_actions = geom.make_C2_group(D)  # just the flips
 conv_filters = geom.get_invariant_filters(
     Ms=[3], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions
 )
@@ -814,23 +827,23 @@ train_kwargs = {
 
 key, *subkeys = random.split(key, num=13)
 models_ls = [
-    (
-        "dil_resnet64_metrictensor",
-        train_and_eval,
-        {
-            "model": models.DilResNet(
-                D,
-                input_keys,
-                output_keys,
-                depth=64,
-                equivariant=False,
-                kernel_size=3,
-                key=subkeys[0],
-            ),
-            "lr": 1e-3,
-            **train_kwargs,
-        },
-    ),
+    # (
+    #     "dil_resnet64",
+    #     train_and_eval,
+    #     {
+    #         "model": models.DilResNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=64,
+    #             equivariant=False,
+    #             kernel_size=3,
+    #             key=subkeys[0],
+    #         ),
+    #         "lr": 1e-3,
+    #         **train_kwargs,
+    #     },
+    # ),
     # (
     #     "dil_resnet64_groupaveraged",
     #     train_and_eval,
@@ -846,27 +859,29 @@ models_ls = [
     #                 key=subkeys[0],
     #             ),
     #             group_actions,
+    #             always_average=True,
     #         ),
     #         "lr": 1e-3,
     #         **train_kwargs,
     #     },
     # ),
-    # (
-    #     "dil_resnet_equiv20",
-    #     train_and_eval,
-    #     {
-    #         "model": models.DilResNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=20,
-    #             conv_filters=conv_filters,
-    #             key=subkeys[1],
-    #         ),
-    #         "lr": 1e-3,
-    #         **train_kwargs,
-    #     },
-    # ),
+    (
+        "dil_resnet_equiv20",
+        train_and_eval,
+        {
+            "model": models.DilResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=20,
+                conv_filters=conv_filters,
+                mid_keys=geom.Signature((((0, 0), 20), ((0, 1), 20), ((1, 0), 20), ((1, 1), 20))),
+                key=subkeys[1],
+            ),
+            "lr": 5e-4,
+            **train_kwargs,
+        },
+    ),
     # (
     #     "dil_resnet_equiv48",
     #     train_and_eval,
@@ -877,6 +892,7 @@ models_ls = [
     #             output_keys,
     #             depth=48,
     #             conv_filters=conv_filters,
+    #             mid_keys=geom.Signature((((0, 0), 48), ((0, 1), 48), ((1, 0), 48), ((1, 1), 48))),
     #             key=subkeys[2],
     #         ),
     #         "lr": 1e-3,
@@ -1050,9 +1066,12 @@ results = ml.benchmark(
     lambda _: data,
     models_ls,
     subkey,
-    "",
-    [0],
-    benchmark_type=ml.BENCHMARK_NONE,
+    # "",
+    # [0],
+    # benchmark_type=ml.BENCHMARK_NONE,
+    "lr",
+    [1e-5, 5e-5, 1e-4, 3e-4],
+    benchmark_type=ml.BENCHMARK_MODEL,
     num_results=4,
     num_trials=args.n_trials,
     is_wandb=args.wandb,

@@ -1,6 +1,8 @@
 import functools
 import numpy as np
-from typing_extensions import NewType, Optional, Self, Sequence, Union
+import matplotlib.figure
+import matplotlib.pyplot as plt
+from typing_extensions import Any, NewType, Optional, Self, Sequence, Union
 from collections.abc import ItemsView, KeysView, ValuesView
 
 import jax
@@ -300,6 +302,31 @@ class MultiImage:
 
         return self.__class__.from_vector(self.to_vector() + other.to_vector(), self)
 
+    def __sub__(self: Self, other: Self) -> Self:
+        """
+        Subtraction operator for MultiImages, must have the same types of MultiImages, adds them together
+
+        args:
+            other: other MultiImage to subtract from this one
+
+        returns:
+            a new MultiImage that is the difference of this and other
+        """
+        assert type(self) == type(
+            other
+        ), f"{self.__class__}::__add__: Types of MultiImages being added must match, had {type(self)} and {type(other)}"
+        assert (
+            self.D == other.D
+        ), f"{self.__class__}::__add__: Dimension of MultiImages must match, had {self.D} and {other.D}"
+        assert (
+            self.is_torus == other.is_torus
+        ), f"{self.__class__}::__add__: is_torus of MultiImages must match, had {self.is_torus} and {other.is_torus}"
+        assert (
+            self.keys() == other.keys()
+        ), f"{self.__class__}::__add__: Must have same types of images, had {self.keys()} and {other.keys()}"
+
+        return self.__class__.from_vector(self.to_vector() - other.to_vector(), self)
+
     def __mul__(self: Self, other: Union[Self, float]) -> Self:
         """
         Multiplication operator for a MultiImage and a scalar
@@ -354,6 +381,46 @@ class MultiImage:
             out.append(k, parity, image_block, axis)
 
         return out
+
+    def concat_inverse(
+        self: Self, signature: Union[Signature, dict[tuple[int, int], int]], axis: int = 0
+    ) -> tuple[Self, Self]:
+        """
+        Given a signature, split the multi image into a and b, where b has the signature provided
+        and a has the remaining images. Thus a.concat(b, axis).inverse_concat(b.get_signature(), axis)
+        will return a and b. Note that get_signature() will use the last leading axis, for this
+        function you can also manually construct the signature-like object if you want to use a
+        different axis.
+
+        args:
+            signature: signature of the second multi image to split off, either signature or dict
+                version of the signature
+            axis: the axis that we are splitting on
+
+        returns:
+            the two multi images from the reverse concat
+        """
+        if isinstance(signature, tuple):
+            signature_dict = {(k, parity): size for (k, parity), size in signature}
+        else:
+            signature_dict = signature
+
+        a = self.empty()
+        b = self.empty()
+        for (k, parity), image_block in self.items():
+            size = signature_dict[(k, parity)] if (k, parity) in signature_dict else 0
+            axis_size = image_block.shape[axis]
+            assert 0 <= size <= axis_size
+
+            if size == 0:
+                a.append(k, parity, image_block)
+            elif size == axis_size:
+                b.append(k, parity, image_block)
+            else:
+                a.append(k, parity, image_block[(slice(None),) * axis + (slice(0, -size),)])
+                b.append(k, parity, image_block[(slice(None),) * axis + (slice(-size, axis_size),)])
+
+        return a, b
 
     def to_images(self: Self) -> list[GeometricImage]:
         """
@@ -554,6 +621,56 @@ class MultiImage:
         """
         return self.get_component(component, future_steps)
 
+    def expand(self: Self, axis: int, size: int) -> Self:
+        """
+        A common task is that we have a MultiImage with shape (batch,c*timesteps,spatial,tensor)
+        and we want to split the channels*timestep channel into (c,timesteps). To achieve this, we
+        can call expand(axis=1,size=timesteps) which will reshape all the images to
+        (batch,c,timesteps,spatial,tensor)
+
+        args:
+            axis: the axis we are expanding
+            size: size of one of the new axes, must divide the current size
+
+        returns:
+            a MultiImage that has been reshaped
+        """
+        out = self.empty()
+        for (k, parity), image_block in self.items():
+            out.append(
+                k,
+                parity,
+                image_block.reshape(
+                    image_block.shape[:axis] + (-1, size) + image_block.shape[axis + 1 :]
+                ),
+            )
+
+        return out
+
+    def combine_axes(self: Self, axes: Sequence[int]) -> Self:
+        """
+        Combine multiple adjacent axes into a single one on all images. Useful for recombining
+        after splitting for timesteps.
+
+        args:
+            axes: the axes to recombine
+
+        returns:
+            a MultiImage that has been reshaped
+        """
+        assert list(axes) == list(range(axes[0], axes[-1] + 1))
+        out = self.empty()
+        for (k, parity), image_block in self.items():
+            out.append(
+                k,
+                parity,
+                image_block.reshape(
+                    image_block.shape[: axes[0]] + (-1,) + image_block.shape[axes[-1] + 1 :]
+                ),
+            )
+
+        return out
+
     def get_signature(self: Self) -> Signature:
         """
         Get a tuple of ( ((k,p),channels), ((k,p),channels), ...). Channels is the last axis prior
@@ -685,6 +802,57 @@ class MultiImage:
                 self.D,
                 self.is_torus,
             )
+
+    def plot(
+        self: Self,
+        rows_axis: int = 0,
+        cols_axis: int = 1,
+        fig: Optional[matplotlib.figure.Figure] = None,
+        axes: Any = None,
+        row_titles: list = [],
+        col_titles: list = [],
+        colorbar: bool = False,
+    ) -> tuple[matplotlib.figure.Figure, Any]:
+        """
+        Plot a MultiImage. This implicitly assumes that the MultiImage has at least two axes that
+        aren't the spatial ones.
+
+        Plot all timesteps of a particular component of two MultiImages, and the differences between them.
+        args:
+            test_multi_image: the predicted MultiImage
+            actual_multi_image: the ground truth MultiImage
+            save_loc: file location to save the image
+            future_steps: the number future time steps in the MultiImage
+            component: index of the component to plot, default to 0
+            show_power: whether to also plot the power spectrum
+            title: additional str to add to title, will be "test {title} {col}"
+                "actual {title} {col}"
+            minimal: if minimal, no titles, colorbars, or axes labels
+        """
+        assert (0, 0) in self, "MultiImage::plot: Currently only plots scalar multi images."
+
+        # move the rows axis to the first axis, and the cols axis to the second
+        image_block = jnp.moveaxis(self[(0, 0)], (rows_axis, cols_axis), (0, 1))
+        nrows = image_block.shape[0]
+        ncols = image_block.shape[1]
+        if fig is None or axes is None:
+            fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(6 * ncols, 6 * nrows))
+
+        vmax = float(jnp.max(jnp.abs(image_block)))
+        vmin = -1 * vmax
+
+        # figsize is 6 per col, 6 per row, (cols,rows)
+        for i, row_title in zip(range(nrows), row_titles):
+            for j, col_title in zip(range(ncols), col_titles):
+                if row_title and col_title:
+                    title = f"{row_title} {col_title}"
+                else:
+                    title = f"{row_title}{col_title}"
+                GeometricImage(image_block[i, j], 0, self.D, self.is_torus).plot(
+                    axes[i, j], title, vmin=vmin, vmax=vmax, colorbar=colorbar
+                )
+
+        return fig, axes
 
     # JAX helpers
     def tree_flatten(self):

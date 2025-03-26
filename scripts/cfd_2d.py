@@ -405,14 +405,14 @@ def train_and_eval(
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
-        "--plot_component",
+        "--plot-component",
         help="which component to plot, one of 0-3",
         type=int,
         default=0,
         choices=[0, 1, 2, 3],
     )
     parser.add_argument(
-        "--rollout_steps",
+        "--rollout-steps",
         help="number of steps to rollout in test",
         type=int,
         default=5,
@@ -762,7 +762,7 @@ for i in range(len(model_list) // 2):
 print("\n")
 
 if args.images_dir:
-    for i, (model_name, _) in enumerate(model_list):
+    for i, (model_name, _, _) in enumerate(model_list):
         label, color, marker, linestyle = plot_mapping[model_name]
         plt.plot(
             jnp.arange(1, 1 + args.rollout_steps),

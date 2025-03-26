@@ -4,6 +4,7 @@ import argparse
 import numpy as np
 from functools import partial
 import xarray as xr
+import matplotlib.pyplot as plt
 from typing_extensions import Optional, Union
 
 import jax.numpy as jnp
@@ -197,7 +198,6 @@ def read_all_seeds(
 def make_constant_fields(
     orography: Optional[geom.MultiImage],
     lats: jax.Array,
-    lons: jax.Array,
     is_torus: Union[bool, tuple[bool, ...]],
     spatial_dims: tuple[int, ...],
     normalize: bool,
@@ -223,7 +223,6 @@ def make_constant_fields(
     """
     # make it (1,192,96)
     lats_field = jnp.full((1,) + spatial_dims, lats[None, None])
-    lons_field = jnp.full((1,) + spatial_dims, lons[None, ..., None])
 
     constant_fields = geom.MultiImage({}, D, is_torus)
 
@@ -241,10 +240,8 @@ def make_constant_fields(
     if include_lats:
         if normalize:
             constant_fields.append(0, 0, (lats_field - jnp.mean(lats_field)) / jnp.std(lats_field))
-            constant_fields.append(0, 0, (lons_field - jnp.mean(lons_field)) / jnp.std(lons_field))
         else:
             constant_fields.append(0, 0, lats_field)
-            constant_fields.append(0, 0, lons_field)
 
     if include_metric_tensor:
         sin_squared_lats = (jnp.sin(lats) ** 2).reshape((96, 1, 1))
@@ -396,25 +393,25 @@ def get_data(
         train, val, test one step, and test rollout input and output multi images. Also a multi
         image of the constant fields.
     """
-    uv, pres, lats, lons = get_torch_harmonics_data(data_dir, n_train + n_val + n_test)
-    train_uv = uv[:n_train]
-    train_pres = pres[:n_train]
-    train_vor = None  # for now
-    train_div = None
+    # uv, pres, lats, _ = get_torch_harmonics_data(data_dir, n_train + n_val + n_test)
+    # train_uv = uv[:n_train]
+    # train_pres = pres[:n_train]
+    # train_vor = None  # for now
+    # train_div = None
 
-    val_uv = uv[n_train : n_train + n_val]
-    val_pres = pres[n_train : n_train + n_val]
-    val_vor = None
-    val_div = None
+    # val_uv = uv[n_train : n_train + n_val]
+    # val_pres = pres[n_train : n_train + n_val]
+    # val_vor = None
+    # val_div = None
 
-    test_uv = uv[n_train + n_val :]
-    test_pres = pres[n_train + n_val :]
-    test_vor = None
-    test_div = None
+    # test_uv = uv[n_train + n_val :]
+    # test_pres = pres[n_train + n_val :]
+    # test_vor = None
+    # test_div = None
 
-    # train_uv, train_pres, train_vor, train_div, lats = read_all_seeds(data_dir, n_train, "train")
-    # val_uv, val_pres, val_vor, val_div, _ = read_all_seeds(data_dir, n_val, "valid")
-    # test_uv, test_pres, test_vor, test_div, _ = read_all_seeds(data_dir, n_test, "test")
+    train_uv, train_pres, train_vor, train_div, lats = read_all_seeds(data_dir, n_train, "train")
+    val_uv, val_pres, val_vor, val_div, _ = read_all_seeds(data_dir, n_val, "valid")
+    test_uv, test_pres, test_vor, test_div, _ = read_all_seeds(data_dir, n_test, "test")
 
     if normalize:
         pres_mean = jnp.mean(jnp.concatenate([train_pres, val_pres]))
@@ -423,16 +420,16 @@ def get_data(
         val_pres = (val_pres - pres_mean) / pres_std
         test_pres = (test_pres - pres_mean) / pres_std
 
-        # vor_std = jnp.std(jnp.concatenate([train_vor, val_vor]))
-        # train_vor = train_vor / vor_std
-        # val_vor = val_vor / vor_std
-        # test_vor = test_vor / vor_std
+        vor_std = jnp.std(jnp.concatenate([train_vor, val_vor]))
+        train_vor = train_vor / vor_std
+        val_vor = val_vor / vor_std
+        test_vor = test_vor / vor_std
 
-        # div_mean = jnp.mean(jnp.concatenate([train_div, val_div]))
-        # div_std = jnp.std(jnp.concatenate([train_div, val_div]))
-        # train_div = (train_div - div_mean) / div_std
-        # val_div = (val_div - div_mean) / div_std
-        # test_div = (test_div - div_mean) / div_std
+        div_mean = jnp.mean(jnp.concatenate([train_div, val_div]))
+        div_std = jnp.std(jnp.concatenate([train_div, val_div]))
+        train_div = (train_div - div_mean) / div_std
+        val_div = (val_div - div_mean) / div_std
+        test_div = (test_div - div_mean) / div_std
 
         uv_std = jnp.std(jnp.concatenate([train_uv, val_uv]))
         train_uv = train_uv / uv_std
@@ -451,7 +448,6 @@ def get_data(
     constant_fields = make_constant_fields(
         orography,
         lats,
-        lons,
         is_torus,
         spatial_dims,
         normalize,
@@ -532,7 +528,7 @@ def map_and_loss(
     multi_image_x: geom.MultiImage,
     multi_image_y: geom.MultiImage,
     aux_data: Optional[eqx.nn.State] = None,
-    future_steps: int = 1,
+    rollout_steps: int = 1,
     return_map: bool = False,
     constant_fields: dict[tuple[int, int], int] = {},
 ) -> Union[
@@ -551,12 +547,12 @@ def map_and_loss(
         aux_data,
         2,  # TODO: fix this
         # multi_image_x[(1, 0)].shape[1],  # past_steps
-        future_steps,
+        rollout_steps,
         constant_fields,
     )
 
-    loss = ml.timestep_smse_loss(out, multi_image_y, future_steps)
-    loss = loss[0] if future_steps == 1 else loss
+    loss = ml.timestep_smse_loss(out, multi_image_y, rollout_steps)
+    loss = loss[0] if rollout_steps == 1 else loss
 
     return (loss, aux_data, out) if return_map else (loss, aux_data)
 
@@ -644,49 +640,6 @@ def train_and_eval(
             aux_data=batch_stats,
         )
 
-        print("train:", train_loss)
-        print("val:", val_loss)
-
-        sorted_operators = np.stack(geom.make_all_operators(D))[[0, 5, 3, 6, 1, 2, 7, 4]]
-        # names = [
-        #     'Identity',
-        #     r'Rot $90^{}$'.format('{\circ}'),
-        #     r'Rot $180^{}$'.format('{\circ}'),
-        #     r'Rot $270^{}$'.format('{\circ}'),
-        #     'Flip over X',
-        #     'Flip over Y',
-        #     r'Rot $90^{}$, Flip X'.format('{\circ}'),
-        #     r'Rot $270^{}$, Flip X'.format('{\circ}'),
-        # ]
-
-        ops = [sorted_operators[0], sorted_operators[2], sorted_operators[4], sorted_operators[5]]
-        print(ops)
-        ga_model = models.GroupAverage(model, ops)
-
-        key, subkey1, subkey2 = random.split(key, num=3)
-        train_loss = ml.map_loss_in_batches(
-            map_and_loss_f,
-            ga_model,
-            train_X,
-            train_Y,
-            batch_size,
-            subkey1,
-            aux_data=batch_stats,
-        )
-        val_loss = ml.map_loss_in_batches(
-            map_and_loss_f,
-            ga_model,
-            val_X,
-            val_Y,
-            batch_size,
-            subkey2,
-            aux_data=batch_stats,
-        )
-
-        print("ga train:", train_loss)
-        print("ga val:", val_loss)
-        exit()
-
     key, subkey = random.split(key)
     test_loss = ml.map_loss_in_batches(
         map_and_loss_f,
@@ -701,7 +654,7 @@ def train_and_eval(
 
     key, subkey = random.split(key)
     test_rollout_loss, rollout_multi_image = ml.map_plus_loss_in_batches(
-        partial(map_and_loss_f, future_steps=rollout_steps, return_map=True),
+        partial(map_and_loss_f, rollout_steps=rollout_steps, return_map=True),
         model,
         test_rollout_X,
         test_rollout_Y,
@@ -711,6 +664,72 @@ def train_and_eval(
     )
     print(f"Test Rollout Loss: {test_rollout_loss}, Sum: {jnp.sum(test_rollout_loss)}")
 
+    if images_dir is not None:
+        pred = rollout_multi_image.get_one().batch_get_component(plot_component, rollout_steps)
+        target = test_rollout_Y.get_one().batch_get_component(plot_component, rollout_steps)
+        diff = (target - pred).norm()
+        combined_multi_image = pred.concat(target).concat(diff)
+
+        components = ["pressure", "velocity_x", "velocity_y"]
+        field_name = components[plot_component]
+
+        fig, _ = combined_multi_image.plot(
+            row_titles=[f"pred {field_name}", f"target {field_name}", f"diff {field_name}"],
+            col_titles=list(range(rollout_steps)),
+        )
+
+        plt.tight_layout()
+        plt.savefig(f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}_rollout.png")
+        plt.close(fig)
+
+    key, subkey = random.split(key)
+    test_rollout_loss, rollout_multi_image = ml.map_plus_loss_in_batches(
+        partial(map_and_loss_f, rollout_steps=rollout_steps, return_map=True),
+        models.GroupAverage(model, geom.make_all_operators(D)[:4]),
+        test_rollout_X,
+        test_rollout_Y,
+        batch_size,
+        subkey,
+        aux_data=batch_stats,
+    )
+    print(f"Test Rollout Loss: {test_rollout_loss}, Sum: {jnp.sum(test_rollout_loss)}")
+
+    if images_dir is not None:
+        pred = rollout_multi_image.get_one().batch_get_component(plot_component, rollout_steps)
+        target = test_rollout_Y.get_one().batch_get_component(plot_component, rollout_steps)
+        diff = (target - pred).norm()
+        combined_multi_image = pred.concat(target).concat(diff)
+
+        components = ["pressure", "velocity_x", "velocity_y"]
+        field_name = components[plot_component]
+
+        fig, _ = combined_multi_image.plot(
+            row_titles=[f"ga pred {field_name}", f"target {field_name}", f"diff {field_name}"],
+            col_titles=list(range(rollout_steps)),
+        )
+
+        plt.tight_layout()
+        plt.savefig(f"{images_dir}ga_{model_name}_L{train_X.get_L()}_e{epochs}_rollout.png")
+        plt.close(fig)
+
+        # plot_multi_image(
+        #     rollout_multi_image.get_one(),
+        #     test_rollout_Y.get_one(),
+        #     f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}_rollout.png",
+        #     rollout_steps=rollout_steps,
+        #     component=plot_component,
+        #     show_power=True,
+        #     title=f"{components[plot_component]}",
+        # )
+        # plot_timestep_power(
+        #     [rollout_multi_image, test_rollout_Y],
+        #     ["test", "actual"],
+        #     f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}_{components[plot_component]}_power_spectrum.png",
+        #     rollout_steps=rollout_steps,
+        #     component=plot_component,
+        #     title=f"{components[plot_component]}",
+        # )
+
     return train_loss, val_loss, test_loss, *test_rollout_loss
 
 
@@ -718,44 +737,44 @@ def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument("--past_steps", help="number of historical timesteps", type=int, default=2)
     parser.add_argument(
-        "--include_lats",
+        "--lats",
         help="include the latitudes as a scalar field input",
         action=argparse.BooleanOptionalAction,
         default=False,
     )
     parser.add_argument(
-        "--include_metric_tensor",
+        "--metric-tensor",
         help="include the metric tensor as an input tensor field",
         action=argparse.BooleanOptionalAction,
         default=False,
     )
     parser.add_argument(
-        "--include_coriolis",
+        "--coriolis",
         help="include the coriolis pseudoscalar field",
         action=argparse.BooleanOptionalAction,
         default=True,
     )
     parser.add_argument(
-        "--include_orography",
+        "--orography",
         help="include the orography map",
         action=argparse.BooleanOptionalAction,
         default=True,
     )
     parser.add_argument(
-        "--plot_component",
+        "--plot-component",
         help="which component to plot, one of 0-3",
         type=int,
         default=0,
         choices=[0, 1, 2, 3],
     )
     parser.add_argument(
-        "--rollout_steps",
+        "--rollout-steps",
         help="number of steps to rollout in test",
         type=int,
         default=5,
     )
     parser.add_argument(
-        "-pres_vor_form",
+        "-pres-vor-form",
         help="toggle to use pressure/vorticity form, rather than pressure/velocity form",
         action="store_true",
     )
@@ -794,10 +813,10 @@ data, constant_fields = get_data(
     args.normalize,
     args.pres_vor_form,
     args.subsample,
-    args.include_lats,
-    args.include_metric_tensor,
-    args.include_coriolis,
-    args.include_orography,
+    args.lats,
+    args.metric_tensor,
+    args.coriolis,
+    args.orography,
 )
 
 input_keys = data[0].get_signature()
@@ -865,23 +884,23 @@ models_ls = [
     #         **train_kwargs,
     #     },
     # ),
-    (
-        "dil_resnet_equiv20",
-        train_and_eval,
-        {
-            "model": models.DilResNet(
-                D,
-                input_keys,
-                output_keys,
-                depth=20,
-                conv_filters=conv_filters,
-                mid_keys=geom.Signature((((0, 0), 20), ((0, 1), 20), ((1, 0), 20), ((1, 1), 20))),
-                key=subkeys[1],
-            ),
-            "lr": 5e-4,
-            **train_kwargs,
-        },
-    ),
+    # (
+    #     "dil_resnet_equiv20",
+    #     train_and_eval,
+    #     {
+    #         "model": models.DilResNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=20,
+    #             conv_filters=conv_filters,
+    #             mid_keys=geom.Signature((((0, 0), 20), ((0, 1), 20), ((1, 0), 20), ((1, 1), 20))),
+    #             key=subkeys[1],
+    #         ),
+    #         "lr": 5e-4,
+    #         **train_kwargs,
+    #     },
+    # ),
     # (
     #     "dil_resnet_equiv48",
     #     train_and_eval,
@@ -899,23 +918,23 @@ models_ls = [
     #         **train_kwargs,
     #     },
     # ),
-    # (
-    #     "resnet",
-    #     train_and_eval,
-    #     {
-    #         "model": models.ResNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=128,
-    #             equivariant=False,
-    #             kernel_size=3,
-    #             key=subkeys[3],
-    #         ),
-    #         "lr": 1e-3,
-    #         **train_kwargs,
-    #     },
-    # ),
+    (
+        "resnet",
+        train_and_eval,
+        {
+            "model": models.ResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=128,
+                equivariant=False,
+                kernel_size=3,
+                key=subkeys[3],
+            ),
+            "lr": 1e-3,
+            **train_kwargs,
+        },
+    ),
     # (
     #     "resnet_equiv_groupnorm_42",
     #     train_and_eval,
@@ -1066,12 +1085,12 @@ results = ml.benchmark(
     lambda _: data,
     models_ls,
     subkey,
-    # "",
-    # [0],
-    # benchmark_type=ml.BENCHMARK_NONE,
-    "lr",
-    [1e-5, 5e-5, 1e-4, 3e-4],
-    benchmark_type=ml.BENCHMARK_MODEL,
+    "",
+    [0],
+    benchmark_type=ml.BENCHMARK_NONE,
+    # "lr",
+    # [1e-5, 5e-5, 1e-4, 3e-4],
+    # benchmark_type=ml.BENCHMARK_MODEL,
     num_results=4,
     num_trials=args.n_trials,
     is_wandb=args.wandb,

@@ -94,12 +94,11 @@ def get_batches(
 
 def autoregressive_step(
     input: geom.MultiImage,
-    one_step: geom.MultiImage,
     output: geom.MultiImage,
     past_steps: int,
     constant_fields_dict: dict[tuple[int, int], int] = {},
     future_steps: int = 1,
-) -> tuple[geom.MultiImage, geom.MultiImage]:
+) -> geom.MultiImage:
     """
     Given the input MultiImage, the next step of the model, and the output, update the input
     and output to be fed into the model next. MultiImages should have shape (channels,spatial,tensor).
@@ -107,90 +106,66 @@ def autoregressive_step(
 
     args:
         input: the input to the model
-        one_step: the model output at this step, assumed to be a single time step
-        output: the full output that we are building up
+        output: the model output at this step, assumed to be a single time step
         past_steps: the number of past time steps that are fed into the model
         constant_fields_dict: a map {key:n_constant_fields} for fields that don't depend on timestep
         future_steps: number of future steps that the model outputs, currently must be 1
 
     returns:
-        the new input and output
+        the new input
     """
     assert (
         future_steps == 1
     ), f"ml::autoregressive_step: future_steps must be 1, but found {future_steps}."
 
+    dynamic_input, constant_fields = input.concat_inverse(constant_fields_dict)
+    dynamic_input = dynamic_input.expand(0, past_steps)
+    output = output.expand(0, future_steps)
+
     new_input = input.empty()
-    new_output = output.empty()
-    constant_fields = input.empty()
-    for (k, parity), step_data in one_step.items():
-        img_shape = step_data.shape[1:]  # the shape of the image, spatial + tensor
-        exp_data = step_data.reshape((-1, future_steps) + img_shape)
-        n_channels = exp_data.shape[0]  # number of channels for the key, not timesteps
-
-        if ((k, parity) in constant_fields_dict) and constant_fields_dict[(k, parity)] > 0:
-            n_const_fields = constant_fields_dict[(k, parity)]
-            constant_fields.append(k, parity, input[(k, parity)][-n_const_fields:])
-            dynamic_input = input[(k, parity)][:-n_const_fields]
-        else:
-            dynamic_input = input[(k, parity)]
-
-        # get dynamic fields that were the input (c,past_steps,spatial,tensor)
-        exp_input = dynamic_input.reshape((-1, past_steps) + img_shape)
+    for (k, parity), output_image in output.items():
         new_input.append(
             k,
             parity,
-            jnp.concatenate([exp_input[:, 1:], exp_data], axis=1).reshape((-1,) + img_shape),
+            jnp.concatenate([dynamic_input[(k, parity)][:, future_steps:], output_image], axis=1),
         )
 
-        if (k, parity) in output:
-            exp_output = output[(k, parity)].reshape((n_channels, -1) + img_shape)
-            full_output = jnp.concatenate([exp_output, exp_data], axis=1).reshape((-1,) + img_shape)
-        else:
-            full_output = step_data
-
-        new_output.append(k, parity, full_output)
-
-    # add constant fields which don't have dynamic fields
-    for (k, parity), length in constant_fields_dict.items():
-        if (k, parity) not in new_input:
-            assert len(input[(k, parity)]) == length  # entire image type must be a constant field
-            constant_fields.append(k, parity, input[(k, parity)])
-
-    return new_input.concat(constant_fields), new_output
+    return new_input.combine_axes((0, 1)).concat(constant_fields)
 
 
+# TODO: THIS IS BUGGED!! Maybe test cfd?
 def autoregressive_map(
     model: models.MultiImageModule,
     x: geom.MultiImage,
     aux_data: Optional[eqx.nn.State] = None,
     past_steps: int = 1,
-    future_steps: int = 1,
+    autoregressive_steps: int = 1,
     constant_fields: dict[tuple[int, int], int] = {},
 ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
     """
-    Given a model, perform an autoregressive step (future_steps) times, and return the output
-    steps in a single MultiImage.
+    Given a model, perform an autoregressive step n times, and return the output
+    steps in a single MultiImage. Currently the model must output a single time step.
 
     args:
         model: model that operates on MultiImages
         x: the input MultiImage to map
         aux_data: auxilliary data to pass to the network
         past_steps: the number of past steps input to the autoregressive map
-        future_steps: how many times to loop through the autoregression
+        autoregressive_steps: how many times to loop through the autoregression
         constant_fields: data structure which explains which fields are constant fields
 
     returns:
         the output map with number of steps equal to future steps, and the aux_data
     """
-    assert callable(model)
-
+    future_steps = 1
     out_x = x.empty()  # assume out matches D and is_torus
-    for _ in range(future_steps):
-        learned_x, aux_data = model(x, aux_data)
-        x, out_x = autoregressive_step(x, learned_x, out_x, past_steps, constant_fields)
+    for _ in range(autoregressive_steps):
+        pred_x, aux_data = model(x, aux_data)
+        x = autoregressive_step(x, pred_x, past_steps, constant_fields)
 
-    return out_x, aux_data
+        out_x = out_x.concat(pred_x.expand(axis=0, size=future_steps), axis=1)
+
+    return out_x.combine_axes((0, 1)), aux_data
 
 
 def evaluate(

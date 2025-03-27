@@ -846,23 +846,23 @@ train_kwargs = {
 
 key, *subkeys = random.split(key, num=13)
 models_ls = [
-    # (
-    #     "dil_resnet64",
-    #     train_and_eval,
-    #     {
-    #         "model": models.DilResNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=64,
-    #             equivariant=False,
-    #             kernel_size=3,
-    #             key=subkeys[0],
-    #         ),
-    #         "lr": 1e-3,
-    #         **train_kwargs,
-    #     },
-    # ),
+    (
+        "dil_resnet64",
+        train_and_eval,
+        {
+            "model": models.DilResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=64,
+                equivariant=False,
+                kernel_size=3,
+                key=subkeys[0],
+            ),
+            "lr": 1e-3,
+            **train_kwargs,
+        },
+    ),
     # (
     #     "dil_resnet64_groupaveraged",
     #     train_and_eval,
@@ -894,10 +894,10 @@ models_ls = [
     #             output_keys,
     #             depth=20,
     #             conv_filters=conv_filters,
-    #             mid_keys=geom.Signature((((0, 0), 20), ((0, 1), 20), ((1, 0), 20), ((1, 1), 20))),
+    #             # mid_keys=geom.Signature((((0, 0), 20), ((0, 1), 20), ((1, 0), 20), ((1, 1), 20))),
     #             key=subkeys[1],
     #         ),
-    #         "lr": 5e-4,
+    #         "lr": 1e-4,
     #         **train_kwargs,
     #     },
     # ),
@@ -918,23 +918,23 @@ models_ls = [
     #         **train_kwargs,
     #     },
     # ),
-    (
-        "resnet",
-        train_and_eval,
-        {
-            "model": models.ResNet(
-                D,
-                input_keys,
-                output_keys,
-                depth=128,
-                equivariant=False,
-                kernel_size=3,
-                key=subkeys[3],
-            ),
-            "lr": 1e-3,
-            **train_kwargs,
-        },
-    ),
+    # (
+    #     "resnet",
+    #     train_and_eval,
+    #     {
+    #         "model": models.ResNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=128,
+    #             equivariant=False,
+    #             kernel_size=3,
+    #             key=subkeys[3],
+    #         ),
+    #         "lr": 1e-3,
+    #         **train_kwargs,
+    #     },
+    # ),
     # (
     #     "resnet_equiv_groupnorm_42",
     #     train_and_eval,

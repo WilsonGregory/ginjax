@@ -123,14 +123,23 @@ def autoregressive_step(
     output = output.expand(0, future_steps)
 
     new_input = input.empty()
-    for (k, parity), output_image in output.items():
-        new_input.append(
-            k,
-            parity,
-            jnp.concatenate([dynamic_input[(k, parity)][:, future_steps:], output_image], axis=1),
-        )
+    for k, parity in input.keys():
+        # its important to insert the keys in the same order
+        if (k, parity) in dynamic_input:
+            assert (k, parity) in output
 
-    return new_input.combine_axes((0, 1)).concat(constant_fields)
+            # (c,past_steps,spatial,tensor)
+            new_input_image = jnp.concatenate(
+                [dynamic_input[(k, parity)][:, future_steps:], output[(k, parity)]], axis=1
+            )
+            # (c*past_steps,spatial,tensor)
+            new_input_image = new_input_image.reshape((-1,) + new_input_image.shape[2:])
+            new_input.append(k, parity, new_input_image)
+
+        if (k, parity) in constant_fields:
+            new_input.append(k, parity, constant_fields[(k, parity)])
+
+    return new_input
 
 
 # TODO: THIS IS BUGGED!! Maybe test cfd?

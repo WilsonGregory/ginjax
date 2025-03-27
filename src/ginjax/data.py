@@ -89,13 +89,7 @@ def batch_time_series(
         delta_t,
         downsample,
     )
-    for key, image in multi_image_x.items():
-        multi_image_x[key] = image.reshape((-1,) + image.shape[2:])
-
-    for key, image in multi_image_y.items():
-        multi_image_y[key] = image.reshape((-1,) + image.shape[2:])
-
-    return multi_image_x, multi_image_y
+    return multi_image_x.combine_axes((0, 1)), multi_image_y.combine_axes((0, 1))
 
 
 def times_series_to_multi_images(
@@ -136,32 +130,23 @@ def times_series_to_multi_images(
 
     multi_image_x = dynamic_fields.empty()
     multi_image_y = dynamic_fields.empty()
-    for (k, parity), image in dynamic_fields.items():
-        image = image.reshape((-1, total_steps) + spatial_dims + (D,) * k)
+    for (k, parity), image in dynamic_fields.expand(0, total_steps).items():
         image = image[:, skip_initial:]
         n_channels = len(image)
 
         input_image = image[:, input_idxs].reshape(
-            (n_channels,) + (-1, past_steps) + spatial_dims + (D,) * k
+            (n_channels, -1, past_steps) + spatial_dims + (D,) * k
         )
         output_image = image[:, output_idxs].reshape(
-            (n_channels,) + (-1, future_steps) + spatial_dims + (D,) * k
+            (n_channels, -1, future_steps) + spatial_dims + (D,) * k
         )
 
-        multi_image_x.append(
-            k,
-            parity,
-            jnp.moveaxis(input_image, 1, 0).reshape(
-                (-1, n_channels * past_steps) + spatial_dims + (D,) * k
-            ),
-        )
-        multi_image_y.append(
-            k,
-            parity,
-            jnp.moveaxis(output_image, 1, 0).reshape(
-                (-1, n_channels * future_steps) + spatial_dims + (D,) * k
-            ),
-        )
+        # (c,b,timesteps,spatial,tensor) -> (b,c,timesteps,spatial,tensor)
+        multi_image_x.append(k, parity, jnp.moveaxis(input_image, 1, 0))
+        multi_image_y.append(k, parity, jnp.moveaxis(output_image, 1, 0))
+
+    multi_image_x = multi_image_x.combine_axes((1, 2))
+    multi_image_y = multi_image_y.combine_axes((1, 2))
 
     batch = len(next(iter(multi_image_x.values())))
     for (k, parity), image in constant_fields.items():

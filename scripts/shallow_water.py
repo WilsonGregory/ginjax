@@ -4,6 +4,7 @@ import argparse
 import numpy as np
 from functools import partial
 import xarray as xr
+import matplotlib.pyplot as plt
 from typing_extensions import Optional, Union
 
 import jax.numpy as jnp
@@ -83,8 +84,8 @@ def read_one_seed(
         vor = jax.device_put(dataset["vor"], jax.devices("cpu")[0])  # vorticity pseudoscalar
         div = jax.device_put(dataset["div"], jax.devices("cpu")[0])  # divergence scalar
 
-        lat = jax.device_put(dataset["lat"], jax.devices("cpu")[0])  # latitude degrees
-        # lon = jax.device_put(dataset["lon"], jax.devices("cpu")[0])  # longitude degrees
+        lat_degrees = jax.device_put(dataset["lat"], jax.devices("cpu")[0])  # latitude degrees
+        # lon_degrees = jax.device_put(dataset["lon"], jax.devices("cpu")[0])  # longitude degrees
     else:
         datals = os.path.join(data_dir, data_class, seed, "run*", "output.nc")
         dataset = xr.open_mfdataset(datals, concat_dim="b", combine="nested", parallel=True)  # dict
@@ -102,13 +103,21 @@ def read_one_seed(
 
         # all have shape (96,)
         # latitudes
-        lat = jax.device_put(jnp.array(dataset["lat"].to_numpy()), jax.devices("cpu")[0])
+        lat_degrees = jax.device_put(jnp.array(dataset["lat"].to_numpy()), jax.devices("cpu")[0])
         # longitudes
-        lon = jax.device_put(jnp.array(dataset["lon"].to_numpy()), jax.devices("cpu")[0])
+        lon_degrees = jax.device_put(jnp.array(dataset["lon"].to_numpy()), jax.devices("cpu")[0])
 
         jnp.save(
             target_file,
-            {"u": u, "v": v, "pres": pres, "vor": vor, "lat": lat, "lon": lon, "div": div},
+            {
+                "u": u,
+                "v": v,
+                "pres": pres,
+                "vor": vor,
+                "lat": lat_degrees,
+                "lon": lon_degrees,
+                "div": div,
+            },
         )
 
     # Data is loaded with shape (96,192), or (latitude,longitude) or (y,x). This means that the
@@ -120,6 +129,9 @@ def read_one_seed(
     pres = jnp.moveaxis(pres, -2, -1)
     vor = jnp.moveaxis(vor, -2, -1)
     div = jnp.moveaxis(div, -2, -1)
+
+    lat = (lat_degrees * jnp.pi) / 180
+    # lon = (lon_degrees * jnp.pi) / 180
 
     uv = jnp.stack([u[:, :, 0, ...], v[:, :, 0, ...]], axis=-1)
     return uv, pres, vor[:, :, 0, ...], div[:, :, 0, ...], lat
@@ -198,7 +210,7 @@ def make_constant_fields(
 
     args:
         orography: a multi image of the mountains, shape (1,spatial)
-        lats: array of the latitudes in degrees, (96,)
+        lats: array of the latitudes in radians, (96,)
         is_torus: toroidal structure of the images
         spatial_dims: spatial dimensions of the images
         normalize: whether to normalize in an equivariant way
@@ -220,7 +232,7 @@ def make_constant_fields(
         # add the coriolis as a pseudoscalar field.
         # From https://speedyweather.github.io/SpeedyWeather.jl/dev/ringgrids/#Indexing-RingGrids
         rotation = 7.29e-5  # this will get scaled away anyways
-        coriolis = 2 * rotation * jnp.sin((jnp.pi / 180) * lats_field)
+        coriolis = 2 * rotation * jnp.sin(lats_field)
         if normalize:
             coriolis = coriolis / jnp.std(coriolis)
 
@@ -230,8 +242,9 @@ def make_constant_fields(
             constant_fields.append(0, 0, (lats_field - jnp.mean(lats_field)) / jnp.std(lats_field))
         else:
             constant_fields.append(0, 0, lats_field)
+
     if include_metric_tensor:
-        sin_squared_lats = (jnp.sin((jnp.pi / 180) * lats) ** 2).reshape((96, 1, 1))
+        sin_squared_lats = (jnp.sin(lats) ** 2).reshape((96, 1, 1))
         bottom = sin_squared_lats * jnp.array([[0, 0], [0, 1]]).reshape((1, 2, 2))
         top = jnp.ones((96, 1, 1)) * jnp.array([[1, 0], [0, 0]]).reshape((1, 2, 2))
         metric = (top + bottom).reshape((1, 1, 96, 2, 2))  # (96,2,2) -> (1,1,96,2,2)
@@ -306,6 +319,31 @@ def get_data_multi_images(
     return multi_image_x, multi_image_y
 
 
+def get_torch_harmonics_data(
+    file: str, n_trajectories: int
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    dataset = jnp.load(file, allow_pickle=True).item()
+    # shape (b,timesteps,huv,lats,lons)
+    huv = jax.device_put(dataset["huv"], jax.devices("cpu")[0])  # height, u, v
+    lat = jax.device_put(dataset["lat"], jax.devices("cpu")[0])  # (96,), as radians pi/2 to -pi/2
+    lon = jax.device_put(dataset["lon"], jax.devices("cpu")[0])  # (192,) as radians 0 to 2pi
+
+    pres = huv[:, :, 0, ...]
+    u = huv[:, :, 1, ...]
+    v = huv[:, :, 2, ...]
+
+    # Data is loaded with shape (96,192), or (latitude,longitude) or (y,x). This means that the
+    # normal way we think of arrays, by rows then columns it will be layed out like a typical map.
+    # However, this is backwards of when we think of accessing elements [x,y] where the x-coordinate
+    # is the first and the y-coordinate is second. So we will flip them.
+    u = jnp.moveaxis(u, -2, -1)[:n_trajectories]
+    v = jnp.moveaxis(v, -2, -1)[:n_trajectories]
+    pres = jnp.moveaxis(pres, -2, -1)[:n_trajectories]
+
+    uv = jnp.stack([u, v], axis=-1)
+    return uv, pres, lat, lon
+
+
 def get_data(
     data_dir: str,
     n_train: int,
@@ -355,6 +393,22 @@ def get_data(
         train, val, test one step, and test rollout input and output multi images. Also a multi
         image of the constant fields.
     """
+    # uv, pres, lats, _ = get_torch_harmonics_data(data_dir, n_train + n_val + n_test)
+    # train_uv = uv[:n_train]
+    # train_pres = pres[:n_train]
+    # train_vor = None  # for now
+    # train_div = None
+
+    # val_uv = uv[n_train : n_train + n_val]
+    # val_pres = pres[n_train : n_train + n_val]
+    # val_vor = None
+    # val_div = None
+
+    # test_uv = uv[n_train + n_val :]
+    # test_pres = pres[n_train + n_val :]
+    # test_vor = None
+    # test_div = None
+
     train_uv, train_pres, train_vor, train_div, lats = read_all_seeds(data_dir, n_train, "train")
     val_uv, val_pres, val_vor, val_div, _ = read_all_seeds(data_dir, n_val, "valid")
     test_uv, test_pres, test_vor, test_div, _ = read_all_seeds(data_dir, n_test, "test")
@@ -387,7 +441,10 @@ def get_data(
     total_steps = train_uv.shape[1]
     spatial_dims = train_uv.shape[2:4]
 
-    orography = read_orography(D, is_torus, normalize, data_dir)
+    orography = None
+    if include_orography:
+        orography = read_orography(D, is_torus, normalize, data_dir)
+
     constant_fields = make_constant_fields(
         orography,
         lats,
@@ -471,7 +528,8 @@ def map_and_loss(
     multi_image_x: geom.MultiImage,
     multi_image_y: geom.MultiImage,
     aux_data: Optional[eqx.nn.State] = None,
-    future_steps: int = 1,
+    past_steps: int = 2,
+    rollout_steps: int = 1,
     return_map: bool = False,
     constant_fields: dict[tuple[int, int], int] = {},
 ) -> Union[
@@ -488,13 +546,13 @@ def map_and_loss(
         model,
         multi_image_x,
         aux_data,
-        multi_image_x[(1, 0)].shape[1],  # past_steps
-        future_steps,
+        past_steps,
+        rollout_steps,
         constant_fields,
     )
 
-    loss = ml.timestep_smse_loss(out, multi_image_y, future_steps)
-    loss = loss[0] if future_steps == 1 else loss
+    loss = ml.timestep_smse_loss(out, multi_image_y, rollout_steps)
+    loss = loss[0] if rollout_steps == 1 else loss
 
     return (loss, aux_data, out) if return_map else (loss, aux_data)
 
@@ -507,6 +565,7 @@ def train_and_eval(
     lr: float,
     batch_size: int,
     epochs: int,
+    past_steps: int,
     rollout_steps: int,
     save_model: Optional[str],
     load_model: Optional[str],
@@ -531,7 +590,7 @@ def train_and_eval(
 
     print(f"Model params: {models.count_params(model):,}")
 
-    map_and_loss_f = partial(map_and_loss, constant_fields=constant_fields)
+    map_and_loss_f = partial(map_and_loss, past_steps=past_steps, constant_fields=constant_fields)
 
     if load_model is None:
         steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
@@ -596,7 +655,7 @@ def train_and_eval(
 
     key, subkey = random.split(key)
     test_rollout_loss, rollout_multi_image = ml.map_plus_loss_in_batches(
-        partial(map_and_loss_f, future_steps=rollout_steps, return_map=True),
+        partial(map_and_loss_f, rollout_steps=rollout_steps, return_map=True),
         model,
         test_rollout_X,
         test_rollout_Y,
@@ -606,6 +665,24 @@ def train_and_eval(
     )
     print(f"Test Rollout Loss: {test_rollout_loss}, Sum: {jnp.sum(test_rollout_loss)}")
 
+    if images_dir is not None:
+        pred = rollout_multi_image.get_one().batch_get_component(plot_component, rollout_steps)
+        target = test_rollout_Y.get_one().batch_get_component(plot_component, rollout_steps)
+        diff = (target - pred).norm()
+        combined_multi_image = pred.concat(target).concat(diff)
+
+        components = ["pressure", "velocity_x", "velocity_y"]
+        field_name = components[plot_component]
+
+        fig, _ = combined_multi_image.plot(
+            row_titles=[f"pred {field_name}", f"target {field_name}", f"diff {field_name}"],
+            col_titles=list(range(rollout_steps)),
+        )
+
+        plt.tight_layout()
+        plt.savefig(f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}_rollout.png")
+        plt.close(fig)
+
     return train_loss, val_loss, test_loss, *test_rollout_loss
 
 
@@ -613,44 +690,44 @@ def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument("--past_steps", help="number of historical timesteps", type=int, default=2)
     parser.add_argument(
-        "--include_lats",
+        "--lats",
         help="include the latitudes as a scalar field input",
         action=argparse.BooleanOptionalAction,
         default=False,
     )
     parser.add_argument(
-        "--include_metric_tensor",
+        "--metric-tensor",
         help="include the metric tensor as an input tensor field",
         action=argparse.BooleanOptionalAction,
         default=False,
     )
     parser.add_argument(
-        "--include_coriolis",
+        "--coriolis",
         help="include the coriolis pseudoscalar field",
         action=argparse.BooleanOptionalAction,
         default=True,
     )
     parser.add_argument(
-        "--include_orography",
+        "--orography",
         help="include the orography map",
         action=argparse.BooleanOptionalAction,
         default=True,
     )
     parser.add_argument(
-        "--plot_component",
+        "--plot-component",
         help="which component to plot, one of 0-3",
         type=int,
         default=0,
         choices=[0, 1, 2, 3],
     )
     parser.add_argument(
-        "--rollout_steps",
+        "--rollout-steps",
         help="number of steps to rollout in test",
         type=int,
         default=5,
     )
     parser.add_argument(
-        "-pres_vor_form",
+        "-pres-vor-form",
         help="toggle to use pressure/vorticity form, rather than pressure/velocity form",
         action="store_true",
     )
@@ -689,10 +766,10 @@ data, constant_fields = get_data(
     args.normalize,
     args.pres_vor_form,
     args.subsample,
-    args.include_lats,
-    args.include_metric_tensor,
-    args.include_coriolis,
-    args.include_orography,
+    args.lats,
+    args.metric_tensor,
+    args.coriolis,
+    args.orography,
 )
 
 input_keys = data[0].get_signature()
@@ -709,6 +786,7 @@ upsample_filters = geom.get_invariant_filters(
 train_kwargs = {
     "batch_size": args.batch,
     "epochs": args.epochs,
+    "past_steps": args.past_steps,
     "rollout_steps": args.rollout_steps,
     "save_model": args.save_model,
     "load_model": args.load_model,
@@ -738,42 +816,44 @@ models_ls = [
             **train_kwargs,
         },
     ),
-    (
-        "dil_resnet64_groupaveraged",
-        train_and_eval,
-        {
-            "model": models.GroupAverage(
-                models.DilResNet(
-                    D,
-                    input_keys,
-                    output_keys,
-                    depth=64,
-                    equivariant=False,
-                    kernel_size=3,
-                    key=subkeys[0],
-                ),
-                group_actions,
-            ),
-            "lr": 1e-3,
-            **train_kwargs,
-        },
-    ),
-    (
-        "dil_resnet_equiv20",
-        train_and_eval,
-        {
-            "model": models.DilResNet(
-                D,
-                input_keys,
-                output_keys,
-                depth=20,
-                conv_filters=conv_filters,
-                key=subkeys[1],
-            ),
-            "lr": 1e-3,
-            **train_kwargs,
-        },
-    ),
+    # (
+    #     "dil_resnet64_groupaveraged",
+    #     train_and_eval,
+    #     {
+    #         "model": models.GroupAverage(
+    #             models.DilResNet(
+    #                 D,
+    #                 input_keys,
+    #                 output_keys,
+    #                 depth=64,
+    #                 equivariant=False,
+    #                 kernel_size=3,
+    #                 key=subkeys[0],
+    #             ),
+    #             group_actions,
+    #             always_average=True,
+    #         ),
+    #         "lr": 1e-3,
+    #         **train_kwargs,
+    #     },
+    # ),
+    # (
+    #     "dil_resnet_equiv20",
+    #     train_and_eval,
+    #     {
+    #         "model": models.DilResNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=20,
+    #             conv_filters=conv_filters,
+    #             # mid_keys=geom.Signature((((0, 0), 20), ((0, 1), 20), ((1, 0), 20), ((1, 1), 20))),
+    #             key=subkeys[1],
+    #         ),
+    #         "lr": 1e-4,
+    #         **train_kwargs,
+    #     },
+    # ),
     # (
     #     "dil_resnet_equiv48",
     #     train_and_eval,
@@ -784,6 +864,7 @@ models_ls = [
     #             output_keys,
     #             depth=48,
     #             conv_filters=conv_filters,
+    #             mid_keys=geom.Signature((((0, 0), 48), ((0, 1), 48), ((1, 0), 48), ((1, 1), 48))),
     #             key=subkeys[2],
     #         ),
     #         "lr": 1e-3,
@@ -960,6 +1041,9 @@ results = ml.benchmark(
     "",
     [0],
     benchmark_type=ml.BENCHMARK_NONE,
+    # "lr",
+    # [1e-5, 5e-5, 1e-4, 3e-4],
+    # benchmark_type=ml.BENCHMARK_MODEL,
     num_results=4,
     num_trials=args.n_trials,
     is_wandb=args.wandb,

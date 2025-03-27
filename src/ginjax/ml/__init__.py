@@ -25,6 +25,7 @@ from .training import (
     load as load,
     get_batches as get_batches,
     autoregressive_map as autoregressive_map,
+    autoregressive_step as autoregressive_step,
     map_loss_in_batches as map_loss_in_batches,
     map_plus_loss_in_batches as map_plus_loss_in_batches,
     train as train,

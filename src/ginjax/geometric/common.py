@@ -68,6 +68,20 @@ def make_all_operators(D: int) -> list[np.ndarray]:
     )
 
 
+def make_C2_group(D: int) -> list[np.ndarray]:
+    """
+    Construct the group C2 x C2 x ... x C2, D times. On a D-dimensional space this is the group
+    which flips each axis.
+
+    args:
+        D: the dimension of the space
+
+    returns:
+        the operators as a list of numpy arrays
+    """
+    return [np.diag(prod) for prod in it.product([1, -1], repeat=D)]
+
+
 # ------------------------------------------------------------------------------
 # PART 2: Use group averaging to find unique invariant filters.
 

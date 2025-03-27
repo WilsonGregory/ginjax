@@ -36,6 +36,7 @@ from .constants import (
 
 from .common import (
     make_all_operators as make_all_operators,
+    make_C2_group as make_C2_group,
     get_unique_invariant_filters as get_unique_invariant_filters,
     get_invariant_filters_dict as get_invariant_filters_dict,
     get_invariant_filters_list as get_invariant_filters_list,

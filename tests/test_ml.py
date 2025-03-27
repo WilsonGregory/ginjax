@@ -1,9 +1,25 @@
+from typing_extensions import Optional, Self, Union
+
 import jax.numpy as jnp
 from jax import random
 import jax
+import equinox as eqx
 
 import ginjax.geometric as geom
 import ginjax.ml as ml
+import ginjax.models as models
+
+
+# dummy module for testing autoregressive map
+class DummyModule(models.MultiImageModule):
+    def __call__(
+        self: Self, x: geom.MultiImage, aux_data: Optional[eqx.nn.State] = None
+    ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
+        out = x.empty()
+        for (k, parity), image_block in x.items():
+            out.append(k, parity, image_block[:1] + image_block[-1:])
+
+        return out, aux_data
 
 
 class TestMachineLearning:
@@ -99,80 +115,179 @@ class TestMachineLearning:
 
     def testAutoregressiveStep(self):
         past_steps = 4
+        future_steps = 1
         N = 5
         D = 2
 
         key = random.PRNGKey(0)
         key1, key2, key3, key4, key5, key6, key7 = random.split(key, 7)
 
+        # Basic example with scalar field
         data1 = random.normal(key1, shape=(past_steps,) + (N,) * D)
-
         input1 = geom.MultiImage({(0, 0): data1}, D)
-        one_step1 = geom.MultiImage({(0, 0): random.normal(key2, shape=(1,) + (N,) * D)}, D)
-
-        new_input, output = ml.training.autoregressive_step(
-            input1, one_step1, input1.empty(), past_steps
+        one_step1 = geom.MultiImage(
+            {(0, 0): random.normal(key2, shape=(future_steps,) + (N,) * D)}, D
         )
+
+        new_input = ml.training.autoregressive_step(input1, one_step1, past_steps)
         assert jnp.allclose(
             new_input[(0, 0)],
-            jnp.concatenate([input1[(0, 0)][1:], one_step1[(0, 0)]]),
+            jnp.concatenate([input1[(0, 0)][future_steps:], one_step1[(0, 0)]]),
         )
-        assert output == one_step1
 
+        # Example with scalar and vector field
         data2 = random.normal(key3, shape=(2 * past_steps,) + (N,) * D + (D,))
-
         input2 = geom.MultiImage({(0, 0): data1, (1, 0): data2}, D)
         one_step2 = geom.MultiImage(
             {
-                (0, 0): random.normal(key4, shape=(1,) + (N,) * D),
-                (1, 0): random.normal(key5, shape=(2,) + (N,) * D + (D,)),
+                (0, 0): random.normal(key4, shape=(1 * future_steps,) + (N,) * D),
+                (1, 0): random.normal(key5, shape=(2 * future_steps,) + (N,) * D + (D,)),
             },
             D,
         )
 
-        new_input, output = ml.training.autoregressive_step(
-            input2, one_step2, input2.empty(), past_steps
-        )
+        new_input = ml.training.autoregressive_step(input2, one_step2, past_steps)
         assert jnp.allclose(
             new_input[(0, 0)],
-            jnp.concatenate([input2[(0, 0)][1:], one_step2[(0, 0)]]),
+            jnp.concatenate([input2[(0, 0)][future_steps:], one_step2[(0, 0)]]),
         )
-        assert output == one_step2
-        assert jnp.allclose(new_input[(1, 0)][: past_steps - 1], input2[(1, 0)][1:past_steps])
-        assert jnp.allclose(new_input[(1, 0)][past_steps - 1], one_step2[(1, 0)][0])
-        assert jnp.allclose(new_input[(1, 0)][past_steps:-1], input2[(1, 0)][past_steps + 1 :])
-        assert jnp.allclose(new_input[(1, 0)][-1], one_step2[(1, 0)][1])
+        new_input_exp = new_input.expand(0, past_steps)[(1, 0)]  # (c,past_steps,spatial,tensor)
+        input_exp = input2.expand(0, past_steps)[(1, 0)]
+        step_exp = one_step2.expand(0, future_steps)[(1, 0)]
+        assert jnp.allclose(new_input_exp[:, :-future_steps], input_exp[:, future_steps:])
+        assert jnp.allclose(new_input_exp[:, -future_steps:], step_exp)
 
+        # Example with constant scalar and vector fields
         constant_field1 = random.normal(key6, shape=(1,) + (N,) * D)
         constant_field2 = random.normal(key7, shape=(1,) + (N,) * D + (D,))
 
         input3 = input2.concat(
             geom.MultiImage({(0, 0): constant_field1, (1, 0): constant_field2}, D)
         )
-        new_input, output = ml.training.autoregressive_step(
-            input3, one_step2, input3.empty(), past_steps, {(0, 0): 1, (1, 0): 1}
+        new_input = ml.training.autoregressive_step(
+            input3, one_step2, past_steps, {(0, 0): 1, (1, 0): 1}
         )
         assert jnp.allclose(
             new_input[(0, 0)],
-            jnp.concatenate([input3[(0, 0)][1:-1], one_step2[(0, 0)], constant_field1]),
+            jnp.concatenate(
+                [input3[(0, 0)][future_steps:-future_steps], one_step2[(0, 0)], constant_field1]
+            ),
         )
-        assert output == one_step2
-        assert jnp.allclose(new_input[(1, 0)][: past_steps - 1], input3[(1, 0)][1:past_steps])
-        assert jnp.allclose(new_input[(1, 0)][past_steps - 1], one_step2[(1, 0)][0])
-        assert jnp.allclose(new_input[(1, 0)][past_steps:-2], input3[(1, 0)][past_steps + 1 : -1])
-        assert jnp.allclose(new_input[(1, 0)][-2], one_step2[(1, 0)][1])
-        assert jnp.allclose(new_input[(1, 0)][-1:], constant_field2)
+        input_dynamic_fields, _ = input3.concat_inverse({(0, 0): 1, (1, 0): 1})
+        new_dynamic_fields, new_const_fields = new_input.concat_inverse({(0, 0): 1, (1, 0): 1})
+
+        new_input_exp = new_dynamic_fields.expand(0, past_steps)[
+            (1, 0)
+        ]  # (c,past_steps,spatial,tensor)
+        input_exp = input_dynamic_fields.expand(0, past_steps)[(1, 0)]
+        step_exp = one_step2.expand(0, future_steps)[(1, 0)]
+        assert jnp.allclose(new_input_exp[:, :-future_steps], input_exp[:, future_steps:])
+        assert jnp.allclose(new_input_exp[:, -future_steps:], step_exp)
+        assert jnp.allclose(new_const_fields[(1, 0)], constant_field2)
 
         # test when there is a field which is only constant
         input4 = input1.concat(
             geom.MultiImage({(0, 0): constant_field1, (1, 0): constant_field2}, D)
         )
-        new_input, output = ml.training.autoregressive_step(
-            input4, one_step1, input4.empty(), past_steps, {(0, 0): 1, (1, 0): 1}
+        new_input = ml.training.autoregressive_step(
+            input4, one_step1, past_steps, {(0, 0): 1, (1, 0): 1}
         )
         assert jnp.allclose(
             new_input[(0, 0)],
-            jnp.concatenate([input4[(0, 0)][1:-1], one_step1[(0, 0)], constant_field1]),
+            jnp.concatenate(
+                [input4[(0, 0)][future_steps:-future_steps], one_step1[(0, 0)], constant_field1]
+            ),
         )
-        assert jnp.allclose(new_input[(1, 0)], constant_field2)
-        assert output == one_step1
+        new_dynamic_fields, new_const_fields = new_input.concat_inverse({(0, 0): 1, (1, 0): 1})
+        assert (1, 0) not in new_dynamic_fields
+        assert jnp.allclose(new_const_fields[(1, 0)], constant_field2)
+
+    def testAutoregressiveMap(self):
+        past_steps = 4
+        N = 5
+        D = 2
+
+        key = random.PRNGKey(0)
+
+        # Test an input image with constant fields for each image type
+        key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
+        x = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(past_steps,) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(past_steps,) + (N,) * D + (D,)),
+            },
+            D,
+        )
+        constant_fields = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey3, shape=(1,) + (N,) * D),
+                (1, 0): random.normal(subkey4, shape=(1,) + (N,) * D + (D,)),
+            },
+            D,
+        )
+        x = x.concat(constant_fields)
+
+        model = DummyModule()
+        out, _ = ml.autoregressive_map(model, x, None, past_steps, 5, {(0, 0): 1, (1, 0): 1})
+        assert len(out[(0, 0)]) == 5
+        assert jnp.allclose(out[(0, 0)][0], x[(0, 0)][0] + constant_fields[(0, 0)])
+        assert jnp.allclose(out[(0, 0)][1], x[(0, 0)][1] + constant_fields[(0, 0)])
+        assert jnp.allclose(out[(0, 0)][2], x[(0, 0)][2] + constant_fields[(0, 0)])
+        assert jnp.allclose(out[(0, 0)][3], x[(0, 0)][3] + constant_fields[(0, 0)])
+        assert jnp.allclose(
+            out[(0, 0)][4], x[(0, 0)][0] + constant_fields[(0, 0)] + constant_fields[(0, 0)]
+        )
+
+        assert len(out[(1, 0)]) == 5
+        assert jnp.allclose(out[(1, 0)][0], x[(1, 0)][0] + constant_fields[(1, 0)])
+        assert jnp.allclose(out[(1, 0)][1], x[(1, 0)][1] + constant_fields[(1, 0)])
+        assert jnp.allclose(out[(1, 0)][2], x[(1, 0)][2] + constant_fields[(1, 0)])
+        assert jnp.allclose(out[(1, 0)][3], x[(1, 0)][3] + constant_fields[(1, 0)])
+        assert jnp.allclose(
+            out[(1, 0)][4], x[(1, 0)][0] + constant_fields[(1, 0)] + constant_fields[(1, 0)]
+        )
+
+        # Test when constant fields only has 1 constant field
+        key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
+        x = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(past_steps,) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(past_steps,) + (N,) * D + (D,)),
+            },
+            D,
+        )
+        constant_fields = geom.MultiImage(
+            {(0, 0): random.normal(subkey3, shape=(1,) + (N,) * D)}, D
+        )
+        x = x.concat(constant_fields)
+
+        model = DummyModule()
+        out, _ = ml.autoregressive_map(model, x, None, past_steps, 5, {(0, 0): 1})
+        assert len(out[(0, 0)]) == 5
+        assert jnp.allclose(out[(0, 0)][0], x[(0, 0)][0] + constant_fields[(0, 0)])
+        assert jnp.allclose(out[(0, 0)][1], x[(0, 0)][1] + constant_fields[(0, 0)])
+        assert jnp.allclose(out[(0, 0)][2], x[(0, 0)][2] + constant_fields[(0, 0)])
+        assert jnp.allclose(out[(0, 0)][3], x[(0, 0)][3] + constant_fields[(0, 0)])
+        assert jnp.allclose(
+            out[(0, 0)][4], x[(0, 0)][0] + constant_fields[(0, 0)] + constant_fields[(0, 0)]
+        )
+
+        assert len(out[(1, 0)]) == 5
+        assert jnp.allclose(out[(1, 0)][0], x[(1, 0)][0] + x[(1, 0)][3])
+        assert jnp.allclose(out[(1, 0)][1], x[(1, 0)][1] + x[(1, 0)][0] + x[(1, 0)][3])
+        assert jnp.allclose(
+            out[(1, 0)][2], x[(1, 0)][2] + x[(1, 0)][1] + x[(1, 0)][0] + x[(1, 0)][3]
+        )
+        assert jnp.allclose(
+            out[(1, 0)][3], x[(1, 0)][3] + x[(1, 0)][2] + x[(1, 0)][1] + x[(1, 0)][0] + x[(1, 0)][3]
+        )
+        assert jnp.allclose(
+            out[(1, 0)][4],
+            x[(1, 0)][0]
+            + x[(1, 0)][3]
+            + x[(1, 0)][3]
+            + x[(1, 0)][2]
+            + x[(1, 0)][1]
+            + x[(1, 0)][0]
+            + x[(1, 0)][3],
+        )

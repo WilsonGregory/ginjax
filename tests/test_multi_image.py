@@ -294,6 +294,74 @@ class TestMultiImage:
         with pytest.raises(TypeError):
             assert multi_image7 + multi_image8
 
+    def testSub(self):
+        key = random.PRNGKey(time.time_ns())
+        D = 2
+        N = 5
+        channels = 4
+
+        key, subkey1, subkey2, subkey3, subkey4, subkey5, subkey6, subkey7, subkey8 = random.split(
+            key, 9
+        )
+
+        multi_image1 = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=((channels,) + (N,) * D + (D,) * 0)),
+                (1, 0): random.normal(subkey2, shape=((channels,) + (N,) * D + (D,) * 1)),
+            },
+            D,
+            True,
+        )
+
+        multi_image2 = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey3, shape=((channels,) + (N,) * D + (D,) * 0)),
+                (1, 0): random.normal(subkey4, shape=((channels,) + (N,) * D + (D,) * 1)),
+            },
+            D,
+            True,
+        )
+
+        multi_image3 = multi_image1 - multi_image2
+        multi_image4 = geom.MultiImage(
+            {
+                (0, 0): multi_image1[(0, 0)] - multi_image2[(0, 0)],
+                (1, 0): multi_image1[(1, 0)] - multi_image2[(1, 0)],
+            },
+            D,
+            True,
+        )
+
+        assert multi_image3 == multi_image4
+
+        # mismatched multi_image types
+        multi_image5 = geom.MultiImage(
+            {(0, 0): random.normal(subkey5, shape=((channels,) + (N,) * D + (D,) * 0))},
+            D,
+            True,
+        )
+        multi_image6 = geom.MultiImage(
+            {(1, 0): random.normal(subkey6, shape=((channels,) + (N,) * D + (D,) * 1))},
+            D,
+            True,
+        )
+        with pytest.raises(AssertionError):
+            assert multi_image5 - multi_image6
+
+        # mismatched number of channels
+        multi_image7 = geom.MultiImage(
+            {(0, 0): random.normal(subkey7, shape=((channels + 1,) + (N,) * D + (D,) * 0))},
+            D,
+            True,
+        )
+        multi_image8 = geom.MultiImage(
+            {(0, 0): random.normal(subkey8, shape=((channels,) + (N,) * D + (D,) * 0))},
+            D,
+            True,
+        )
+        with pytest.raises(TypeError):
+            assert multi_image7 - multi_image8
+
     def testMul(self):
         key = random.PRNGKey(0)
         channels = 3
@@ -578,6 +646,30 @@ class TestMultiImage:
         assert jnp.allclose(images[11].data, multi_image[(2, 0)][2])
         assert images[11].parity == 0
 
+    def testExpandCombine(self):
+        D = 2
+        N = 5
+        timesteps = 3
+        key = random.PRNGKey(0)
+
+        key, subkey1, subkey2 = random.split(key, num=3)
+        image1 = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(2 * timesteps,) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(3 * timesteps,) + (N,) * D + (D,)),
+            },
+            D,
+        )
+        image1_expand = image1.expand(0, timesteps)
+        assert jnp.allclose(
+            image1_expand[(0, 0)], image1[(0, 0)].reshape((2, timesteps) + (N,) * D)
+        )
+        assert jnp.allclose(
+            image1_expand[(1, 0)], image1[(1, 0)].reshape((3, timesteps) + (N,) * D + (D,))
+        )
+
+        assert image1 == image1_expand.combine_axes((0, 1))
+
     def testGetSignature(self):
         D = 2
         N = 5
@@ -817,6 +909,38 @@ class TestBatchMultiImage:
             multi_image6[(1, 0)],
             jnp.concatenate([multi_image4[(1, 0)], multi_image5[(1, 0)]], axis=1),
         )
+
+    def testConcatInverse(self):
+        key = random.PRNGKey(time.time_ns())
+        D = 2
+        N = 5
+
+        key, subkey1, subkey2, subkey3, subkey4 = random.split(key, 5)
+        multi_image1 = geom.MultiImage(
+            {
+                (1, 0): random.normal(subkey1, shape=((5, 10) + (N,) * D + (D,) * 1)),
+                (2, 0): random.normal(subkey2, shape=((5, 3) + (N,) * D + (D,) * 2)),
+            },
+            D,
+            True,
+        )
+        multi_image2 = geom.MultiImage(
+            {
+                (1, 0): random.normal(subkey3, shape=((5, 10) + (N,) * D + (D,) * 1)),
+                (2, 0): random.normal(subkey4, shape=((5, 3) + (N,) * D + (D,) * 2)),
+            },
+            D,
+            True,
+        )
+        a, b = multi_image1.concat(multi_image2, axis=1).concat_inverse(
+            multi_image2.get_signature(), axis=1
+        )
+        assert a == multi_image1
+        assert b == multi_image2
+
+        a, b = multi_image1.concat(multi_image2).concat_inverse({(1, 0): 5, (2, 0): 5})
+        assert a == multi_image1
+        assert b == multi_image2
 
     def testSize(self):
         D = 2

@@ -528,6 +528,7 @@ def map_and_loss(
     multi_image_x: geom.MultiImage,
     multi_image_y: geom.MultiImage,
     aux_data: Optional[eqx.nn.State] = None,
+    past_steps: int = 2,
     rollout_steps: int = 1,
     return_map: bool = False,
     constant_fields: dict[tuple[int, int], int] = {},
@@ -545,8 +546,7 @@ def map_and_loss(
         model,
         multi_image_x,
         aux_data,
-        2,  # TODO: fix this
-        # multi_image_x[(1, 0)].shape[1],  # past_steps
+        past_steps,
         rollout_steps,
         constant_fields,
     )
@@ -565,6 +565,7 @@ def train_and_eval(
     lr: float,
     batch_size: int,
     epochs: int,
+    past_steps: int,
     rollout_steps: int,
     save_model: Optional[str],
     load_model: Optional[str],
@@ -589,7 +590,7 @@ def train_and_eval(
 
     print(f"Model params: {models.count_params(model):,}")
 
-    map_and_loss_f = partial(map_and_loss, constant_fields=constant_fields)
+    map_and_loss_f = partial(map_and_loss, past_steps=past_steps, constant_fields=constant_fields)
 
     if load_model is None:
         steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
@@ -681,54 +682,6 @@ def train_and_eval(
         plt.tight_layout()
         plt.savefig(f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}_rollout.png")
         plt.close(fig)
-
-    key, subkey = random.split(key)
-    test_rollout_loss, rollout_multi_image = ml.map_plus_loss_in_batches(
-        partial(map_and_loss_f, rollout_steps=rollout_steps, return_map=True),
-        models.GroupAverage(model, geom.make_all_operators(D)[:4]),
-        test_rollout_X,
-        test_rollout_Y,
-        batch_size,
-        subkey,
-        aux_data=batch_stats,
-    )
-    print(f"Test Rollout Loss: {test_rollout_loss}, Sum: {jnp.sum(test_rollout_loss)}")
-
-    if images_dir is not None:
-        pred = rollout_multi_image.get_one().batch_get_component(plot_component, rollout_steps)
-        target = test_rollout_Y.get_one().batch_get_component(plot_component, rollout_steps)
-        diff = (target - pred).norm()
-        combined_multi_image = pred.concat(target).concat(diff)
-
-        components = ["pressure", "velocity_x", "velocity_y"]
-        field_name = components[plot_component]
-
-        fig, _ = combined_multi_image.plot(
-            row_titles=[f"ga pred {field_name}", f"target {field_name}", f"diff {field_name}"],
-            col_titles=list(range(rollout_steps)),
-        )
-
-        plt.tight_layout()
-        plt.savefig(f"{images_dir}ga_{model_name}_L{train_X.get_L()}_e{epochs}_rollout.png")
-        plt.close(fig)
-
-        # plot_multi_image(
-        #     rollout_multi_image.get_one(),
-        #     test_rollout_Y.get_one(),
-        #     f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}_rollout.png",
-        #     rollout_steps=rollout_steps,
-        #     component=plot_component,
-        #     show_power=True,
-        #     title=f"{components[plot_component]}",
-        # )
-        # plot_timestep_power(
-        #     [rollout_multi_image, test_rollout_Y],
-        #     ["test", "actual"],
-        #     f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}_{components[plot_component]}_power_spectrum.png",
-        #     rollout_steps=rollout_steps,
-        #     component=plot_component,
-        #     title=f"{components[plot_component]}",
-        # )
 
     return train_loss, val_loss, test_loss, *test_rollout_loss
 
@@ -822,8 +775,7 @@ data, constant_fields = get_data(
 input_keys = data[0].get_signature()
 output_keys = data[1].get_signature()
 
-# group_actions = geom.make_all_operators(D)
-group_actions = geom.make_C2_group(D)  # just the flips
+group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(
     Ms=[3], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions
 )
@@ -834,6 +786,7 @@ upsample_filters = geom.get_invariant_filters(
 train_kwargs = {
     "batch_size": args.batch,
     "epochs": args.epochs,
+    "past_steps": args.past_steps,
     "rollout_steps": args.rollout_steps,
     "save_model": args.save_model,
     "load_model": args.load_model,

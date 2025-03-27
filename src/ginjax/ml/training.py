@@ -100,9 +100,9 @@ def autoregressive_step(
     future_steps: int = 1,
 ) -> geom.MultiImage:
     """
-    Given the input MultiImage, the next step of the model, and the output, update the input
-    and output to be fed into the model next. MultiImages should have shape (channels,spatial,tensor).
-    Channels are c*past_steps + constant_fields where c is some positive integer.
+    Given the input MultiImage, the next step of the model, update the input to be fed into the
+    model next. MultiImages should have shape (channels,spatial,tensor). Channels are
+    c*past_steps + constant_fields where c is some positive integer.
 
     args:
         input: the input to the model
@@ -142,7 +142,6 @@ def autoregressive_step(
     return new_input
 
 
-# TODO: THIS IS BUGGED!! Maybe test cfd?
 def autoregressive_map(
     model: models.MultiImageModule,
     x: geom.MultiImage,

@@ -393,25 +393,25 @@ def get_data(
         train, val, test one step, and test rollout input and output multi images. Also a multi
         image of the constant fields.
     """
-    # uv, pres, lats, _ = get_torch_harmonics_data(data_dir, n_train + n_val + n_test)
-    # train_uv = uv[:n_train]
-    # train_pres = pres[:n_train]
-    # train_vor = None  # for now
-    # train_div = None
+    uv, pres, lats, _ = get_torch_harmonics_data(data_dir, n_train + n_val + n_test)
+    train_uv = uv[:n_train]
+    train_pres = pres[:n_train]
+    train_vor = None  # for now
+    train_div = None
 
-    # val_uv = uv[n_train : n_train + n_val]
-    # val_pres = pres[n_train : n_train + n_val]
-    # val_vor = None
-    # val_div = None
+    val_uv = uv[n_train : n_train + n_val]
+    val_pres = pres[n_train : n_train + n_val]
+    val_vor = None
+    val_div = None
 
-    # test_uv = uv[n_train + n_val :]
-    # test_pres = pres[n_train + n_val :]
-    # test_vor = None
-    # test_div = None
+    test_uv = uv[n_train + n_val :]
+    test_pres = pres[n_train + n_val :]
+    test_vor = None
+    test_div = None
 
-    train_uv, train_pres, train_vor, train_div, lats = read_all_seeds(data_dir, n_train, "train")
-    val_uv, val_pres, val_vor, val_div, _ = read_all_seeds(data_dir, n_val, "valid")
-    test_uv, test_pres, test_vor, test_div, _ = read_all_seeds(data_dir, n_test, "test")
+    # train_uv, train_pres, train_vor, train_div, lats = read_all_seeds(data_dir, n_train, "train")
+    # val_uv, val_pres, val_vor, val_div, _ = read_all_seeds(data_dir, n_val, "valid")
+    # test_uv, test_pres, test_vor, test_div, _ = read_all_seeds(data_dir, n_test, "test")
 
     if normalize:
         pres_mean = jnp.mean(jnp.concatenate([train_pres, val_pres]))
@@ -420,16 +420,16 @@ def get_data(
         val_pres = (val_pres - pres_mean) / pres_std
         test_pres = (test_pres - pres_mean) / pres_std
 
-        vor_std = jnp.std(jnp.concatenate([train_vor, val_vor]))
-        train_vor = train_vor / vor_std
-        val_vor = val_vor / vor_std
-        test_vor = test_vor / vor_std
+        # vor_std = jnp.std(jnp.concatenate([train_vor, val_vor]))
+        # train_vor = train_vor / vor_std
+        # val_vor = val_vor / vor_std
+        # test_vor = test_vor / vor_std
 
-        div_mean = jnp.mean(jnp.concatenate([train_div, val_div]))
-        div_std = jnp.std(jnp.concatenate([train_div, val_div]))
-        train_div = (train_div - div_mean) / div_std
-        val_div = (val_div - div_mean) / div_std
-        test_div = (test_div - div_mean) / div_std
+        # div_mean = jnp.mean(jnp.concatenate([train_div, val_div]))
+        # div_std = jnp.std(jnp.concatenate([train_div, val_div]))
+        # train_div = (train_div - div_mean) / div_std
+        # val_div = (val_div - div_mean) / div_std
+        # test_div = (test_div - div_mean) / div_std
 
         uv_std = jnp.std(jnp.concatenate([train_uv, val_uv]))
         train_uv = train_uv / uv_std
@@ -774,6 +774,10 @@ data, constant_fields = get_data(
 
 input_keys = data[0].get_signature()
 output_keys = data[1].get_signature()
+spatial_dims = data[0].get_spatial_dims()
+
+input_keys_1d = models.Climate1D.get_1d_signature(input_keys, spatial_dims[1])
+output_keys_1d = models.Climate1D.get_1d_signature(output_keys, spatial_dims[1])
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(
@@ -803,14 +807,21 @@ models_ls = [
         "dil_resnet64",
         train_and_eval,
         {
-            "model": models.DilResNet(
-                D,
-                input_keys,
+            "model": models.Climate1D(
+                models.DilResNet(
+                    1,
+                    input_keys_1d,
+                    output_keys_1d,
+                    depth=64,
+                    equivariant=False,
+                    kernel_size=3,
+                    key=subkeys[0],
+                ),
                 output_keys,
-                depth=64,
-                equivariant=False,
-                kernel_size=3,
-                key=subkeys[0],
+                args.past_steps,
+                1,  # future_steps
+                spatial_dims,
+                constant_fields,
             ),
             "lr": 1e-3,
             **train_kwargs,

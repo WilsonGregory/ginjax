@@ -269,6 +269,8 @@ class MultiImage:
             k > 0
         ):  # very light shape checking, other problematic cases should be caught in concatenate
             assert image_block.shape[-k:] == (self.D,) * k
+        if self.D == 1:
+            assert k == 0, "MultiImage::append: 1D images can only have scalars and pseudoscalars"
 
         if (k, parity) in self:
             self[(k, parity)] = jnp.concatenate((self[(k, parity)], image_block), axis=axis)
@@ -683,6 +685,16 @@ class MultiImage:
         return Signature(
             tuple((k_p, img.shape[leading_axes - 1]) for k_p, img in self.data.items())
         )
+
+    def get_signature_dict(self: Self) -> dict[tuple[int, int], int]:
+        """
+        Get the signature as a dictionary of keys (k,parity) and values channels. Channels is the
+        last axis prior to spatial dimensions.
+
+        returns:
+            the signature as a dictionary
+        """
+        return {key: val for key, val in self.get_signature()}
 
     def get_n_leading(self: Self) -> int:
         """

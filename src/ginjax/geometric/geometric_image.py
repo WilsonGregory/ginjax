@@ -127,6 +127,9 @@ class GeometricImage:
         assert data.shape[D:] == self.k * (
             self.D,
         ), "GeometricImage: each pixel must be D cross D, k times"
+        if self.D == 1:
+            assert self.k == 0, "GeometricImage: 1D images must be a scalar or pseudoscalar"
+
         self.parity = parity % 2
 
         assert (isinstance(is_torus, tuple) and (len(is_torus) == D)) or isinstance(is_torus, bool)
@@ -847,10 +850,15 @@ class GeometricFilter(GeometricImage):
                 return self.times_scalar(-1)
         elif self.k == 1:
             if self.parity % 2 == 0:
-                if np.sum([np.dot(np.array(key), self[key]) for key in self.keys()]) < 0:
+                if (
+                    jnp.sum(
+                        jnp.einsum("...i,...i", self.key_array().reshape(self.shape()), self.data)
+                    )
+                    < 0
+                ):
                     return self.times_scalar(-1)
             elif self.D == 2:
-                if np.sum([np.cross(np.array(key), self[key]) for key in self.keys()]) < 0:
+                if jnp.sum(jnp.cross(self.key_array().reshape(self.shape()), self.data)) < 0:
                     return self.times_scalar(-1)
         return self
 

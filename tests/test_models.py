@@ -1,8 +1,11 @@
 import time
 import itertools as it
+import numpy as np
+from typing_extensions import Self
 
 import jax.numpy as jnp
 from jax import random
+import jax
 import equinox as eqx
 
 import ginjax.geometric as geom
@@ -126,3 +129,122 @@ class TestModels:
             first, _ = inference_model(multi_image_x.times_group_element(gg))
             second = inference_model(multi_image_x)[0].times_group_element(gg)
             assert first.__eq__(second, rtol=1e-3, atol=1e-3)
+
+    def testClimate1d(self):
+        D = 2
+        N = 16
+        past_steps = 2
+        c = 5
+        key = random.PRNGKey(0)
+
+        key, subkey1, subkey2 = random.split(key, num=3)
+        x = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(c * past_steps,) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(c * past_steps,) + (N,) * D + (D,)),
+            },
+            D,
+            (True, False),
+        )
+        output_keys = x.get_signature()
+        spatial_dims = x.get_spatial_dims()
+        output_keys_1d = models.Climate1D.get_1d_signature(output_keys, spatial_dims[1])
+
+        # test that to1d and from1d are inverses
+        model = models.Climate1D(
+            models.ModelWrapper(1, eqx.nn.Identity(), output_keys_1d, True),
+            output_keys,
+            past_steps,
+            1,
+            spatial_dims,
+            {},
+        )
+
+        out = model.from1d(model.model(model.to1d(x), None)[0])
+        assert out == x
+
+        # test that the Climate1D model is equivariant to the equator flip
+        key, subkey = random.split(key)
+        mlp = eqx.nn.MLP(x.size(), x.size(), 64, 2, key=subkey)
+
+        class MLPReshapeModule(eqx.Module):
+            mlp: eqx.Module
+            N: int
+
+            def __init__(self: Self, mlp, N: int):
+                self.mlp = mlp
+                self.N = N
+
+            def __call__(self: Self, x: jax.Array) -> jax.Array:
+                assert callable(self.mlp)
+                return self.mlp(x.reshape(-1)).reshape((-1, self.N))
+
+        model = models.Climate1D(
+            models.ModelWrapper(1, MLPReshapeModule(mlp, N), output_keys_1d, True),
+            output_keys,
+            past_steps,
+            1,
+            spatial_dims,
+            {},
+        )
+
+        equator_flip = np.array([[1, 0], [0, -1]])
+        first = model(x.times_group_element(equator_flip))[0]
+        second = model(x)[0].times_group_element(equator_flip)
+        assert first.__eq__(second, rtol=1e-3, atol=1e-3)
+
+        # test that the conversion to 1d preserves longitude flips
+        longitude_flip = np.array([[-1, 0], [0, 1]])
+        longitude_flip_1d = np.array([[-1]])
+        first = model.to1d(x.times_group_element(longitude_flip))
+        second = model.to1d(x).times_group_element(longitude_flip_1d)
+        assert first.__eq__(second, rtol=1e-3, atol=1e-3)
+
+        first = model.from1d(first)
+        second = model.from1d(second)
+        assert first.__eq__(second, rtol=1e-3, atol=1e-3)
+
+    def testClimate1dConstantFields(self):
+        D = 2
+        N = 16
+        past_steps = 2
+        c = 5
+        key = random.PRNGKey(0)
+
+        key, subkey1, subkey2, subkey3, subkey4 = random.split(key, num=5)
+        x = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(c * past_steps,) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(c * past_steps,) + (N,) * D + (D,)),
+            },
+            D,
+            (True, False),
+        )
+        const_x = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey3, shape=(1,) + (N,) * D),
+                (0, 1): random.normal(subkey4, shape=(1,) + (N,) * D),
+            },
+            D,
+            (True, False),
+        )
+        x = x.concat(const_x)
+        output_keys = x.get_signature()
+        spatial_dims = x.get_spatial_dims()
+        output_keys_1d = models.Climate1D.get_1d_signature(output_keys, spatial_dims[1])
+
+        model = models.Climate1D(
+            models.ModelWrapper(1, eqx.nn.Identity(), output_keys_1d, True),
+            output_keys,
+            past_steps,
+            1,
+            spatial_dims,
+            const_x.get_signature_dict(),
+        )
+
+        # test that the conversion to 1d preserves longitude flips
+        longitude_flip = np.array([[-1, 0], [0, 1]])
+        longitude_flip_1d = np.array([[-1]])
+        first = model.to1d(x.times_group_element(longitude_flip))
+        second = model.to1d(x).times_group_element(longitude_flip_1d)
+        assert first.__eq__(second, rtol=1e-3, atol=1e-3)

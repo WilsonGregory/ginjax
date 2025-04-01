@@ -73,6 +73,21 @@ class TestGeometricImage:
         assert image5.data.shape == (4, 5, 6)
         assert image5.D == 3
 
+        # 1D
+        image6 = geom.GeometricImage.zeros((5,), 0, 0, 1, True)
+        assert image6.data.shape == (5,)
+        assert image6.k == 0
+        assert image6.D == 1
+        assert image6.parity == 0
+        assert image6.is_torus == (True,)
+
+        image7 = geom.GeometricImage.zeros((5,), 0, 1, 1, False)
+        assert image7.data.shape == (5,)
+        assert image7.k == 0
+        assert image7.D == 1
+        assert image7.parity == 1
+        assert image7.is_torus == (False,)
+
     def testConstructor(self):
         # note we are not actually relying on randomness in this function, just filling values
         key = random.PRNGKey(0)
@@ -105,6 +120,13 @@ class TestGeometricImage:
         assert image6.data.shape == (2, 5, 2)
         assert image6.k == 1
 
+        # 1d image
+        image7 = geom.GeometricImage(random.uniform(key, shape=(5,)), 0, 1)
+        assert image7.spatial_dims == (5,)
+        assert image7.data.shape == (5,)
+        assert image7.k == 0
+        assert image7.parity == 0
+
         # D does not match dimensions
         with pytest.raises(AssertionError):
             geom.GeometricImage(random.uniform(key, shape=(10, 10)), 0, 3)
@@ -112,6 +134,9 @@ class TestGeometricImage:
         # side length of pixel tensors does not match D
         with pytest.raises(AssertionError):
             geom.GeometricImage(random.uniform(key, shape=(10, 10, 3, 3)), 0, 2)
+
+        with pytest.raises(AssertionError):
+            geom.GeometricImage(random.uniform(key, shape=(5, 1)), 0, 1)
 
     def testEqual(self):
         img1 = geom.GeometricImage(jnp.ones((10, 10, 2)), 0, 2)
@@ -285,11 +310,11 @@ class TestGeometricImage:
 
         image5 = geom.GeometricImage(jnp.ones((10, 10)), 0, 2)
         with pytest.raises(AssertionError):  # mismatched N
-            image5 * image1
+            _ = image5 * image1
 
         image6 = geom.GeometricImage(jnp.ones((3, 3, 3)), 0, 3)
         with pytest.raises(AssertionError):  # mismatched D
-            image6 * image1
+            _ = image6 * image1
 
         # Test multiplying by a scalar
         result = image1 * 5

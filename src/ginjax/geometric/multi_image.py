@@ -234,14 +234,18 @@ class MultiImage:
                 or (self.is_torus != other.is_torus)
                 or (self.keys() != other.keys())
             ):
+                print("1")
                 return False
 
             for key in self.keys():
                 if not jnp.allclose(self[key], other[key], rtol, atol):
+                    print(jnp.max(jnp.abs(self[key] - other[key])))
+                    print("2")
                     return False
 
             return True
         else:
+            print("3")
             return False
 
     # Other functions
@@ -683,6 +687,16 @@ class MultiImage:
         return Signature(
             tuple((k_p, img.shape[leading_axes - 1]) for k_p, img in self.data.items())
         )
+
+    def get_signature_dict(self: Self) -> dict[tuple[int, int], int]:
+        """
+        Get the signature as a dictionary of keys (k,parity) and values channels. Channels is the
+        last axis prior to spatial dimensions.
+
+        returns:
+            the signature as a dictionary
+        """
+        return {key: val for key, val in self.get_signature()}
 
     def get_n_leading(self: Self) -> int:
         """

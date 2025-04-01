@@ -1018,3 +1018,155 @@ class GroupAverage(MultiImageModule):
 
         else:
             return self.model(x, aux_data)
+
+
+class Climate1D(MultiImageModule):
+
+    model: MultiImageModule
+    output_keys: geom.Signature
+    past_steps: int
+    future_steps: int
+    spatial_dims: tuple[int, ...]
+    constant_fields_2d: dict[tuple[int, int], int]
+    output_is_torus: tuple[bool, ...]
+
+    def __init__(
+        self: Self,
+        model: MultiImageModule,
+        output_keys: geom.Signature,
+        past_steps: int,
+        future_steps: int,
+        spatial_dims: tuple[int, ...],
+        constant_fields_2d: dict[tuple[int, int], int],
+        output_is_torus: tuple[bool, ...] = (True, False),
+    ) -> None:
+        self.model = model
+        self.output_keys = output_keys
+        self.past_steps = past_steps
+        self.future_steps = future_steps
+        self.spatial_dims = spatial_dims  # 2d
+        self.constant_fields_2d = constant_fields_2d
+        self.output_is_torus = output_is_torus
+
+    def __call__(
+        self: Self, x: geom.MultiImage, aux_data: Optional[eqx.nn.State] = None
+    ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
+        assert aux_data is None, "Currently cannot handle batch stats"
+
+        # we multiply this by the identity
+        x1 = self.from1d(self.model(self.to1d(x), aux_data)[0])
+
+        equator_flip = np.array([[1, 0], [0, -1]])
+        x2 = self.from1d(
+            self.model(self.to1d(x.times_group_element(equator_flip)), aux_data)[0]
+        ).times_group_element(equator_flip)
+
+        return (x1 + x2) / 2, aux_data
+
+    def to1d(self: Self, x: geom.MultiImage) -> geom.MultiImage:
+        spatial_dims = x.get_spatial_dims()
+        n_lons, _ = spatial_dims
+
+        dynamic_x, const_x = x.concat_inverse(self.constant_fields_2d)
+        dynamic_x = dynamic_x.expand(0, self.past_steps)
+
+        out = geom.MultiImage({}, 1, (True,))
+        for (k, parity), image in dynamic_x.items():
+            assert (k, parity) in [(0, 0), (0, 1), (1, 0)]  # currently they can only be these
+
+            if k == 0:
+                out.append(k, parity, image)
+            else:  # k==1
+                # velocity in horizontal direction becomes a pseudoscalar, vertical is a scalar
+                out.append(0, 1, image[..., 0])
+                out.append(0, 0, image[..., 1])
+
+        # (c,t,x,y) -> (y,c,t,x) -> (y*c*t,x)
+        out.data = {
+            (k, parity): jnp.moveaxis(image, -1, 0).reshape((-1, n_lons))
+            for (k, parity), image in out.items()
+        }
+
+        for (k, parity), image in const_x.items():
+            # (c,x,y) -> (y,c,x) -> (y*c,x)
+            out.append(k, parity, jnp.moveaxis(image, -1, 0).reshape((-1, n_lons)))
+
+        return out
+
+    def from1d(self: Self, x: geom.MultiImage) -> geom.MultiImage:
+        n_lons, n_lats = self.spatial_dims
+        keys_dict = {(k, parity): size for (k, parity), size in self.output_keys}
+
+        # number of channels
+        c_scalar = keys_dict[(0, 0)] // self.future_steps if (0, 0) in keys_dict else 0
+        c_pseudoscalar = keys_dict[(0, 1)] // self.future_steps if (0, 1) in keys_dict else 0
+        c_vector = keys_dict[(1, 0)] // self.future_steps if (1, 0) in keys_dict else 0
+
+        out = geom.MultiImage({}, 2, self.output_is_torus)
+        x = x.expand(0, self.future_steps)  # -> (y*c,t,x)
+
+        scalar_image = None
+        pseudoscalar_image = None
+        if (0, 0) in x:
+            # (y*c,t,x) -> (y,c,t,x) -> (c,t,x,y)
+            scalar_image = jnp.moveaxis(
+                x[(0, 0)].reshape((n_lats, -1, self.future_steps, n_lons)), 0, -1
+            )
+            assert len(scalar_image) == c_scalar + c_vector
+        if (0, 1) in x:
+            # (y*c,t,x) -> (y,c,t,x) -> (c,t,x,y)
+            pseudoscalar_image = jnp.moveaxis(
+                x[(0, 1)].reshape((n_lats, -1, self.future_steps, n_lons)), 0, -1
+            )
+            assert len(pseudoscalar_image) == c_pseudoscalar + c_vector
+
+        vec = None
+        if (1, 0) in keys_dict:  # then there are scalars and pseudoscalars
+            assert scalar_image is not None and pseudoscalar_image is not None
+            vec_y = scalar_image[c_scalar:]
+            scalar_image = scalar_image[:c_scalar]
+
+            vec_x = pseudoscalar_image[c_pseudoscalar:]
+            pseudoscalar_image = pseudoscalar_image[:c_pseudoscalar]
+            vec = jnp.stack([vec_x, vec_y], axis=-1)
+
+        if (0, 0) in keys_dict:
+            assert scalar_image is not None
+            out.append(0, 0, scalar_image)
+        if (0, 1) in keys_dict:
+            assert pseudoscalar_image is not None
+            out.append(0, 1, pseudoscalar_image)
+        if (1, 0) in keys_dict:
+            assert vec is not None
+            out.append(1, 0, vec)
+
+        return out.combine_axes((0, 1))
+
+    @classmethod
+    def get_1d_signature(
+        cls, signature: Union[geom.Signature, dict[tuple[int, int], int]], n_lats: int
+    ) -> geom.Signature:
+        if not isinstance(signature, dict):
+            signature = {(k, parity): size for (k, parity), size in signature}
+
+        new_signature = {}
+        for (k, parity), size in signature.items():
+            assert (k, parity) in [(0, 0), (0, 1), (1, 0)]
+
+            if k == 0:
+                if (k, parity) not in new_signature:
+                    new_signature[(k, parity)] = size * n_lats
+                else:
+                    new_signature[(k, parity)] += size * n_lats
+            else:  # k ==1
+                if (0, 0) not in new_signature:
+                    new_signature[(0, 0)] = size * n_lats
+                else:
+                    new_signature[(0, 0)] += size * n_lats
+
+                if (0, 1) not in new_signature:
+                    new_signature[(0, 1)] = size * n_lats
+                else:
+                    new_signature[(0, 1)] += size * n_lats
+
+        return geom.Signature(tuple(new_signature.items()))

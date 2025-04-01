@@ -234,18 +234,14 @@ class MultiImage:
                 or (self.is_torus != other.is_torus)
                 or (self.keys() != other.keys())
             ):
-                print("1")
                 return False
 
             for key in self.keys():
                 if not jnp.allclose(self[key], other[key], rtol, atol):
-                    print(jnp.max(jnp.abs(self[key] - other[key])))
-                    print("2")
                     return False
 
             return True
         else:
-            print("3")
             return False
 
     # Other functions
@@ -273,6 +269,8 @@ class MultiImage:
             k > 0
         ):  # very light shape checking, other problematic cases should be caught in concatenate
             assert image_block.shape[-k:] == (self.D,) * k
+        if self.D == 1:
+            assert k == 0, "MultiImage::append: 1D images can only have scalars and pseudoscalars"
 
         if (k, parity) in self:
             self[(k, parity)] = jnp.concatenate((self[(k, parity)], image_block), axis=axis)

@@ -178,6 +178,16 @@ class TestMultiImage:
         multi_image2.append(0, 0, random.normal(key, shape=((10,) + (N,) * D + (D,) * 0)))
         assert multi_image2.get_spatial_dims() == (N,) * D
 
+        # 1D image
+        D = 1
+        multi_image3 = geom.MultiImage({(0, 0): random.normal(key, shape=(10,) + (N,) * D)}, D)
+        multi_image3.append(0, 1, jnp.ones((5,) + (N,) * D))
+        assert multi_image3[(0, 1)].shape == (5, N)
+
+        # add a vector to a 1d image, which doesn't make sense
+        with pytest.raises(AssertionError):
+            multi_image3.append(1, 0, jnp.ones((10,) + (N,) * D + (D,)))
+
     def testConcat(self):
         key = random.PRNGKey(time.time_ns())
         D = 2

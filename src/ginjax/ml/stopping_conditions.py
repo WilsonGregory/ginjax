@@ -145,8 +145,10 @@ class TrainLoss(StopCondition):
         returns:
             whether to stop
         """
-        if train_loss is None or not isinstance(train_loss, float):
+        if train_loss is None:
             return False
+        else:
+            train_loss = train_loss.astype(float)
 
         if train_loss < (self.best_train_loss - self.min_delta):
             self.best_train_loss = train_loss

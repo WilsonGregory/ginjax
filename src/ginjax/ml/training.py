@@ -459,7 +459,7 @@ def train(
     while not stop_condition.stop(model, epoch, epoch_loss, epoch_val_loss, epoch_time):
         rand_key, subkey = random.split(rand_key)
         X_batches, Y_batches = get_batches((X, Y), batch_size, subkey, devices)
-        # epoch_loss = 0
+        epoch_loss = None
         start_time = time.time()
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             model, opt_state, loss_value, aux_data = train_step(

@@ -3,25 +3,55 @@ import os
 import time
 import argparse
 import numpy as np
-from functools import partial
-import matplotlib.pyplot as plt
 import h5py
-from typing import Optional
+import matplotlib.pyplot as plt
+from typing import Optional, Union
 
 import jax.numpy as jnp
 import jax
 import jax.random as random
-import jax.experimental.mesh_utils as mesh_utils
 from jaxtyping import ArrayLike
 import optax
 import equinox as eqx
 
-import geometricconvolutions.geometric as geom
-import geometricconvolutions.ml as ml
-import geometricconvolutions.ml_eqx as ml_eqx
-import geometricconvolutions.utils as utils
-import geometricconvolutions.data as gc_data
-import geometricconvolutions.models_eqx as models
+import ginjax.geometric as geom
+import ginjax.ml as ml
+import ginjax.utils as utils
+import ginjax.models as models
+
+
+def plot_fields(
+    images_dir: str, density_data: jax.Array, temperature_data: jax.Array, velocity_data: jax.Array
+) -> None:
+    density_data = density_data[0, :, 32]  # (59, spatial_2D)
+    temperature_data = temperature_data[0, :, 32]
+    velocity_data = velocity_data[0, :, 32]
+    nrows = 4
+    ncols = 5
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 6 * nrows))
+    for i, row in enumerate([0, 1, 2, 29]):
+        geom.GeometricImage(jnp.log10(density_data[row]), 0, 2, False).plot(
+            axes[i, 0], f"density step {row}", colorbar=True
+        )
+        geom.GeometricImage(jnp.log10(temperature_data[row]), 0, 2, False).plot(
+            axes[i, 1], f"temperature step {row}", colorbar=True
+        )
+        vec_norm = geom.norm(2 + 1, velocity_data, keepdims=True)
+        scaled_velocity_data = (jnp.log10(vec_norm) / vec_norm) * velocity_data
+        geom.GeometricImage(scaled_velocity_data[row, ..., 0], 0, 2, False).plot(
+            axes[i, 2], f"velocity_x step {row}", colorbar=True
+        )
+        geom.GeometricImage(scaled_velocity_data[row, ..., 1], 0, 2, False).plot(
+            axes[i, 3], f"velocity_y step {row}", colorbar=True
+        )
+        geom.GeometricImage(scaled_velocity_data[row, ..., 2], 0, 2, False).plot(
+            axes[i, 4], f"velocity_z step {row}", colorbar=True
+        )
+
+    plt.tight_layout()
+    plt.savefig(f"{images_dir}supernova_steps.png")
+    plt.close(fig)
 
 
 def read_one_h5(filename: str, input_step: int, output_step: int) -> tuple:
@@ -39,6 +69,9 @@ def read_one_h5(filename: str, input_step: int, output_step: int) -> tuple:
     't1_fields': ['velocity'], (16,59,64,64,64,3) presumably (batch,timesteps,spatial,tensor)
     't2_fields': empty
 
+    Note that the batch size of 16 is for the training files, valid and test only have 2. Thus:
+    There are 400 Msun_1 total training trajectories, 50 total valid traj, and 50 total test traj
+
     args:
         filename (str): the full file path
         data_class (str): either 'train', 'test', or 'valid'
@@ -48,7 +81,8 @@ def read_one_h5(filename: str, input_step: int, output_step: int) -> tuple:
 
     scalar_X_ls = []
     scalar_y_ls = []
-    for scalar_field in ["density", "pressure", "temperature"]:
+    # only use density and temperature omitting pressure as in Keiya's paper
+    for scalar_field in ["density", "temperature"]:
         scalar_X_ls.append(
             jax.device_put(
                 jnp.array(data_dict["t0_fields"][scalar_field][:, input_step][()]),
@@ -83,8 +117,8 @@ def read_one_h5(filename: str, input_step: int, output_step: int) -> tuple:
 def merge_data(D: int, N: int, dir: str, n_traj: int, input_step: int, output_step: int):
     all_files = filter(lambda file: f"Msun_1" in file, os.listdir(dir))
 
-    all_scalar_X = jnp.zeros((0, 3) + (N,) * D)  # 3 scalar channels, density, pressure, temp
-    all_scalar_y = jnp.zeros((0, 3) + (N,) * D)
+    all_scalar_X = jnp.zeros((0, 2) + (N,) * D)  # 2 scalar channels, density, temp
+    all_scalar_y = jnp.zeros((0, 2) + (N,) * D)
     all_velocity_X = jnp.zeros((0, 1) + (N,) * D + (D,))
     all_velocity_y = jnp.zeros((0, 1) + (N,) * D + (D,))
     for filename in all_files:
@@ -107,10 +141,10 @@ def merge_data(D: int, N: int, dir: str, n_traj: int, input_step: int, output_st
     all_velocity_y = all_velocity_y[:n_traj]
 
     # boundary conditions are open for this dataset
-    layer_X = geom.BatchLayer({(0, 0): all_scalar_X, (1, 0): all_velocity_X}, D, False)
-    layer_y = geom.BatchLayer({(0, 0): all_scalar_y, (1, 0): all_velocity_y}, D, False)
+    multi_image_x = geom.MultiImage({(0, 0): all_scalar_X, (1, 0): all_velocity_X}, D, False)
+    multi_image_y = geom.MultiImage({(0, 0): all_scalar_y, (1, 0): all_velocity_y}, D, False)
 
-    return layer_X, layer_y
+    return multi_image_x, multi_image_y
 
 
 def get_data(
@@ -123,60 +157,75 @@ def get_data(
     input_step: int = 0,
     output_step: int = 29,
     normalize: bool = True,
-) -> tuple[geom.BatchLayer]:
+    include_center: bool = False,
+) -> tuple[
+    geom.MultiImage,
+    geom.MultiImage,
+    geom.MultiImage,
+    geom.MultiImage,
+    geom.MultiImage,
+    geom.MultiImage,
+]:
+    """
+    Get the data.
+
+    args:
+        D: dimension of the space, should be 3
+        N: sidelength of the images, should be 64
+        dir: directory containing train, valid, and test folders
+        n_train: number of training trajectories
+        n_val: number of validation trajectories
+        n_test: number of test trajectories
+        input_step: timestep of the input data, defaults to 0
+        output_step: timestep of the output data, defaults to 29 which is 0.1 Myr
+        normalize: whether to normalize the data with log10 normalization
+        include_center: break translation symmetry where energy is injected
+
+    returns:
+        returns 6 multi images corresponding to train_x, train_y, val_x, val_y, test_x, test_y
+    """
     train_X, train_y = merge_data(D, N, dir + "train/", n_train, input_step, output_step)
     val_X, val_y = merge_data(D, N, dir + "valid/", n_val, input_step, output_step)
     test_X, test_y = merge_data(D, N, dir + "test/", n_test, input_step, output_step)
 
     if normalize:
         # log10 normalization
-        # for layer in [train_X, train_y, val_X, val_y, test_X, test_y]:
-        #     layer[(0, 0)] = jnp.log10(layer[(0, 0)])
-        #     vec_data = layer[(1, 0)]  # (batch,channels,spatial,D)
-        #     layer[(1, 0)] = jnp.concatenate(
-        #         [
-        #             jnp.where(vec_data > 0, jnp.log10(vec_data), jnp.zeros_like(vec_data)),
-        #             jnp.where(vec_data < 0, jnp.log10(-vec_data), jnp.zeros_like(vec_data)),
-        #         ],
-        #         axis=1,
-        #     )
+        for multi_image in [train_X, train_y, val_X, val_y, test_X, test_y]:
+            multi_image[(0, 0)] = jnp.log10(multi_image[(0, 0)])
+            vec_data = multi_image[(1, 0)]  # (batch,channels,spatial,D)
+            # original transformation is not equivariant, so scale the norm of the vectors by log10
+            vec_norm = geom.norm(D + 2, vec_data, keepdims=True)  # (batch,channels,spatial,1)
+            multi_image[(1, 0)] = (jnp.log10(vec_norm) / vec_norm) * vec_data
 
-        # mean, var normalization
-        # do we normalize both the inputs and the outputs?
-        # axes = (0,) + tuple(range(2, train_X[(0, 0)].ndim))
-        # all_scalars = jnp.concatenate(
-        #     [train_X[(0, 0)], train_y[(0, 0)], val_X[(0, 0)], val_y[(0, 0)]]
-        # )
-        # scalar_mean = jnp.mean(all_scalars, axis=axes, keepdims=True)  # (1,channels,(1,)*D)
-        # scalar_std = jnp.std(all_scalars, axis=axes, keepdims=True)
-
-        # axes = (0,) + tuple(range(2, train_X[(1, 0)].ndim))
-        # all_vectors = jnp.concatenate(
-        #     [train_X[(1, 0)], train_y[(1, 0)], val_X[(1, 0)], val_y[(1, 0)]]
-        # )
-        # vector_std = jnp.std(all_vectors, axis=axes, keepdims=True)  # (1,channels,(1,)*D,1)
-
+        # mean and var scaling
         for data_group in [[train_X, val_X, test_X], [train_y, val_y, test_y]]:
 
+            # (b,c,spatial) -> (1,c,1...)
+            train_scalar = data_group[0][(0, 0)]
             scalar_mean = jnp.mean(
-                data_group[0][(0, 0)],
-                axis=(0,) + tuple(range(2, data_group[0][(0, 0)].ndim)),
-                keepdims=True,
+                train_scalar, axis=(0,) + tuple(range(2, train_scalar.ndim)), keepdims=True
             )
             scalar_std = jnp.std(
-                data_group[0][(0, 0)],
-                axis=(0,) + tuple(range(2, data_group[0][(0, 0)].ndim)),
-                keepdims=True,
+                train_scalar, axis=(0,) + tuple(range(2, train_scalar.ndim)), keepdims=True
             )
+            # (b,c,spatial,tensor) -> (1,c,1...,1)
+            train_vec = data_group[0][(1, 0)]
+            vec_norm = jnp.linalg.norm(train_vec, axis=-1, keepdims=True)
             vector_std = jnp.std(
-                data_group[0][(1, 0)],
-                axis=(0,) + tuple(range(2, data_group[0][(1, 0)].ndim)),
-                keepdims=True,
+                vec_norm, axis=(0,) + tuple(range(2, vec_norm.ndim)), keepdims=True
             )
 
-            for layer in data_group:
-                layer[(0, 0)] = (layer[(0, 0)] - scalar_mean) / scalar_std
-                layer[(1, 0)] = layer[(1, 0)] / vector_std
+            for multi_image in data_group:
+                multi_image[(0, 0)] = (multi_image[(0, 0)] - scalar_mean) / scalar_std
+                multi_image[(1, 0)] = multi_image[(1, 0)] / vector_std
+
+    if include_center:
+        for data_X in [train_X, val_X, test_X]:
+            # the fact that the boundary conditions are open already breaks this symmetry somewhat
+            center = np.zeros((len(data_X[(0, 0)]), 1) + (N,) * D)
+            assert N % 2 == 0  # N will be 64 which is even
+            center[(slice(None), slice(None)) + (slice(N // 2 - 1, N // 2 + 1),) * D] = 1
+            data_X[(0, 0)] = jnp.concatenate([data_X[(0, 0)], center], axis=1)  # converts to jnp
 
     return (
         train_X,
@@ -188,135 +237,39 @@ def get_data(
     )
 
 
-def plot_layer(
-    test_layer: geom.BatchLayer,
-    actual_layer: geom.BatchLayer,
-    save_loc: str,
-    future_steps: int,
-    component: int = 0,
-    show_power: bool = False,
-    title: str = "",
-    minimal: bool = False,
-):
-    """
-    Plot all timesteps of a particular component of two layers, and the differences between them.
-    args:
-        test_layer (BatchLayer): the predicted layer
-        actual_layer (BatchLayer): the ground truth layer
-        save_loc (str): file location to save the image
-        future_steps (int): the number future time steps in the layer
-        component (int): index of the component to plot, default to 0
-        show_power (bool): whether to also plot the power spectrum, default to False
-        title (str): additional str to add to title, will be "test {title} {col}"
-            "actual {title} {col}"
-        minimal (bool): if minimal, no titles, colorbars, or axes labels, defaults to False
-    """
-    test_layer_comp = test_layer.get_component(component, future_steps).get_one_layer()
-    actual_layer_comp = actual_layer.get_component(component, future_steps).get_one_layer()
-
-    test_images = test_layer_comp.to_images()
-    actual_images = actual_layer_comp.to_images()
-
-    img_arr = jnp.concatenate([test_layer_comp[(0, 0)], actual_layer_comp[(0, 0)]])
-    vmax = jnp.max(jnp.abs(img_arr))
-    vmin = -1 * vmax
-
-    nrows = 4 if show_power else 3
-
-    # figsize is 6 per col, 6 per row, (cols,rows)
-    fig, axes = plt.subplots(nrows=nrows, ncols=future_steps, figsize=(6 * future_steps, 6 * nrows))
-    for col, (test_image, actual_image) in enumerate(zip(test_images, actual_images)):
-        diff = (actual_image - test_image).norm()
-        if minimal:
-            test_title = ""
-            actual_title = ""
-            diff_title = ""
-            colorbar = False
-            hide_ticks = True
-            xlabel = ""
-            ylabel = ""
-        else:
-            test_title = f"test {title} {col}"
-            actual_title = f"actual {title} {col}"
-            diff_title = f"diff {title} {col} (mse: {jnp.mean(diff.data)})"
-            colorbar = True
-            hide_ticks = False
-            xlabel = "unnormalized wavenumber"
-            ylabel = "unnormalized power"
-
-        test_image.plot(axes[0, col], title=test_title, vmin=vmin, vmax=vmax, colorbar=colorbar)
-        actual_image.plot(axes[1, col], title=actual_title, vmin=vmin, vmax=vmax, colorbar=colorbar)
-        diff.plot(axes[2, col], title=diff_title, vmin=vmin, vmax=vmax, colorbar=colorbar)
-
-        if show_power:
-            utils.plot_power(
-                [test_image.data[None, None], actual_image.data[None, None]],
-                ["test", "actual"] if col == 0 else None,
-                axes[3, col],
-                xlabel=xlabel,
-                ylabel=ylabel,
-                hide_ticks=hide_ticks,
-            )
-
-    plt.tight_layout()
-    plt.savefig(save_loc)
-    plt.close(fig)
-
-
-def plot_timestep_power(
-    layers: list[geom.BatchLayer],
-    labels: list[str],
-    save_loc: str,
-    future_steps: int,
-    component: int = 0,
-    title: str = "",
-):
-    fig, axes = plt.subplots(nrows=1, ncols=future_steps, figsize=(8 * future_steps, 6 * 1))
-    for i, ax in enumerate(axes):
-        utils.plot_power(
-            [
-                layer.get_component(component, future_steps, as_layer=False)[:, i : i + 1]
-                for layer in layers
-            ],
-            labels,
-            ax,
-            title=f"{title} {i}",
-        )
-
-    plt.savefig(save_loc)
-    plt.close(fig)
-
-
 @eqx.filter_jit
 def map_and_loss(
-    model: eqx.Module,
-    layer_x: geom.BatchLayer,
-    layer_y: geom.BatchLayer,
+    model: models.MultiImageModule,
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
     aux_data: Optional[eqx.nn.State] = None,
     return_map: bool = False,
-):
-    out_layer = model(layer_x, aux_data)
-    if isinstance(out_layer, tuple):
-        out_layer, aux_data = out_layer
+) -> Union[
+    tuple[jax.Array, Optional[eqx.nn.State], geom.MultiImage],
+    tuple[jax.Array, Optional[eqx.nn.State]],
+]:
+    vmap_model = jax.vmap(model, in_axes=(0, None), out_axes=(0, None))
+    out_image, aux_data = vmap_model(multi_image_x, aux_data)
+    loss = ml.smse_loss(out_image, multi_image_y)
 
-    loss = ml.smse_loss(out_layer, layer_y)
-
-    return (loss, aux_data, out_layer) if return_map else (loss, aux_data)
+    return (loss, aux_data, out_image) if return_map else (loss, aux_data)
 
 
 def train_and_eval(
-    data: tuple[geom.BatchLayer],
+    data: tuple[geom.MultiImage, ...],
     key: ArrayLike,
     model_name: str,
-    model: eqx.Module,
+    model: models.MultiImageModule,
     lr: float,
     batch_size: int,
     epochs: int,
     save_model: Optional[str],
     load_model: Optional[str],
+    images_dir: Optional[str],
     has_aux: bool = False,
     verbose: int = 1,
-) -> tuple[float]:
+    is_wandb: bool = False,
+) -> tuple[Optional[ArrayLike], ...]:
     train_X, train_Y, val_X, val_Y, test_single_X, test_single_Y = data
     batch_stats = eqx.nn.State(model) if has_aux else None
 
@@ -325,13 +278,13 @@ def train_and_eval(
     if load_model is None:
         key, subkey = random.split(key)
         steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
-        model, batch_stats, train_loss, val_loss = ml_eqx.train(
+        model, batch_stats, train_loss, val_loss = ml.train(
             train_X,
             train_Y,
             map_and_loss,
             model,
             subkey,
-            stop_condition=ml.EpochStop(epochs, verbose=verbose),
+            stop_condition=ml.AnyStop([ml.ValLoss(10), ml.EpochStop(epochs, verbose=verbose)]),
             batch_size=batch_size,
             optimizer=optax.adamw(
                 optax.warmup_cosine_decay_schedule(
@@ -342,16 +295,17 @@ def train_and_eval(
             validation_X=val_X,
             validation_Y=val_Y,
             aux_data=batch_stats,
+            is_wandb=is_wandb,
         )
 
         if save_model is not None:
             # TODO: need to save batch_stats as well
-            ml_eqx.save(f"{save_model}{model_name}_L{train_X.L}_e{epochs}_model.eqx", model)
+            ml.save(f"{save_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model)
     else:
-        model = ml_eqx.load(f"{save_model}{model_name}_L{train_X.L}_e{epochs}_model.eqx", model)
+        model = ml.load(f"{load_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model)
 
-        key, subkey1, subkey2 = random.split(key)
-        train_loss = ml_eqx.map_loss_in_batches(
+        key, subkey1, subkey2 = random.split(key, num=3)
+        train_loss = ml.map_loss_in_batches(
             map_and_loss,
             model,
             train_X,
@@ -360,7 +314,7 @@ def train_and_eval(
             subkey1,
             aux_data=batch_stats,
         )
-        val_loss = ml_eqx.map_loss_in_batches(
+        val_loss = ml.map_loss_in_batches(
             map_and_loss,
             model,
             val_X,
@@ -371,7 +325,7 @@ def train_and_eval(
         )
 
     key, subkey = random.split(key)
-    test_loss = ml_eqx.map_loss_in_batches(
+    test_loss = ml.map_loss_in_batches(
         map_and_loss,
         model,
         test_single_X,
@@ -382,55 +336,53 @@ def train_and_eval(
     )
     print(f"Test Loss: {test_loss}")
 
+    if images_dir is not None:
+        # plot a single center slice of the 3d image, rather than trying to plot a 3d image
+        components = ["density", "temperature", "velocity_x", "velocity_y", "velocity_z"]
+        pred_y = model(test_single_X.get_one(keepdims=False))[0]
+        pred_y_slice = pred_y.to_scalar_multi_image()[(0, 0)][:, 32]  # (c,y,z)
+        target_y = test_single_Y.get_one(keepdims=False)
+        target_y_slice = target_y.to_scalar_multi_image()[(0, 0)][:, 32]  # (c,y,z)
+        ncols = len(pred_y_slice)
+        nrows = 3
+
+        vec_vmax = float(jnp.max(jnp.abs(jnp.stack([pred_y_slice[2:], target_y_slice[2:]]))))
+
+        fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 6 * nrows))
+        for i, pred_data, target_data, name in zip(
+            range(ncols), pred_y_slice, target_y_slice, components
+        ):
+            pred_image_2d = geom.GeometricImage(pred_data, 0, 2, pred_y.is_torus[1:])
+            target_image_2d = geom.GeometricImage(target_data, 0, 2, test_single_Y.is_torus[1:])
+            diff_2d = (target_image_2d - pred_image_2d).norm()
+
+            if i < 2:
+                vmax = float(jnp.max(jnp.abs(jnp.stack([pred_data, target_data]))))
+            else:
+                vmax = vec_vmax
+
+            pred_image_2d.plot(axes[0, i], f"test {name}", vmin=-vmax, vmax=vmax, colorbar=True)
+            target_image_2d.plot(axes[1, i], f"actual {name}", vmin=-vmax, vmax=vmax, colorbar=True)
+            diff_2d.plot(axes[2, i], f"diff {name}", vmin=-vmax, vmax=vmax, colorbar=True)
+
+        plt.tight_layout()
+        plt.savefig(f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}.png")
+        plt.close(fig)
+
     return (train_loss, val_loss, test_loss)
 
 
 def handleArgs(argv):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("data", help="the data .hdf5 file", type=str)
-    parser.add_argument("-e", "--epochs", help="number of epochs to run", type=int, default=50)
-    parser.add_argument("-batch", help="batch size", type=int, default=8)
-    parser.add_argument("-n_train", help="number of training trajectories", type=int, default=1)
+    # n_train <=400, n_val <= 50, n_test <= 50
+    # https://arxiv.org/abs/2410.23346 uses n_train=300
+    parser = utils.get_common_parser()
     parser.add_argument(
-        "-n_val",
-        help="number of validation trajectories, defaults to batch",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "-n_test",
-        help="number of testing trajectories, defaults to batch",
-        type=int,
-        default=None,
-    )
-    parser.add_argument("-t", "--n_trials", help="number of trials to run", type=int, default=1)
-    parser.add_argument("-seed", help="the random number seed", type=int, default=None)
-    parser.add_argument(
-        "-s", "--save_model", help="file name to save the params", type=str, default=None
-    )
-    parser.add_argument(
-        "-l", "--load_model", help="file name to load params from", type=str, default=None
-    )
-    parser.add_argument(
-        "-images_dir",
-        help="directory to save images, or None to not save",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        help="verbose argument passed to trainer",
-        type=int,
-        default=1,
-    )
-    parser.add_argument(
-        "--normalize",
-        help="normalize input data, equivariantly",
+        "--include-center",
+        help="identify the center pixels where the supernova starts",
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-
+    parser.add_argument("--wandb-project", help="the wandb project", type=str, default="supernova")
     return parser.parse_args()
 
 
@@ -454,9 +406,10 @@ data = get_data(
     n_val,
     n_test,
     normalize=args.normalize,
+    include_center=args.include_center,
 )
 input_keys = data[0].get_signature()
-output_keys = input_keys
+output_keys = data[1].get_signature()
 
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(
@@ -466,22 +419,43 @@ upsample_filters = geom.get_invariant_filters(
     Ms=[2], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions
 )
 
-train_and_eval = partial(
-    train_and_eval,
-    batch_size=args.batch,
-    epochs=args.epochs,
-    save_model=args.save_model,
-    load_model=args.load_model,
-    verbose=args.verbose,
-)
+train_kwargs = {
+    "batch_size": args.batch,
+    "epochs": args.epochs,
+    "save_model": args.save_model,
+    "load_model": args.load_model,
+    "images_dir": args.images_dir,
+    "verbose": args.verbose,
+    "is_wandb": args.wandb,
+}
 
 key, *subkeys = random.split(key, num=4)
 model_list = [
+    # (
+    #     "unet_keiya",
+    #     train_and_eval,
+    #     {
+    #         "model": models.UNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=8,
+    #             use_bias=True,
+    #             activation_f=jax.nn.relu,
+    #             equivariant=False,
+    #             kernel_size=1,  # paper describes a patch size of 1?
+    #             use_group_norm=False,
+    #             key=subkeys[0],
+    #         ),
+    #         "lr": 1e-3,
+    #         **train_kwargs,
+    #     },
+    # ),
     (
         "unet",
-        partial(
-            train_and_eval,
-            model=models.UNet(
+        train_and_eval,
+        {
+            "model": models.UNet(
                 D,
                 input_keys,
                 output_keys,
@@ -493,14 +467,15 @@ model_list = [
                 use_group_norm=False,
                 key=subkeys[0],
             ),
-            lr=3e-4,
-        ),
+            "lr": 1e-3,
+            **train_kwargs,
+        },
     ),
     (
         "unet_equiv",
-        partial(
-            train_and_eval,
-            model=models.UNet(
+        train_and_eval,
+        {
+            "model": models.UNet(
                 D,
                 input_keys,
                 output_keys,
@@ -510,24 +485,13 @@ model_list = [
                 upsample_filters=upsample_filters,
                 key=subkeys[1],
             ),
-            lr=3e-4,
-        ),
+            "lr": 5e-4,
+            **train_kwargs,
+        },
     ),
 ]
 
 key, subkey = random.split(key)
-
-# # Use this for benchmarking over different learning rates
-# results = ml.benchmark(
-#     lambda _: data,
-#     model_list,
-#     subkey,
-#     "lr",
-#     [5e-5, 1e-4, 3e-4],
-#     benchmark_type=ml.BENCHMARK_MODEL,
-#     num_trials=args.n_trials,
-#     num_results=3,
-# )
 
 # Use this for benchmarking the models with known learning rates.
 results = ml.benchmark(
@@ -537,8 +501,14 @@ results = ml.benchmark(
     "",
     [0],
     benchmark_type=ml.BENCHMARK_NONE,
+    # "lr",
+    # [1e-4, 3e-4, 5e-4, 1e-3],
+    # benchmark_type=ml.BENCHMARK_MODEL,
     num_trials=args.n_trials,
     num_results=3,
+    is_wandb=args.wandb,
+    wandb_project=args.wandb_project,
+    wandb_entity=args.wandb_entity,
 )
 
 print(results)

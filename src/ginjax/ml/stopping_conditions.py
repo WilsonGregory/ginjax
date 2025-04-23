@@ -1,9 +1,11 @@
 from typing_extensions import Optional, Self
 import numpy as np
+import functools
 
 import jax.numpy as jnp
 from jaxtyping import ArrayLike
 import equinox as eqx
+import jax
 
 
 class StopCondition:
@@ -30,8 +32,8 @@ class StopCondition:
         self: Self,
         model: eqx.Module,
         current_epoch: int,
-        train_loss: Optional[ArrayLike],
-        val_loss: Optional[ArrayLike],
+        train_loss: Optional[jax.Array],
+        val_loss: Optional[jax.Array],
         epoch_time: float,
     ) -> bool:
         return True
@@ -73,8 +75,8 @@ class EpochStop(StopCondition):
         self: Self,
         model: eqx.Module,
         current_epoch: int,
-        train_loss: Optional[ArrayLike],
-        val_loss: Optional[ArrayLike],
+        train_loss: Optional[jax.Array],
+        val_loss: Optional[jax.Array],
         epoch_time: float,
     ) -> bool:
         """
@@ -125,8 +127,8 @@ class TrainLoss(StopCondition):
         self: Self,
         model: eqx.Module,
         current_epoch: int,
-        train_loss: Optional[ArrayLike],
-        val_loss: Optional[ArrayLike],
+        train_loss: Optional[jax.Array],
+        val_loss: Optional[jax.Array],
         epoch_time: float,
     ) -> bool:
         """
@@ -143,8 +145,10 @@ class TrainLoss(StopCondition):
         returns:
             whether to stop
         """
-        if train_loss is None or not isinstance(train_loss, float):
+        if train_loss is None:
             return False
+        else:
+            train_loss = train_loss.astype(float)
 
         if train_loss < (self.best_train_loss - self.min_delta):
             self.best_train_loss = train_loss
@@ -183,8 +187,8 @@ class ValLoss(StopCondition):
         self: Self,
         model: eqx.Module,
         current_epoch: int,
-        train_loss: Optional[ArrayLike],
-        val_loss: Optional[ArrayLike],
+        train_loss: Optional[jax.Array],
+        val_loss: Optional[jax.Array],
         epoch_time: float,
     ) -> bool:
         """
@@ -201,8 +205,10 @@ class ValLoss(StopCondition):
         returns:
             whether to stop
         """
-        if val_loss is None or not isinstance(val_loss, float):
+        if val_loss is None:
             return False
+        else:
+            val_loss = val_loss.astype(float)
 
         if val_loss < (self.best_val_loss - self.min_delta):
             self.best_val_loss = val_loss
@@ -215,3 +221,38 @@ class ValLoss(StopCondition):
             self.epochs_since_best += 1
 
         return self.epochs_since_best > self.patience
+
+
+class AnyStop(StopCondition):
+    """
+    Combine multiple stopping conditions, and stop when any of them stop. Can be used to implement
+    early stopping. The best model returned is according to the first stop condition, and each
+    prints according to its verbosity.
+    """
+
+    stop_conditions: list[StopCondition]
+
+    def __init__(self: Self, stop_conditions: list[StopCondition]) -> None:
+        """
+        StopCondition constructor.
+
+        args:
+            stop_conditions: a list of all the stopping conditions
+        """
+        assert len(stop_conditions) > 0
+        self.stop_conditions = stop_conditions
+
+    def stop(
+        self: Self,
+        model: eqx.Module,
+        current_epoch: int,
+        train_loss: Optional[jax.Array],
+        val_loss: Optional[jax.Array],
+        epoch_time: float,
+    ) -> bool:
+        test_all = [
+            sc.stop(model, current_epoch, train_loss, val_loss, epoch_time)
+            for sc in self.stop_conditions
+        ]
+        self.best_model = self.stop_conditions[0].best_model
+        return functools.reduce(lambda x, y: x or y, test_all, False)

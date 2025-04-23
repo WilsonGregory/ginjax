@@ -65,6 +65,7 @@ def get_data(
         pressure = (pressure - jnp.mean(pressure[: (n_train + n_val)])) / jnp.std(
             pressure[: (n_train + n_val)]
         )
+        # TODO: this is not equivariant :/
         velocity = velocity / jnp.std(
             velocity[: (n_train + n_val)]
         )  # this one I am not so sure about

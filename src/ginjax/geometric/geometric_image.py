@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from jax.tree_util import register_pytree_node_class
 from jaxtyping import ArrayLike
 
-from ginjax.geometric.constants import LeviCivitaSymbol, KroneckerDeltaSymbol, TINY
+from ginjax.geometric.constants import LeviCivitaSymbol, KroneckerDeltaSymbol, TINY, LETTERS
 from ginjax.geometric.functional_geometric_image import (
     average_pool,
     convolve,
@@ -36,6 +36,7 @@ class GeometricImage:
     D: int
     spatial_dims: tuple[int, ...]
     k: int
+    covariant_axes: tuple[bool, ...]  # can be () for k==0
     data: jax.Array
     parity: int
     is_torus: tuple[bool, ...]
@@ -50,6 +51,7 @@ class GeometricImage:
         parity: int,
         D: int,
         is_torus: Union[bool, tuple[bool]] = True,
+        covariant_axes: Union[bool, tuple[bool, ...]] = False,
     ) -> Self:
         """
         Zero constructor for GeometricImage.
@@ -60,13 +62,15 @@ class GeometricImage:
             parity: 0 or 1, 0 is normal vectors, 1 is pseudovectors
             D: dimension of the image, and length of vectors or side length of matrices or tensors.
             is_torus: whether the datablock is a torus, used for convolutions
+            covariant_axes: which of k tensor axes are covariant, i.e. they rotate covariantly
+                of the coordinate change. False for typical vectors, true for gradients.
 
         returns:
             constructed GeometricImage
         """
         spatial_dims = N if isinstance(N, tuple) else (N,) * D
         assert len(spatial_dims) == D
-        return cls(jnp.zeros(spatial_dims + (D,) * k), parity, D, is_torus)
+        return cls(jnp.zeros(spatial_dims + (D,) * k), parity, D, is_torus, covariant_axes)
 
     @classmethod
     def fill(
@@ -76,6 +80,7 @@ class GeometricImage:
         D: int,
         fill: Union[jax.Array, float],
         is_torus: Union[bool, tuple[bool, ...]] = True,
+        covariant_axes: Union[bool, tuple[bool, ...]] = False,
     ) -> Self:
         """
         Fill constructor to construct a geometric image every pixel as fill
@@ -86,6 +91,8 @@ class GeometricImage:
             D: dimension of the image, and length of vectors or side length of matrices or tensors.
             fill: tensor to fill the image with
             is_torus: whether the datablock is a torus, used for convolutions. Defaults to true.
+            covariant_axes: which of k tensor axes are covariant, i.e. they rotate covariantly
+                of the coordinate change. False for typical vectors, true for gradients.
 
         returns:
             Constructed GeometricImage
@@ -101,7 +108,7 @@ class GeometricImage:
         data = jnp.stack([fill for _ in range(np.multiply.reduce(spatial_dims))]).reshape(
             spatial_dims + (D,) * k
         )
-        return cls(data, parity, D, is_torus)
+        return cls(data, parity, D, is_torus, covariant_axes)
 
     def __init__(
         self: Self,
@@ -109,6 +116,7 @@ class GeometricImage:
         parity: int,
         D: int,
         is_torus: Union[bool, tuple[bool, ...]] = True,
+        covariant_axes: Union[bool, tuple[bool, ...]] = False,
     ) -> None:
         """
         Constructor for GeometricImage. It will be (N^D x D^k), so if N=100, D=2, k=1, then it's
@@ -121,6 +129,11 @@ class GeometricImage:
             is_torus: whether the datablock is a torus, used for convolutions.
                 Takes either a tuple of bools of length D specifying whether each dimension is toroidal,
                 or simply True or False which sets all dimensions to that value.
+            covariant_axes: which of k tensor axes are covariant, i.e. they rotate covariantly
+                of the coordinate change. False for typical vectors, true for gradients. You
+                can only take a contraction between 1 covariant axis and 1 contravariant axis,
+                but for a flat Euclidean metric these vectors are numerically identical, so we will
+                not enforce this.
         """
         self.D = D
         self.spatial_dims, self.k = parse_shape(data.shape, D)
@@ -130,6 +143,12 @@ class GeometricImage:
         if self.D == 1:
             assert self.k == 0, "GeometricImage: 1D images must be a scalar or pseudoscalar"
 
+        if isinstance(covariant_axes, bool):
+            covariant_axes = (covariant_axes,) * self.k
+
+        assert len(covariant_axes) == self.k
+
+        self.covariant_axes = covariant_axes
         self.parity = parity % 2
 
         assert (isinstance(is_torus, tuple) and (len(is_torus) == D)) or isinstance(is_torus, bool)
@@ -146,7 +165,7 @@ class GeometricImage:
         """
         Copy the geometric image.
         """
-        return self.__class__(self.data, self.parity, self.D, self.is_torus)
+        return self.__class__(self.data, self.parity, self.D, self.is_torus, self.covariant_axes)
 
     # Getters, setters, basic info
 
@@ -236,13 +255,14 @@ class GeometricImage:
         returns:
             the string representation of the GeometricImage
         """
-        return "<{} object in D={} with spatial_dims={}, k={}, parity={}, is_torus={}>".format(
+        return "<{} object in D={} with spatial_dims={}, k={}, parity={}, is_torus={}, covariant_axes={}>".format(
             self.__class__,
             self.D,
             self.spatial_dims,
             self.k,
             self.parity,
             self.is_torus,
+            self.covariant_axes,
         )
 
     # itertools does not have type hints, but it will be a product[tuple[int,...]]
@@ -299,6 +319,7 @@ class GeometricImage:
                 and self.k == other.k
                 and self.parity == other.parity
                 and self.is_torus == other.is_torus
+                and self.covariant_axes == other.covariant_axes
                 and self.data.shape == other.data.shape
                 and bool(jnp.allclose(self.data, other.data, rtol=TINY, atol=TINY))
             )
@@ -320,8 +341,11 @@ class GeometricImage:
         assert self.k == other.k
         assert self.parity == other.parity
         assert self.is_torus == other.is_torus
+        assert self.covariant_axes == other.covariant_axes
         assert self.data.shape == other.data.shape
-        return self.__class__(self.data + other.data, self.parity, self.D, self.is_torus)
+        return self.__class__(
+            self.data + other.data, self.parity, self.D, self.is_torus, self.covariant_axes
+        )
 
     def __sub__(self: Self, other: Self) -> Self:
         """
@@ -338,8 +362,11 @@ class GeometricImage:
         assert self.k == other.k
         assert self.parity == other.parity
         assert self.is_torus == other.is_torus
+        assert self.covariant_axes == other.covariant_axes
         assert self.data.shape == other.data.shape
-        return self.__class__(self.data - other.data, self.parity, self.D, self.is_torus)
+        return self.__class__(
+            self.data - other.data, self.parity, self.D, self.is_torus, self.covariant_axes
+        )
 
     def __mul__(self: Self, other: Union[Self, float, int]) -> Self:
         """
@@ -361,9 +388,12 @@ class GeometricImage:
                 self.parity + other.parity,
                 self.D,
                 self.is_torus,
+                self.covariant_axes + other.covariant_axes,
             )
         else:  # its an integer or a float, or something that can we can multiply a Jax array by (like a DeviceArray)
-            return self.__class__(self.data * other, self.parity, self.D, self.is_torus)
+            return self.__class__(
+                self.data * other, self.parity, self.D, self.is_torus, self.covariant_axes
+            )
 
     def __rmul__(self: Self, other: Union[Self, float, int]) -> Self:
         """
@@ -392,8 +422,13 @@ class GeometricImage:
         new_indices = tuple(
             tuple(range(idx_shift)) + tuple(axis + idx_shift for axis in axes_permutation)
         )
+        new_covariant_axes = tuple(self.covariant_axes[axis] for axis in axes_permutation)
         return self.__class__(
-            jnp.transpose(self.data, new_indices), self.parity, self.D, self.is_torus
+            jnp.transpose(self.data, new_indices),
+            self.parity,
+            self.D,
+            self.is_torus,
+            new_covariant_axes,
         )
 
     @functools.partial(jax.jit, static_argnums=[2, 3, 4, 5])
@@ -435,6 +470,7 @@ class GeometricImage:
             self.parity + filter_image.parity,
             self.D,
             self.is_torus,
+            self.covariant_axes + filter_image.covariant_axes,
         )
 
     @functools.partial(jax.jit, static_argnums=[1, 2])
@@ -456,6 +492,7 @@ class GeometricImage:
             self.parity,
             self.D,
             self.is_torus,
+            self.covariant_axes,
         )
 
     @functools.partial(jax.jit, static_argnums=1)
@@ -476,6 +513,7 @@ class GeometricImage:
             self.parity,
             self.D,
             self.is_torus,
+            self.covariant_axes,
         )
 
     @functools.partial(jax.jit, static_argnums=1)
@@ -545,9 +583,10 @@ class GeometricImage:
         assert (
             self.k == 0
         ), "Activation functions only implemented for k=0 tensors due to equivariance"
-        return self.__class__(function(self.data), self.parity, self.D, self.is_torus)
+        return self.__class__(
+            function(self.data), self.parity, self.D, self.is_torus, self.covariant_axes
+        )
 
-    @functools.partial(jax.jit, static_argnums=[1, 2])
     def contract(self: Self, i: int, j: int) -> Self:
         """
         Use einsum to perform a kronecker contraction on two dimensions of the tensor
@@ -561,15 +600,19 @@ class GeometricImage:
         """
         assert self.k >= 2
         idx_shift = len(self.image_shape())
+
+        first, second = min(i, j), max(i, j)
+        axes_ls = self.covariant_axes
+        new_covariant_axes = axes_ls[:first] + axes_ls[first + 1 : second] + axes_ls[second + 1 :]
         return self.__class__(
             multicontract(self.data, ((i, j),), idx_shift),
             self.parity,
             self.D,
             self.is_torus,
+            new_covariant_axes,
         )
 
-    @functools.partial(jax.jit, static_argnums=1)
-    def multicontract(self: Self, indices: tuple[tuple[int]]) -> Self:
+    def multicontract(self: Self, indices: tuple[tuple[int, int], ...]) -> Self:
         """
         Use einsum to perform a kronecker contraction on two dimensions of the tensor
 
@@ -581,11 +624,17 @@ class GeometricImage:
         """
         assert self.k >= 2
         idx_shift = len(self.image_shape())
+        sorted_idxs = sorted(list(sum(indices, ())))
+        new_cov_axes = tuple(
+            self.covariant_axes[prev + 1 : next]
+            for prev, next in zip([-1] + sorted_idxs, sorted_idxs + [self.k])
+        )
         return self.__class__(
             multicontract(self.data, indices, idx_shift),
             self.parity,
             self.D,
             self.is_torus,
+            sum(new_cov_axes, ()),
         )
 
     def levi_civita_contract(self: Self, indices: Union[tuple[int, ...], int]) -> Self:
@@ -616,8 +665,106 @@ class GeometricImage:
             for i, j in zip(indices, range(self.k, self.k + len(indices)))
         )
         return self.__class__(
-            multicontract(outer, zipped_indices), self.parity + 1, self.D, self.is_torus
+            multicontract(outer, zipped_indices),
+            self.parity + 1,
+            self.D,
+            self.is_torus,
+            self.covariant_axes[: self.k - self.D + 2],  # right length, but maybe wrong
         )
+
+    def raise_axes(
+        self: Self,
+        metric_tensor_inv: jax.Array,
+        axes: Optional[tuple[int, ...]] = None,
+        precision: Optional[jax.lax.Precision] = None,
+    ) -> Self:
+        """
+        Raise the tensor axes so they are upper
+
+        args:
+            metric_tensor_inv: the inverse metric tensor, g^ij. Must be same spatial shape as this
+            axes: if tuple of integers then raise those tensor axes, otherwise raise them all
+            precision: precision used for einsum
+
+        returns:
+            new GeometricImage with raised axes
+        """
+        assert self.k < 13
+        if axes is None:  # raise all
+            axes = tuple(range(self.k))
+
+        # ignore axes that are already contravariant
+        to_raise = tuple(filter(lambda axis: self.covariant_axes[axis], axes))
+        if len(to_raise) == 0:
+            return self
+
+        einstr = f"...{LETTERS[:self.k]},"
+        einstr += ",".join(["..." + LETTERS[13 + axis] + LETTERS[axis] for axis in to_raise])
+        # out axes are implicit
+        tensor_inputs = (self.data,) + (metric_tensor_inv,) * len(to_raise)
+        raised_data = jnp.einsum(einstr, *tensor_inputs, precision=precision)
+
+        return self.__class__(
+            raised_data,
+            self.parity,
+            self.D,
+            self.is_torus,
+            tuple((self.covariant_axes[i] and (i not in to_raise)) for i in range(self.k)),
+        )
+
+    def raise_precise(
+        self: Self,
+        metric_tensor_inv: jax.Array,
+        axes: Optional[tuple[int, ...]] = None,
+    ) -> Self:
+        return self.raise_axes(metric_tensor_inv, axes, jax.lax.Precision.HIGHEST)
+
+    def lower_axes(
+        self: Self,
+        metric_tensor: jax.Array,
+        axes: Optional[tuple[int, ...]] = None,
+        precision: Optional[jax.lax.Precision] = None,
+    ) -> Self:
+        """
+        Lower the tensor axes specified.
+
+        args:
+            metric_tensor: the metric tensor, g_ij. Must be same spatial shape as this
+            axes: if tuple of integers then lower those tensor axes, otherwise lower them all
+            precision: precision used for einsum
+
+        returns:
+            new GeometricImage with lowered axes
+        """
+        assert self.k < 13
+        if axes is None:  # lower all
+            axes = tuple(range(self.k))
+
+        # ignore axes that are already contravariant
+        to_lower = tuple(filter(lambda axis: not self.covariant_axes[axis], axes))
+        if len(to_lower) == 0:
+            return self
+
+        einstr = f"...{LETTERS[:self.k]},"
+        einstr += ",".join(["..." + LETTERS[13 + axis] + LETTERS[axis] for axis in to_lower])
+        # out axes are implicit
+        tensor_inputs = (self.data,) + (metric_tensor,) * len(to_lower)
+        lowered_data = jnp.einsum(einstr, *tensor_inputs, precision=precision)
+
+        return self.__class__(
+            lowered_data,
+            self.parity,
+            self.D,
+            self.is_torus,
+            tuple((self.covariant_axes[i] or (i in to_lower)) for i in range(self.k)),
+        )
+
+    def lower_precise(
+        self: Self,
+        metric_tensor: jax.Array,
+        axes: Optional[tuple[int, ...]] = None,
+    ) -> Self:
+        return self.lower_axes(metric_tensor, axes, jax.lax.Precision.HIGHEST)
 
     def get_rotated_keys(self: Self, gg: np.ndarray) -> np.ndarray:
         """
@@ -632,16 +779,17 @@ class GeometricImage:
         """
         return get_rotated_keys(self.D, self.data, gg)
 
-    def times_group_element(
+    def times_gg_upper(
         self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision] = None
     ) -> Self:
         """
-        Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the location of the
-        pixels, then apply the action to the pixels themselves.
+        Apply a group element of O(d) to the geometric image. First apply the action to the location
+        of the pixels, then apply the action to the pixels themselves. Assumes a flat Euclidean
+        metric or all the tensor axes are upper.
 
         args:
             gg: a DxD matrix that rotates the tensor
-            precision: precision level for einsum, for equality tests use Precision.HIGH
+            precision: precision level for einsum, for equality tests use Precision.HIGHEST
 
         returns:
             a new GeometricImage that has been rotated
@@ -650,11 +798,54 @@ class GeometricImage:
         assert gg.shape == (self.D, self.D)
 
         return self.__class__(
-            times_group_element(self.D, self.data, self.parity, gg, precision=precision),
+            times_group_element(self.D, self.data, self.parity, gg, precision, self.covariant_axes),
             self.parity,
             self.D,
             self.is_torus,
+            self.covariant_axes,
         )
+
+    def times_group_element(
+        self: Self,
+        gg: np.ndarray,
+        precision: Optional[jax.lax.Precision] = None,
+        metric_tensor: Optional[Self] = None,
+    ) -> Self:
+        """
+        Apply a group element of O(d) to the geometric image. First apply the action to the location
+        of the pixels, then apply the action to the pixels themselves. If a metric tensor image is
+        provided, then contravariant/covariant axes will be handled properly.
+
+        args:
+            gg: a DxD matrix that rotates the tensor
+            precision: precision level for einsum, for equality tests use Precision.HIGHEST
+            metric_tensor: the metric tensor field for the image, has to be the same spatial size
+
+        returns:
+            a new GeometricImage that has been rotated
+        """
+        if metric_tensor:
+            diagonals = jax.vmap(jnp.diag)(
+                metric_tensor.data.reshape((-1,) + (metric_tensor.D,) * 2)
+            )
+            metric_inv_data = jax.vmap(jnp.diag)(1 / diagonals).reshape(metric_tensor.shape())
+
+            upper_image = self.raise_axes(metric_inv_data, precision=precision)
+            rot_upper_image = upper_image.times_gg_upper(gg, precision)
+
+            # Need to lower with the rotated metric tensor
+            rot_metric_tensor = metric_tensor.times_group_element(gg, precision=precision)
+            axes = tuple(filter(lambda x: self.covariant_axes[x], range(self.k)))
+            return rot_upper_image.lower_axes(rot_metric_tensor.data, axes, precision=precision)
+        else:  # treat all indices as upper
+            return self.times_gg_upper(gg, precision)
+
+    def times_gg_precise(
+        self: Self,
+        gg: np.ndarray,
+        metric_tensor: Optional[Self] = None,
+    ) -> Self:
+        return self.times_group_element(gg, jax.lax.Precision.HIGHEST, metric_tensor)
 
     def plot(
         self: Self,
@@ -758,6 +949,7 @@ class GeometricImage:
             "D": self.D,
             "parity": self.parity,
             "is_torus": self.is_torus,
+            "covariant_axes": self.covariant_axes,
         }  # static values
         return (children, aux_data)
 
@@ -781,6 +973,7 @@ class GeometricFilter(GeometricImage):
         parity: int,
         D: int,
         is_torus: Union[bool, tuple[bool, ...]] = True,
+        covariant_axes: Union[bool, tuple[bool, ...]] = False,
     ) -> None:
         """
         Constructor for GeometricFilter.
@@ -790,8 +983,13 @@ class GeometricFilter(GeometricImage):
             parity: parity of tensor, 0 for vector, 1 for pseudo-vector
             D: dimension of the image
             is_torus: which dimensions are toroidal
+            covariant_axes: which of k tensor axes are covariant, i.e. they rotate covariantly
+                of the coordinate change. False for typical vectors, true for gradients. You
+                can only take a contraction between 1 covariant axis and 1 contravariant axis,
+                but for a flat Euclidean metric these vectors are numerically identical, so we will
+                not enforce this.
         """
-        super(GeometricFilter, self).__init__(data, parity, D, is_torus)
+        super(GeometricFilter, self).__init__(data, parity, D, is_torus, covariant_axes)
         assert (
             self.spatial_dims == (self.spatial_dims[0],) * self.D
         ), "GeometricFilter: Filters must be square."  # I could remove  this requirement in the future
@@ -812,15 +1010,7 @@ class GeometricFilter(GeometricImage):
             geometric_image.parity,
             geometric_image.D,
             geometric_image.is_torus,
-        )
-
-    def __str__(self: Self) -> str:
-        """
-        returns:
-            the string representation of the GeometricFilter
-        """
-        return "<geometric filter object in D={} with spatial_dims={}, k={}, parity={}, and is_torus={}>".format(
-            self.D, self.spatial_dims, self.k, self.parity, self.is_torus
+            geometric_image.covariant_axes,
         )
 
     def bigness(self: Self) -> float:
@@ -902,24 +1092,22 @@ class GeometricFilter(GeometricImage):
         )
 
 
-def get_kronecker_delta_image(N: int, D: int, k: int) -> GeometricImage:
+def get_kronecker_delta_image(N: int, D: int) -> GeometricImage:
     """
     Get an image with a Kronecker Delta in every pixel.
-
-    TODO: This should not be able to create Kronecker Deltas that are not 2-tensors.
 
     args:
         N: the sidelength of the image
         D: the dimension of the image
-        k: the tensor order
 
     returns:
         a new GeometricImage.
     """
     return GeometricImage(
-        jnp.stack([KroneckerDeltaSymbol.get(D, k) for _ in range(N**D)]).reshape(
-            ((N,) * D + (D,) * k)
+        jnp.stack([KroneckerDeltaSymbol.get(D, 2) for _ in range(N**D)]).reshape(
+            ((N,) * D + (D,) * 2)
         ),
         0,
         D,
+        covariant_axes=(True, False),  # could also be False,True, its symmetric.
     )

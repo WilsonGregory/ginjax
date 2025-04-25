@@ -150,15 +150,14 @@ class TestPropositions:
         N = 3
         D = 2
         k = 3
-        kron_delta_k = 2
 
         key = random.PRNGKey(time.time_ns())
         key, subkey = random.split(key)
         img1 = geom.GeometricImage(random.normal(subkey, shape=((N,) * D + (D,) * k)), 0, D)
-        kron_delta_img = geom.get_kronecker_delta_image(N, D, kron_delta_k)
+        kron_delta_img = geom.get_kronecker_delta_image(N, D)
 
         expanded_img1 = img1 * kron_delta_img
-        assert expanded_img1.k == k + kron_delta_k
+        assert expanded_img1.k == k + 2
         assert jnp.allclose(expanded_img1.contract(3, 4).data, (img1 * D).data)
 
         # Multiplying by K-D then contracting on exactly one K-D index returns the original, up to a transpose of axes
@@ -167,10 +166,10 @@ class TestPropositions:
         D = 3
         key, subkey = random.split(key)
         img2 = geom.GeometricImage(random.normal(subkey, shape=((N,) * D + (D,) * k)), 0, D)
-        kron_delta_img = geom.get_kronecker_delta_image(N, D, kron_delta_k)
+        kron_delta_img = geom.get_kronecker_delta_image(N, D)
 
         expanded_img2 = img2 * kron_delta_img
-        assert expanded_img2.k == k + kron_delta_k
+        assert expanded_img2.k == k + 2
 
         assert expanded_img2.contract(3, 4) == (img2 * D)
 

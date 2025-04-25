@@ -571,7 +571,6 @@ def times_group_element(
     parity: int,
     gg: np.ndarray,
     precision: Optional[jax.lax.Precision] = None,
-    covariant_axes: Union[bool, tuple[bool, ...]] = False,
 ) -> jax.Array:
     """
     Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the
@@ -585,18 +584,11 @@ def times_group_element(
             by this argument because it needs to deal with concrete values
         precision: einsum precision, normally uses lower precision, use jax.lax.Precision.HIGHEST
             for testing equality in unit tests
-        covariant_axes: which of k tensor axes are covariant, i.e. they rotate covariantly
-            with the coordinate change. False for typical vectors, true for gradients.
 
     returns:
         the rotated image data
     """
     spatial_dims, k = parse_shape(data.shape, D)
-    if isinstance(covariant_axes, bool):
-        covariant_axes = (covariant_axes,) * k
-
-    assert len(covariant_axes) == k
-
     sign, _ = jnp.linalg.slogdet(gg)
     parity_flip = sign**parity  # if parity=1, the flip operators don't flip the tensors
 
@@ -611,8 +603,7 @@ def times_group_element(
         # vector, by the group action. The image pixels have already been rotated.
         einstr = LETTERS[: len(data.shape)] + ","
         einstr += ",".join([LETTERS[i + 13] + LETTERS[i + D] for i in range(k)])
-        rotation_matrices = tuple(gg.T if covariant else gg for covariant in covariant_axes)
-        tensor_inputs = (rotated_pixels,) + rotation_matrices
+        tensor_inputs = (rotated_pixels,) + (gg,) * k
         newdata = jnp.einsum(einstr, *tensor_inputs, precision=precision) * (parity_flip)
 
     return newdata

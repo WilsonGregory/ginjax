@@ -63,7 +63,7 @@ class GeometricImage:
             D: dimension of the image, and length of vectors or side length of matrices or tensors.
             is_torus: whether the datablock is a torus, used for convolutions
             covariant_axes: which of k tensor axes are covariant, i.e. they rotate covariantly
-                of the coordinate change. False for typical vectors, true for gradients.
+                with the coordinate change. False for typical vectors, true for gradients.
 
         returns:
             constructed GeometricImage
@@ -92,7 +92,7 @@ class GeometricImage:
             fill: tensor to fill the image with
             is_torus: whether the datablock is a torus, used for convolutions. Defaults to true.
             covariant_axes: which of k tensor axes are covariant, i.e. they rotate covariantly
-                of the coordinate change. False for typical vectors, true for gradients.
+                with the coordinate change. False for typical vectors, true for gradients.
 
         returns:
             Constructed GeometricImage
@@ -130,7 +130,7 @@ class GeometricImage:
                 Takes either a tuple of bools of length D specifying whether each dimension is toroidal,
                 or simply True or False which sets all dimensions to that value.
             covariant_axes: which of k tensor axes are covariant, i.e. they rotate covariantly
-                of the coordinate change. False for typical vectors, true for gradients. You
+                with the coordinate change. False for typical vectors, true for gradients. You
                 can only take a contraction between 1 covariant axis and 1 contravariant axis,
                 but for a flat Euclidean metric these vectors are numerically identical, so we will
                 not enforce this.
@@ -717,6 +717,16 @@ class GeometricImage:
         metric_tensor_inv: jax.Array,
         axes: Optional[tuple[int, ...]] = None,
     ) -> Self:
+        """
+        Raise the tensor axes with HIGHEST einsum precision.
+
+        args:
+            metric_tensor_inv: the inverse metric tensor, g^ij. Must be same spatial shape as this
+            axes: if tuple of integers then raise those tensor axes, otherwise raise them all
+
+        returns:
+            new GeometricImage with raised axes
+        """
         return self.raise_axes(metric_tensor_inv, axes, jax.lax.Precision.HIGHEST)
 
     def lower_axes(
@@ -764,6 +774,16 @@ class GeometricImage:
         metric_tensor: jax.Array,
         axes: Optional[tuple[int, ...]] = None,
     ) -> Self:
+        """
+        Lower the tensor axes specified with HIGHEST einsum precision.
+
+        args:
+            metric_tensor: the metric tensor, g_ij. Must be same spatial shape as this
+            axes: if tuple of integers then lower those tensor axes, otherwise lower them all
+
+        returns:
+            new GeometricImage with lowered axes
+        """
         return self.lower_axes(metric_tensor, axes, jax.lax.Precision.HIGHEST)
 
     def get_rotated_keys(self: Self, gg: np.ndarray) -> np.ndarray:
@@ -798,7 +818,7 @@ class GeometricImage:
         assert gg.shape == (self.D, self.D)
 
         return self.__class__(
-            times_group_element(self.D, self.data, self.parity, gg, precision, self.covariant_axes),
+            times_group_element(self.D, self.data, self.parity, gg, precision),
             self.parity,
             self.D,
             self.is_torus,
@@ -820,6 +840,7 @@ class GeometricImage:
             gg: a DxD matrix that rotates the tensor
             precision: precision level for einsum, for equality tests use Precision.HIGHEST
             metric_tensor: the metric tensor field for the image, has to be the same spatial size
+                as the image and must be a diagonal matrix everywhere with nonzero diagonal values
 
         returns:
             a new GeometricImage that has been rotated

@@ -1165,9 +1165,7 @@ class TestGeometricImage:
             )
             second = (
                 A_up.times_gg_precise(gg)
-                * metric_tensor.times_gg_precise(
-                    gg, metric_tensor
-                )  # equal to .times_gg_precise(gg)
+                * metric_tensor.times_gg_precise(gg, metric_tensor)  # = .times_gg_precise(gg)
                 * B_up.times_gg_precise(gg)
             ).multicontract(((0, 1), (2, 3)))
 

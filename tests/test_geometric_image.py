@@ -1,11 +1,13 @@
 import math
 import time
 import numpy as np
+import pytest
+
+import jax.numpy as jnp
+import jax
+from jax import random
 
 import ginjax.geometric as geom
-import pytest
-import jax.numpy as jnp
-from jax import random
 
 TINY = 1.0e-5
 
@@ -51,14 +53,17 @@ class TestGeometricImage:
         image1 = geom.GeometricImage.zeros(20, 0, 0, 2)
         assert image1.data.shape == (20, 20)
         assert image1.k == 0
+        assert image1.covariant_axes == ()
 
         image2 = geom.GeometricImage.zeros(20, 1, 0, 2)
         assert image2.data.shape == (20, 20, 2)
         assert image2.k == 1
+        assert image2.covariant_axes == (False,)
 
         image3 = geom.GeometricImage.zeros(20, 3, 0, 2)
         assert image3.data.shape == (20, 20, 2, 2, 2)
         assert image3.k == 3
+        assert image3.covariant_axes == (False, False, False)
 
         # square but spatial_dims in constructor, odd parity, D=3, not torus
         image4 = geom.GeometricImage.zeros((5,) * 3, 1, 1, 3, False)
@@ -67,11 +72,13 @@ class TestGeometricImage:
         assert image4.D == 3
         assert image4.parity == 1
         assert image4.is_torus == (False,) * 3
+        assert image4.covariant_axes == (False,)
 
         # non-square, D=3
         image5 = geom.GeometricImage.zeros((4, 5, 6), 0, 0, 3)
         assert image5.data.shape == (4, 5, 6)
         assert image5.D == 3
+        assert image5.covariant_axes == ()
 
         # 1D
         image6 = geom.GeometricImage.zeros((5,), 0, 0, 1, True)
@@ -80,6 +87,7 @@ class TestGeometricImage:
         assert image6.D == 1
         assert image6.parity == 0
         assert image6.is_torus == (True,)
+        assert image6.covariant_axes == ()
 
         image7 = geom.GeometricImage.zeros((5,), 0, 1, 1, False)
         assert image7.data.shape == (5,)
@@ -87,6 +95,23 @@ class TestGeometricImage:
         assert image7.D == 1
         assert image7.parity == 1
         assert image7.is_torus == (False,)
+        assert image7.covariant_axes == ()
+
+        # covariant scalar, so still nothing
+        image8 = geom.GeometricImage.zeros(20, 0, 0, 2, covariant_axes=True)
+        assert image8.covariant_axes == ()
+
+        # covariant vector
+        image9 = geom.GeometricImage.zeros(20, 1, 0, 2, covariant_axes=True)
+        assert image9.covariant_axes == (True,)
+
+        # fully covariant 2-tensor
+        image10 = geom.GeometricImage.zeros(20, 2, 0, 2, covariant_axes=True)
+        assert image10.covariant_axes == (True, True)
+
+        # mixed 2-tensor
+        image11 = geom.GeometricImage.zeros(20, 2, 0, 2, covariant_axes=(True, False))
+        assert image11.covariant_axes == (True, False)
 
     def testConstructor(self):
         # note we are not actually relying on randomness in this function, just filling values
@@ -97,28 +122,34 @@ class TestGeometricImage:
         assert image1.D == 2
         assert image1.k == 0
         assert image1.is_torus == (True,) * 2
+        assert image1.covariant_axes == ()
 
         image2 = geom.GeometricImage(random.uniform(key, shape=(10, 10, 2)), 0, 2)
         assert image2.data.shape == (10, 10, 2)
         assert image2.D == 2
         assert image2.k == 1
+        assert image2.covariant_axes == (False,)
 
         image3 = geom.GeometricImage(random.uniform(key, shape=(10, 10, 2, 2, 2)), 3, 2)
         assert image3.data.shape == (10, 10, 2, 2, 2)
         assert image3.k == 3
         assert image3.parity == 1
+        assert image3.covariant_axes == (False, False, False)
 
         image4 = geom.GeometricImage(random.uniform(key, shape=(10, 10, 10)), 0, 3, False)
         assert image4.is_torus == (False,) * 3
+        assert image4.covariant_axes == ()
 
         image5 = geom.GeometricImage(random.uniform(key, shape=(4, 5)), 0, 2)
         assert image5.spatial_dims == (4, 5)
         assert image5.k == 0
+        assert image5.covariant_axes == ()
 
         image6 = geom.GeometricImage(random.uniform(key, shape=(2, 5, 2)), 0, 2)
         assert image6.spatial_dims == (2, 5)
         assert image6.data.shape == (2, 5, 2)
         assert image6.k == 1
+        assert image6.covariant_axes == (False,)
 
         # 1d image
         image7 = geom.GeometricImage(random.uniform(key, shape=(5,)), 0, 1)
@@ -126,6 +157,25 @@ class TestGeometricImage:
         assert image7.data.shape == (5,)
         assert image7.k == 0
         assert image7.parity == 0
+        assert image7.covariant_axes == ()
+
+        # covariant vector
+        image8 = geom.GeometricImage(
+            random.uniform(key, shape=(5, 5, 2)), 0, 2, covariant_axes=True
+        )
+        assert image8.covariant_axes == (True,)
+
+        # fully covariant 2-tensor
+        image9 = geom.GeometricImage(
+            random.uniform(key, shape=(20, 20, 2, 2)), 0, 2, covariant_axes=True
+        )
+        assert image9.covariant_axes == (True, True)
+
+        # mixed 2-tensor
+        image10 = geom.GeometricImage(
+            random.uniform(key, shape=(20, 20, 2, 2)), 0, 2, covariant_axes=(True, False)
+        )
+        assert image10.covariant_axes == (True, False)
 
         # D does not match dimensions
         with pytest.raises(AssertionError):
@@ -137,6 +187,14 @@ class TestGeometricImage:
 
         with pytest.raises(AssertionError):
             geom.GeometricImage(random.uniform(key, shape=(5, 1)), 0, 1)
+
+        # too many covariant axes
+        with pytest.raises(AssertionError):
+            geom.GeometricImage(jnp.ones((5, 5, 2)), 0, 2, covariant_axes=(True, False))
+
+        # not enough covariant axes
+        with pytest.raises(AssertionError):
+            geom.GeometricImage(jnp.ones((5, 5, 2, 2, 2)), 0, 2, covariant_axes=(True, False))
 
     def testEqual(self):
         img1 = geom.GeometricImage(jnp.ones((10, 10, 2)), 0, 2)
@@ -178,6 +236,10 @@ class TestGeometricImage:
         img10 = geom.GeometricImage(jnp.ones((9, 10, 2)), 0, 2)
         assert img1 != img10
 
+        # different covariant axes
+        img11 = geom.GeometricImage(jnp.ones((10, 10, 2)), 0, 2, covariant_axes=True)
+        assert img1 != img11
+
     def testAdd(self):
         image1 = geom.GeometricImage(jnp.ones((10, 10, 2), dtype=int), 0, 2)
         image2 = geom.GeometricImage(5 * jnp.ones((10, 10, 2), dtype=int), 0, 2)
@@ -189,6 +251,7 @@ class TestGeometricImage:
         assert result.D == 2
         assert result.k == 1
         assert result.spatial_dims == (10, 10)
+        assert result.covariant_axes == (False,)
 
         assert (image1.data == 1).all()
         assert (image2.data == 5).all()
@@ -214,6 +277,10 @@ class TestGeometricImage:
         image6 = geom.GeometricImage(jnp.ones((10, 10, 2)), 0, 2, False)
         with pytest.raises(AssertionError):  # is_torus not equal
             result = image1 + image6
+
+        image7 = geom.GeometricImage(jnp.ones((10, 10, 2)), 0, 2, covariant_axes=True)
+        with pytest.raises(AssertionError):
+            result = image1 + image7  # trying to add covariant vector to contravariant vector
 
     def testSub(self):
         image1 = geom.GeometricImage(jnp.ones((10, 10, 2), dtype=int), 0, 2)
@@ -248,6 +315,10 @@ class TestGeometricImage:
         with pytest.raises(AssertionError):  # N not equal
             result = image1 - image5
 
+        image6 = geom.GeometricImage(jnp.ones((10, 10, 2), dtype=int), 0, 2, covariant_axes=True)
+        with pytest.raises(AssertionError):
+            result = image1 - image6  # trying to subtract covariant and contravariant vectors
+
     def testMul(self):
         image1 = geom.GeometricImage(2 * jnp.ones((3, 3), dtype=int), 0, 2)
         image2 = geom.GeometricImage(5 * jnp.ones((3, 3), dtype=int), 0, 2)
@@ -257,15 +328,17 @@ class TestGeometricImage:
         assert mult1_2.parity == 0
         assert mult1_2.D == image1.D == image2.D
         assert mult1_2.spatial_dims == image1.spatial_dims == image1.spatial_dims
+        assert mult1_2.covariant_axes == image1.covariant_axes + image2.covariant_axes
         assert (mult1_2.data == 10 * jnp.ones((3, 3))).all()
         assert (mult1_2.data == (image2 * image1).data).all()
 
-        image3 = geom.GeometricImage(jnp.arange(18).reshape(3, 3, 2), 0, 2)
+        image3 = geom.GeometricImage(jnp.arange(18).reshape(3, 3, 2), 0, 2, covariant_axes=True)
         mult1_3 = image1 * image3
         assert mult1_3.k == image1.k + image3.k == 1
         assert mult1_3.parity == (image1.parity + image3.parity) % 2 == 0
         assert mult1_3.D == image1.D == image3.D
         assert mult1_3.spatial_dims == image1.spatial_dims == image3.spatial_dims
+        assert mult1_3.covariant_axes == image1.covariant_axes + image3.covariant_axes
         assert (
             mult1_3.data
             == jnp.array(
@@ -284,6 +357,7 @@ class TestGeometricImage:
         assert mult3_4.parity == (image3.parity + image4.parity) % 2 == 1
         assert mult3_4.D == image3.D == image4.D
         assert mult3_4.spatial_dims == image3.spatial_dims == image4.spatial_dims
+        assert mult3_4.covariant_axes == image3.covariant_axes + image4.covariant_axes
         assert (
             mult3_4.data
             == jnp.array(
@@ -323,11 +397,13 @@ class TestGeometricImage:
         assert result.D == image1.D
         assert result.k == image1.k
         assert result.spatial_dims == image1.spatial_dims
+        assert result.covariant_axes == image1.covariant_axes
         assert (image1.data == 2).all()  # original is unchanged
 
         result2 = image1 * 3.4
         assert (result2.data == 6.8).all()
         assert (image1.data == 2).all()
+        assert result2.covariant_axes == image1.covariant_axes
 
         # Test multiplying by a scalar right mul
         result = 5 * image1
@@ -336,33 +412,19 @@ class TestGeometricImage:
         assert result.D == image1.D
         assert result.k == image1.k
         assert result.spatial_dims == image1.spatial_dims
+        assert result.covariant_axes == image1.covariant_axes
         assert (image1.data == 2).all()  # original is unchanged
 
         result2 = 3.4 * image1
         assert (result2.data == 6.8).all()
         assert (image1.data == 2).all()
+        assert result2.covariant_axes == image1.covariant_axes
 
         # check that rmul isn't being used in this case, because it only handles scalar multiplication
         geom_filter = geom.GeometricFilter(jnp.ones(image1.shape()), image1.parity, image1.D)
         res1 = image1 * geom_filter
         res2 = geom_filter * image1
         assert (res1.data == res2.data).all()
-
-    def testTimeScalar(self):
-        image1 = geom.GeometricImage(jnp.ones((10, 10, 2), dtype=int), 0, 2)
-        assert (image1.data == 1).all()
-
-        result = image1 * 5
-        assert (result.data == 5).all()
-        assert result.parity == image1.parity
-        assert result.D == image1.D
-        assert result.k == image1.k
-        assert result.spatial_dims == image1.spatial_dims
-        assert (image1.data == 1).all()  # original is unchanged
-
-        result2 = image1 * 3.4
-        assert (result2.data == 3.4).all()
-        assert (image1.data == 1).all()
 
     def testGetItem(self):
         # note we are not actually relying on randomness in this function, just filling values
@@ -384,6 +446,7 @@ class TestGeometricImage:
         assert img1_contracted.shape() == (3, 3)
         assert (img1_contracted.data == jnp.array([[3, 11, 19], [27, 35, 43], [51, 59, 67]])).all()
         assert (img1.contract(1, 0).data == img1_contracted.data).all()
+        assert img1_contracted.covariant_axes == ()
 
         img2 = geom.GeometricImage(jnp.arange(72).reshape((3, 3, 2, 2, 2)), 0, 2)
 
@@ -432,6 +495,13 @@ class TestGeometricImage:
         img3 = geom.GeometricImage(jnp.ones((3, 3)), 0, 2)
         with pytest.raises(AssertionError):
             img3.contract(0, 1)  # k < 2
+
+        img4 = geom.GeometricImage(
+            jnp.ones((5, 5, 2, 2, 2)), 0, 2, covariant_axes=(True, False, True)
+        )
+        assert img4.contract(0, 1).covariant_axes == (True,)
+        assert img4.contract(0, 2).covariant_axes == (False,)
+        assert img4.contract(1, 2).covariant_axes == (True,)
 
     def testMulticontract(self):
         D = 2
@@ -668,6 +738,7 @@ class TestGeometricImage:
             ),
             0,
             2,
+            covariant_axes=(True,),
         )  # this is an invariant filter, hopefully not a problem?
 
         convolved_image = image1.convolve_with(filter_image)
@@ -675,6 +746,7 @@ class TestGeometricImage:
         assert convolved_image.spatial_dims == image1.spatial_dims
         assert convolved_image.k == image1.k + filter_image.k
         assert convolved_image.parity == (image1.parity + filter_image.parity) % 2
+        assert convolved_image.covariant_axes == (True,)
         assert (
             convolved_image.data
             == jnp.array(
@@ -1059,6 +1131,58 @@ class TestGeometricImage:
             ),
         )
 
+    def testTimesGroupElementMetric(self):
+        key = random.PRNGKey(0)
+        N = 5
+        D = 2
+        spatial_dims = (N,) * D
+        operators = geom.make_all_operators(D)
+
+        key, subkey = random.split(key)
+        data = random.uniform(subkey, shape=spatial_dims + (D,)) * 4 + 0.1  # uniform 0.1 to 4.1
+        vec_to_2tensor = lambda x: jax.vmap(jnp.diag)(x.reshape((-1, D))).reshape(x.shape + (D,))
+        metric_tensor = geom.GeometricImage(vec_to_2tensor(data), 0, D, covariant_axes=True)
+        # inv is contravariant
+        metric_tensor_half = geom.GeometricImage(
+            jnp.sqrt(vec_to_2tensor(data)), 0, D, covariant_axes=True
+        )
+
+        key, subkey = random.split(key)
+        A_up = geom.GeometricImage(random.normal(subkey, shape=spatial_dims + (D,)), 0, D)
+        key, subkey = random.split(key)
+        B_up = geom.GeometricImage(random.normal(subkey, shape=spatial_dims + (D,)), 0, D)
+
+        # scaled vectors so that inner product uses the identity metric tensor
+        A = (A_up * metric_tensor_half).contract(0, 1)
+        B = (B_up * metric_tensor_half).contract(0, 1)
+
+        B_down = (B_up * metric_tensor).contract(0, 1)
+
+        # Test that the inner product of the fields is equivariant to rotations
+        for gg in operators:
+            first = (
+                (A_up * metric_tensor * B_up).multicontract(((0, 1), (2, 3))).times_gg_precise(gg)
+            )
+            second = (
+                A_up.times_gg_precise(gg)
+                * metric_tensor.times_gg_precise(gg, metric_tensor)  # = .times_gg_precise(gg)
+                * B_up.times_gg_precise(gg)
+            ).multicontract(((0, 1), (2, 3)))
+
+            third = (A_up * B_down).contract(0, 1).times_gg_precise(gg)
+            fourth = (
+                A_up.times_gg_precise(gg) * B_down.times_gg_precise(gg, metric_tensor)
+            ).contract(0, 1)
+
+            assert first == second
+            assert second == third
+            assert third == fourth
+
+            fifth = (A * B).contract(0, 1).times_gg_precise(gg)
+            sixth = (A.times_gg_precise(gg) * B.times_gg_precise(gg)).contract(0, 1)
+            assert fourth == fifth
+            assert fifth == sixth
+
     def testMaxPoolUseNorm(self):
         image1 = geom.GeometricImage(
             jnp.array(
@@ -1355,3 +1479,35 @@ class TestGeometricImage:
             0,
             2,
         )
+
+    def testRaiseLowerAxes(self):
+        key = random.PRNGKey(0)
+        N = 5
+        D = 2
+        k = 1
+        metric_tensor = jnp.full((N,) * D + (D,) * 2, jnp.array([[1, 0], [0, 0.5]]))
+        metric_tensor_inv = jnp.full((N,) * D + (D,) * 2, jnp.array([[1, 0], [0, 2]]))
+
+        key, subkey = random.split(key)
+        A_down = geom.GeometricImage(
+            random.uniform(subkey, shape=(N,) * D + (D,) * k), 0, D, covariant_axes=True
+        )
+        A_up = A_down.raise_precise(metric_tensor_inv)
+        assert A_up.covariant_axes == (False,)
+        assert jnp.allclose(A_up.data[..., 0], A_down.data[..., 0])
+        assert jnp.allclose(A_up.data[..., 1], 2 * A_down.data[..., 1])
+
+        assert A_down == A_up.lower_precise(metric_tensor)
+
+        k = 3
+        B = geom.GeometricImage(
+            random.uniform(subkey, shape=(N,) * D + (D,) * k),
+            0,
+            D,
+            covariant_axes=(True, False, False),
+        )
+        assert B.lower_precise(metric_tensor, (1,)).covariant_axes == (True, True, False)
+        assert B.lower_precise(metric_tensor, (2,)).covariant_axes == (True, False, True)
+        assert B.lower_precise(metric_tensor, (0,)).covariant_axes == (True, False, False)
+        assert B.lower_precise(metric_tensor, (0,)) == B
+        assert B.lower_precise(metric_tensor).covariant_axes == (True, True, True)

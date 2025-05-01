@@ -13,7 +13,6 @@ from ginjax.geometric.constants import LeviCivitaSymbol, KroneckerDeltaSymbol, T
 from ginjax.geometric.functional_geometric_image import (
     average_pool,
     convolve,
-    get_metric_inverse,
     get_rotated_keys,
     hash,
     max_pool,
@@ -477,7 +476,7 @@ class GeometricImage:
             self.covariant_axes + filter_image.covariant_axes,
         )
 
-    @functools.partial(jax.jit, static_argnums=[1, 2])
+    # @functools.partial(jax.jit, static_argnums=[1, 2])
     def max_pool(self: Self, patch_len: int, use_norm: bool = True) -> Self:
         """
         Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined
@@ -678,8 +677,8 @@ class GeometricImage:
 
     def raise_lower(
         self: Self,
-        metric_tensor: jax.Array,
-        metric_tensor_inv: jax.Array,
+        metric_tensor: Self,
+        metric_tensor_inv: Self,
         axes: tuple[bool, ...],
         precision: Optional[jax.lax.Precision] = None,
     ) -> Self:
@@ -697,7 +696,12 @@ class GeometricImage:
         """
         return self.__class__(
             raise_lower(
-                self.data, metric_tensor, metric_tensor_inv, self.covariant_axes, axes, precision
+                self.data,
+                metric_tensor.data,
+                metric_tensor_inv.data,
+                self.covariant_axes,
+                axes,
+                precision,
             ),
             self.parity,
             self.D,
@@ -706,7 +710,7 @@ class GeometricImage:
         )
 
     def raise_lower_precise(
-        self: Self, metric_tensor: jax.Array, metric_tensor_inv: jax.Array, axes: tuple[bool, ...]
+        self: Self, metric_tensor: Self, metric_tensor_inv: Self, axes: tuple[bool, ...]
     ) -> Self:
         return self.raise_lower(metric_tensor, metric_tensor_inv, axes, jax.lax.Precision.HIGHEST)
 
@@ -723,16 +727,19 @@ class GeometricImage:
         """
         return get_rotated_keys(self.D, self.data, gg)
 
-    def times_gg_upper(
-        self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision] = None
+    def times_group_element(
+        self: Self,
+        gg: np.ndarray,
+        precision: Optional[jax.lax.Precision] = None,
     ) -> Self:
         """
         Apply a group element of O(d) to the geometric image. First apply the action to the location
-        of the pixels, then apply the action to the pixels themselves. Assumes a flat Euclidean
-        metric or all the tensor axes are upper.
+        of the pixels, then apply the action to the pixels themselves. The group element provided
+        is the one that acts on contravariant axes, will be inverted to apply to covariant axes as
+        well.
 
         args:
-            gg: a DxD matrix that rotates the tensor
+            gg: a DxD matrix that rotates a contravariant vector gg @ v
             precision: precision level for einsum, for equality tests use Precision.HIGHEST
 
         returns:
@@ -742,64 +749,25 @@ class GeometricImage:
         assert gg.shape == (self.D, self.D)
 
         return self.__class__(
-            times_group_element(self.D, self.data, self.parity, gg, precision),
+            times_group_element(self.D, self.data, self.parity, gg, self.covariant_axes, precision),
             self.parity,
             self.D,
             self.is_torus,
             self.covariant_axes,
         )
 
-    def times_group_element(
-        self: Self,
-        gg: np.ndarray,
-        precision: Optional[jax.lax.Precision] = None,
-        metric_tensor: Optional[Self] = None,
-    ) -> Self:
+    def times_gg_precise(self: Self, gg: np.ndarray) -> Self:
         """
-        Apply a group element of O(d) to the geometric image. First apply the action to the location
-        of the pixels, then apply the action to the pixels themselves. If a metric tensor image is
-        provided, then contravariant/covariant axes will be handled properly.
+        Apply a group element of O(d) to the geometric image using the highest precision einsum.
+        See times_group_element for more details.
 
         args:
-            gg: a DxD matrix that rotates the tensor
-            precision: precision level for einsum, for equality tests use Precision.HIGHEST
-            metric_tensor: the metric tensor field for the image, has to be the same spatial size
-                as the image and must be a diagonal matrix everywhere with nonzero diagonal values
+            gg: a DxD matrix that rotates a contravariant vector gg @ v
 
         returns:
             a new GeometricImage that has been rotated
         """
-        if metric_tensor:
-            metric_tensor_inv = GeometricImage(
-                get_metric_inverse(metric_tensor.data),
-                0,
-                metric_tensor.D,
-                metric_tensor.is_torus,
-                (False, False),
-            )
-            upper_image = self.raise_lower(
-                metric_tensor.data, metric_tensor_inv.data, (False,) * self.k, precision
-            )
-            rot_upper_image = upper_image.times_gg_upper(gg, precision)
-
-            # Need to lower with the rotated metric tensor
-            rot_metric_tensor = metric_tensor.times_group_element(gg, precision=precision)
-            rot_metric_tensor_inv = metric_tensor_inv.times_group_element(gg, precision=precision)
-            return rot_upper_image.raise_lower(
-                rot_metric_tensor.data,
-                rot_metric_tensor_inv.data,
-                self.covariant_axes,
-                precision,
-            )
-        else:  # treat all indices as upper
-            return self.times_gg_upper(gg, precision)
-
-    def times_gg_precise(
-        self: Self,
-        gg: np.ndarray,
-        metric_tensor: Optional[Self] = None,
-    ) -> Self:
-        return self.times_group_element(gg, jax.lax.Precision.HIGHEST, metric_tensor)
+        return self.times_group_element(gg, jax.lax.Precision.HIGHEST)
 
     def plot(
         self: Self,
@@ -1065,3 +1033,18 @@ def get_kronecker_delta_image(N: int, D: int) -> GeometricImage:
         D,
         covariant_axes=(True, False),  # could also be False,True, its symmetric.
     )
+
+
+def get_metric_inverse(metric_tensor: GeometricImage, eps: float = TINY) -> GeometricImage:
+    D = metric_tensor.D
+    # (..., D, D) -> (..., D), (..., D, D)
+    eigvals, eigvecs = jnp.linalg.eigh(metric_tensor.data, symmetrize_input=False)
+
+    eigvals_inv = 1.0 / (eigvals + eps)  # (...,D)
+    S_diag = jax.vmap(jnp.diag)(eigvals_inv.reshape((-1, D))).reshape(eigvals.shape + (D,))
+    # do U S U^T, and multiply each vector in centered_img by the resulting matrix
+
+    inverse_data = jnp.einsum(
+        "...ij,...jk,...kl->...il", eigvecs, S_diag, jnp.moveaxis(eigvecs, -1, -2)
+    )
+    return GeometricImage(inverse_data, 0, D, metric_tensor.is_torus, (False, False))

@@ -277,7 +277,7 @@ class TestPropositions:
                             jnp.linalg.norm(tensor),
                             jnp.linalg.norm(
                                 geom.times_group_element(
-                                    D, tensor, parity, gg, jax.lax.Precision.HIGHEST
+                                    D, tensor, parity, gg, (False,) * k, jax.lax.Precision.HIGHEST
                                 ),
                             ),
                         )
@@ -340,13 +340,9 @@ class TestPropositions:
 
                     # assert that norm is equivariant
                     for gg in operators:
-                        first = vmap_times_gg(
-                            D, geom.norm(D + 2, multi_image[((False,) * k, parity)]), 0, gg, prec
-                        )
-                        second = geom.norm(
-                            D + 2, multi_image.times_group_element(gg, prec)[((False,) * k, parity)]
-                        )
-                        assert jnp.allclose(first, second)
+                        first = multi_image.norm().times_gg_precise(gg)
+                        second = multi_image.times_gg_precise(gg).norm()
+                        assert jnp.allclose(first.to_vector(), second.to_vector())
 
     def testMaxPoolEquivariance(self):
         N = 6
@@ -356,25 +352,17 @@ class TestPropositions:
             for parity in [0, 1]:
                 for k in [0, 1, 2, 3]:
                     key, subkey = random.split(key)
-                    image = random.normal(subkey, shape=((N,) * D + (D,) * k))
+                    image = geom.GeometricImage(
+                        random.normal(subkey, shape=((N,) * D + (D,) * k)), parity, D
+                    )
 
-                    # assert that norm is equivariant
+                    # assert that max pool is equivariant
                     for gg in operators:
-                        first = geom.times_group_element(
-                            D,
-                            geom.max_pool(D, image, 2),
-                            parity,
-                            gg,
-                            precision=jax.lax.Precision.HIGH,
-                        )
-                        second = geom.max_pool(
-                            D,
-                            geom.times_group_element(
-                                D, image, parity, gg, precision=jax.lax.Precision.HIGH
-                            ),
-                            2,
-                        )
-                        assert jnp.allclose(first, second), f"{jnp.max(jnp.abs(first - second))}"
+                        first = image.max_pool(2).times_gg_precise(gg)
+                        second = image.times_gg_precise(gg).max_pool(2)
+                        assert jnp.allclose(
+                            first.data, second.data
+                        ), f"{jnp.max(jnp.abs(first.data - second.data))}"
 
     def testLayerNormEquivariance(self):
         N = 3

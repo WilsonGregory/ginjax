@@ -4,7 +4,6 @@ from .functional_geometric_image import (
     convolve_ravel as convolve_ravel,
     convolve_contract as convolve_contract,
     get_contraction_indices as get_contraction_indices,
-    get_metric_inverse as get_metric_inverse,
     hash as hash,
     max_pool as max_pool,
     mul as mul,
@@ -20,6 +19,7 @@ from .geometric_image import (
     GeometricImage as GeometricImage,
     GeometricFilter as GeometricFilter,
     get_kronecker_delta_image as get_kronecker_delta_image,
+    get_metric_inverse as get_metric_inverse,
 )
 
 from .multi_image import (

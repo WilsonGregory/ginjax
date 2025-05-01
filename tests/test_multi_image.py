@@ -615,9 +615,7 @@ class TestMultiImage:
             jnp.moveaxis(eigvecs, -1, -2),
         )
         metric_tensor = geom.GeometricImage(metric_tensor_data, 0, D, covariant_axes=(True, True))
-        metric_tensor_inv = geom.GeometricImage(
-            geom.get_metric_inverse(metric_tensor_data), 0, D, covariant_axes=(False, False)
-        )
+        metric_tensor_inv = geom.get_metric_inverse(metric_tensor)
 
         # multi image with only scalars
         key, subkey1, subkey2 = random.split(key, num=3)
@@ -707,7 +705,7 @@ class TestMultiImage:
         N = 5
         channels = 3
 
-        vmap_times_gg = jax.vmap(geom.times_group_element, in_axes=(None, 0, None, None))
+        vmap_times_gg = jax.vmap(geom.times_group_element, in_axes=(None, 0, None, None, None))
         key = random.PRNGKey(0)
         for D in [2, 3]:
             multi_image = geom.MultiImage({}, D)
@@ -727,7 +725,7 @@ class TestMultiImage:
                 rotated_multi_image = multi_image.times_group_element(gg)
 
                 for (k, parity), img_block in multi_image.items():
-                    rotated_block = vmap_times_gg(D, img_block, parity, gg)
+                    rotated_block = vmap_times_gg(D, img_block, parity, gg, k)
                     assert jnp.allclose(rotated_multi_image[(k, parity)], rotated_block)
 
     def testTimesGroupElementMetric(self):
@@ -750,9 +748,7 @@ class TestMultiImage:
             metric_tensor = geom.GeometricImage(
                 metric_tensor_data, 0, D, covariant_axes=(True, True)
             )
-            metric_tensor_inv = geom.GeometricImage(
-                geom.get_metric_inverse(metric_tensor_data), 0, D, covariant_axes=(False, False)
-            )
+            metric_tensor_inv = geom.get_metric_inverse(metric_tensor)
 
             multi_image = geom.MultiImage({}, D, True, metric_tensor, metric_tensor_inv)
             for parity in [0, 1]:
@@ -770,7 +766,7 @@ class TestMultiImage:
                 rot_image_list = multi_image.times_gg_precise(gg).to_images()
 
                 for image, rot_image in zip(multi_image.to_images(), rot_image_list):
-                    first = image.times_gg_precise(gg, metric_tensor)
+                    first = image.times_gg_precise(gg)
                     second = rot_image
                     assert first.__eq__(second, 1e-4, 1e-4)
 
@@ -1233,12 +1229,10 @@ class TestBatchMultiImage:
         batch = 4
         channels = 3
 
-        vmap_times_gg = jax.vmap(
-            jax.vmap(geom.times_group_element, in_axes=(None, 0, None, None)),
-            in_axes=(None, 0, None, None),
-        )
+        vmap_times_gg = jax.vmap(geom.times_group_element, in_axes=(None, 0, None, None, None))
         key = random.PRNGKey(0)
         for D in [2, 3]:
+            spatial_dims = (N,) * D
             multi_image = geom.MultiImage({}, D)
 
             for parity in [0, 1]:
@@ -1247,16 +1241,16 @@ class TestBatchMultiImage:
                     multi_image.append(
                         k,
                         parity,
-                        random.normal(subkey, shape=((batch, channels) + (N,) * D + (D,) * k)),
+                        random.normal(subkey, shape=((batch, channels) + spatial_dims + (D,) * k)),
                     )
 
-            operators = geom.make_all_operators(D)
-
-            for gg in operators:
+            for gg in geom.make_all_operators(D):
                 rotated_multi_image = multi_image.times_group_element(gg)
 
                 for (k, parity), img_block in multi_image.items():
-                    rotated_block = vmap_times_gg(D, img_block, parity, gg)
+                    rotated_block = vmap_times_gg(
+                        D, img_block.reshape((-1,) + spatial_dims + (D,) * len(k)), parity, gg, k
+                    ).reshape(img_block.shape)
                     assert jnp.allclose(rotated_multi_image[(k, parity)], rotated_block)
 
     def testNorm(self):
@@ -1471,9 +1465,7 @@ class TestBatchMultiImage:
             jnp.moveaxis(eigvecs, -1, -2),
         )
         metric_tensor = geom.GeometricImage(metric_tensor_data, 0, D, covariant_axes=(True, True))
-        metric_tensor_inv = geom.GeometricImage(
-            geom.get_metric_inverse(metric_tensor_data), 0, D, covariant_axes=(False, False)
-        )
+        metric_tensor_inv = geom.get_metric_inverse(metric_tensor)
 
         # multi image with only scalars
         key, subkey1, subkey2 = random.split(key, num=3)

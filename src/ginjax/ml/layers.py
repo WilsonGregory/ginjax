@@ -346,6 +346,14 @@ class ConvContract(eqx.Module):
         returns:
             the convolved MultiImage
         """
+        if (
+            input_multi_image.metric_tensor is not None
+            and input_multi_image.metric_tensor_inv is None
+        ):
+            input_multi_image.metric_tensor_inv = geom.get_metric_inverse(
+                input_multi_image.metric_tensor
+            )
+
         out = input_multi_image.empty()
         for (in_k, in_p), images_block in input_multi_image.items():
             for (out_k, out_p), weight_block in weights[(in_k, in_p)].items():
@@ -359,27 +367,18 @@ class ConvContract(eqx.Module):
                     jax.lax.stop_gradient(self.invariant_filters[filter_key]),
                 )
 
-                # # may be able to do this to the entire layer
-                # if input_multi_image.metric_tensor is not None:
-                #     metric_tensor = input_multi_image.metric_tensor
-                #     if input_multi_image.metric_tensor_inv is None:
-                #         input_multi_image.metric_tensor_inv = geom.GeometricImage(
-                #             geom.get_metric_inverse(input_multi_image.metric_tensor.data),
-                #             0,
-                #             metric_tensor.D,
-                #             metric_tensor.is_torus,
-                #             (False, False),
-                #         )
-
-                #     # currently precision is default
-                #     # lower all axes to covariant
-                #     images_block = geom.raise_lower(
-                #         images_block,
-                #         input_multi_image.metric_tensor.data,
-                #         input_multi_image.metric_tensor_inv.data,
-                #         in_k,
-                #         (True,) * len(in_k),
-                #     )
+                if input_multi_image.metric_tensor is not None:
+                    assert input_multi_image.metric_tensor_inv is not None
+                    # lower all axes to covariant
+                    images_block = geom.raise_lower(
+                        images_block,
+                        input_multi_image.metric_tensor.data,
+                        input_multi_image.metric_tensor_inv.data,
+                        in_k,
+                        (True,) * len(in_k),
+                    )
+                    # without a metric tensor, we assume that its the flat euclidean metric in
+                    # which case lower == upper
 
                 convolve_contracted_imgs = geom.convolve_contract(
                     input_multi_image.D,
@@ -392,16 +391,16 @@ class ConvContract(eqx.Module):
                     self.rhs_dilation,
                 )[0]
 
-                # if input_multi_image.metric_tensor is not None:
-                #     assert input_multi_image.metric_tensor_inv is not None
-                #     # restore axes to proper lower/upper
-                #     convolve_contracted_imgs = geom.raise_lower(
-                #         convolve_contracted_imgs,
-                #         input_multi_image.metric_tensor.data,
-                #         input_multi_image.metric_tensor_inv.data,
-                #         (True,) * len(out_k),
-                #         out_k,
-                #     )
+                if input_multi_image.metric_tensor is not None:
+                    assert input_multi_image.metric_tensor_inv is not None
+                    # restore axes to proper lower/upper
+                    convolve_contracted_imgs = geom.raise_lower(
+                        convolve_contracted_imgs,
+                        input_multi_image.metric_tensor.data,
+                        input_multi_image.metric_tensor_inv.data,
+                        (True,) * len(out_k),
+                        out_k,
+                    )
 
                 if (out_k, out_p) in out:  # it already has that key
                     out[(out_k, out_p)] = convolve_contracted_imgs + out[(out_k, out_p)]

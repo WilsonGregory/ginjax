@@ -13,12 +13,11 @@ import equinox as eqx
 from ginjax.geometric.constants import TINY
 from ginjax.geometric.functional_geometric_image import (
     average_pool,
-    get_metric_inverse,
     norm,
     raise_lower,
     times_group_element,
 )
-from ginjax.geometric.geometric_image import GeometricImage
+from ginjax.geometric.geometric_image import GeometricImage, get_metric_inverse
 
 Signature = NewType("Signature", tuple[tuple[tuple[tuple[bool, ...], int], int], ...])
 
@@ -628,13 +627,7 @@ class MultiImage:
         ), f"MultiImage::raise_lower: Signatures must have same k, {self.get_signature()} != {new_signature}"
 
         if self.metric_tensor_inv is None:
-            self.metric_tensor_inv = GeometricImage(
-                get_metric_inverse(self.metric_tensor.data),
-                self.metric_tensor.parity,
-                self.metric_tensor.D,
-                self.metric_tensor.is_torus,
-                (False, False),
-            )
+            self.metric_tensor_inv = get_metric_inverse(self.metric_tensor)
 
         out = self.empty()
         for (len_k, parity), curr_key_list in curr_sig_by_k.items():
@@ -646,11 +639,7 @@ class MultiImage:
 
             i, j = 0, 0
             start = 0
-            fluba = 0
             while i < len(curr_key_list) and j < len(new_key_list):
-                fluba += 1
-                if fluba == 5:
-                    exit()
                 (curr_k, curr_p), curr_channels = curr_key_list[i]
                 (new_k, new_p), new_channels = new_key_list[j]
 
@@ -729,7 +718,7 @@ class MultiImage:
 
         return self.raise_lower(Signature(covariant_sig), precision=precision)
 
-    def times_gg_upper(
+    def times_group_element(
         self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision] = None
     ) -> Self:
         """
@@ -753,39 +742,19 @@ class MultiImage:
         if self.metric_tensor_inv is not None:
             out.metric_tensor_inv = self.metric_tensor_inv.times_group_element(gg, precision)
 
-        vmap_rotate = jax.vmap(times_group_element, in_axes=(None, 0, None, None, None))
+        vmap_rotate = jax.vmap(times_group_element, in_axes=(None, 0, None, None, None, None))
         for (k, parity), image_block in self.items():
             rotated_img_block = vmap_rotate(
                 self.D,
                 image_block.reshape((-1,) + self.get_spatial_dims() + (self.D,) * len(k)),
                 parity,
                 gg,
+                k,
                 precision,
             )
             out.append(k, parity, rotated_img_block.reshape(image_block.shape))
 
         return out
-
-    def times_group_element(
-        self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision] = None
-    ) -> Self:
-        """
-        Apply a group element of O(2) or O(3) to the MultiImage. First apply the action to the
-        location of the pixels, then apply the action to the pixels themselves.
-
-        args:
-            gg: a DxD matrix that rotates the tensor
-            precision: precision level for einsum, for equality tests use Precision.HIGH
-
-        returns:
-            a new MultiImage that has been rotated
-        """
-        if self.metric_tensor is None:
-            return self.times_gg_upper(gg, precision)
-        else:  # there is a metric tensor
-            contra_multi_image = self.raise_all(precision=precision)
-            rot_contra_multi_image = contra_multi_image.times_gg_upper(gg, precision)
-            return rot_contra_multi_image.raise_lower(self.get_signature(), precision=precision)
 
     def times_gg_precise(self: Self, gg: np.ndarray) -> Self:
         return self.times_group_element(gg, jax.lax.Precision.HIGHEST)

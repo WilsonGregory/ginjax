@@ -264,23 +264,25 @@ class TestMisc:
             timesteps - past_steps - future_steps + 1
         )  # sliding window per original trajectory
         assert isinstance(X, geom.MultiImage) and isinstance(Y, geom.MultiImage)
-        assert list(X.keys()) == [(0, 0), (1, 0)]
-        assert X[(0, 0)].shape == ((num_windows, past_steps) + (N,) * D)
-        assert X[(1, 0)].shape == ((num_windows, past_steps) + (N,) * D + (D,))
+        assert list(X.keys()) == [((), 0), ((False,), 0)]
+        assert X[((), 0)].shape == ((num_windows, past_steps) + (N,) * D)
+        assert X[((False,), 0)].shape == ((num_windows, past_steps) + (N,) * D + (D,))
         for i in range(num_windows):
-            assert jnp.allclose(X[(0, 0)][i], dynamic_fields[(0, 0)][i : i + past_steps])
-            assert jnp.allclose(X[(1, 0)][i], dynamic_fields[(1, 0)][i : i + past_steps])
+            assert jnp.allclose(X[((), 0)][i], dynamic_fields[((), 0)][i : i + past_steps])
+            assert jnp.allclose(
+                X[((False,), 0)][i], dynamic_fields[((False,), 0)][i : i + past_steps]
+            )
 
-        assert Y[(0, 0)].shape == ((num_windows, future_steps) + (N,) * D)
-        assert Y[(1, 0)].shape == ((num_windows, future_steps) + (N,) * D + (D,))
+        assert Y[((), 0)].shape == ((num_windows, future_steps) + (N,) * D)
+        assert Y[((False,), 0)].shape == ((num_windows, future_steps) + (N,) * D + (D,))
         for i in range(num_windows):
             assert jnp.allclose(
-                Y[(0, 0)][i],
-                dynamic_fields[(0, 0)][i + past_steps : i + past_steps + future_steps],
+                Y[((), 0)][i],
+                dynamic_fields[((), 0)][i + past_steps : i + past_steps + future_steps],
             )
             assert jnp.allclose(
-                Y[(1, 0)][i],
-                dynamic_fields[(1, 0)][i + past_steps : i + past_steps + future_steps],
+                Y[((False,), 0)][i],
+                dynamic_fields[((False,), 0)][i + past_steps : i + past_steps + future_steps],
             )
 
         # test with a constant fields
@@ -296,30 +298,30 @@ class TestMisc:
         X2, Y2 = gc_data.times_series_to_multi_images(
             dynamic_fields, constant_fields, timesteps, past_steps, future_steps
         )
-        assert list(X2.keys()) == [(0, 0), (1, 0), (2, 0)]
-        assert X2[(0, 0)].shape == ((num_windows, past_steps) + (N,) * D)
-        assert X2[(1, 0)].shape == ((num_windows, past_steps + 1) + (N,) * D + (D,))
-        assert X2[(2, 0)].shape == ((num_windows, 1) + (N,) * D + (D, D))
+        assert list(X2.keys()) == [((), 0), ((False,), 0), ((False, False), 0)]
+        assert X2[((), 0)].shape == ((num_windows, past_steps) + (N,) * D)
+        assert X2[((False,), 0)].shape == ((num_windows, past_steps + 1) + (N,) * D + (D,))
+        assert X2[((False, False), 0)].shape == ((num_windows, 1) + (N,) * D + (D, D))
         for i in range(num_windows):
             assert jnp.allclose(
-                X2[(0, 0)][i, :past_steps], dynamic_fields[(0, 0)][i : i + past_steps]
+                X2[((), 0)][i, :past_steps], dynamic_fields[((), 0)][i : i + past_steps]
             )
             assert jnp.allclose(
-                X2[(1, 0)][i, :past_steps], dynamic_fields[(1, 0)][i : i + past_steps]
+                X2[((False,), 0)][i, :past_steps], dynamic_fields[((False,), 0)][i : i + past_steps]
             )
-            assert jnp.allclose(X2[(1, 0)][i, past_steps], constant_fields[(1, 0)])
-            assert jnp.allclose(X2[(2, 0)][i], constant_fields[(2, 0)])
+            assert jnp.allclose(X2[((False,), 0)][i, past_steps], constant_fields[((False,), 0)])
+            assert jnp.allclose(X2[((False, False), 0)][i], constant_fields[((False, False), 0)])
 
-        assert Y2[(0, 0)].shape == ((num_windows, future_steps) + (N,) * D)
-        assert Y2[(1, 0)].shape == ((num_windows, future_steps) + (N,) * D + (D,))
+        assert Y2[((), 0)].shape == ((num_windows, future_steps) + (N,) * D)
+        assert Y2[((False,), 0)].shape == ((num_windows, future_steps) + (N,) * D + (D,))
         for i in range(num_windows):
             assert jnp.allclose(
-                Y2[(0, 0)][i],
-                dynamic_fields[(0, 0)][i + past_steps : i + past_steps + future_steps],
+                Y2[((), 0)][i],
+                dynamic_fields[((), 0)][i + past_steps : i + past_steps + future_steps],
             )
             assert jnp.allclose(
-                Y2[(1, 0)][i],
-                dynamic_fields[(1, 0)][i + past_steps : i + past_steps + future_steps],
+                Y2[((False,), 0)][i],
+                dynamic_fields[((False,), 0)][i + past_steps : i + past_steps + future_steps],
             )
 
         # test with constant fields with multiple channels
@@ -331,20 +333,20 @@ class TestMisc:
         X3, Y3 = gc_data.times_series_to_multi_images(
             dynamic_fields, constant_fields, timesteps, past_steps, future_steps
         )
-        assert list(X3.keys()) == [(0, 0), (1, 0)]
-        assert X3[(0, 0)].shape == ((num_windows, past_steps) + (N,) * D)
-        assert X3[(1, 0)].shape == ((num_windows, past_steps + 3) + (N,) * D + (D,))
+        assert list(X3.keys()) == [((), 0), ((False,), 0)]
+        assert X3[((), 0)].shape == ((num_windows, past_steps) + (N,) * D)
+        assert X3[((False,), 0)].shape == ((num_windows, past_steps + 3) + (N,) * D + (D,))
         for i in range(num_windows):
             assert jnp.allclose(
-                X3[(0, 0)][i, :past_steps], dynamic_fields[(0, 0)][i : i + past_steps]
+                X3[((), 0)][i, :past_steps], dynamic_fields[((), 0)][i : i + past_steps]
             )
             assert jnp.allclose(
-                X3[(1, 0)][i, :past_steps], dynamic_fields[(1, 0)][i : i + past_steps]
+                X3[((False,), 0)][i, :past_steps], dynamic_fields[((False,), 0)][i : i + past_steps]
             )
-            assert jnp.allclose(X3[(1, 0)][i, past_steps:], constant_fields[(1, 0)])
+            assert jnp.allclose(X3[((False,), 0)][i, past_steps:], constant_fields[((False,), 0)])
 
-        assert Y3[(0, 0)].shape == ((num_windows, future_steps) + (N,) * D)
-        assert Y3[(1, 0)].shape == ((num_windows, future_steps) + (N,) * D + (D,))
+        assert Y3[((), 0)].shape == ((num_windows, future_steps) + (N,) * D)
+        assert Y3[((False,), 0)].shape == ((num_windows, future_steps) + (N,) * D + (D,))
 
         # test with multiple channels of timestep fields
         key, subkey6, subkey7 = random.split(key, 3)
@@ -358,24 +360,24 @@ class TestMisc:
         X4, Y4 = gc_data.times_series_to_multi_images(
             dynamic_fields, constant_fields, timesteps, past_steps, future_steps
         )
-        assert list(X4.keys()) == [(0, 0)]
-        assert X4[(0, 0)].shape == ((num_windows, 2 * past_steps) + (N,) * D)
+        assert list(X4.keys()) == [((), 0)]
+        assert X4[((), 0)].shape == ((num_windows, 2 * past_steps) + (N,) * D)
         for i in range(num_windows):
             assert jnp.allclose(
-                X4[(0, 0)][i].reshape((2, past_steps) + (N,) * D)[0], data1[i : i + past_steps]
+                X4[((), 0)][i].reshape((2, past_steps) + (N,) * D)[0], data1[i : i + past_steps]
             )
             assert jnp.allclose(
-                X4[(0, 0)][i].reshape((2, past_steps) + (N,) * D)[1], data2[i : i + past_steps]
+                X4[((), 0)][i].reshape((2, past_steps) + (N,) * D)[1], data2[i : i + past_steps]
             )
 
-        assert Y4[(0, 0)].shape == ((num_windows, 2 * future_steps) + (N,) * D)
+        assert Y4[((), 0)].shape == ((num_windows, 2 * future_steps) + (N,) * D)
         for i in range(num_windows):
             assert jnp.allclose(
-                Y4[(0, 0)][i].reshape((2, future_steps) + (N,) * D)[0],
+                Y4[((), 0)][i].reshape((2, future_steps) + (N,) * D)[0],
                 data1[i + past_steps : i + past_steps + future_steps],
             )
             assert jnp.allclose(
-                Y4[(0, 0)][i].reshape((2, future_steps) + (N,) * D)[1],
+                Y4[((), 0)][i].reshape((2, future_steps) + (N,) * D)[1],
                 data2[i + past_steps : i + past_steps + future_steps],
             )
 
@@ -406,33 +408,35 @@ class TestMisc:
             timesteps - past_steps - future_steps + 1
         )  # sliding window per original trajectory
         assert isinstance(X, geom.MultiImage) and isinstance(Y, geom.MultiImage)
-        assert list(X.keys()) == [(0, 0), (1, 0)]
-        assert X[(0, 0)].shape == ((batch * num_windows, past_steps) + (N,) * D)
-        assert X[(1, 0)].shape == ((batch * num_windows, past_steps) + (N,) * D + (D,))
+        assert list(X.keys()) == [((), 0), ((False,), 0)]
+        assert X[((), 0)].shape == ((batch * num_windows, past_steps) + (N,) * D)
+        assert X[((False,), 0)].shape == ((batch * num_windows, past_steps) + (N,) * D + (D,))
 
         X_exp = X.expand(0, num_windows)  # (b,num_windows,past_steps,spatial,tensor)
         for i in range(batch):
             for j in range(num_windows):
                 assert jnp.allclose(
-                    X_exp[(0, 0)][i, j], dynamic_fields[(0, 0)][i, j : j + past_steps]
+                    X_exp[((), 0)][i, j], dynamic_fields[((), 0)][i, j : j + past_steps]
                 )
                 assert jnp.allclose(
-                    X_exp[(1, 0)][i, j], dynamic_fields[(1, 0)][i, j : j + past_steps]
+                    X_exp[((False,), 0)][i, j], dynamic_fields[((False,), 0)][i, j : j + past_steps]
                 )
 
-        assert Y[(0, 0)].shape == ((batch * num_windows, future_steps) + (N,) * D)
-        assert Y[(1, 0)].shape == ((batch * num_windows, future_steps) + (N,) * D + (D,))
+        assert Y[((), 0)].shape == ((batch * num_windows, future_steps) + (N,) * D)
+        assert Y[((False,), 0)].shape == ((batch * num_windows, future_steps) + (N,) * D + (D,))
 
         Y_exp = Y.expand(0, num_windows)
         for i in range(batch):
             for j in range(num_windows):
                 assert jnp.allclose(
-                    Y_exp[(0, 0)][i, j],
-                    dynamic_fields[(0, 0)][i, j + past_steps : j + past_steps + future_steps],
+                    Y_exp[((), 0)][i, j],
+                    dynamic_fields[((), 0)][i, j + past_steps : j + past_steps + future_steps],
                 )
                 assert jnp.allclose(
-                    Y_exp[(1, 0)][i, j],
-                    dynamic_fields[(1, 0)][i, j + past_steps : j + past_steps + future_steps],
+                    Y_exp[((False,), 0)][i, j],
+                    dynamic_fields[((False,), 0)][
+                        i, j + past_steps : j + past_steps + future_steps
+                    ],
                 )
 
         # test with a constant fields
@@ -444,39 +448,41 @@ class TestMisc:
         X2, Y2 = gc_data.batch_time_series(
             dynamic_fields, constant_fields, timesteps, past_steps, future_steps
         )
-        assert list(X.keys()) == [(0, 0), (1, 0)]
-        assert X2[(0, 0)].shape == ((batch * num_windows, past_steps) + (N,) * D)
-        assert X2[(1, 0)].shape == ((batch * num_windows, past_steps + 1) + (N,) * D + (D,))
+        assert list(X.keys()) == [((), 0), ((False,), 0)]
+        assert X2[((), 0)].shape == ((batch * num_windows, past_steps) + (N,) * D)
+        assert X2[((False,), 0)].shape == ((batch * num_windows, past_steps + 1) + (N,) * D + (D,))
 
-        X2_dynamic, X2_const = X2.concat_inverse({(1, 0): 1}, axis=1)
+        X2_dynamic, X2_const = X2.concat_inverse({((False,), 0): 1}, axis=1)
         X2_dynamic = X2_dynamic.expand(0, num_windows)
         for i in range(batch):
             for j in range(num_windows):
                 assert jnp.allclose(
-                    X2_dynamic[(0, 0)][i, j],
-                    dynamic_fields[(0, 0)][i, j : j + past_steps],
+                    X2_dynamic[((), 0)][i, j],
+                    dynamic_fields[((), 0)][i, j : j + past_steps],
                 )
                 assert jnp.allclose(
-                    X2_dynamic[(1, 0)][i, j],
-                    dynamic_fields[(1, 0)][i, j : j + past_steps],
+                    X2_dynamic[((False,), 0)][i, j],
+                    dynamic_fields[((False,), 0)][i, j : j + past_steps],
                 )
 
         # check that each element of the batch has the correct constant field
         X2_const = X2_const.expand(0, num_windows)
         for i in range(num_windows):
-            assert jnp.allclose(X2_const[(1, 0)][:, i], constant_fields[(1, 0)])
+            assert jnp.allclose(X2_const[((False,), 0)][:, i], constant_fields[((False,), 0)])
 
-        assert Y2[(0, 0)].shape == ((batch * num_windows, future_steps) + (N,) * D)
-        assert Y2[(1, 0)].shape == ((batch * num_windows, future_steps) + (N,) * D + (D,))
+        assert Y2[((), 0)].shape == ((batch * num_windows, future_steps) + (N,) * D)
+        assert Y2[((False,), 0)].shape == ((batch * num_windows, future_steps) + (N,) * D + (D,))
 
         Y2_exp = Y2.expand(0, num_windows)
         for i in range(batch):
             for j in range(num_windows):
                 assert jnp.allclose(
-                    Y2_exp[(0, 0)][i, j],
-                    dynamic_fields[(0, 0)][i, j + past_steps : j + past_steps + future_steps],
+                    Y2_exp[((), 0)][i, j],
+                    dynamic_fields[((), 0)][i, j + past_steps : j + past_steps + future_steps],
                 )
                 assert jnp.allclose(
-                    Y2_exp[(1, 0)][i, j],
-                    dynamic_fields[(1, 0)][i, j + past_steps : j + past_steps + future_steps],
+                    Y2_exp[((False,), 0)][i, j],
+                    dynamic_fields[((False,), 0)][
+                        i, j + past_steps : j + past_steps + future_steps
+                    ],
                 )

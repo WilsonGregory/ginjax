@@ -174,7 +174,7 @@ def plot_multi_image(
     test_images = test_multi_image_comp.to_images()
     actual_images = actual_multi_image_comp.to_images()
 
-    img_arr = jnp.concatenate([test_multi_image_comp[(0, 0)], actual_multi_image_comp[(0, 0)]])
+    img_arr = jnp.concatenate([test_multi_image_comp[((), 0)], actual_multi_image_comp[((), 0)]])
     vmax = float(jnp.max(jnp.abs(img_arr)))
     vmin = -1 * vmax
 
@@ -266,7 +266,7 @@ def map_and_loss(
         model,
         multi_image_x,
         aux_data,
-        multi_image_x[(1, 0)].shape[1],  # past_steps
+        multi_image_x[((False,), 0)].shape[1],  # past_steps
         future_steps,
     )
 

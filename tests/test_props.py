@@ -341,10 +341,10 @@ class TestPropositions:
                     # assert that norm is equivariant
                     for gg in operators:
                         first = vmap_times_gg(
-                            D, geom.norm(D + 2, multi_image[(k, parity)]), 0, gg, prec
+                            D, geom.norm(D + 2, multi_image[((False,) * k, parity)]), 0, gg, prec
                         )
                         second = geom.norm(
-                            D + 2, multi_image.times_group_element(gg, prec)[(k, parity)]
+                            D + 2, multi_image.times_group_element(gg, prec)[((False,) * k, parity)]
                         )
                         assert jnp.allclose(first, second)
 

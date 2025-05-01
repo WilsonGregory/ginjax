@@ -386,3 +386,26 @@ class TestFunctionalGeometricImage:
 
                 assert convolve_res.shape == vmap_convolve_res.shape
                 assert jnp.allclose(convolve_res, vmap_convolve_res, rtol=geom.TINY, atol=geom.TINY)
+
+    def testMetricTensorInverse(self):
+        D = 2
+        N = 5
+        key = random.PRNGKey(0)
+
+        key, subkey1, subkey2 = random.split(key, num=3)
+        eigvecs = random.orthogonal(subkey1, D, shape=(N,) * D)
+        eigvals = jax.vmap(jnp.diag)(random.uniform(subkey2, shape=(N**D, D)) + 0.1)
+        # print(eigvecs.shape)
+        # print(eigvals.shape)
+        metric_tensor_data = jnp.einsum(
+            "...ij,...jk,...kl->...il",
+            eigvecs,
+            eigvals.reshape((N,) * D + (D, D)),
+            jnp.moveaxis(eigvecs, -1, -2),
+        )
+        metric_tensor_inv_data = geom.get_metric_inverse(metric_tensor_data)
+        id1 = jnp.einsum("...ij,...jk->...ik", metric_tensor_data, metric_tensor_inv_data)
+        id2 = jnp.einsum("...ij,...jk->...ik", metric_tensor_inv_data, metric_tensor_data)
+        actual_identity = jnp.stack([jnp.eye(D) for _ in range(N**D)]).reshape((N,) * D + (D, D))
+        assert jnp.allclose(id1, actual_identity, 1e-3, 1e-3)
+        assert jnp.allclose(id2, actual_identity, 1e-3, 1e-3)

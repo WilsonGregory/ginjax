@@ -13,6 +13,7 @@ from ginjax.geometric.constants import LeviCivitaSymbol, KroneckerDeltaSymbol, T
 from ginjax.geometric.functional_geometric_image import (
     average_pool,
     convolve,
+    get_metric_inverse,
     get_rotated_keys,
     hash,
     max_pool,
@@ -20,6 +21,7 @@ from ginjax.geometric.functional_geometric_image import (
     multicontract,
     norm,
     parse_shape,
+    raise_lower,
     times_group_element,
 )
 import ginjax.utils as utils
@@ -302,12 +304,14 @@ class GeometricImage:
 
     # Binary Operators, Complicated functions
 
-    def __eq__(self: Self, other: object) -> bool:
+    def __eq__(self: Self, other: object, rtol: float = TINY, atol: float = TINY) -> bool:
         """
         Equality operator, must have same shape, parity, and data within the TINY=1e-5 tolerance.
 
         args:
             other: an object to compare to this GeometricImage
+            rtol: relative tolerance, passed to jnp.allclose
+            atol: absolute tolerance, passed to jnp.allclose
 
         returns:
             true if they are equal, false otherwise
@@ -321,7 +325,7 @@ class GeometricImage:
                 and self.is_torus == other.is_torus
                 and self.covariant_axes == other.covariant_axes
                 and self.data.shape == other.data.shape
-                and bool(jnp.allclose(self.data, other.data, rtol=TINY, atol=TINY))
+                and bool(jnp.allclose(self.data, other.data, rtol, atol))
             )
         else:
             return False
@@ -672,119 +676,39 @@ class GeometricImage:
             self.covariant_axes[: self.k - self.D + 2],  # right length, but maybe wrong
         )
 
-    def raise_axes(
+    def raise_lower(
         self: Self,
+        metric_tensor: jax.Array,
         metric_tensor_inv: jax.Array,
-        axes: Optional[tuple[int, ...]] = None,
+        axes: tuple[bool, ...],
         precision: Optional[jax.lax.Precision] = None,
     ) -> Self:
         """
-        Raise the tensor axes so they are upper
+        Raise or lower the axes of the tensor according the the metric tensor and axes.
 
         args:
+            metric_tensor: the metric tensor g_ij, must be same spatial shape as this
             metric_tensor_inv: the inverse metric tensor, g^ij. Must be same spatial shape as this
-            axes: if tuple of integers then raise those tensor axes, otherwise raise them all
+            axes: desired covariant axes
             precision: precision used for einsum
 
         returns:
-            new GeometricImage with raised axes
+            new GeometricImage with correct axes
         """
-        assert self.k < 13
-        if axes is None:  # raise all
-            axes = tuple(range(self.k))
-
-        # ignore axes that are already contravariant
-        to_raise = tuple(filter(lambda axis: self.covariant_axes[axis], axes))
-        if len(to_raise) == 0:
-            return self
-
-        einstr = f"...{LETTERS[:self.k]},"
-        einstr += ",".join(["..." + LETTERS[13 + axis] + LETTERS[axis] for axis in to_raise])
-        # out axes are implicit
-        tensor_inputs = (self.data,) + (metric_tensor_inv,) * len(to_raise)
-        raised_data = jnp.einsum(einstr, *tensor_inputs, precision=precision)
-
         return self.__class__(
-            raised_data,
+            raise_lower(
+                self.data, metric_tensor, metric_tensor_inv, self.covariant_axes, axes, precision
+            ),
             self.parity,
             self.D,
             self.is_torus,
-            tuple((self.covariant_axes[i] and (i not in to_raise)) for i in range(self.k)),
+            axes,
         )
 
-    def raise_precise(
-        self: Self,
-        metric_tensor_inv: jax.Array,
-        axes: Optional[tuple[int, ...]] = None,
+    def raise_lower_precise(
+        self: Self, metric_tensor: jax.Array, metric_tensor_inv: jax.Array, axes: tuple[bool, ...]
     ) -> Self:
-        """
-        Raise the tensor axes with HIGHEST einsum precision.
-
-        args:
-            metric_tensor_inv: the inverse metric tensor, g^ij. Must be same spatial shape as this
-            axes: if tuple of integers then raise those tensor axes, otherwise raise them all
-
-        returns:
-            new GeometricImage with raised axes
-        """
-        return self.raise_axes(metric_tensor_inv, axes, jax.lax.Precision.HIGHEST)
-
-    def lower_axes(
-        self: Self,
-        metric_tensor: jax.Array,
-        axes: Optional[tuple[int, ...]] = None,
-        precision: Optional[jax.lax.Precision] = None,
-    ) -> Self:
-        """
-        Lower the tensor axes specified.
-
-        args:
-            metric_tensor: the metric tensor, g_ij. Must be same spatial shape as this
-            axes: if tuple of integers then lower those tensor axes, otherwise lower them all
-            precision: precision used for einsum
-
-        returns:
-            new GeometricImage with lowered axes
-        """
-        assert self.k < 13
-        if axes is None:  # lower all
-            axes = tuple(range(self.k))
-
-        # ignore axes that are already contravariant
-        to_lower = tuple(filter(lambda axis: not self.covariant_axes[axis], axes))
-        if len(to_lower) == 0:
-            return self
-
-        einstr = f"...{LETTERS[:self.k]},"
-        einstr += ",".join(["..." + LETTERS[13 + axis] + LETTERS[axis] for axis in to_lower])
-        # out axes are implicit
-        tensor_inputs = (self.data,) + (metric_tensor,) * len(to_lower)
-        lowered_data = jnp.einsum(einstr, *tensor_inputs, precision=precision)
-
-        return self.__class__(
-            lowered_data,
-            self.parity,
-            self.D,
-            self.is_torus,
-            tuple((self.covariant_axes[i] or (i in to_lower)) for i in range(self.k)),
-        )
-
-    def lower_precise(
-        self: Self,
-        metric_tensor: jax.Array,
-        axes: Optional[tuple[int, ...]] = None,
-    ) -> Self:
-        """
-        Lower the tensor axes specified with HIGHEST einsum precision.
-
-        args:
-            metric_tensor: the metric tensor, g_ij. Must be same spatial shape as this
-            axes: if tuple of integers then lower those tensor axes, otherwise lower them all
-
-        returns:
-            new GeometricImage with lowered axes
-        """
-        return self.lower_axes(metric_tensor, axes, jax.lax.Precision.HIGHEST)
+        return self.raise_lower(metric_tensor, metric_tensor_inv, axes, jax.lax.Precision.HIGHEST)
 
     def get_rotated_keys(self: Self, gg: np.ndarray) -> np.ndarray:
         """
@@ -846,18 +770,27 @@ class GeometricImage:
             a new GeometricImage that has been rotated
         """
         if metric_tensor:
-            diagonals = jax.vmap(jnp.diag)(
-                metric_tensor.data.reshape((-1,) + (metric_tensor.D,) * 2)
+            metric_tensor_inv = GeometricImage(
+                get_metric_inverse(metric_tensor.data),
+                0,
+                metric_tensor.D,
+                metric_tensor.is_torus,
+                (False, False),
             )
-            metric_inv_data = jax.vmap(jnp.diag)(1 / diagonals).reshape(metric_tensor.shape())
-
-            upper_image = self.raise_axes(metric_inv_data, precision=precision)
+            upper_image = self.raise_lower(
+                metric_tensor.data, metric_tensor_inv.data, (False,) * self.k, precision
+            )
             rot_upper_image = upper_image.times_gg_upper(gg, precision)
 
             # Need to lower with the rotated metric tensor
             rot_metric_tensor = metric_tensor.times_group_element(gg, precision=precision)
-            axes = tuple(filter(lambda x: self.covariant_axes[x], range(self.k)))
-            return rot_upper_image.lower_axes(rot_metric_tensor.data, axes, precision=precision)
+            rot_metric_tensor_inv = metric_tensor_inv.times_group_element(gg, precision=precision)
+            return rot_upper_image.raise_lower(
+                rot_metric_tensor.data,
+                rot_metric_tensor_inv.data,
+                self.covariant_axes,
+                precision,
+            )
         else:  # treat all indices as upper
             return self.times_gg_upper(gg, precision)
 

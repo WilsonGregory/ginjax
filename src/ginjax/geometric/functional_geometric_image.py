@@ -33,7 +33,7 @@ def parse_shape(shape: tuple[int, ...], D: int) -> tuple[tuple[int, ...], int]:
     return shape[:D], len(shape) - D
 
 
-def hash(D: int, image: jax.Array, indices: ArrayLike) -> tuple[jax.Array]:
+def hash(D: int, image: jax.Array, indices: ArrayLike) -> tuple[jax.Array, ...]:
     """
     Converts an array of indices to their pixels on the torus by modding the indices with the
     spatial dimensions.
@@ -536,6 +536,73 @@ def multicontract(
         einstr[idx1 + idx_shift] = einstr[idx2 + idx_shift] = LETTERS[-(i + 1)]
 
     return jnp.einsum("".join(einstr), data)
+
+
+def raise_lower(
+    data: jax.Array,
+    metric_tensor: jax.Array,
+    metric_tensor_inv: jax.Array,
+    from_axes: tuple[bool, ...],
+    to_axes: tuple[bool, ...],
+    precision: Optional[jax.lax.Precision] = None,
+) -> jax.Array:
+    """
+    Raise or lower the axes of a tensor or tensor image according to the metric tensor and axes.
+
+    args:
+        data: a tensor, or tensor image, shape (...,tensor)
+        metric_tensor: the metric tensor g_ij, shape (...,tensor)
+        metric_tensor_inv: the inverse metric tensor, g^ij. Must be same spatial shape as this
+        from_axes: covariant axes you are starting at, True for covariant, False contravariant
+        to_axes: covariant axes to convert to, True for covariant, False contravariant
+        precision: precision used for einsum
+
+    returns:
+        the data with the modified axes
+    """
+    assert len(from_axes) == len(to_axes)
+    k = len(from_axes)
+    assert k < 13
+
+    # convert to 0 if unchanged, or -1 if upper->lower and 1 for lower->upper
+    int_axes = tuple(
+        0 if from_axis == to_axis else (-2 * int(to_axis) + 1)
+        for from_axis, to_axis in zip(from_axes, to_axes)
+    )
+    if int_axes == (0,) * k:  # no axes are changed
+        return data
+
+    changed_idxs = list(filter(lambda x: int_axes[x] != 0, range(k)))
+    einstr = f"...{LETTERS[:k]},"
+    einstr += ",".join(["..." + LETTERS[13 + i] + LETTERS[i] for i in changed_idxs])
+    einstr += "->..."
+    einstr += "".join(
+        [LETTERS[i] if int_axis == 0 else LETTERS[13 + i] for i, int_axis in enumerate(int_axes)]
+    )
+
+    changed_axes = filter(lambda x: x != 0, int_axes)
+    metric_tensors = tuple(
+        metric_tensor_inv if axis == 1 else metric_tensor for axis in changed_axes
+    )
+    tensor_inputs = (data,) + metric_tensors
+
+    return jnp.einsum(einstr, *tensor_inputs, precision=precision)
+
+
+def get_metric_inverse(metric_tensor: jax.Array, eps: float = 1e-5) -> jax.Array:
+    # (..., D, D) -> (..., D), (..., D, D)
+    eigvals, eigvecs = jnp.linalg.eigh(metric_tensor, symmetrize_input=False)
+    D = eigvals.shape[-1]
+
+    eigvals_inv = 1.0 / (eigvals + eps)  # (...,D)
+    S_diag = jax.vmap(jnp.diag)(eigvals_inv.reshape((-1, D))).reshape(eigvals.shape + (D,))
+    # do U S U^T, and multiply each vector in centered_img by the resulting matrix
+    return jnp.einsum(
+        "...ij,...jk,...kl->...il",
+        eigvecs,
+        S_diag,
+        jnp.moveaxis(eigvecs, -1, -2),
+    )
 
 
 def get_rotated_keys(D: int, data: jax.Array, gg: np.ndarray) -> np.ndarray:

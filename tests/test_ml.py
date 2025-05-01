@@ -42,8 +42,8 @@ class TestMachineLearning:
         assert len(X_batches) == len(Y_batches) == 5
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             assert (
-                X_batch[(k, 0)].shape
-                == Y_batch[(k, 0)].shape
+                X_batch[((False,) * k, 0)].shape
+                == Y_batch[((False,) * k, 0)].shape
                 == (num_devices, batch_size, 1) + (N,) * D + (D,) * k
             )
 
@@ -70,13 +70,13 @@ class TestMachineLearning:
         assert len(X_batches) == len(Y_batches) == 4
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             assert (
-                X_batch[(0, 0)].shape
-                == Y_batch[(0, 0)].shape
+                X_batch[((), 0)].shape
+                == Y_batch[((), 0)].shape
                 == (num_devices, batch_size, 1) + (N,) * D + (D,) * 0
             )
             assert (
-                X_batch[(1, 0)].shape
-                == Y_batch[(1, 0)].shape
+                X_batch[((False,), 0)].shape
+                == Y_batch[((False,), 0)].shape
                 == (num_devices, batch_size, 1) + (N,) * D + (D,) * 1
             )
 
@@ -103,13 +103,13 @@ class TestMachineLearning:
         assert len(X_batches) == len(Y_batches) == 4
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             assert (
-                X_batch[(0, 0)].shape
-                == Y_batch[(0, 0)].shape
+                X_batch[((), 0)].shape
+                == Y_batch[((), 0)].shape
                 == (num_devices, batch_size, 2) + (N,) * D + (D,) * 0
             )
             assert (
-                X_batch[(1, 0)].shape
-                == Y_batch[(1, 0)].shape
+                X_batch[((False,), 0)].shape
+                == Y_batch[((False,), 0)].shape
                 == (num_devices, batch_size, 1) + (N,) * D + (D,) * 1
             )
 
@@ -131,8 +131,8 @@ class TestMachineLearning:
 
         new_input = ml.training.autoregressive_step(input1, one_step1, past_steps)
         assert jnp.allclose(
-            new_input[(0, 0)],
-            jnp.concatenate([input1[(0, 0)][future_steps:], one_step1[(0, 0)]]),
+            new_input[((), 0)],
+            jnp.concatenate([input1[((), 0)][future_steps:], one_step1[((), 0)]]),
         )
 
         # Example with scalar and vector field
@@ -148,12 +148,14 @@ class TestMachineLearning:
 
         new_input = ml.training.autoregressive_step(input2, one_step2, past_steps)
         assert jnp.allclose(
-            new_input[(0, 0)],
-            jnp.concatenate([input2[(0, 0)][future_steps:], one_step2[(0, 0)]]),
+            new_input[((), 0)],
+            jnp.concatenate([input2[((), 0)][future_steps:], one_step2[((), 0)]]),
         )
-        new_input_exp = new_input.expand(0, past_steps)[(1, 0)]  # (c,past_steps,spatial,tensor)
-        input_exp = input2.expand(0, past_steps)[(1, 0)]
-        step_exp = one_step2.expand(0, future_steps)[(1, 0)]
+        new_input_exp = new_input.expand(0, past_steps)[
+            ((False,), 0)
+        ]  # (c,past_steps,spatial,tensor)
+        input_exp = input2.expand(0, past_steps)[((False,), 0)]
+        step_exp = one_step2.expand(0, future_steps)[((False,), 0)]
         assert jnp.allclose(new_input_exp[:, :-future_steps], input_exp[:, future_steps:])
         assert jnp.allclose(new_input_exp[:, -future_steps:], step_exp)
 
@@ -165,42 +167,46 @@ class TestMachineLearning:
             geom.MultiImage({(0, 0): constant_field1, (1, 0): constant_field2}, D)
         )
         new_input = ml.training.autoregressive_step(
-            input3, one_step2, past_steps, {(0, 0): 1, (1, 0): 1}
+            input3, one_step2, past_steps, {((), 0): 1, ((False,), 0): 1}
         )
         assert jnp.allclose(
-            new_input[(0, 0)],
+            new_input[((), 0)],
             jnp.concatenate(
-                [input3[(0, 0)][future_steps:-future_steps], one_step2[(0, 0)], constant_field1]
+                [input3[((), 0)][future_steps:-future_steps], one_step2[((), 0)], constant_field1]
             ),
         )
-        input_dynamic_fields, _ = input3.concat_inverse({(0, 0): 1, (1, 0): 1})
-        new_dynamic_fields, new_const_fields = new_input.concat_inverse({(0, 0): 1, (1, 0): 1})
+        input_dynamic_fields, _ = input3.concat_inverse({((), 0): 1, ((False,), 0): 1})
+        new_dynamic_fields, new_const_fields = new_input.concat_inverse(
+            {((), 0): 1, ((False,), 0): 1}
+        )
 
         new_input_exp = new_dynamic_fields.expand(0, past_steps)[
-            (1, 0)
+            ((False,), 0)
         ]  # (c,past_steps,spatial,tensor)
-        input_exp = input_dynamic_fields.expand(0, past_steps)[(1, 0)]
-        step_exp = one_step2.expand(0, future_steps)[(1, 0)]
+        input_exp = input_dynamic_fields.expand(0, past_steps)[((False,), 0)]
+        step_exp = one_step2.expand(0, future_steps)[((False,), 0)]
         assert jnp.allclose(new_input_exp[:, :-future_steps], input_exp[:, future_steps:])
         assert jnp.allclose(new_input_exp[:, -future_steps:], step_exp)
-        assert jnp.allclose(new_const_fields[(1, 0)], constant_field2)
+        assert jnp.allclose(new_const_fields[((False,), 0)], constant_field2)
 
         # test when there is a field which is only constant
         input4 = input1.concat(
             geom.MultiImage({(0, 0): constant_field1, (1, 0): constant_field2}, D)
         )
         new_input = ml.training.autoregressive_step(
-            input4, one_step1, past_steps, {(0, 0): 1, (1, 0): 1}
+            input4, one_step1, past_steps, {((), 0): 1, ((False,), 0): 1}
         )
         assert jnp.allclose(
-            new_input[(0, 0)],
+            new_input[((), 0)],
             jnp.concatenate(
-                [input4[(0, 0)][future_steps:-future_steps], one_step1[(0, 0)], constant_field1]
+                [input4[((), 0)][future_steps:-future_steps], one_step1[((), 0)], constant_field1]
             ),
         )
-        new_dynamic_fields, new_const_fields = new_input.concat_inverse({(0, 0): 1, (1, 0): 1})
-        assert (1, 0) not in new_dynamic_fields
-        assert jnp.allclose(new_const_fields[(1, 0)], constant_field2)
+        new_dynamic_fields, new_const_fields = new_input.concat_inverse(
+            {((), 0): 1, ((False,), 0): 1}
+        )
+        assert ((False,), 0) not in new_dynamic_fields
+        assert jnp.allclose(new_const_fields[((False,), 0)], constant_field2)
 
     def testAutoregressiveMap(self):
         past_steps = 4
@@ -228,23 +234,34 @@ class TestMachineLearning:
         x = x.concat(constant_fields)
 
         model = DummyModule()
-        out, _ = ml.autoregressive_map(model, x, None, past_steps, 5, {(0, 0): 1, (1, 0): 1})
-        assert len(out[(0, 0)]) == 5
-        assert jnp.allclose(out[(0, 0)][0], x[(0, 0)][0] + constant_fields[(0, 0)])
-        assert jnp.allclose(out[(0, 0)][1], x[(0, 0)][1] + constant_fields[(0, 0)])
-        assert jnp.allclose(out[(0, 0)][2], x[(0, 0)][2] + constant_fields[(0, 0)])
-        assert jnp.allclose(out[(0, 0)][3], x[(0, 0)][3] + constant_fields[(0, 0)])
+        out, _ = ml.autoregressive_map(
+            model, x, None, past_steps, 5, {((), 0): 1, ((False,), 0): 1}
+        )
+        assert len(out[((), 0)]) == 5
+        assert jnp.allclose(out[((), 0)][0], x[((), 0)][0] + constant_fields[((), 0)])
+        assert jnp.allclose(out[((), 0)][1], x[((), 0)][1] + constant_fields[((), 0)])
+        assert jnp.allclose(out[((), 0)][2], x[((), 0)][2] + constant_fields[((), 0)])
+        assert jnp.allclose(out[((), 0)][3], x[((), 0)][3] + constant_fields[((), 0)])
         assert jnp.allclose(
-            out[(0, 0)][4], x[(0, 0)][0] + constant_fields[(0, 0)] + constant_fields[(0, 0)]
+            out[((), 0)][4], x[((), 0)][0] + constant_fields[((), 0)] + constant_fields[((), 0)]
         )
 
-        assert len(out[(1, 0)]) == 5
-        assert jnp.allclose(out[(1, 0)][0], x[(1, 0)][0] + constant_fields[(1, 0)])
-        assert jnp.allclose(out[(1, 0)][1], x[(1, 0)][1] + constant_fields[(1, 0)])
-        assert jnp.allclose(out[(1, 0)][2], x[(1, 0)][2] + constant_fields[(1, 0)])
-        assert jnp.allclose(out[(1, 0)][3], x[(1, 0)][3] + constant_fields[(1, 0)])
+        assert len(out[((False,), 0)]) == 5
         assert jnp.allclose(
-            out[(1, 0)][4], x[(1, 0)][0] + constant_fields[(1, 0)] + constant_fields[(1, 0)]
+            out[((False,), 0)][0], x[((False,), 0)][0] + constant_fields[((False,), 0)]
+        )
+        assert jnp.allclose(
+            out[((False,), 0)][1], x[((False,), 0)][1] + constant_fields[((False,), 0)]
+        )
+        assert jnp.allclose(
+            out[((False,), 0)][2], x[((False,), 0)][2] + constant_fields[((False,), 0)]
+        )
+        assert jnp.allclose(
+            out[((False,), 0)][3], x[((False,), 0)][3] + constant_fields[((False,), 0)]
+        )
+        assert jnp.allclose(
+            out[((False,), 0)][4],
+            x[((False,), 0)][0] + constant_fields[((False,), 0)] + constant_fields[((False,), 0)],
         )
 
         # Test when constant fields only has 1 constant field
@@ -262,32 +279,40 @@ class TestMachineLearning:
         x = x.concat(constant_fields)
 
         model = DummyModule()
-        out, _ = ml.autoregressive_map(model, x, None, past_steps, 5, {(0, 0): 1})
-        assert len(out[(0, 0)]) == 5
-        assert jnp.allclose(out[(0, 0)][0], x[(0, 0)][0] + constant_fields[(0, 0)])
-        assert jnp.allclose(out[(0, 0)][1], x[(0, 0)][1] + constant_fields[(0, 0)])
-        assert jnp.allclose(out[(0, 0)][2], x[(0, 0)][2] + constant_fields[(0, 0)])
-        assert jnp.allclose(out[(0, 0)][3], x[(0, 0)][3] + constant_fields[(0, 0)])
+        out, _ = ml.autoregressive_map(model, x, None, past_steps, 5, {((), 0): 1})
+        assert len(out[((), 0)]) == 5
+        assert jnp.allclose(out[((), 0)][0], x[((), 0)][0] + constant_fields[((), 0)])
+        assert jnp.allclose(out[((), 0)][1], x[((), 0)][1] + constant_fields[((), 0)])
+        assert jnp.allclose(out[((), 0)][2], x[((), 0)][2] + constant_fields[((), 0)])
+        assert jnp.allclose(out[((), 0)][3], x[((), 0)][3] + constant_fields[((), 0)])
         assert jnp.allclose(
-            out[(0, 0)][4], x[(0, 0)][0] + constant_fields[(0, 0)] + constant_fields[(0, 0)]
+            out[((), 0)][4], x[((), 0)][0] + constant_fields[((), 0)] + constant_fields[((), 0)]
         )
 
-        assert len(out[(1, 0)]) == 5
-        assert jnp.allclose(out[(1, 0)][0], x[(1, 0)][0] + x[(1, 0)][3])
-        assert jnp.allclose(out[(1, 0)][1], x[(1, 0)][1] + x[(1, 0)][0] + x[(1, 0)][3])
+        assert len(out[((False,), 0)]) == 5
+        assert jnp.allclose(out[((False,), 0)][0], x[((False,), 0)][0] + x[((False,), 0)][3])
         assert jnp.allclose(
-            out[(1, 0)][2], x[(1, 0)][2] + x[(1, 0)][1] + x[(1, 0)][0] + x[(1, 0)][3]
+            out[((False,), 0)][1], x[((False,), 0)][1] + x[((False,), 0)][0] + x[((False,), 0)][3]
         )
         assert jnp.allclose(
-            out[(1, 0)][3], x[(1, 0)][3] + x[(1, 0)][2] + x[(1, 0)][1] + x[(1, 0)][0] + x[(1, 0)][3]
+            out[((False,), 0)][2],
+            x[((False,), 0)][2] + x[((False,), 0)][1] + x[((False,), 0)][0] + x[((False,), 0)][3],
         )
         assert jnp.allclose(
-            out[(1, 0)][4],
-            x[(1, 0)][0]
-            + x[(1, 0)][3]
-            + x[(1, 0)][3]
-            + x[(1, 0)][2]
-            + x[(1, 0)][1]
-            + x[(1, 0)][0]
-            + x[(1, 0)][3],
+            out[((False,), 0)][3],
+            x[((False,), 0)][3]
+            + x[((False,), 0)][2]
+            + x[((False,), 0)][1]
+            + x[((False,), 0)][0]
+            + x[((False,), 0)][3],
+        )
+        assert jnp.allclose(
+            out[((False,), 0)][4],
+            x[((False,), 0)][0]
+            + x[((False,), 0)][3]
+            + x[((False,), 0)][3]
+            + x[((False,), 0)][2]
+            + x[((False,), 0)][1]
+            + x[((False,), 0)][0]
+            + x[((False,), 0)][3],
         )

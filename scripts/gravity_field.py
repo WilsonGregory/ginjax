@@ -102,13 +102,13 @@ class Model(models.MultiImageModule):
         self: Self,
         spatial_dims: tuple[int, ...],
         input_keys: geom.Signature,
+        target_keys: geom.Signature,
         conv_filters: geom.MultiImage,
         depth: int,
         key: ArrayLike,
     ) -> None:
         D = conv_filters.D
-        mid_keys = geom.Signature((((0, 0), depth), ((1, 0), depth)))
-        target_keys = geom.Signature((((1, 0), 1),))
+        mid_keys = geom.signature_union(input_keys, target_keys, depth)
 
         key, subkey = random.split(key)
         self.embedding = ml.ConvContract(input_keys, mid_keys, conv_filters, key=subkey)
@@ -165,7 +165,7 @@ def map_and_loss(
 def handleArgs(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("--images_dir", help="where to save the image", type=str, default=None)
-    parser.add_argument("-lr", help="learning rate", type=float, default=0.01)
+    parser.add_argument("-lr", help="learning rate", type=float, default=1e-3)
     parser.add_argument("-e", "--epochs", help="number of epochs", type=int, default=50)
     parser.add_argument("-batch", help="batch size", type=int, default=1)
     parser.add_argument("-seed", help="the random number seed", type=int, default=None)
@@ -214,7 +214,14 @@ conv_filters = geom.get_invariant_filters(
 assert conv_filters is not None
 
 key, subkey = random.split(key)
-model = Model(train_X.get_spatial_dims(), train_X.get_signature(), conv_filters, 10, key=subkey)
+model = Model(
+    train_X.get_spatial_dims(),
+    train_X.get_signature(),
+    train_Y.get_signature(),
+    conv_filters,
+    10,
+    key=subkey,
+)
 print(f"Num params: {sum([x.size for x in jax.tree_util.tree_leaves(model)]):,}")
 
 if args.load_model:

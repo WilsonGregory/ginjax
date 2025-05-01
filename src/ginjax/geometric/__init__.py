@@ -1,17 +1,19 @@
 from .functional_geometric_image import (
-    parse_shape as parse_shape,
-    hash as hash,
-    mul as mul,
+    average_pool as average_pool,
     convolve as convolve,
     convolve_ravel as convolve_ravel,
     convolve_contract as convolve_contract,
     get_contraction_indices as get_contraction_indices,
+    get_metric_inverse as get_metric_inverse,
+    hash as hash,
+    max_pool as max_pool,
+    mul as mul,
     multicontract as multicontract,
+    norm as norm,
+    parse_shape as parse_shape,
+    raise_lower as raise_lower,
     times_group_element as times_group_element,
     tensor_times_gg as tensor_times_gg,
-    norm as norm,
-    max_pool as max_pool,
-    average_pool as average_pool,
 )
 
 from .geometric_image import (

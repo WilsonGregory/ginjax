@@ -354,6 +354,7 @@ class ConvContract(eqx.Module):
                 input_multi_image.metric_tensor
             )
 
+        # TODO: metric should only be carried over if the image isn't changing size
         out = input_multi_image.empty()
         for (in_k, in_p), images_block in input_multi_image.items():
             for (out_k, out_p), weight_block in weights[(in_k, in_p)].items():

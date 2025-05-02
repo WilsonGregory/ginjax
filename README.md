@@ -37,11 +37,11 @@ See our readthedocs for <a href="https://ginjax.readthedocs.io/en/latest/">full 
 
 ### GeometricImage
 
-The GeometricImage is the main concept of this package. We define a geometric image for dimension D, spatial dimensions, parity p, and tensor order k. To construct a geometric image, do: `image = GeometricImage(data, parity, D)`. Data is a jnp.array with the shape spatial dimensions followed by `(D,)*k)`.
+The GeometricImage is the main concept of this package. We define a geometric image for dimension D, spatial dimensions, parity p, and tensor order k of either contravariant or covariant axes. To construct a geometric image, do: `image = GeometricImage(data, parity, D)`. Data is a jnp.array with the shape spatial dimensions followed by `(D,)*k)`. Images default to being defined on the torus, aka periodic boundary conditions. When working with a metric that is not the flat Euclidean metric, you can define which tensor axes are contravariant (the default) or covariant.
 
 ### MultiImage
 
-The MultiImage class allow us to group multiple images together that have the same dimension and spatial dimensions. MultiImage is a dictionary where the keys are (tensor order k, parity p) and the values are a image data block which has some number of initial axes followed by spatial axes and tensor axes. Common numbers of prior axes are 1 for channels, or 2 for batch followed by channels. The machine learning layers and models defined in this package expect a single axis for the channels, while the training code expects batch and then channels. You can easily construct MultiImages from images using the `from_images` function.
+The MultiImage class allow us to group multiple images together that have the same dimension and spatial dimensions. MultiImage is a dictionary where the keys are (tensor order k, parity p) and the values are a image data block which has some number of initial axes followed by spatial axes and tensor axes. Common numbers of prior axes are 1 for channels, or 2 for batch followed by channels. The machine learning layers and models defined in this package expect a single axis for the channels, while the training code expects batch and then channels. You can easily construct MultiImages from images using the `from_images` function. Additionally, MultiImages can be created with an associated metric tensor field.
 
 ## Authors and Attribution
 - **Wilson Gregory** (JHU)

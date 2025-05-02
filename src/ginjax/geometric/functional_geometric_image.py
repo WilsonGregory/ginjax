@@ -625,7 +625,7 @@ def times_group_element(
     precision: Optional[jax.lax.Precision] = None,
 ) -> jax.Array:
     """
-    Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the
+    Apply a group element of O(d) to the geometric image. First apply the action to the
     location of the pixels, then apply the action to the pixels themselves.
 
     args:
@@ -643,9 +643,6 @@ def times_group_element(
     """
     spatial_dims, k = parse_shape(data.shape, D)
     assert len(covariant_axes) == k, f"times_group_element: Must be {k} axes, got {covariant_axes}"
-    # hope to relax this constraint in the future, for now this function is actually unchanged
-    # because gg.inv == gg.T
-    assert jnp.allclose(gg.T @ gg, jnp.eye(D)), "times_group_element: must be subgroup of O(d)"
     sign, _ = jnp.linalg.slogdet(gg)
     parity_flip = sign**parity  # if parity=1, the flip operators don't flip the tensors
 

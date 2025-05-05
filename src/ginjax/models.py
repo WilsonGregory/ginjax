@@ -925,11 +925,12 @@ class ModelWrapper(MultiImageModule):
     appropriate output MultiImage at the end.
     """
 
-    D: int
     model: eqx.Module
-    output_keys: geom.Signature
-    output_is_torus: Union[bool, tuple[bool, ...]]
-    pass_aux_data: bool
+
+    D: int = eqx.field(static=True)
+    output_keys: geom.Signature = eqx.field(static=True)
+    output_is_torus: Union[bool, tuple[bool, ...]] = eqx.field(static=True)
+    pass_aux_data: bool = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -986,8 +987,8 @@ class GroupAverage(MultiImageModule):
     model: MultiImageModule
     # static to prevent this from being converted to a traced jax array
     operators: list[np.ndarray] = eqx.field(static=True)
-    always_average: bool
-    inference: bool
+    always_average: bool = eqx.field(static=True)
+    inference: bool = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -1023,12 +1024,13 @@ class GroupAverage(MultiImageModule):
 class Climate1D(MultiImageModule):
 
     model: MultiImageModule
-    output_keys: geom.Signature
-    past_steps: int
-    future_steps: int
-    spatial_dims: tuple[int, ...]
-    constant_fields_2d: dict[tuple[tuple[bool, ...], int], int]
-    output_is_torus: tuple[bool, ...]
+
+    output_keys: geom.Signature = eqx.field(static=True)
+    past_steps: int = eqx.field(static=True)
+    future_steps: int = eqx.field(static=True)
+    spatial_dims: tuple[int, ...] = eqx.field(static=True)
+    constant_fields_2d: dict[tuple[tuple[bool, ...], int], int] = eqx.field(static=True)
+    output_is_torus: tuple[bool, ...] = eqx.field(static=True)
 
     def __init__(
         self: Self,

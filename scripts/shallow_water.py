@@ -573,7 +573,7 @@ def train_and_eval(
     has_aux: bool = False,
     verbose: int = 1,
     plot_component: int = 0,
-    constant_fields: dict[tuple[int, int], int] = {},
+    constant_fields: dict[tuple[tuple[bool, ...], int], int] = {},
     is_wandb: bool = False,
 ) -> tuple[Optional[ArrayLike], ...]:
     (
@@ -727,12 +727,13 @@ def handleArgs() -> argparse.Namespace:
         default=5,
     )
     parser.add_argument(
-        "-pres-vor-form",
+        "--pres-vor-form",
         help="toggle to use pressure/vorticity form, rather than pressure/velocity form",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=False,
     )
     parser.add_argument(
-        "-subsample",
+        "--subsample",
         help="how many timesteps per model step, default 1",
         type=int,
         default=1,

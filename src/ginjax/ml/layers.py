@@ -331,7 +331,7 @@ class ConvContract(eqx.Module):
 
     def individual_convolve(
         self: Self,
-        input_multi_image: geom.MultiImage,
+        x: geom.MultiImage,
         weights: dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]],
     ) -> geom.MultiImage:
         """
@@ -340,23 +340,18 @@ class ConvContract(eqx.Module):
         not all equal. Weights is passed as an argument to make it easier to test this function.
 
         args:
-            input_multi_image: the input
+            x: the input
             weights: the weights used to combine the invariant filters
 
         returns:
             the convolved MultiImage
         """
-        if (
-            input_multi_image.metric_tensor is not None
-            and input_multi_image.metric_tensor_inv is None
-        ):
-            input_multi_image.metric_tensor_inv = geom.get_metric_inverse(
-                input_multi_image.metric_tensor
-            )
+        if x.metric_tensor is not None and x.metric_tensor_inv is None:
+            x.metric_tensor_inv = geom.get_metric_inverse(x.metric_tensor)
 
         # TODO: metric should only be carried over if the image isn't changing size
-        out = input_multi_image.empty()
-        for (in_k, in_p), images_block in input_multi_image.items():
+        out = x.empty()
+        for (in_k, in_p), images_block in x.items():
             for (out_k, out_p), weight_block in weights[(in_k, in_p)].items():
                 # filters are always contravariant
                 filter_key = ((False,) * (len(in_k) + len(out_k)), (in_p + out_p) % 2)
@@ -368,13 +363,13 @@ class ConvContract(eqx.Module):
                     jax.lax.stop_gradient(self.invariant_filters[filter_key]),
                 )
 
-                if input_multi_image.metric_tensor is not None:
-                    assert input_multi_image.metric_tensor_inv is not None
+                if x.metric_tensor is not None:
+                    assert x.metric_tensor_inv is not None
                     # lower all axes to covariant
                     images_block = geom.raise_lower(
                         images_block,
-                        input_multi_image.metric_tensor.data,
-                        input_multi_image.metric_tensor_inv.data,
+                        x.metric_tensor.data,
+                        x.metric_tensor_inv.data,
                         in_k,
                         (True,) * len(in_k),
                     )
@@ -382,23 +377,28 @@ class ConvContract(eqx.Module):
                     # which case lower == upper
 
                 convolve_contracted_imgs = geom.convolve_contract(
-                    input_multi_image.D,
+                    x.D,
                     images_block[None],  # add batch dim
                     filter_block,
-                    input_multi_image.is_torus,
+                    x.is_torus,
                     self.stride,
                     self.padding,
                     self.lhs_dilation,
                     self.rhs_dilation,
                 )[0]
 
-                if input_multi_image.metric_tensor is not None:
-                    assert input_multi_image.metric_tensor_inv is not None
+                if x.metric_tensor is not None:
+                    assert x.metric_tensor_inv is not None
+                    in_spatial, _ = geom.parse_shape(images_block.shape[1:], x.D)
+                    out_spatial, _ = geom.parse_shape(convolve_contracted_imgs.shape[1:], x.D)
+                    assert (
+                        in_spatial == out_spatial
+                    ), f"For convolution with a metric tensor, spatial dimensions cannot change"
                     # restore axes to proper lower/upper
                     convolve_contracted_imgs = geom.raise_lower(
                         convolve_contracted_imgs,
-                        input_multi_image.metric_tensor.data,
-                        input_multi_image.metric_tensor_inv.data,
+                        x.metric_tensor.data,
+                        x.metric_tensor_inv.data,
                         (True,) * len(out_k),
                         out_k,
                     )

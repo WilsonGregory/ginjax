@@ -476,7 +476,6 @@ class GeometricImage:
             self.covariant_axes + filter_image.covariant_axes,
         )
 
-    # @functools.partial(jax.jit, static_argnums=[1, 2])
     def max_pool(self: Self, patch_len: int, use_norm: bool = True) -> Self:
         """
         Perform a max pooling operation where the length of the side of each patch is patch_len. Max is determined
@@ -712,6 +711,18 @@ class GeometricImage:
     def raise_lower_precise(
         self: Self, metric_tensor: Self, metric_tensor_inv: Self, axes: tuple[bool, ...]
     ) -> Self:
+        """
+        Raise or lower the axes of the tensor according the the metric tensor and axes using the
+        highest precision for einsum.
+
+        args:
+            metric_tensor: the metric tensor g_ij, must be same spatial shape as this
+            metric_tensor_inv: the inverse metric tensor, g^ij. Must be same spatial shape as this
+            axes: desired covariant axes
+
+        returns:
+            new GeometricImage with correct axes
+        """
         return self.raise_lower(metric_tensor, metric_tensor_inv, axes, jax.lax.Precision.HIGHEST)
 
     def get_rotated_keys(self: Self, gg: np.ndarray) -> np.ndarray:
@@ -1036,6 +1047,17 @@ def get_kronecker_delta_image(N: int, D: int) -> GeometricImage:
 
 
 def get_metric_inverse(metric_tensor: GeometricImage, eps: float = TINY) -> GeometricImage:
+    """
+    Given a metric tensor image, invert the matrix in each pixel to get the inverse metric tensor.
+    This converts g_ij -> g^ij.
+
+    args:
+        metric_tensor: the current metric tensor image
+        eps: to prevent dividing by zero, add eps to the denominator.
+
+    returns:
+        the inverse metric tensor image
+    """
     D = metric_tensor.D
     # (..., D, D) -> (..., D), (..., D, D)
     eigvals, eigvecs = jnp.linalg.eigh(metric_tensor.data, symmetrize_input=False)

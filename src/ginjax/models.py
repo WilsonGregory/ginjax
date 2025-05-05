@@ -985,10 +985,11 @@ class GroupAverage(MultiImageModule):
     """
 
     model: MultiImageModule
+    inference: bool
+
     # static to prevent this from being converted to a traced jax array
     operators: list[np.ndarray] = eqx.field(static=True)
     always_average: bool = eqx.field(static=True)
-    inference: bool = eqx.field(static=True)
 
     def __init__(
         self: Self,

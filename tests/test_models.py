@@ -2,6 +2,7 @@ import time
 import itertools as it
 import numpy as np
 from typing_extensions import Self
+import pytest
 
 import jax.numpy as jnp
 from jax import random
@@ -187,6 +188,18 @@ class TestModels:
             first = conv(multi_image2.times_gg_precise(gg))
             second = conv(multi_image2).times_gg_precise(gg)
             assert first.__eq__(second, 1e-4, 1e-4)
+
+        with pytest.raises(AssertionError):
+            key, subkey = random.split(key)
+            conv = ml.ConvContract(
+                multi_image2.get_signature(),
+                multi_image2.get_signature(),
+                conv_filters,
+                use_bias=False,
+                padding=0,  # image will be smaller, this causes a problem with metric tensor
+                key=subkey,
+            )
+            conv(multi_image2)
 
     def testConvContractContraCovEquivalence(self):
         # This experiments tests whether a convolution conv(A_up) == conv(A_down)

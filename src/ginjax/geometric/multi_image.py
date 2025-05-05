@@ -39,7 +39,10 @@ class MultiImage:
     values specifying which tensor axes are covariant (True) or contravariant (False). When the
     metric tensor is the flat Euclidean metric, the axes are equivalent numerically and we just
     assume that every axis is contravariant. However, when there is a non-flat metric tensor, the
-    contravariant axes transform normally under O(d), but the covariant axes are different.
+    covariant and contravariant axes transform differently under coordinate changes. If those
+    coordinate changes are a subgroup of O(d), then they are actually the same again. Additionally,
+    contracting axes can only be done when one is covariant and the other is contravariant. This
+    is not enforced explicitly at the moment, it is just implemented for ConvContract.
 
     There could be a variable number of axes of channels, from 0 to whatever. The most common
     options are 1 (channels) or 2 (batch,channels). The number of leading axes must be the same for
@@ -110,8 +113,8 @@ class MultiImage:
     def empty(self: Self, same_metric: bool = True) -> Self:
         """
         A copy of this MultiImage without the data. In some cases we might want to use the same
-        metric tensor in which case you can pass it as an argument, but in other situations you
-        might want a different one (for example, if the spatial dimensions change).
+        metric tensor in which case use same_metric = True, but in other situations you might want
+        a different one (for example, if the spatial dimensions change).
 
         args:
             same_metric: The new image will have the same metric tensor
@@ -593,14 +596,25 @@ class MultiImage:
         precision: Optional[jax.lax.Precision] = None,
     ) -> Self:
         """
-        This function has the potential to cause massive issues if there is a many to many
-        conversion of key types if the keys are in different orders. For example, doing
+        Raise or lower the axes of each image according to the new_signature. This has the potential
+        to cause issues if there is a many to many conversion of key types for the same number of
+        axes and parity. For example, doing
         [(True,False) (True, True)] -> [(True, True), (False,False)] will, if given in this order
         convert (True,False) -> (True,True) and (True,True) -> (False,False), which may not be what
-        you expect. This issue can arise if they are all converted to something, operated on, then
-        later converted back to two separate types.
+        you expect. This issue can also arise if they are all converted to something, operated on,
+        then later converted back to two separate types.
 
         Therefore, care must be taken.
+
+        args:
+            new_signature: new signature of the resulting multi_image. This must have the same
+                total number of channels per (len_k,parity)
+            channels_axis: what axis is the channel axis for concatenation. If none, defaults to
+                the last axis before the spatial axes.
+            precision: the einsum precision
+
+        returns:
+            a new MultiImage with the specified signature
         """
         assert self.metric_tensor is not None, "MultiImage::raise_lower: metric tensor is None"
         if channel_axis is None:
@@ -667,7 +681,6 @@ class MultiImage:
                 else:
                     start = end
 
-            # they both have to be -1 at the end
             assert i == len(curr_key_list) and j == len(new_key_list)
 
         return out

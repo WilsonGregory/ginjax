@@ -96,7 +96,7 @@ def autoregressive_step(
     input: geom.MultiImage,
     output: geom.MultiImage,
     past_steps: int,
-    constant_fields_dict: dict[tuple[int, int], int] = {},
+    constant_fields_dict: dict[tuple[tuple[bool, ...], int], int] = {},
     future_steps: int = 1,
 ) -> geom.MultiImage:
     """
@@ -148,7 +148,7 @@ def autoregressive_map(
     aux_data: Optional[eqx.nn.State] = None,
     past_steps: int = 1,
     autoregressive_steps: int = 1,
-    constant_fields: dict[tuple[int, int], int] = {},
+    constant_fields: dict[tuple[tuple[bool, ...], int], int] = {},
 ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
     """
     Given a model, perform an autoregressive step n times, and return the output

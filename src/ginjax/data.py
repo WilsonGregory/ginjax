@@ -135,10 +135,10 @@ def times_series_to_multi_images(
         n_channels = len(image)
 
         input_image = image[:, input_idxs].reshape(
-            (n_channels, -1, past_steps) + spatial_dims + (D,) * k
+            (n_channels, -1, past_steps) + spatial_dims + (D,) * len(k)
         )
         output_image = image[:, output_idxs].reshape(
-            (n_channels, -1, future_steps) + spatial_dims + (D,) * k
+            (n_channels, -1, future_steps) + spatial_dims + (D,) * len(k)
         )
 
         # (c,b,timesteps,spatial,tensor) -> (b,c,timesteps,spatial,tensor)

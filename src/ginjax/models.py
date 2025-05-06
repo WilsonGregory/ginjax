@@ -109,7 +109,7 @@ def make_conv(
     else:
         assert kernel_size is not None
         assert len(input_keys) == len(target_keys) == 1
-        assert input_keys[0][0] == target_keys[0][0] == (0, 0)
+        assert input_keys[0][0] == target_keys[0][0] == ((), 0)
         padding = "SAME" if padding is None else padding
         use_bias = True if use_bias == "auto" else use_bias
         assert isinstance(use_bias, bool)
@@ -380,13 +380,13 @@ class UNet(MultiImageModule):
             assert not use_batch_norm, "UNet::init Batch Norm cannot be used with equivariant model"
         else:
             if mid_keys is None:
-                mid_keys = geom.Signature((((0, 0), depth),))
+                mid_keys = geom.Signature(((((), 0), depth),))
 
             # use these keys along the way, then for the final output use self.output_keys
-            input_keys_size = sum(in_c * (D**k) for (k, _), in_c in input_keys)
-            input_keys = geom.Signature((((0, 0), input_keys_size),))
-            output_key_size = sum(out_c * (D**k) for (k, _), out_c in output_keys)
-            output_keys = geom.Signature((((0, 0), output_key_size),))
+            input_keys_size = sum(in_c * (D ** len(k)) for (k, _), in_c in input_keys)
+            input_keys = geom.Signature(((((), 0), input_keys_size),))
+            output_key_size = sum(out_c * (D ** len(k)) for (k, _), out_c in output_keys)
+            output_keys = geom.Signature(((((), 0), output_key_size),))
 
         self.D = D
         self.equivariant = equivariant
@@ -624,14 +624,14 @@ class DilResNet(MultiImageModule):
                 mid_keys = geom.signature_union(input_keys, output_keys, depth)
         else:
             if mid_keys is None:
-                mid_keys = geom.Signature((((0, 0), depth),))
+                mid_keys = geom.Signature(((((), 0), depth),))
 
             # use these keys along the way, then for the final output use self.output_keys
             input_keys = geom.Signature(
-                (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
+                ((((), 0), sum(in_c * (D ** len(k)) for (k, _), in_c in input_keys)),)
             )
             output_keys = geom.Signature(
-                (((0, 0), sum(out_c * (D**k) for (k, _), out_c in output_keys)),)
+                ((((), 0), sum(out_c * (D ** len(k)) for (k, _), out_c in output_keys)),)
             )
 
         # encoder
@@ -801,14 +801,14 @@ class ResNet(MultiImageModule):
                 mid_keys = geom.signature_union(input_keys, output_keys, depth)
         else:
             if mid_keys is None:
-                mid_keys = geom.Signature((((0, 0), depth),))
+                mid_keys = geom.Signature(((((), 0), depth),))
 
             # use these keys along the way, then for the final output use self.output_keys
             input_keys = geom.Signature(
-                (((0, 0), sum(in_c * (D**k) for (k, _), in_c in input_keys)),)
+                ((((), 0), sum(in_c * (D ** len(k)) for (k, _), in_c in input_keys)),)
             )
             output_keys = geom.Signature(
-                (((0, 0), sum(out_c * (D**k) for (k, _), out_c in output_keys)),)
+                ((((), 0), sum(out_c * (D ** len(k)) for (k, _), out_c in output_keys)),)
             )
 
         # encoder
@@ -925,11 +925,12 @@ class ModelWrapper(MultiImageModule):
     appropriate output MultiImage at the end.
     """
 
-    D: int
     model: eqx.Module
-    output_keys: geom.Signature
-    output_is_torus: Union[bool, tuple[bool, ...]]
-    pass_aux_data: bool
+
+    D: int = eqx.field(static=True)
+    output_keys: geom.Signature = eqx.field(static=True)
+    output_is_torus: Union[bool, tuple[bool, ...]] = eqx.field(static=True)
+    pass_aux_data: bool = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -959,7 +960,7 @@ class ModelWrapper(MultiImageModule):
     def __call__(
         self: Self, x: geom.MultiImage, aux_data: Optional[eqx.nn.State] = None
     ) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
-        x_array = x.to_scalar_multi_image()[(0, 0)]
+        x_array = x.to_scalar_multi_image()[((), 0)]
         assert callable(self.model)
         if self.pass_aux_data:
             out, aux_data = self.model(x_array, aux_data)
@@ -984,10 +985,11 @@ class GroupAverage(MultiImageModule):
     """
 
     model: MultiImageModule
+    inference: bool
+
     # static to prevent this from being converted to a traced jax array
     operators: list[np.ndarray] = eqx.field(static=True)
-    always_average: bool
-    inference: bool
+    always_average: bool = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -1023,12 +1025,13 @@ class GroupAverage(MultiImageModule):
 class Climate1D(MultiImageModule):
 
     model: MultiImageModule
-    output_keys: geom.Signature
-    past_steps: int
-    future_steps: int
-    spatial_dims: tuple[int, ...]
-    constant_fields_2d: dict[tuple[int, int], int]
-    output_is_torus: tuple[bool, ...]
+
+    output_keys: geom.Signature = eqx.field(static=True)
+    past_steps: int = eqx.field(static=True)
+    future_steps: int = eqx.field(static=True)
+    spatial_dims: tuple[int, ...] = eqx.field(static=True)
+    constant_fields_2d: dict[tuple[tuple[bool, ...], int], int] = eqx.field(static=True)
+    output_is_torus: tuple[bool, ...] = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -1037,7 +1040,7 @@ class Climate1D(MultiImageModule):
         past_steps: int,
         future_steps: int,
         spatial_dims: tuple[int, ...],
-        constant_fields_2d: dict[tuple[int, int], int],
+        constant_fields_2d: dict[tuple[tuple[bool, ...], int], int],
         output_is_torus: tuple[bool, ...] = (True, False),
     ) -> None:
         self.model = model
@@ -1072,9 +1075,9 @@ class Climate1D(MultiImageModule):
 
         out = geom.MultiImage({}, 1, (True,))
         for (k, parity), image in dynamic_x.items():
-            assert (k, parity) in [(0, 0), (0, 1), (1, 0)]  # currently they can only be these
+            assert (k, parity) in [((), 0), ((), 1), ((False,), 0)]  # currently must be one of
 
-            if k == 0:
+            if k == ():
                 out.append(k, parity, image)
             else:  # k==1
                 # velocity in horizontal direction becomes a pseudoscalar, vertical is a scalar
@@ -1098,30 +1101,33 @@ class Climate1D(MultiImageModule):
         keys_dict = {(k, parity): size for (k, parity), size in self.output_keys}
 
         # number of channels
-        c_scalar = keys_dict[(0, 0)] // self.future_steps if (0, 0) in keys_dict else 0
-        c_pseudoscalar = keys_dict[(0, 1)] // self.future_steps if (0, 1) in keys_dict else 0
-        c_vector = keys_dict[(1, 0)] // self.future_steps if (1, 0) in keys_dict else 0
+        c_scalar = keys_dict[((), 0)] // self.future_steps if ((), 0) in keys_dict else 0
+        c_pseudoscalar = keys_dict[((), 1)] // self.future_steps if ((), 1) in keys_dict else 0
+        c_vector = (
+            keys_dict[((False,), 0)] // self.future_steps if ((False,), 0) in keys_dict else 0
+        )
+        # does this need to be able to handle covariant axes
 
         out = geom.MultiImage({}, 2, self.output_is_torus)
         x = x.expand(0, self.future_steps)  # -> (y*c,t,x)
 
         scalar_image = None
         pseudoscalar_image = None
-        if (0, 0) in x:
+        if ((), 0) in x:
             # (y*c,t,x) -> (y,c,t,x) -> (c,t,x,y)
             scalar_image = jnp.moveaxis(
-                x[(0, 0)].reshape((n_lats, -1, self.future_steps, n_lons)), 0, -1
+                x[((), 0)].reshape((n_lats, -1, self.future_steps, n_lons)), 0, -1
             )
             assert len(scalar_image) == c_scalar + c_vector
-        if (0, 1) in x:
+        if ((), 1) in x:
             # (y*c,t,x) -> (y,c,t,x) -> (c,t,x,y)
             pseudoscalar_image = jnp.moveaxis(
-                x[(0, 1)].reshape((n_lats, -1, self.future_steps, n_lons)), 0, -1
+                x[((), 1)].reshape((n_lats, -1, self.future_steps, n_lons)), 0, -1
             )
             assert len(pseudoscalar_image) == c_pseudoscalar + c_vector
 
         vec = None
-        if (1, 0) in keys_dict:  # then there are scalars and pseudoscalars
+        if ((False,), 0) in keys_dict:  # then there are scalars and pseudoscalars
             assert scalar_image is not None and pseudoscalar_image is not None
             vec_y = scalar_image[c_scalar:]
             scalar_image = scalar_image[:c_scalar]
@@ -1130,43 +1136,43 @@ class Climate1D(MultiImageModule):
             pseudoscalar_image = pseudoscalar_image[:c_pseudoscalar]
             vec = jnp.stack([vec_x, vec_y], axis=-1)
 
-        if (0, 0) in keys_dict:
+        if ((), 0) in keys_dict:
             assert scalar_image is not None
             out.append(0, 0, scalar_image)
-        if (0, 1) in keys_dict:
+        if ((), 1) in keys_dict:
             assert pseudoscalar_image is not None
             out.append(0, 1, pseudoscalar_image)
-        if (1, 0) in keys_dict:
+        if ((False,), 0) in keys_dict:
             assert vec is not None
-            out.append(1, 0, vec)
+            out.append((False,), 0, vec)
 
         return out.combine_axes((0, 1))
 
     @classmethod
     def get_1d_signature(
-        cls, signature: Union[geom.Signature, dict[tuple[int, int], int]], n_lats: int
+        cls, signature: Union[geom.Signature, dict[tuple[tuple[bool, ...], int], int]], n_lats: int
     ) -> geom.Signature:
         if not isinstance(signature, dict):
             signature = {(k, parity): size for (k, parity), size in signature}
 
         new_signature = {}
         for (k, parity), size in signature.items():
-            assert (k, parity) in [(0, 0), (0, 1), (1, 0)]
+            assert (k, parity) in [((), 0), ((), 1), ((False,), 0)]
 
-            if k == 0:
+            if k == ():
                 if (k, parity) not in new_signature:
                     new_signature[(k, parity)] = size * n_lats
                 else:
                     new_signature[(k, parity)] += size * n_lats
             else:  # k ==1
-                if (0, 0) not in new_signature:
-                    new_signature[(0, 0)] = size * n_lats
+                if ((), 0) not in new_signature:
+                    new_signature[((), 0)] = size * n_lats
                 else:
-                    new_signature[(0, 0)] += size * n_lats
+                    new_signature[((), 0)] += size * n_lats
 
-                if (0, 1) not in new_signature:
-                    new_signature[(0, 1)] = size * n_lats
+                if ((), 1) not in new_signature:
+                    new_signature[((), 1)] = size * n_lats
                 else:
-                    new_signature[(0, 1)] += size * n_lats
+                    new_signature[((), 1)] += size * n_lats
 
         return geom.Signature(tuple(new_signature.items()))

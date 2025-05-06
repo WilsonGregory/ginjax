@@ -2,6 +2,7 @@ import math
 import time
 import numpy as np
 import pytest
+import itertools as it
 
 import jax.numpy as jnp
 import jax
@@ -1165,23 +1166,21 @@ class TestGeometricImage:
             )
             second = (
                 A_up.times_gg_precise(gg)
-                * metric_tensor.times_gg_precise(gg, metric_tensor)  # = .times_gg_precise(gg)
+                * metric_tensor.times_gg_precise(gg)
                 * B_up.times_gg_precise(gg)
             ).multicontract(((0, 1), (2, 3)))
 
             third = (A_up * B_down).contract(0, 1).times_gg_precise(gg)
-            fourth = (
-                A_up.times_gg_precise(gg) * B_down.times_gg_precise(gg, metric_tensor)
-            ).contract(0, 1)
+            fourth = (A_up.times_gg_precise(gg) * B_down.times_gg_precise(gg)).contract(0, 1)
 
-            assert first == second
-            assert second == third
-            assert third == fourth
+            assert first.__eq__(second, 1e-4, 1e-4), f"{jnp.max(jnp.abs(first.data - second.data))}"
+            assert second.__eq__(third, 1e-4, 1e-4), f"{jnp.max(jnp.abs(second.data - third.data))}"
+            assert third.__eq__(fourth, 1e-4, 1e-4), f"{jnp.max(jnp.abs(third.data - fourth.data))}"
 
             fifth = (A * B).contract(0, 1).times_gg_precise(gg)
             sixth = (A.times_gg_precise(gg) * B.times_gg_precise(gg)).contract(0, 1)
-            assert fourth == fifth
-            assert fifth == sixth
+            assert fourth.__eq__(fifth, 1e-4, 1e-4), f"{jnp.max(jnp.abs(fourth.data - fifth.data))}"
+            assert fifth.__eq__(sixth, 1e-4, 1e-4), f"{jnp.max(jnp.abs(fifth.data - sixth.data))}"
 
     def testMaxPoolUseNorm(self):
         image1 = geom.GeometricImage(
@@ -1485,29 +1484,79 @@ class TestGeometricImage:
         N = 5
         D = 2
         k = 1
-        metric_tensor = jnp.full((N,) * D + (D,) * 2, jnp.array([[1, 0], [0, 0.5]]))
-        metric_tensor_inv = jnp.full((N,) * D + (D,) * 2, jnp.array([[1, 0], [0, 2]]))
+        key, subkey = random.split(key)
+        metric_tensor = geom.GeometricImage(
+            jnp.full((N,) * D + (D,) * 2, jnp.array([[1, 0], [0, 0.5]])),
+            0,
+            D,
+            covariant_axes=(True, True),
+        )
+        metric_tensor_inv = geom.GeometricImage(
+            jnp.full((N,) * D + (D,) * 2, jnp.array([[1, 0], [0, 2]])),
+            0,
+            D,
+            covariant_axes=(True, True),
+        )
 
         key, subkey = random.split(key)
         A_down = geom.GeometricImage(
             random.uniform(subkey, shape=(N,) * D + (D,) * k), 0, D, covariant_axes=True
         )
-        A_up = A_down.raise_precise(metric_tensor_inv)
+        A_up = A_down.raise_lower_precise(metric_tensor, metric_tensor_inv, (False,))
         assert A_up.covariant_axes == (False,)
         assert jnp.allclose(A_up.data[..., 0], A_down.data[..., 0])
         assert jnp.allclose(A_up.data[..., 1], 2 * A_down.data[..., 1])
+        assert A_down == A_up.raise_lower_precise(metric_tensor, metric_tensor_inv, (True,))
 
-        assert A_down == A_up.lower_precise(metric_tensor)
+        key, subkey1, subkey2 = random.split(key, num=3)
+        eigvecs = random.orthogonal(subkey1, D, shape=(N,) * D)
+        eigvals = jax.vmap(jnp.diag)(random.uniform(subkey2, shape=(N**D, D)) + 0.5)
+        metric_tensor_data = jnp.einsum(
+            "...ij,...jk,...kl->...il",
+            eigvecs,
+            eigvals.reshape((N,) * D + (D, D)),
+            jnp.moveaxis(eigvecs, -1, -2),
+        )
+        metric_tensor = geom.GeometricImage(metric_tensor_data, 0, D, covariant_axes=(True, True))
+        metric_tensor_inv = geom.get_metric_inverse(metric_tensor)
 
         k = 3
+        key, subkey = random.split(key)
         B = geom.GeometricImage(
             random.uniform(subkey, shape=(N,) * D + (D,) * k),
             0,
             D,
             covariant_axes=(True, False, False),
         )
-        assert B.lower_precise(metric_tensor, (1,)).covariant_axes == (True, True, False)
-        assert B.lower_precise(metric_tensor, (2,)).covariant_axes == (True, False, True)
-        assert B.lower_precise(metric_tensor, (0,)).covariant_axes == (True, False, False)
-        assert B.lower_precise(metric_tensor, (0,)) == B
-        assert B.lower_precise(metric_tensor).covariant_axes == (True, True, True)
+
+        for axes in it.product([True, False], repeat=3):
+            assert (
+                B.raise_lower_precise(metric_tensor, metric_tensor_inv, axes).covariant_axes == axes
+            )
+            first = B.raise_lower_precise(
+                metric_tensor, metric_tensor_inv, axes
+            ).raise_lower_precise(metric_tensor, metric_tensor_inv, B.covariant_axes)
+            second = B
+            assert first.__eq__(second, 1e-4, 1e-4), f"{jnp.max(jnp.abs((first - second).data))}"
+
+    def testMetricTensorInverse(self):
+        D = 2
+        N = 5
+        key = random.PRNGKey(0)
+
+        key, subkey1, subkey2 = random.split(key, num=3)
+        eigvecs = random.orthogonal(subkey1, D, shape=(N,) * D)
+        eigvals = jax.vmap(jnp.diag)(random.uniform(subkey2, shape=(N**D, D)) + 0.1)
+        metric_tensor_data = jnp.einsum(
+            "...ij,...jk,...kl->...il",
+            eigvecs,
+            eigvals.reshape((N,) * D + (D, D)),
+            jnp.moveaxis(eigvecs, -1, -2),
+        )
+        metric_tensor = geom.GeometricImage(metric_tensor_data, 0, D, covariant_axes=(True, True))
+        metric_tensor_inv = geom.get_metric_inverse(metric_tensor)
+        id1 = (metric_tensor * metric_tensor_inv).contract(1, 2)
+        id2 = (metric_tensor_inv * metric_tensor).contract(1, 2)
+        actual_identity = jnp.stack([jnp.eye(D) for _ in range(N**D)]).reshape((N,) * D + (D, D))
+        assert jnp.allclose(id1.data, actual_identity, 1e-3, 1e-3)
+        assert jnp.allclose(id2.data, actual_identity, 1e-3, 1e-3)

@@ -14,7 +14,7 @@ import jax.numpy as jnp
 from jaxtyping import ArrayLike
 import equinox as eqx
 
-from ginjax.geometric.constants import LETTERS
+from ginjax.geometric.constants import LETTERS, TINY
 
 
 def parse_shape(shape: tuple[int, ...], D: int) -> tuple[tuple[int, ...], int]:
@@ -33,7 +33,7 @@ def parse_shape(shape: tuple[int, ...], D: int) -> tuple[tuple[int, ...], int]:
     return shape[:D], len(shape) - D
 
 
-def hash(D: int, image: jax.Array, indices: ArrayLike) -> tuple[jax.Array]:
+def hash(D: int, image: jax.Array, indices: ArrayLike) -> tuple[jax.Array, ...]:
     """
     Converts an array of indices to their pixels on the torus by modding the indices with the
     spatial dimensions.
@@ -538,6 +538,57 @@ def multicontract(
     return jnp.einsum("".join(einstr), data)
 
 
+def raise_lower(
+    data: jax.Array,
+    metric_tensor: jax.Array,
+    metric_tensor_inv: jax.Array,
+    from_axes: tuple[bool, ...],
+    to_axes: tuple[bool, ...],
+    precision: Optional[jax.lax.Precision] = None,
+) -> jax.Array:
+    """
+    Raise or lower the axes of a tensor or tensor image according to the metric tensor and axes.
+
+    args:
+        data: a tensor, or tensor image, shape (...,tensor)
+        metric_tensor: the metric tensor g_ij, shape (...,tensor)
+        metric_tensor_inv: the inverse metric tensor, g^ij. Must be same spatial shape as this
+        from_axes: covariant axes you are starting at, True for covariant, False contravariant
+        to_axes: covariant axes to convert to, True for covariant, False contravariant
+        precision: precision used for einsum
+
+    returns:
+        the data with the modified axes
+    """
+    assert len(from_axes) == len(to_axes)
+    k = len(from_axes)
+    assert k < 13
+
+    # convert to 0 if unchanged, or -1 if upper->lower and 1 for lower->upper
+    int_axes = tuple(
+        0 if from_axis == to_axis else (-2 * int(to_axis) + 1)
+        for from_axis, to_axis in zip(from_axes, to_axes)
+    )
+    if int_axes == (0,) * k:  # no axes are changed
+        return data
+
+    changed_idxs = list(filter(lambda x: int_axes[x] != 0, range(k)))
+    einstr = f"...{LETTERS[:k]},"
+    einstr += ",".join(["..." + LETTERS[13 + i] + LETTERS[i] for i in changed_idxs])
+    einstr += "->..."
+    einstr += "".join(
+        [LETTERS[i] if int_axis == 0 else LETTERS[13 + i] for i, int_axis in enumerate(int_axes)]
+    )
+
+    changed_axes = filter(lambda x: x != 0, int_axes)
+    metric_tensors = tuple(
+        metric_tensor_inv if axis == 1 else metric_tensor for axis in changed_axes
+    )
+    tensor_inputs = (data,) + metric_tensors
+
+    return jnp.einsum(einstr, *tensor_inputs, precision=precision)
+
+
 def get_rotated_keys(D: int, data: jax.Array, gg: np.ndarray) -> np.ndarray:
     """
     Get the rotated keys of data when it will be rotated by gg. Note that we rotate the key vector indices
@@ -570,18 +621,20 @@ def times_group_element(
     data: jax.Array,
     parity: int,
     gg: np.ndarray,
+    covariant_axes: tuple[bool, ...],
     precision: Optional[jax.lax.Precision] = None,
 ) -> jax.Array:
     """
-    Apply a group element of SO(2) or SO(3) to the geometric image. First apply the action to the
+    Apply a group element of O(d) to the geometric image. First apply the action to the
     location of the pixels, then apply the action to the pixels themselves.
 
     args:
         D: dimension of the data
         data: data block of image data to rotate, shape (spatial,tensor)
         parity: parity of the data, 0 for even parity, 1 for odd parity
-        gg: a DxD matrix that rotates the tensor. Note that you cannot vmap
-            by this argument because it needs to deal with concrete values
+        gg: a DxD matrix that rotates the tensor. Note that you cannot vmap by this argument
+            because it needs to deal with concrete values
+        covariant_axes: which axes of the tensor are covariant (True) or contravariant (False)
         precision: einsum precision, normally uses lower precision, use jax.lax.Precision.HIGHEST
             for testing equality in unit tests
 
@@ -589,6 +642,7 @@ def times_group_element(
         the rotated image data
     """
     spatial_dims, k = parse_shape(data.shape, D)
+    assert len(covariant_axes) == k, f"times_group_element: Must be {k} axes, got {covariant_axes}"
     sign, _ = jnp.linalg.slogdet(gg)
     parity_flip = sign**parity  # if parity=1, the flip operators don't flip the tensors
 
@@ -601,9 +655,15 @@ def times_group_element(
     else:
         # applying the rotation to tensors is essentially multiplying each index, which we can think of as a
         # vector, by the group action. The image pixels have already been rotated.
-        einstr = LETTERS[: len(data.shape)] + ","
-        einstr += ",".join([LETTERS[i + 13] + LETTERS[i + D] for i in range(k)])
-        tensor_inputs = (rotated_pixels,) + (gg,) * k
+        einstr = f"...{LETTERS[:k]},"
+        einstr += ",".join(
+            [
+                LETTERS[i] + LETTERS[i + 13] if covariant else LETTERS[i + 13] + LETTERS[i]
+                for i, covariant in enumerate(covariant_axes)
+            ]
+        )
+        einstr += f"->...{LETTERS[13:13+k]}"
+        tensor_inputs = (rotated_pixels,) + tuple(gg.T if cov else gg for cov in covariant_axes)
         newdata = jnp.einsum(einstr, *tensor_inputs, precision=precision) * (parity_flip)
 
     return newdata

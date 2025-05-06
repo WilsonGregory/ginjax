@@ -191,17 +191,17 @@ def get_data(
     if normalize:
         # log10 normalization
         for multi_image in [train_X, train_y, val_X, val_y, test_X, test_y]:
-            multi_image[(0, 0)] = jnp.log10(multi_image[(0, 0)])
-            vec_data = multi_image[(1, 0)]  # (batch,channels,spatial,D)
+            multi_image[((), 0)] = jnp.log10(multi_image[((), 0)])
+            vec_data = multi_image[((False,), 0)]  # (batch,channels,spatial,D)
             # original transformation is not equivariant, so scale the norm of the vectors by log10
             vec_norm = geom.norm(D + 2, vec_data, keepdims=True)  # (batch,channels,spatial,1)
-            multi_image[(1, 0)] = (jnp.log10(vec_norm) / vec_norm) * vec_data
+            multi_image[((False,), 0)] = (jnp.log10(vec_norm) / vec_norm) * vec_data
 
         # mean and var scaling
         for data_group in [[train_X, val_X, test_X], [train_y, val_y, test_y]]:
 
             # (b,c,spatial) -> (1,c,1...)
-            train_scalar = data_group[0][(0, 0)]
+            train_scalar = data_group[0][((), 0)]
             scalar_mean = jnp.mean(
                 train_scalar, axis=(0,) + tuple(range(2, train_scalar.ndim)), keepdims=True
             )
@@ -209,23 +209,23 @@ def get_data(
                 train_scalar, axis=(0,) + tuple(range(2, train_scalar.ndim)), keepdims=True
             )
             # (b,c,spatial,tensor) -> (1,c,1...,1)
-            train_vec = data_group[0][(1, 0)]
+            train_vec = data_group[0][((False,), 0)]
             vec_norm = jnp.linalg.norm(train_vec, axis=-1, keepdims=True)
             vector_std = jnp.std(
                 vec_norm, axis=(0,) + tuple(range(2, vec_norm.ndim)), keepdims=True
             )
 
             for multi_image in data_group:
-                multi_image[(0, 0)] = (multi_image[(0, 0)] - scalar_mean) / scalar_std
-                multi_image[(1, 0)] = multi_image[(1, 0)] / vector_std
+                multi_image[((), 0)] = (multi_image[((), 0)] - scalar_mean) / scalar_std
+                multi_image[((False,), 0)] = multi_image[((False,), 0)] / vector_std
 
     if include_center:
         for data_X in [train_X, val_X, test_X]:
             # the fact that the boundary conditions are open already breaks this symmetry somewhat
-            center = np.zeros((len(data_X[(0, 0)]), 1) + (N,) * D)
+            center = np.zeros((len(data_X[((), 0)]), 1) + (N,) * D)
             assert N % 2 == 0  # N will be 64 which is even
             center[(slice(None), slice(None)) + (slice(N // 2 - 1, N // 2 + 1),) * D] = 1
-            data_X[(0, 0)] = jnp.concatenate([data_X[(0, 0)], center], axis=1)  # converts to jnp
+            data_X[((), 0)] = jnp.concatenate([data_X[((), 0)], center], axis=1)  # converts to jnp
 
     return (
         train_X,
@@ -340,9 +340,9 @@ def train_and_eval(
         # plot a single center slice of the 3d image, rather than trying to plot a 3d image
         components = ["density", "temperature", "velocity_x", "velocity_y", "velocity_z"]
         pred_y = model(test_single_X.get_one(keepdims=False))[0]
-        pred_y_slice = pred_y.to_scalar_multi_image()[(0, 0)][:, 32]  # (c,y,z)
+        pred_y_slice = pred_y.to_scalar_multi_image()[((), 0)][:, 32]  # (c,y,z)
         target_y = test_single_Y.get_one(keepdims=False)
-        target_y_slice = target_y.to_scalar_multi_image()[(0, 0)][:, 32]  # (c,y,z)
+        target_y_slice = target_y.to_scalar_multi_image()[((), 0)][:, 32]  # (c,y,z)
         ncols = len(pred_y_slice)
         nrows = 3
 

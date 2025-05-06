@@ -82,8 +82,8 @@ class ConvContract(eqx.Module):
     A layer then performs the convolution followed by contraction.
     """
 
-    weights: dict[tuple[int, int], dict[tuple[int, int], jax.Array]]
-    bias: dict[tuple[int, int], jax.Array]
+    weights: dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]]
+    bias: dict[tuple[tuple[bool, ...], int], jax.Array]
     invariant_filters: geom.MultiImage
 
     input_keys: geom.Signature = eqx.field(static=True)
@@ -156,13 +156,14 @@ class ConvContract(eqx.Module):
             for (out_k, out_p), out_c in self.target_keys:
                 key, subkey1, subkey2 = random.split(key, num=3)
 
-                filter_key = (in_k + out_k, (in_p + out_p) % 2)
+                # filters are always contravariant
+                filter_key = ((False,) * (len(in_k) + len(out_k)), (in_p + out_p) % 2)
                 if filter_key not in self.invariant_filters:
                     self.missing_filter = True
                     continue  # relevant when there isn't an N=3, (0,1) filter
 
                 num_filters = len(self.invariant_filters[filter_key])
-                if False and filter_key == (0, 0):
+                if False and filter_key == ((), 0):
                     # TODO: Currently unused, a work in progress
                     weight_per_ff = []
                     # TODO: jax.lax.scan here instead
@@ -196,7 +197,7 @@ class ConvContract(eqx.Module):
                     filter_spatial_dims, _ = geom.parse_shape(
                         self.invariant_filters[filter_key].shape[1:], self.D
                     )
-                    bound_shape = (in_c,) + filter_spatial_dims + (self.D,) * in_k
+                    bound_shape = (in_c,) + filter_spatial_dims + (self.D,) * len(in_k)
                     bound = 1 / jnp.sqrt(math.prod(bound_shape))
                     self.weights[(in_k, in_p)][(out_k, out_p)] = random.uniform(
                         subkey1,
@@ -210,7 +211,7 @@ class ConvContract(eqx.Module):
                     # this may get set multiple times, bound could be different but not a huge issue?
                     self.bias[(out_k, out_p)] = random.uniform(
                         subkey2,
-                        shape=(out_c,) + (1,) * (self.D + out_k),
+                        shape=(out_c,) + (1,) * (self.D + len(out_k)),
                         minval=-bound,
                         maxval=bound,
                     )
@@ -227,7 +228,7 @@ class ConvContract(eqx.Module):
     def fast_convolve(
         self: Self,
         input_multi_image: geom.MultiImage,
-        weights: dict[tuple[int, int], dict[tuple[int, int], jax.Array]],
+        weights: dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]],
     ) -> geom.MultiImage:
         """
         Convolve when all filter_spatial_dims, in_c, and out_c match, can do a single convolve
@@ -250,10 +251,10 @@ class ConvContract(eqx.Module):
             image_ravel = jnp.concatenate([image_ravel, img], axis=-2)
 
             filter_ravel_in = jnp.zeros(
-                (in_c,) + filter_spatial_dims + (self.D,) * in_k + (0, out_c)
+                (in_c,) + filter_spatial_dims + (self.D,) * len(in_k) + (0, out_c)
             )
             for (out_k, out_p), weight_block in weights[(in_k, in_p)].items():
-                filter_key = (in_k + out_k, (in_p + out_p) % 2)
+                filter_key = (in_k + out_k, (in_p + out_p) % 2)  # tuple addition for k is right?
 
                 # (out_c,in_c,num_filters),(num, spatial, tensor) -> (out_c,in_c,spatial,tensor)
                 filter_block = jnp.einsum(
@@ -264,7 +265,7 @@ class ConvContract(eqx.Module):
                 # (out_c,in_c,spatial,tensor) -> (in_c,spatial,in_tensor,-1,out_c)
                 ff = jnp.moveaxis(
                     filter_block.reshape(
-                        (out_c, in_c) + filter_spatial_dims + (self.D,) * in_k + (-1,)
+                        (out_c, in_c) + filter_spatial_dims + (self.D,) * len(in_k) + (-1,)
                     ),
                     0,
                     -1,
@@ -295,25 +296,25 @@ class ConvContract(eqx.Module):
         # (spatial,tensor_sum*out_c) -> (out_c,spatial,tensor_sum)
         out = jnp.moveaxis(out.reshape(new_spatial_dims + (-1, out_c)), -1, 0)
 
-        out_k_sum = sum([self.D**out_k for (out_k, _), _ in self.target_keys])
+        out_k_sum = sum([self.D ** len(out_k) for (out_k, _), _ in self.target_keys])
         idx = 0
         out_multi_image = input_multi_image.empty()
         for in_k, in_p in input_multi_image.keys():
-            length = (self.D**in_k) * out_k_sum
+            length = (self.D ** len(in_k)) * out_k_sum
             # break off all the channels related to this particular in_k
             out_per_in = out[..., idx : idx + length].reshape(
-                (out_c,) + new_spatial_dims + (self.D,) * in_k + (-1,)
+                (out_c,) + new_spatial_dims + (self.D,) * len(in_k) + (-1,)
             )
 
             out_idx = 0
             for (out_k, out_p), _ in self.target_keys:
-                out_length = self.D**out_k
+                out_length = self.D ** len(out_k)
                 # separate the different out_k parts for particular in_k
                 img_block = out_per_in[..., out_idx : out_idx + out_length]
                 img_block = img_block.reshape(
-                    (out_c,) + new_spatial_dims + (self.D,) * (in_k + out_k)
+                    (out_c,) + new_spatial_dims + (self.D,) * len(in_k + out_k)
                 )
-                contracted_img = jnp.sum(img_block, axis=range(1 + self.D, 1 + self.D + in_k))
+                contracted_img = jnp.sum(img_block, axis=range(1 + self.D, 1 + self.D + len(in_k)))
 
                 if (out_k, out_p) in out_multi_image:  # it already has that key
                     out_multi_image[(out_k, out_p)] = (
@@ -330,8 +331,8 @@ class ConvContract(eqx.Module):
 
     def individual_convolve(
         self: Self,
-        input_multi_image: geom.MultiImage,
-        weights: dict[tuple[int, int], dict[tuple[int, int], jax.Array]],
+        x: geom.MultiImage,
+        weights: dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]],
     ) -> geom.MultiImage:
         """
         Function to perform convolve_contract on an entire MultiImage by doing the pairwise convolutions
@@ -339,16 +340,21 @@ class ConvContract(eqx.Module):
         not all equal. Weights is passed as an argument to make it easier to test this function.
 
         args:
-            input_multi_image: the input
+            x: the input
             weights: the weights used to combine the invariant filters
 
         returns:
             the convolved MultiImage
         """
-        out = input_multi_image.empty()
-        for (in_k, in_p), images_block in input_multi_image.items():
+        if x.metric_tensor is not None and x.metric_tensor_inv is None:
+            x.metric_tensor_inv = geom.get_metric_inverse(x.metric_tensor)
+
+        # TODO: metric should only be carried over if the image isn't changing size
+        out = x.empty()
+        for (in_k, in_p), images_block in x.items():
             for (out_k, out_p), weight_block in weights[(in_k, in_p)].items():
-                filter_key = (in_k + out_k, (in_p + out_p) % 2)
+                # filters are always contravariant
+                filter_key = ((False,) * (len(in_k) + len(out_k)), (in_p + out_p) % 2)
 
                 # (out_c,in_c,num_inv_filters) (num, spatial, tensor) -> (out_c,in_c,spatial,tensor)
                 filter_block = jnp.einsum(
@@ -357,16 +363,45 @@ class ConvContract(eqx.Module):
                     jax.lax.stop_gradient(self.invariant_filters[filter_key]),
                 )
 
+                if x.metric_tensor is not None:
+                    assert x.metric_tensor_inv is not None
+                    # lower all axes to covariant
+                    images_block = geom.raise_lower(
+                        images_block,
+                        x.metric_tensor.data,
+                        x.metric_tensor_inv.data,
+                        in_k,
+                        (True,) * len(in_k),
+                    )
+                    # without a metric tensor, we assume that its the flat euclidean metric in
+                    # which case lower == upper
+
                 convolve_contracted_imgs = geom.convolve_contract(
-                    input_multi_image.D,
+                    x.D,
                     images_block[None],  # add batch dim
                     filter_block,
-                    input_multi_image.is_torus,
+                    x.is_torus,
                     self.stride,
                     self.padding,
                     self.lhs_dilation,
                     self.rhs_dilation,
                 )[0]
+
+                if x.metric_tensor is not None:
+                    assert x.metric_tensor_inv is not None
+                    in_spatial, _ = geom.parse_shape(images_block.shape[1:], x.D)
+                    out_spatial, _ = geom.parse_shape(convolve_contracted_imgs.shape[1:], x.D)
+                    assert (
+                        in_spatial == out_spatial
+                    ), f"For convolution with a metric tensor, spatial dimensions cannot change"
+                    # restore axes to proper lower/upper
+                    convolve_contracted_imgs = geom.raise_lower(
+                        convolve_contracted_imgs,
+                        x.metric_tensor.data,
+                        x.metric_tensor_inv.data,
+                        (True,) * len(out_k),
+                        out_k,
+                    )
 
                 if (out_k, out_p) in out:  # it already has that key
                     out[(out_k, out_p)] = convolve_contracted_imgs + out[(out_k, out_p)]
@@ -394,9 +429,9 @@ class ConvContract(eqx.Module):
         if self.use_bias:
             biased_x = x.empty()
             for (k, p), image in x.items():
-                if (k, p) == (0, 0) and (self.use_bias == "scalar" or self.use_bias == "auto"):
+                if (k, p) == ((), 0) and (self.use_bias == "scalar" or self.use_bias == "auto"):
                     biased_x.append(k, p, image + self.bias[(k, p)])
-                elif ((k, p) != (0, 0) and self.use_bias == "auto") or self.use_bias == "mean":
+                elif ((k, p) != ((), 0) and self.use_bias == "auto") or self.use_bias == "mean":
                     mean_image = jnp.mean(
                         image, axis=tuple(range(1, 1 + self.invariant_filters.D)), keepdims=True
                     )
@@ -412,9 +447,9 @@ class GroupNorm(eqx.Module):
     Implementation of GroupNorm for equivariant and non-equivariant models.
     """
 
-    scale: dict[tuple[int, int], jax.Array]
-    bias: dict[tuple[int, int], jax.Array]
-    vanilla_norm: dict[tuple[int, int], eqx.nn.GroupNorm]
+    scale: dict[tuple[tuple[bool, ...], int], jax.Array]
+    bias: dict[tuple[tuple[bool, ...], int], jax.Array]
+    vanilla_norm: dict[tuple[tuple[bool, ...], int], eqx.nn.GroupNorm]
 
     D: int = eqx.field(static=False)
     groups: int = eqx.field(static=False)
@@ -449,12 +484,12 @@ class GroupNorm(eqx.Module):
                 in_c % groups
             ) == 0, f"group_norm: Groups must evenly divide channels, but got groups={groups}, channels={in_c}."
 
-            if k == 0:
+            if len(k) == 0:
                 self.vanilla_norm[(k, p)] = eqx.nn.GroupNorm(groups, in_c, eps)
-            elif k == 1:
-                self.scale[(k, p)] = jnp.ones((in_c,) + (1,) * (D + k))
-                self.bias[(k, p)] = jnp.zeros((in_c,) + (1,) * (D + k))
-            elif k > 1:
+            elif len(k) == 1:
+                self.scale[(k, p)] = jnp.ones((in_c,) + (1,) * (D + len(k)))
+                self.bias[(k, p)] = jnp.zeros((in_c,) + (1,) * (D + len(k)))
+            elif len(k) > 1:
                 raise NotImplementedError(
                     f"ml::group_norm: Equivariant group_norm not implemented for k>1, but k={k}",
                 )
@@ -471,12 +506,14 @@ class GroupNorm(eqx.Module):
         """
         out_x = x.empty()
         for (k, p), image_block in x.items():
-            if k == 0:
+            if len(k) == 0:
                 whitened_data = self.vanilla_norm[(k, p)](image_block)  # normal norm
-            elif k == 1:
+            elif len(k) == 1:
                 # save mean vec, allows for un-mean centering (?)
                 mean_vec = jnp.mean(image_block, axis=tuple(range(1, 1 + self.D)), keepdims=True)
-                assert mean_vec.shape == (image_block.shape[0],) + (1,) * self.D + (self.D,) * k
+                assert mean_vec.shape == (image_block.shape[0],) + (1,) * self.D + (self.D,) * len(
+                    k
+                )
                 whitened_data = _group_norm_K1(self.D, image_block, self.groups, eps=self.eps)
                 whitened_data = whitened_data * self.scale[(k, p)] + self.bias[(k, p)] * mean_vec
             else:  # k > 1
@@ -515,7 +552,7 @@ class VectorNeuronNonlinear(eqx.Module):
     vector.
     """
 
-    weights: dict[tuple[int, int], jax.Array]
+    weights: dict[tuple[tuple[bool, ...], int], jax.Array]
 
     eps: float = eqx.field(static=True)
     D: int = eqx.field(static=True)
@@ -545,7 +582,7 @@ class VectorNeuronNonlinear(eqx.Module):
 
         self.weights = {}
         for (k, p), in_c in input_keys:
-            if (k, p) != (0, 0):  # initialization?
+            if (k, p) != ((), 0):  # initialization?
                 bound = 1.0 / jnp.sqrt(in_c)
                 key, subkey = random.split(key, num=2)
                 self.weights[(k, p)] = random.uniform(
@@ -565,7 +602,7 @@ class VectorNeuronNonlinear(eqx.Module):
         out_x = x.empty()
         for (k, p), img_block in x.items():
 
-            if (k, p) == (0, 0):
+            if (k, p) == ((), 0):
                 out_x.append(k, p, self.scalar_activation(img_block))
             else:
                 # -> (out_c,spatial,tensor)
@@ -573,18 +610,22 @@ class VectorNeuronNonlinear(eqx.Module):
                 k_vec_normed = k_vec / (geom.norm(1 + self.D, k_vec, keepdims=True) + self.eps)
 
                 inner_prod = jnp.einsum(
-                    f"...{geom.LETTERS[:k]},...{geom.LETTERS[:k]}->...", img_block, k_vec_normed
+                    f"...{geom.LETTERS[:len(k)]},...{geom.LETTERS[:len(k)]}->...",
+                    img_block,
+                    k_vec_normed,
                 )
 
                 # split the vector into a parallel section and a perpendicular section
                 v_parallel = jnp.einsum(
-                    f"...,...{geom.LETTERS[:k]}->...{geom.LETTERS[:k]}", inner_prod, k_vec_normed
+                    f"...,...{geom.LETTERS[:len(k)]}->...{geom.LETTERS[:len(k)]}",
+                    inner_prod,
+                    k_vec_normed,
                 )
                 v_perp = img_block - v_parallel
                 h = self.scalar_activation(inner_prod) / (jnp.abs(inner_prod) + self.eps)
 
                 scaled_parallel = jnp.einsum(
-                    f"...,...{geom.LETTERS[:k]}->...{geom.LETTERS[:k]}", h, v_parallel
+                    f"...,...{geom.LETTERS[:len(k)]}->...{geom.LETTERS[:len(k)]}", h, v_parallel
                 )
                 out_x.append(k, p, scaled_parallel + v_perp)
 
@@ -636,7 +677,7 @@ class LayerWrapper(eqx.Module):
     MultiImage.
     """
 
-    modules: dict[tuple[int, int], Callable[..., Any]]
+    modules: dict[tuple[tuple[bool, ...], int], Callable[..., Any]]
 
     def __init__(self: Self, module: Callable[..., Any], input_keys: geom.Signature) -> None:
         """
@@ -677,7 +718,7 @@ class LayerWrapperAux(eqx.Module):
     producing a MultiImage and aux data.
     """
 
-    modules: dict[tuple[int, int], Callable[..., Any]]
+    modules: dict[tuple[tuple[bool, ...], int], Callable[..., Any]]
 
     def __init__(self: Self, module: Callable[..., Any], input_keys: geom.Signature):
         """

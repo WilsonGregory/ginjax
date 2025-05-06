@@ -138,13 +138,15 @@ def get_unique_invariant_filters(
 
     basis = get_basis("image", shape)  # (N**D * D**k, (N,)*D, (D,)*k)
     # not a true vmap because we can't vmap over the operators, but equivalent (if slower)
-    vmap_times_group = lambda ff, precision: jnp.stack(
-        [times_group_element(D, ff, parity, gg, precision) for gg in operators]
+    # covariant axes should maybe be true? For G = O(D), they are equivalent.
+    vmap_times_group = lambda ff: jnp.stack(
+        [
+            times_group_element(D, ff, parity, gg, (False,) * k, jax.lax.Precision.HIGHEST)
+            for gg in operators
+        ]
     )
     # vmap over the elements of the basis
-    group_average = jax.vmap(
-        lambda ff: jnp.sum(vmap_times_group(ff, jax.lax.Precision.HIGH), axis=0)
-    )
+    group_average = jax.vmap(lambda ff: jnp.sum(vmap_times_group(ff), axis=0))
     filter_matrix = group_average(basis).reshape(len(basis), -1)
 
     # remove rows of all zeros

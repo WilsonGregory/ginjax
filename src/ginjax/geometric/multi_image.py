@@ -14,11 +14,12 @@ from ginjax.geometric.constants import TINY
 from ginjax.geometric.functional_geometric_image import (
     average_pool,
     norm,
+    raise_lower,
     times_group_element,
 )
-from ginjax.geometric.geometric_image import GeometricImage
+from ginjax.geometric.geometric_image import GeometricImage, get_metric_inverse
 
-Signature = NewType("Signature", tuple[tuple[tuple[int, int], int], ...])
+Signature = NewType("Signature", tuple[tuple[tuple[tuple[bool, ...], int], int], ...])
 
 
 def signature_union(signature_a: Signature, signature_b: Signature, num_channels: int) -> Signature:
@@ -34,23 +35,38 @@ class MultiImage:
     layer maps multiple different tensor orders/parities to multiple different tensor orders/parities.
 
     The data of a MultiImage is held in a dictionary whose keys are (k,parity) tuples and whose
-    values are jax arrays of shape (channels,spatial,tensor). However, there could be a variable
-    number of axes of channels, from 0 to whatever. The most common options are 1 (channels) or 2
-    (batch,channels). The number of leading axes must be the same for all (k,parity). This setup
-    allows you to easily vmap a MultiImage, which vmaps over those axes for each image type.
+    values are jax arrays of shape (channels,spatial,tensor). The k is itself a tuple of boolean
+    values specifying which tensor axes are covariant (True) or contravariant (False). When the
+    metric tensor is the flat Euclidean metric, the axes are equivalent numerically and we just
+    assume that every axis is contravariant. However, when there is a non-flat metric tensor, the
+    covariant and contravariant axes transform differently under coordinate changes. If those
+    coordinate changes are a subgroup of O(d), then they are actually the same again. Additionally,
+    contracting axes can only be done when one is covariant and the other is contravariant. This
+    is not enforced explicitly at the moment, it is just implemented for ConvContract.
+
+    There could be a variable number of axes of channels, from 0 to whatever. The most common
+    options are 1 (channels) or 2 (batch,channels). The number of leading axes must be the same for
+    all (k,parity). This setup allows you to easily vmap a MultiImage, which vmaps over those axes
+    for each image type.
     """
 
     D: int
     is_torus: tuple[bool, ...]
-    data: dict[tuple[int, int], jax.Array]
+    data: dict[tuple[tuple[bool, ...], int], jax.Array]
+    metric_tensor: Optional[GeometricImage]
+    metric_tensor_inv: Optional[GeometricImage]
 
     # Constructors
 
     def __init__(
         self: Self,
-        data: dict[tuple[int, int], jax.Array],
+        data: Union[
+            dict[tuple[tuple[bool, ...], int], jax.Array], dict[tuple[int, int], jax.Array]
+        ],
         D: int,
         is_torus: Union[bool, tuple[bool, ...]] = True,
+        metric_tensor: Optional[GeometricImage] = None,
+        metric_tensor_inv: Optional[GeometricImage] = None,
     ) -> None:
         """
         Construct a MultiImage
@@ -59,6 +75,8 @@ class MultiImage:
             data: dictionary by (k,parity) of jnp.array
             D: dimension of the image, and length of vectors or side length of matrices or tensors.
             is_torus: whether the datablock is a torus, used for convolutions.
+            metric_tensor: metric tensor as an image, should be same spatial dimensions as the data
+                If none, assume the metric is the flat Euclidean metric.
         """
         self.D = D
         assert (isinstance(is_torus, tuple) and (len(is_torus) == D)) or isinstance(is_torus, bool)
@@ -66,17 +84,61 @@ class MultiImage:
             is_torus = (is_torus,) * D
 
         self.is_torus = is_torus
+        if metric_tensor is not None:
+            assert metric_tensor.k == 2
+            assert metric_tensor.parity == 0
+            assert metric_tensor.covariant_axes == (True, True)
+
+        self.metric_tensor = metric_tensor
+        self.metric_tensor_inv = metric_tensor_inv
         # copy dict, but image_block is immutable jnp array
-        self.data = {key: image_block for key, image_block in data.items()}
+        self.data = {}
+        for (k, parity), image_block in data.items():
+            if isinstance(k, int):
+                k = (False,) * k
+
+            self.data[k, parity] = image_block
 
     def copy(self: Self) -> Self:
-        return self.__class__(self.data, self.D, self.is_torus)
+        """
+        Copy constructor for MultiImage.
 
-    def empty(self: Self) -> Self:
-        return self.__class__({}, self.D, self.is_torus)
+        returns:
+            a copy of this multi image
+        """
+        return self.__class__(
+            self.data, self.D, self.is_torus, self.metric_tensor, self.metric_tensor_inv
+        )
+
+    def empty(self: Self, same_metric: bool = True) -> Self:
+        """
+        A copy of this MultiImage without the data. In some cases we might want to use the same
+        metric tensor in which case use same_metric = True, but in other situations you might want
+        a different one (for example, if the spatial dimensions change).
+
+        args:
+            same_metric: The new image will have the same metric tensor
+            metric_tensor: To use the same metric tensor, call image.empty(image.metric_tensor)
+
+        returns:
+            the new empty MultiImage
+        """
+        return self.__class__(
+            {},
+            self.D,
+            self.is_torus,
+            self.metric_tensor if same_metric else None,
+            self.metric_tensor_inv if same_metric else None,
+        )
 
     @classmethod
-    def from_images(cls, images: Sequence[GeometricImage], n_lead_axes: int = 1, axis=0) -> Self:
+    def from_images(
+        cls,
+        images: Sequence[GeometricImage],
+        n_lead_axes: int = 1,
+        axis=0,
+        metric_tensor: Optional[GeometricImage] = None,
+    ) -> Self:
         """
         Construct a MultiImage from a sequence of GeometricImages.
 
@@ -84,13 +146,14 @@ class MultiImage:
             images: the GeometricImages
             n_lead_axes: number of leading axes to append
             axis: what axis to append to
+            metric_tensor: the common metric tensor for all the images
 
         returns:
             a new MultiImage
         """
         # We assume that all images have the same D and is_torus
         assert len(images) != 0, "MultiImage.from_images was passed an empty list of images."
-        out = cls({}, images[0].D, images[0].is_torus)
+        out = cls({}, images[0].D, images[0].is_torus, metric_tensor)
         for image in images:
             out.append(
                 image.k,
@@ -130,6 +193,9 @@ class MultiImage:
         for k, image_block in self.items():
             multi_image_repr += f"\t{k}: {image_block.shape}\n"
 
+        if self.metric_tensor is not None:
+            multi_image_repr += f"\tmetric tensor: {self.metric_tensor.shape()}\n"
+
         return multi_image_repr
 
     def size(self: Self) -> int:
@@ -152,12 +218,12 @@ class MultiImage:
             return ()
 
         (k, _), image_block = next(iter(self.items()))
-        prior_indices = image_block.ndim - (k + self.D)  # handles batch or channels
+        prior_indices = image_block.ndim - (len(k) + self.D)  # handles batch or channels
         return image_block.shape[prior_indices : prior_indices + self.D]
 
     # Functions that map directly to calling the function on data
 
-    def keys(self: Self) -> KeysView[tuple[int, int]]:
+    def keys(self: Self) -> KeysView[tuple[tuple[bool, ...], int]]:
         """
         returns:
             the (k,parity) keys of the MultiImage
@@ -171,14 +237,14 @@ class MultiImage:
         """
         return self.data.values()
 
-    def items(self: Self) -> ItemsView[tuple[int, int], jax.Array]:
+    def items(self: Self) -> ItemsView[tuple[tuple[bool, ...], int], jax.Array]:
         """
         returns:
             the key (k,parity) value (image data array) of the MultiImage
         """
         return self.data.items()
 
-    def __getitem__(self: Self, idx: tuple[int, int]) -> jax.Array:
+    def __getitem__(self: Self, idx: tuple[tuple[bool, ...], int]) -> jax.Array:
         """
         Get an image block of a particular tensor order and parity
 
@@ -190,7 +256,7 @@ class MultiImage:
         """
         return self.data[idx]
 
-    def __setitem__(self: Self, idx: tuple[int, int], val: jax.Array) -> jax.Array:
+    def __setitem__(self: Self, idx: tuple[tuple[bool, ...], int], val: jax.Array) -> jax.Array:
         """
         Set an image block for a specific tensor order and parity
 
@@ -204,7 +270,7 @@ class MultiImage:
         self.data[idx] = val
         return self.data[idx]
 
-    def __contains__(self: Self, idx: tuple[int, int]) -> bool:
+    def __contains__(self: Self, idx: tuple[tuple[bool, ...], int]) -> bool:
         """
         Check whether a particular tensor order and parity image block is in the MultiImage
 
@@ -233,6 +299,7 @@ class MultiImage:
                 (self.D != other.D)
                 or (self.is_torus != other.is_torus)
                 or (self.keys() != other.keys())
+                or (self.metric_tensor != other.metric_tensor)
             ):
                 return False
 
@@ -246,7 +313,13 @@ class MultiImage:
 
     # Other functions
 
-    def append(self: Self, k: int, parity: int, image_block: jax.Array, axis: int = 0) -> Self:
+    def append(
+        self: Self,
+        k: Union[tuple[bool, ...], int],
+        parity: int,
+        image_block: jax.Array,
+        axis: int = 0,
+    ) -> Self:
         """
         Append an image block at (k,parity). It will be concatenated along the specified axis which
         must be one of the leading axes.
@@ -265,12 +338,13 @@ class MultiImage:
             axis < n_leading_axes
         ), f"axis={axis} must be one of {n_leading_axes} n_leading_axes"
         parity = parity % 2
-        if (
-            k > 0
-        ):  # very light shape checking, other problematic cases should be caught in concatenate
-            assert image_block.shape[-k:] == (self.D,) * k
+        if isinstance(k, int):
+            k = (False,) * k
+
+        if len(k) > 0:  # light shape checking
+            assert image_block.shape[-len(k) :] == (self.D,) * len(k)
         if self.D == 1:
-            assert k == 0, "MultiImage::append: 1D images can only have scalars and pseudoscalars"
+            assert k == (), "MultiImage::append: 1D images can only have scalars and pseudoscalars"
 
         if (k, parity) in self:
             self[(k, parity)] = jnp.concatenate((self[(k, parity)], image_block), axis=axis)
@@ -301,6 +375,9 @@ class MultiImage:
         assert (
             self.keys() == other.keys()
         ), f"{self.__class__}::__add__: Must have same types of images, had {self.keys()} and {other.keys()}"
+        assert (
+            self.metric_tensor == other.metric_tensor
+        ), f"{self.__class__}::__add__: Metric tensors do not match"
 
         return self.__class__.from_vector(self.to_vector() + other.to_vector(), self)
 
@@ -316,16 +393,19 @@ class MultiImage:
         """
         assert type(self) == type(
             other
-        ), f"{self.__class__}::__add__: Types of MultiImages being added must match, had {type(self)} and {type(other)}"
+        ), f"{self.__class__}::__sub__: Types of MultiImages being added must match, had {type(self)} and {type(other)}"
         assert (
             self.D == other.D
-        ), f"{self.__class__}::__add__: Dimension of MultiImages must match, had {self.D} and {other.D}"
+        ), f"{self.__class__}::__sub__: Dimension of MultiImages must match, had {self.D} and {other.D}"
         assert (
             self.is_torus == other.is_torus
-        ), f"{self.__class__}::__add__: is_torus of MultiImages must match, had {self.is_torus} and {other.is_torus}"
+        ), f"{self.__class__}::__sub__: is_torus of MultiImages must match, had {self.is_torus} and {other.is_torus}"
         assert (
             self.keys() == other.keys()
-        ), f"{self.__class__}::__add__: Must have same types of images, had {self.keys()} and {other.keys()}"
+        ), f"{self.__class__}::__sub__: Must have same types of images, had {self.keys()} and {other.keys()}"
+        assert (
+            self.metric_tensor == other.metric_tensor
+        ), f"{self.__class__}::__sub__: Metric tensors do not match"
 
         return self.__class__.from_vector(self.to_vector() - other.to_vector(), self)
 
@@ -377,6 +457,9 @@ class MultiImage:
         assert (
             self.is_torus == other.is_torus
         ), f"{self.__class__}::concat: is_torus of MultiImages must match, had {self.is_torus} and {other.is_torus}"
+        assert (
+            self.metric_tensor == other.metric_tensor
+        ), f"{self.__class__}::concat: Metric tensors do not match"
 
         out = self.copy()
         for (k, parity), image_block in other.items():
@@ -385,7 +468,9 @@ class MultiImage:
         return out
 
     def concat_inverse(
-        self: Self, signature: Union[Signature, dict[tuple[int, int], int]], axis: int = 0
+        self: Self,
+        signature: Union[Signature, dict[tuple[tuple[bool, ...], int], int]],
+        axis: int = 0,
     ) -> tuple[Self, Self]:
         """
         Given a signature, split the multi image into a and b, where b has the signature provided
@@ -433,7 +518,7 @@ class MultiImage:
         """
         images = []
         for (k, parity), image_block in self.items():
-            for image in image_block.reshape((-1,) + self.get_spatial_dims() + (self.D,) * k):
+            for image in image_block.reshape((-1,) + self.get_spatial_dims() + (self.D,) * len(k)):
                 images.append(GeometricImage(image, parity, self.D, self.is_torus))
 
         return images
@@ -466,7 +551,7 @@ class MultiImage:
         ), "MultiImage::to_scalar_multi_image: assume that there is at least a channels axis"
         for (k, _), image in self.items():
             # (...,c,spatial,tensor) -> (...,spatial,c,tensor)
-            image = jnp.moveaxis(image, n_batch_axes, -(1 + k))
+            image = jnp.moveaxis(image, n_batch_axes, -(1 + len(k)))
             # (...,spatial,c*tensor)
             image = image.reshape(image.shape[: n_batch_axes + self.D] + (-1,))
             # (...,c*tensor,spatial)
@@ -484,25 +569,167 @@ class MultiImage:
         returns:
             a new MultiImage with the same signature as layout
         """
-        assert list(self.keys()) == [(0, 0)]
+        assert list(self.keys()) == [((), 0)]
         spatial_dims = self.get_spatial_dims()
         n_batch_axes = self.get_n_leading() - 1
 
         out = self.empty()
         idx = 0
         # (...,c*tensor,spatial) -> (...,spatial,c*tensor)
-        image = jnp.moveaxis(self[(0, 0)], n_batch_axes, -1)
+        image = jnp.moveaxis(self[((), 0)], n_batch_axes, -1)
         for (k, parity), num_channels in layout:
-            length = num_channels * (self.D**k)
+            length = num_channels * (self.D ** len(k))
             # (...,spatial,num_channels*(D**k)) -> (...,spatial,num_channels,tensor)
             reshaped_data = image[..., idx : idx + length].reshape(
-                image.shape[:n_batch_axes] + spatial_dims + (num_channels,) + (self.D,) * k
+                image.shape[:n_batch_axes] + spatial_dims + (num_channels,) + (self.D,) * len(k)
             )
             # (...,num_channels,spatial,tensor). Can append on any axis cause its always the first
-            out.append(k, parity, jnp.moveaxis(reshaped_data, -(1 + k), n_batch_axes))
+            out.append(k, parity, jnp.moveaxis(reshaped_data, -(1 + len(k)), n_batch_axes))
             idx += length
 
         return out
+
+    def raise_lower(
+        self: Self,
+        new_signature: Signature,
+        channel_axis: Optional[int] = None,
+        precision: Optional[jax.lax.Precision] = None,
+    ) -> Self:
+        """
+        Raise or lower the axes of each image according to the new_signature. This has the potential
+        to cause issues if there is a many to many conversion of key types for the same number of
+        axes and parity. For example, doing
+        [(True,False) (True, True)] -> [(True, True), (False,False)] will, if given in this order
+        convert (True,False) -> (True,True) and (True,True) -> (False,False), which may not be what
+        you expect. This issue can also arise if they are all converted to something, operated on,
+        then later converted back to two separate types.
+
+        Therefore, care must be taken.
+
+        args:
+            new_signature: new signature of the resulting multi_image. This must have the same
+                total number of channels per (len_k,parity)
+            channels_axis: what axis is the channel axis for concatenation. If none, defaults to
+                the last axis before the spatial axes.
+            precision: the einsum precision
+
+        returns:
+            a new MultiImage with the specified signature
+        """
+        assert self.metric_tensor is not None, "MultiImage::raise_lower: metric tensor is None"
+        if channel_axis is None:
+            channel_axis = self.get_n_leading() - 1
+
+        assert channel_axis >= 0, f"MultiImage::raise_lower: need at least one channel axis."
+
+        curr_sig_by_k = {}
+        for (k, parity), n_channels in self.get_signature():
+            if (len(k), parity) in curr_sig_by_k:
+                curr_sig_by_k[(len(k), parity)].append(((k, parity), n_channels))
+            else:
+                curr_sig_by_k[(len(k), parity)] = [((k, parity), n_channels)]
+
+        new_sig_by_k = {}
+        for (k, parity), n_channels in new_signature:
+            if (len(k), parity) in new_sig_by_k:
+                new_sig_by_k[(len(k), parity)].append(((k, parity), n_channels))
+            else:
+                new_sig_by_k[(len(k), parity)] = [((k, parity), n_channels)]
+
+        assert (
+            curr_sig_by_k.keys() == new_sig_by_k.keys()
+        ), f"MultiImage::raise_lower: Signatures must have same k, {self.get_signature()} != {new_signature}"
+
+        if self.metric_tensor_inv is None:
+            self.metric_tensor_inv = get_metric_inverse(self.metric_tensor)
+
+        out = self.empty()
+        for (len_k, parity), curr_key_list in curr_sig_by_k.items():
+            # new to convert, and line up the channels
+            new_key_list = new_sig_by_k[(len_k, parity)]
+            assert sum([n_c for _, n_c in curr_key_list]) == sum(
+                [n_c for _, n_c in new_key_list]
+            ), f"MultiImage::raise_lower: total number of channels must equal, got {curr_key_list} and {new_key_list}"
+
+            i, j = 0, 0
+            start = 0
+            while i < len(curr_key_list) and j < len(new_key_list):
+                (curr_k, curr_p), curr_channels = curr_key_list[i]
+                (new_k, new_p), new_channels = new_key_list[j]
+
+                end = min(curr_channels - start, new_channels) + start
+                image_block = self[(curr_k, curr_p)][
+                    (slice(None),) * (self.get_n_leading() - 1) + (slice(start, end),)
+                ]
+
+                new_image_block = raise_lower(
+                    image_block,
+                    self.metric_tensor.data,
+                    self.metric_tensor_inv.data,
+                    curr_k,
+                    new_k,
+                    precision,
+                )
+                out.append(new_k, new_p, new_image_block, axis=channel_axis)
+
+                if out[(new_k, new_p)].shape[channel_axis] == new_channels:
+                    j += 1  # done filling j
+
+                if end == curr_channels:
+                    i += 1  # done using i, onto next one
+                    start = 0
+                else:
+                    start = end
+
+            assert i == len(curr_key_list) and j == len(new_key_list)
+
+        return out
+
+    def raise_all(self: Self, precision: Optional[jax.lax.Precision] = None) -> Self:
+        """
+        Raise all the tensor axes to contravariant.
+
+        args:
+            precision: einsum precision
+
+        returns:
+            a MultiImage where every tensor axis is contravariant
+        """
+        channels_by_k = {}
+        for (k, parity), n_channels in self.get_signature():
+            if (len(k), parity) in channels_by_k:
+                channels_by_k[(len(k), parity)] = channels_by_k[(len(k), parity)] + n_channels
+            else:
+                channels_by_k[(len(k), parity)] = n_channels
+
+        contra_sig = ()
+        for (len_k, parity), n_channels in channels_by_k.items():
+            contra_sig += ((((False,) * len_k, parity), n_channels),)
+
+        return self.raise_lower(Signature(contra_sig), precision=precision)
+
+    def lower_all(self: Self, precision: Optional[jax.lax.Precision] = None) -> Self:
+        """
+        Lower all the tensor axes to covariant.
+
+        args:
+            precision: einsum precision
+
+        returns:
+            a MultiImage where every tensor axis is covariant
+        """
+        channels_by_k = {}
+        for (k, parity), n_channels in self.get_signature():
+            if (len(k), parity) in channels_by_k:
+                channels_by_k[(len(k), parity)] = channels_by_k[(len(k), parity)] + n_channels
+            else:
+                channels_by_k[(len(k), parity)] = n_channels
+
+        covariant_sig = ()
+        for (len_k, parity), n_channels in channels_by_k.items():
+            covariant_sig += ((((True,) * len_k, parity), n_channels),)
+
+        return self.raise_lower(Signature(covariant_sig), precision=precision)
 
     def times_group_element(
         self: Self, gg: np.ndarray, precision: Optional[jax.lax.Precision] = None
@@ -518,19 +745,32 @@ class MultiImage:
         returns:
             a new MultiImage that has been rotated
         """
-        vmap_rotate = jax.vmap(times_group_element, in_axes=(None, 0, None, None, None))
-        out = self.empty()
+        if self.metric_tensor is None:
+            out = self.empty()
+        else:
+            # should this be upper?
+            out = self.empty(same_metric=False)
+            out.metric_tensor = self.metric_tensor.times_group_element(gg, precision)
+
+        if self.metric_tensor_inv is not None:
+            out.metric_tensor_inv = self.metric_tensor_inv.times_group_element(gg, precision)
+
+        vmap_rotate = jax.vmap(times_group_element, in_axes=(None, 0, None, None, None, None))
         for (k, parity), image_block in self.items():
             rotated_img_block = vmap_rotate(
                 self.D,
-                image_block.reshape((-1,) + self.get_spatial_dims() + (self.D,) * k),
+                image_block.reshape((-1,) + self.get_spatial_dims() + (self.D,) * len(k)),
                 parity,
                 gg,
+                k,
                 precision,
             )
             out.append(k, parity, rotated_img_block.reshape(image_block.shape))
 
         return out
+
+    def times_gg_precise(self: Self, gg: np.ndarray) -> Self:
+        return self.times_group_element(gg, jax.lax.Precision.HIGHEST)
 
     def norm(self: Self) -> Self:
         """
@@ -552,7 +792,8 @@ class MultiImage:
         return out
 
     def average_pool(self: Self, patch_len: int) -> Self:
-        out = self.empty()
+        out = self.empty(same_metric=False)
+        # TODO: what should the metric tensor be here?
         vmap_avg_pool = jax.vmap(average_pool, in_axes=(None, 0, None))
         n_leading_axes = self.get_n_leading()
         for (k, parity), image_block in self.items():
@@ -591,7 +832,7 @@ class MultiImage:
         data = None
         for (k, _), img in self.items():
             # (c,time,spatial,tensor)
-            exp_data = img.reshape((-1, future_steps) + spatial_dims + (self.D,) * k)
+            exp_data = img.reshape((-1, future_steps) + spatial_dims + (self.D,) * len(k))
             exp_data = jnp.moveaxis(exp_data, 0, 1 + self.D)  # (time,spatial,c,tensor)
             exp_data = exp_data.reshape(
                 (future_steps,) + spatial_dims + (-1,)
@@ -602,7 +843,13 @@ class MultiImage:
         assert data is not None, "MultiImage::get_component: Multi Image has no images of any order"
         component_data = data[..., component].reshape((future_steps,) + spatial_dims + (-1,))
         component_data = jnp.moveaxis(component_data, -1, 0).reshape((-1,) + spatial_dims)
-        return self.__class__({(0, 0): component_data}, self.D, self.is_torus)
+        return self.__class__(
+            {(0, 0): component_data},
+            self.D,
+            self.is_torus,
+            self.metric_tensor,
+            self.metric_tensor_inv,
+        )
 
     @eqx.filter_vmap
     def batch_get_component(
@@ -686,7 +933,7 @@ class MultiImage:
             tuple((k_p, img.shape[leading_axes - 1]) for k_p, img in self.data.items())
         )
 
-    def get_signature_dict(self: Self) -> dict[tuple[int, int], int]:
+    def get_signature_dict(self: Self) -> dict[tuple[tuple[bool, ...], int], int]:
         """
         Get the signature as a dictionary of keys (k,parity) and values channels. Channels is the
         last axis prior to spatial dimensions.
@@ -705,7 +952,7 @@ class MultiImage:
             the number of leading axes
         """
         for (k, _), image_block in self.items():
-            return image_block.ndim - (self.D + k)
+            return image_block.ndim - (self.D + len(k))
 
         return 0
 
@@ -792,6 +1039,8 @@ class MultiImage:
             {k: image_block[idxs] for k, image_block in self.items()},
             self.D,
             self.is_torus,
+            self.metric_tensor,
+            self.metric_tensor_inv,
         )
 
     def get_one(self: Self, idx: int = 0, keepdims=True) -> Self:
@@ -813,6 +1062,8 @@ class MultiImage:
                 {k: image_block[idx] for k, image_block in self.items()},
                 self.D,
                 self.is_torus,
+                self.metric_tensor,
+                self.metric_tensor_inv,
             )
 
     def plot(
@@ -841,10 +1092,10 @@ class MultiImage:
                 "actual {title} {col}"
             minimal: if minimal, no titles, colorbars, or axes labels
         """
-        assert (0, 0) in self, "MultiImage::plot: Currently only plots scalar multi images."
+        assert ((), 0) in self, "MultiImage::plot: Currently only plots scalar multi images."
 
         # move the rows axis to the first axis, and the cols axis to the second
-        image_block = jnp.moveaxis(self[(0, 0)], (rows_axis, cols_axis), (0, 1))
+        image_block = jnp.moveaxis(self[((), 0)], (rows_axis, cols_axis), (0, 1))
         nrows = image_block.shape[0]
         ncols = image_block.shape[1]
         if fig is None or axes is None:

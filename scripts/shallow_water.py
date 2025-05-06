@@ -303,7 +303,7 @@ def get_data_multi_images(
             skip_initial,
             subsample,
         )
-        del multi_image_x.data[(0, 1)]  # remove vorticity from input
+        del multi_image_x.data[((), 1)]  # remove vorticity from input
     else:
         multi_image = geom.MultiImage({(0, 0): pres, (1, 0): uv}, D, is_torus)
         multi_image_x, multi_image_y = gc_data.batch_time_series(
@@ -369,7 +369,7 @@ def get_data(
         geom.MultiImage,
         geom.MultiImage,
     ],
-    dict[tuple[int, int], int],
+    dict[tuple[tuple[bool, ...], int], int],
 ]:
     """
     Get train, val, and test data sets.
@@ -531,7 +531,7 @@ def map_and_loss(
     past_steps: int = 2,
     rollout_steps: int = 1,
     return_map: bool = False,
-    constant_fields: dict[tuple[int, int], int] = {},
+    constant_fields: dict[tuple[tuple[bool, ...], int], int] = {},
 ) -> Union[
     tuple[jax.Array, Optional[eqx.nn.State], geom.MultiImage],
     tuple[jax.Array, Optional[eqx.nn.State]],
@@ -573,7 +573,7 @@ def train_and_eval(
     has_aux: bool = False,
     verbose: int = 1,
     plot_component: int = 0,
-    constant_fields: dict[tuple[int, int], int] = {},
+    constant_fields: dict[tuple[tuple[bool, ...], int], int] = {},
     is_wandb: bool = False,
 ) -> tuple[Optional[ArrayLike], ...]:
     (
@@ -727,12 +727,13 @@ def handleArgs() -> argparse.Namespace:
         default=5,
     )
     parser.add_argument(
-        "-pres-vor-form",
+        "--pres-vor-form",
         help="toggle to use pressure/vorticity form, rather than pressure/velocity form",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=False,
     )
     parser.add_argument(
-        "-subsample",
+        "--subsample",
         help="how many timesteps per model step, default 1",
         type=int,
         default=1,
@@ -848,23 +849,23 @@ models_ls = [
     #         **train_kwargs,
     #     },
     # ),
-    # (
-    #     "dil_resnet_equiv20",
-    #     train_and_eval,
-    #     {
-    #         "model": models.DilResNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=20,
-    #             conv_filters=conv_filters,
-    #             # mid_keys=geom.Signature((((0, 0), 20), ((0, 1), 20), ((1, 0), 20), ((1, 1), 20))),
-    #             key=subkeys[1],
-    #         ),
-    #         "lr": 1e-4,
-    #         **train_kwargs,
-    #     },
-    # ),
+    (
+        "dil_resnet_equiv20",
+        train_and_eval,
+        {
+            "model": models.DilResNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=20,
+                conv_filters=conv_filters,
+                # mid_keys=geom.Signature((((0, 0), 20), ((0, 1), 20), ((1, 0), 20), ((1, 1), 20))),
+                key=subkeys[1],
+            ),
+            "lr": 1e-4,
+            **train_kwargs,
+        },
+    ),
     # (
     #     "dil_resnet_equiv48",
     #     train_and_eval,

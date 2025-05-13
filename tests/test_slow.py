@@ -3,11 +3,17 @@ import pytest
 import jax.numpy as jnp
 from jax import random
 import jax.lax
+from typing_extensions import Optional
 
 TINY = 1.0e-5
 
 
-def conv_subimage(image, center_key, filter_image, filter_image_keys=None):
+def conv_subimage(
+    image: geom.GeometricImage,
+    center_key: tuple[int, ...],
+    filter_image: geom.GeometricFilter,
+    filter_image_keys=None,
+):
     """
     Get the subimage (on the torus) centered on center_idx that will be convolved with filter_image
     args:

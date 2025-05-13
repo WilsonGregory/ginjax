@@ -13,7 +13,6 @@ from ginjax.geometric.constants import LeviCivitaSymbol, KroneckerDeltaSymbol, T
 from ginjax.geometric.functional_geometric_image import (
     average_pool,
     convolve,
-    get_rotated_keys,
     hash,
     max_pool,
     mul,
@@ -21,6 +20,7 @@ from ginjax.geometric.functional_geometric_image import (
     norm,
     parse_shape,
     raise_lower,
+    rotate_is_torus,
     times_group_element,
 )
 import ginjax.utils as utils
@@ -181,7 +181,7 @@ class GeometricImage:
         returns:
             the pixel indices as a d-tuple of jax arrays
         """
-        return hash(self.D, self.data, indices)
+        return hash(self.D, self.spatial_dims, indices)
 
     def __getitem__(self: Self, key: Any) -> jax.Array:
         """
@@ -725,19 +725,6 @@ class GeometricImage:
         """
         return self.raise_lower(metric_tensor, metric_tensor_inv, axes, jax.lax.Precision.HIGHEST)
 
-    def get_rotated_keys(self: Self, gg: np.ndarray) -> np.ndarray:
-        """
-        Get the rotated keys of this GeometricImage by the rotation gg.
-        Slightly messier than with GeometricFilter because self.N-1 / 2 might not be an integer, but should work
-
-        args:
-            gg: a DxD matrix that rotates the tensor
-
-        returns:
-            the rotated keys
-        """
-        return get_rotated_keys(self.D, self.data, gg)
-
     def times_group_element(
         self: Self,
         gg: np.ndarray,
@@ -763,7 +750,7 @@ class GeometricImage:
             times_group_element(self.D, self.data, self.parity, gg, self.covariant_axes, precision),
             self.parity,
             self.D,
-            self.is_torus,
+            rotate_is_torus(self.is_torus, gg),
             self.covariant_axes,
         )
 

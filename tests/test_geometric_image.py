@@ -976,6 +976,11 @@ class TestGeometricImage:
         assert img5_flipX.spatial_dims == (3, 4)
         assert (img5_flipX.data == jnp.array([[8, 9, 10, 11], [4, 5, 6, 7], [0, 1, 2, 3]])).all()
 
+        # semi-toroidal
+        img6 = geom.GeometricImage(jnp.ones((5, 5, 2)), 0, 2, (True, False))
+        assert img6.times_group_element(left90).is_torus == (False, True)
+        assert img6.times_group_element(flipX).is_torus == (True, False)
+
     def testTimesGroupElementEven(self):
         left90 = np.array([[0, -1], [1, 0]])
         flipX = np.array([[-1, 0], [0, 1]])

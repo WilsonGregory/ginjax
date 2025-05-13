@@ -11,6 +11,7 @@ from .functional_geometric_image import (
     norm as norm,
     parse_shape as parse_shape,
     raise_lower as raise_lower,
+    rotate_is_torus as rotate_is_torus,
     times_group_element as times_group_element,
     tensor_times_gg as tensor_times_gg,
 )

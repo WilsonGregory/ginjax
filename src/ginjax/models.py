@@ -70,6 +70,7 @@ def make_conv(
     padding: Optional[Union[str, int, tuple[tuple[int, int], ...]]] = None,
     lhs_dilation: Optional[tuple[int, ...]] = None,
     rhs_dilation: Union[int, tuple[int, ...]] = 1,
+    padding_mode: str = "ZEROS",
     key: Any = None,  # any instead of arraylike because split cannot handle None
 ) -> Union[ml.ConvContract, ml.LayerWrapper]:
     """
@@ -88,6 +89,8 @@ def make_conv(
         padding: convolution padding
         lhs_dilation: left hand side dilation for transpose convolution
         rhs_dilation: right hand side dilation for dilated convolutions
+        padding_mode: for non-equivariant convolutions, define padding mode that is passed to conv.
+            For equivariant, this is a variable of the input
         key: jax.random key
 
     returns:
@@ -111,6 +114,7 @@ def make_conv(
         assert len(input_keys) == len(target_keys) == 1
         assert input_keys[0][0] == target_keys[0][0] == ((), 0)
         padding = "SAME" if padding is None else padding
+        padding_mode = padding_mode if padding == "SAME" else "ZEROS"  # only implemented for SAME
         use_bias = True if use_bias == "auto" else use_bias
         assert isinstance(use_bias, bool)
         if lhs_dilation is None:
@@ -124,6 +128,7 @@ def make_conv(
                     padding,
                     rhs_dilation,
                     use_bias=use_bias,
+                    padding_mode=padding_mode,
                     key=key,
                 ),
                 input_keys,
@@ -140,6 +145,7 @@ def make_conv(
                     padding,
                     dilation=rhs_dilation,
                     use_bias=use_bias,
+                    padding_mode=padding_mode,
                     key=key,
                 ),
                 input_keys,
@@ -347,6 +353,7 @@ class UNet(MultiImageModule):
         use_group_norm: bool = False,
         use_batch_norm: bool = False,
         mid_keys: Optional[geom.Signature] = None,
+        padding_mode: str = "ZEROS",
         key: Any = None,
     ) -> None:
         """
@@ -367,6 +374,7 @@ class UNet(MultiImageModule):
             use_group_norm: whether to use GroupNorm
             use_batch_norm: whether to use the BatchNorm, only for non-equivariant version
             mid_keys: types of images and number of channels for the mid layers, as a baseline
+            padding_mode: used for non-equivariant models, padding mode to pass to convolutions
             key: jax.random key
         """
         assert num_conv > 0
@@ -409,6 +417,7 @@ class UNet(MultiImageModule):
                     kernel_size,
                     use_group_norm,
                     use_batch_norm,
+                    padding_mode=padding_mode,
                     key=subkey,
                 )
             )
@@ -441,6 +450,7 @@ class UNet(MultiImageModule):
                         kernel_size,
                         use_group_norm,
                         use_batch_norm,
+                        padding_mode=padding_mode,
                         key=subkey,
                     )
                 )
@@ -477,6 +487,7 @@ class UNet(MultiImageModule):
                     stride,
                     padding,
                     (2,) * self.D,  # lhs_dilation
+                    padding_mode=padding_mode,
                     key=subkey,
                 ),
                 [],
@@ -506,6 +517,7 @@ class UNet(MultiImageModule):
                         kernel_size,
                         use_group_norm,
                         use_batch_norm,
+                        padding_mode=padding_mode,
                         key=subkey,
                     )
                 )
@@ -522,6 +534,7 @@ class UNet(MultiImageModule):
             equivariant,
             conv_filters,
             kernel_size,
+            padding_mode=padding_mode,
             key=subkey,
         )
 
@@ -595,6 +608,7 @@ class DilResNet(MultiImageModule):
         kernel_size: Optional[Union[int, Sequence[int]]] = None,
         use_group_norm: bool = False,
         mid_keys: Optional[geom.Signature] = None,
+        padding_mode: str = "ZEROS",
         key: Any = None,
     ) -> None:
         """
@@ -613,6 +627,7 @@ class DilResNet(MultiImageModule):
             kernel_size: sidelength(s) for the non-equivariant version
             use_group_norm: whether to use GroupNorm
             mid_keys: types of images and number of channels for the mid layers, as a baseline
+            padding_mode: used for non-equivariant models, padding mode to pass to convolutions
             key: jax.random key
         """
         self.D = D
@@ -646,6 +661,7 @@ class DilResNet(MultiImageModule):
                 equivariant,
                 conv_filters,
                 1,
+                padding_mode=padding_mode,
                 key=subkey1,
             ),
             ConvBlock(
@@ -657,6 +673,7 @@ class DilResNet(MultiImageModule):
                 equivariant,
                 conv_filters,
                 1,
+                padding_mode=padding_mode,
                 key=subkey2,
             ),
         ]
@@ -679,6 +696,7 @@ class DilResNet(MultiImageModule):
                         kernel_size,
                         use_group_norm,
                         rhs_dilation=(dilation,) * D,
+                        padding_mode=padding_mode,
                         key=subkey,
                     )
                 )
@@ -696,10 +714,20 @@ class DilResNet(MultiImageModule):
                 equivariant,
                 conv_filters,
                 1,
+                padding_mode=padding_mode,
                 key=subkey1,
             ),
             ConvBlock(
-                D, mid_keys, output_keys, use_bias, None, equivariant, conv_filters, 1, key=subkey2
+                D,
+                mid_keys,
+                output_keys,
+                use_bias,
+                None,
+                equivariant,
+                conv_filters,
+                1,
+                padding_mode=padding_mode,
+                key=subkey2,
             ),
         ]
 
@@ -770,6 +798,7 @@ class ResNet(MultiImageModule):
         use_group_norm: bool = True,
         preactivation_order: bool = True,
         mid_keys: Optional[geom.Signature] = None,
+        padding_mode: str = "ZEROS",
         key: Any = None,
     ) -> None:
         """
@@ -790,6 +819,7 @@ class ResNet(MultiImageModule):
             use_group_norm: whether to use GroupNorm
             preactivation_order: whether to use preactivation order
             mid_keys: types of images and number of channels for the mid layers, as a baseline
+            padding_mode: for non-equivariant, pass 'TOROIDAL' if all sides are toroidal
             key: jax.random key
         """
         self.D = D
@@ -823,6 +853,7 @@ class ResNet(MultiImageModule):
                 equivariant,
                 conv_filters,
                 1,
+                padding_mode=padding_mode,
                 key=subkey1,
             ),
             ConvBlock(
@@ -834,6 +865,7 @@ class ResNet(MultiImageModule):
                 equivariant,
                 conv_filters,
                 1,
+                padding_mode=padding_mode,
                 key=subkey2,
             ),
         ]
@@ -856,6 +888,7 @@ class ResNet(MultiImageModule):
                         kernel_size,
                         use_group_norm,
                         preactivation_order=preactivation_order,
+                        padding_mode=padding_mode,
                         key=subkey,
                     )
                 )
@@ -873,10 +906,20 @@ class ResNet(MultiImageModule):
                 equivariant,
                 conv_filters,
                 1,
+                padding_mode=padding_mode,
                 key=subkey1,
             ),
             ConvBlock(
-                D, mid_keys, output_keys, use_bias, None, equivariant, conv_filters, 1, key=subkey2
+                D,
+                mid_keys,
+                output_keys,
+                use_bias,
+                None,
+                equivariant,
+                conv_filters,
+                1,
+                padding_mode=padding_mode,
+                key=subkey2,
             ),
         ]
 

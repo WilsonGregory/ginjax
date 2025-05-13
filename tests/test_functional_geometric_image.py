@@ -57,12 +57,12 @@ class TestFunctionalGeometricImage:
         indices = jnp.arange(10 * D).reshape((10, D))
 
         img1 = jnp.ones((4, 4))
-        hashed_indices = geom.hash(D, img1, indices)
+        hashed_indices = geom.hash(D, img1.shape, indices)
         assert jnp.allclose(hashed_indices[0], jnp.array([0, 2, 0, 2, 0, 2, 0, 2, 0, 2]))
         assert jnp.allclose(hashed_indices[1], jnp.array([1, 3, 1, 3, 1, 3, 1, 3, 1, 3]))
 
         img2 = jnp.ones((3, 4))
-        hashed_indices = geom.hash(D, img2, indices)
+        hashed_indices = geom.hash(D, img2.shape, indices)
         assert jnp.allclose(hashed_indices[0], jnp.array([0, 2, 1, 0, 2, 1, 0, 2, 1, 0]))
         assert jnp.allclose(hashed_indices[1], jnp.array([1, 3, 1, 3, 1, 3, 1, 3, 1, 3]))
 

@@ -65,10 +65,7 @@ def get_data(
         pressure = (pressure - jnp.mean(pressure[: (n_train + n_val)])) / jnp.std(
             pressure[: (n_train + n_val)]
         )
-        # TODO: this is not equivariant :/
-        velocity = velocity / jnp.std(
-            velocity[: (n_train + n_val)]
-        )  # this one I am not so sure about
+        velocity = velocity / jnp.std(jnp.linalg.norm(velocity[: n_train + n_val], axis=-1))
 
     # (batch,2,timesteps,spatial)
     density_pressure = jnp.concatenate([density[:, None], pressure[:, None]], axis=1)
@@ -472,6 +469,7 @@ train_kwargs = {
     "is_wandb": args.wandb,
 }
 
+padding_mode = "CIRCULAR" if data[0].is_torus == (True,) * D else "ZEROS"
 key, *subkeys = random.split(key, num=13)
 model_list = [
     (
@@ -485,6 +483,7 @@ model_list = [
                 depth=64,
                 equivariant=False,
                 kernel_size=3,
+                padding_mode=padding_mode,
                 key=subkeys[0],
             ),
             "lr": 2e-3,
@@ -534,6 +533,7 @@ model_list = [
                 depth=128,
                 equivariant=False,
                 kernel_size=3,
+                padding_mode=padding_mode,
                 key=subkeys[3],
             ),
             "lr": 1e-3,
@@ -586,6 +586,7 @@ model_list = [
                 equivariant=False,
                 kernel_size=3,
                 use_group_norm=True,
+                padding_mode=padding_mode,
                 key=subkeys[6],
             ),
             "lr": 8e-4,
@@ -640,6 +641,7 @@ model_list = [
                 equivariant=False,
                 kernel_size=3,
                 use_batch_norm=True,
+                padding_mode=padding_mode,
                 key=subkeys[9],
             ),
             "lr": 8e-4,

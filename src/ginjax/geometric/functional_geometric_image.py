@@ -647,7 +647,7 @@ def times_group_element(
     sign, _ = jnp.linalg.slogdet(gg)
     parity_flip = sign**parity  # if parity=1, the flip operators don't flip the tensors
 
-    rotated_spatial_dims = tuple(np.abs(gg @ np.array(spatial_dims)))  # inverse gg?
+    rotated_spatial_dims = tuple(np.abs(gg @ np.array(spatial_dims)))
     rotated_keys = get_rotated_keys(D, spatial_dims, gg)
 
     # hash, then reshape keys

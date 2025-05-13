@@ -2,7 +2,7 @@ import time
 import argparse
 import functools
 import numpy as np
-from typing_extensions import Any, Callable, Optional, Union
+from typing_extensions import Callable, Optional
 
 import jax.numpy as jnp
 import jax
@@ -17,72 +17,106 @@ import ginjax.models as models
 import ginjax.utils as utils
 
 
-def f(coord: jax.Array, coeffs: jax.Array) -> jax.Array:
-    x, y = coord
-    # third_degree_poly = jnp.array([1, x, y, x**2, x * y, y**2, x**3, x**2 * y, x * y**2, y**3])
-    trig = jnp.array([jnp.sin(x), jnp.sin(y), jnp.cos(x), jnp.cos(y)])
-    trig_squared = jnp.concatenate(
-        [
-            trig**2,
-            jnp.array(
-                [
-                    jnp.sin(x) * jnp.cos(x),
-                    jnp.sin(y) * jnp.cos(y),
-                    jnp.sin(x) * jnp.cos(y),
-                    jnp.sin(y) * jnp.cos(x),
-                ]
-            ),
-        ]
-    )
-    library = jnp.concatenate([trig, trig_squared])  # 12 total
-    # mixed = jnp.einsum("i,j->ij", third_degree_poly, jnp.concatenate([trig, trig_squared]))
-    # library = jnp.concatenate([third_degree_poly, mixed.reshape(-1)])
+def f(p: jax.Array, coeffs: jax.Array) -> jax.Array:
+    """
+    Scalar function on the 2d torus at point p
+
+    args:
+        p: 2d array of x,y coordinates
+        coeffs: 2*D + (2*D choose 2) (=14 for D=2) coefficients to construct our function with
+    """
+    trig = jnp.concatenate([jnp.sin(p), jnp.cos(p)])
+    trig_squared = jnp.einsum("i,j->ij", trig, trig)[jnp.triu_indices(len(trig))]
+    library = jnp.concatenate([trig, trig_squared])  # 14 total
 
     return jnp.einsum("i,i->", library, coeffs)
 
 
-def metric_f(coords: jax.Array) -> jax.Array:
-    x, y = coords
+def metric_f(p: jax.Array) -> jax.Array:
+    """
+    Metric tensor at point p of the typical round metric on a sphere.
+
+    args:
+        p: the point on the surface
+
+    returns:
+        2D metric tensor g_ij
+    """
+    x, _ = p
     return jnp.array([[1, 0], [0, jnp.sin(x) ** 2]])
 
 
-def metric_inv_f(coords: jax.Array) -> jax.Array:
-    x, y = coords
+def metric_inv_f(p: jax.Array) -> jax.Array:
+    """
+    Inverse metric tensor at point p of the typical round metric on a sphere.
+
+    args:
+        p: the point on the surface
+
+    returns:
+        2D inverse metric tensor g^ij
+    """
+    x, _ = p
     return jnp.array([[1, 0], [0, 1 / jnp.sin(x) ** 2]])
 
 
-def christoffel_f(coords: jax.Array) -> jax.Array:
-    # new dimension is added at the end
-    metric_partial = jax.jacfwd(metric_f)(coords)
+def christoffel_f(p: jax.Array) -> jax.Array:
+    """
+    Christoffel symbols at point p on a surface with a metric tensor given by metric_f
+
+    args:
+        p: the point on the surface
+
+    returns:
+        Christoffel symbol Lambda^k_ij
+    """
+    metric_partial = jax.jacfwd(metric_f)(p)
     assert isinstance(metric_partial, jax.Array)
     metric_sum = (
         metric_partial.transpose(1, 2, 0) + metric_partial.transpose(2, 0, 1) - metric_partial
     )
-    metric_inv = metric_inv_f(coords)
+    metric_inv = metric_inv_f(p)
     return 0.5 * jnp.einsum("kl,ijl->kij", metric_inv, metric_sum)
 
 
-def covariant_derivative(coords: jax.Array, f: Callable) -> jax.Array:
+def covariant_derivative(p: jax.Array, f: Callable) -> jax.Array:
+    """
+    Calculate the covariant derivative at point p of function f
+
+    args:
+        p: the point on the surface
+        f: the scalar function defined on the surface
+
+    returns:
+        the covariant derivative of the gradient, (delta_f)_c;a
+    """
     # covariant derivative of a covariant vector, grad
     grad_f = jax.grad(f)
     hessian_f = jax.jacfwd(grad_f)
 
-    grad = grad_f(coords)
-    hessian = hessian_f(coords)
-    christoffel = christoffel_f(coords)
+    grad = grad_f(p)
+    hessian = hessian_f(p)
+    christoffel = christoffel_f(p)
     return hessian - jnp.einsum("bca,b->ca", christoffel, grad)
 
 
 def get_dataset(D: int, n_images: int, key: jax.Array) -> tuple[geom.MultiImage, geom.MultiImage]:
+    """
+    Calculate a dataset of scalar function -> gradient of the scalar function
+
+    args:
+        D: the dimension of the space
+        n_images: the number of images to generate
+        key: random key
+
+    returns:
+        input scalar image and output gradient image
+    """
     N = 16
-    spatial_dims = (N, 2 * N)
-    # 96 values, excluding the singularities
-    # theta_range = jnp.linspace(0, jnp.pi, num=spatial_dims[0] + 2)[1:-1]
-    # # 192 values
-    # phi_range = jnp.linspace(0, 2 * jnp.pi, num=spatial_dims[1])
+    spatial_dims = (N, N)
 
     # skip 0 because 0 and 2pi are equal
-    theta_range = jnp.linspace(0, jnp.pi, num=spatial_dims[0] + 1)[1:]
+    theta_range = jnp.linspace(0, 2 * jnp.pi, num=spatial_dims[0] + 1)[1:]
     phi_range = jnp.linspace(0, 2 * jnp.pi, num=spatial_dims[1] + 1)[1:]
 
     # avoid singularities at theta=0,pi,2pi
@@ -99,7 +133,7 @@ def get_dataset(D: int, n_images: int, key: jax.Array) -> tuple[geom.MultiImage,
     for _ in range(n_images):
         key, subkey = random.split(key)
         # 130 for full library
-        coeffs = random.normal(subkey, shape=(12,))  # hardcoded library size
+        coeffs = random.normal(subkey, shape=(14,))  # hardcoded library size
         f_partial = functools.partial(f, coeffs=coeffs)
         # could maybe start from grad instead of scalar?
         scalar_image = jax.vmap(f_partial)(grid_flattened).reshape((1, 1) + spatial_dims)
@@ -138,25 +172,25 @@ def get_dataset(D: int, n_images: int, key: jax.Array) -> tuple[geom.MultiImage,
     X = geom.MultiImage(
         {((), 0): scalar_images},
         D,
-        (False, True),
-        metric_tensor,
-        metric_tensor_inv,
-    )
-    Y = geom.MultiImage(
-        {((True, True), 0): covariant_deriv_images},
-        D,
-        (False, True),
-        metric_tensor,
-        metric_tensor_inv,
+        (True, True),
+        # metric_tensor,
+        # metric_tensor_inv,
     )
     # Y = geom.MultiImage(
-    #     {((True,), 0): grad_images},
+    #     {((True, True), 0): covariant_deriv_images},
     #     D,
-    #     (False, True),
-    #     # (False, True),
-    #     # metric_tensor,
-    #     # metric_tensor_inv,
+    #     (True, True),
+    #     metric_tensor,
+    #     metric_tensor_inv,
     # )
+    Y = geom.MultiImage(
+        {((True,), 0): grad_images},
+        D,
+        (True, True),
+        # (False, True),
+        # metric_tensor,
+        # metric_tensor_inv,
+    )
 
     return X, Y
 
@@ -368,26 +402,6 @@ model_list = [
             **train_kwargs,
         },
     ),
-    # (
-    #     "resnet_group_average",
-    #     train_and_eval,
-    #     {
-    #         "model": models.GroupAverage(
-    #             models.ResNet(
-    #                 D,
-    #                 input_keys,
-    #                 output_keys,
-    #                 depth=128,
-    #                 equivariant=False,
-    #                 kernel_size=3,
-    #                 key=subkeys[1],
-    #             ),
-    #             group_actions,
-    #         ),
-    #         "lr": 1e-3,
-    #         **train_kwargs,
-    #     },
-    # ),
     (
         "resnet_equiv_42",
         train_and_eval,
@@ -399,7 +413,6 @@ model_list = [
                 depth=42,
                 conv_filters=conv_filters,
                 use_group_norm=False,
-                # mid_keys=
                 key=subkeys[1],
             ),
             "lr": 7e-4,

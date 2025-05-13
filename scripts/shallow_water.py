@@ -431,7 +431,7 @@ def get_data(
         # val_div = (val_div - div_mean) / div_std
         # test_div = (test_div - div_mean) / div_std
 
-        uv_std = jnp.std(jnp.concatenate([train_uv, val_uv]))
+        uv_std = jnp.std(jnp.linalg.norm(jnp.concatenate([train_uv, val_uv]), axis=-1))
         train_uv = train_uv / uv_std
         val_uv = val_uv / uv_std
         test_uv = test_uv / uv_std

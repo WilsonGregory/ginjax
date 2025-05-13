@@ -1,6 +1,5 @@
 import time
 import itertools as it
-import numpy as np
 
 import ginjax.geometric as geom
 import pytest
@@ -1286,7 +1285,7 @@ class TestBatchMultiImage:
         channels = 3
 
         key = random.PRNGKey(0)
-        for D in [3]:
+        for D in [2, 3]:
             spatial_dims = (N, 2 * N, N - 2)[:D]
             multi_image = geom.MultiImage({}, D)
 

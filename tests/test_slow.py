@@ -3,7 +3,6 @@ import pytest
 import jax.numpy as jnp
 from jax import random
 import jax.lax
-from typing_extensions import Optional
 
 TINY = 1.0e-5
 

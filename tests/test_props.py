@@ -318,12 +318,6 @@ class TestPropositions:
         batch = 2
         channels = 3
 
-        vmap_times_gg = jax.vmap(
-            jax.vmap(geom.times_group_element, in_axes=(None, 0, None, None, None)),
-            in_axes=(None, 0, None, None, None),
-        )
-
-        prec = jax.lax.Precision.HIGHEST
         for D in [2, 3]:
             operators = geom.make_all_operators(D)
             for parity in [0, 1]:

@@ -33,21 +33,21 @@ def parse_shape(shape: tuple[int, ...], D: int) -> tuple[tuple[int, ...], int]:
     return shape[:D], len(shape) - D
 
 
-def hash(D: int, image: jax.Array, indices: ArrayLike) -> tuple[jax.Array, ...]:
+def hash(D: int, spatial_dims: tuple[int, ...], indices: ArrayLike) -> tuple[jax.Array, ...]:
     """
     Converts an array of indices to their pixels on the torus by modding the indices with the
     spatial dimensions.
 
     args:
         D: dimension of the image
-        image: image data
+        spatial_dims: the spatial dimensions of the data
         indices: array of indices, shape (num_idx, D) to apply the remainder to
 
     returns:
         the pixel indices as a d-tuple of jax arrays
     """
-    spatial_dims = jnp.array(parse_shape(image.shape, D)[0]).reshape((1, D))
-    return tuple(jnp.remainder(indices, spatial_dims).transpose().astype(int))
+    spatial_dims_array = jnp.array(spatial_dims).reshape((1, D))
+    return tuple(jnp.remainder(indices, spatial_dims_array).transpose().astype(int))
 
 
 def get_torus_expanded(
@@ -589,7 +589,7 @@ def raise_lower(
     return jnp.einsum(einstr, *tensor_inputs, precision=precision)
 
 
-def get_rotated_keys(D: int, data: jax.Array, gg: np.ndarray) -> np.ndarray:
+def get_rotated_keys(D: int, spatial_dims: tuple[int, ...], gg: np.ndarray) -> np.ndarray:
     """
     Get the rotated keys of data when it will be rotated by gg. Note that we rotate the key vector indices
     by the inverse of gg per the definition (this is done by key_array @ gg, rather than gg @ key_array).
@@ -598,22 +598,22 @@ def get_rotated_keys(D: int, data: jax.Array, gg: np.ndarray) -> np.ndarray:
 
     args:
         D: dimension of image
-        data: data array to be rotated
+        spatial_dims: the spatial dimensions of the data to be rotated
         gg: group operation
 
     returns:
         the rotated keys
     """
-    spatial_dims, _ = parse_shape(data.shape, D)
     rotated_spatial_dims = tuple(np.abs(gg @ np.array(spatial_dims)))
 
     # When spatial_dims is nonsquare, we have to subtract one version, then add the rotated version.
-    centering_coords = (np.array(rotated_spatial_dims).reshape((1, D)) - 1) / 2
-    rotated_centering_coords = np.abs(gg @ centering_coords.reshape((D, 1))).reshape((1, D))
+    centering_coords = (np.array(spatial_dims).reshape((1, D)) - 1) / 2
+    rot_centering_coords = (np.array(rotated_spatial_dims).reshape((1, D)) - 1) / 2
+
     # rotated keys will need to have the rotated_spatial_dims numbers
     key_array = np.array([key for key in it.product(*list(range(N) for N in rotated_spatial_dims))])
-    shifted_key_array = key_array - centering_coords
-    return np.rint((shifted_key_array @ gg) + rotated_centering_coords).astype(int)
+    shifted_key_array = key_array - rot_centering_coords
+    return np.rint((shifted_key_array @ gg) + centering_coords).astype(int)
 
 
 def times_group_element(
@@ -630,25 +630,31 @@ def times_group_element(
 
     args:
         D: dimension of the data
-        data: data block of image data to rotate, shape (spatial,tensor)
+        data: data block of image data to rotate, shape (batch,spatial,tensor)
         parity: parity of the data, 0 for even parity, 1 for odd parity
         gg: a DxD matrix that rotates the tensor. Note that you cannot vmap by this argument
             because it needs to deal with concrete values
-        covariant_axes: which axes of the tensor are covariant (True) or contravariant (False)
+        covariant_axes: which axes of the tensor are covariant (True) or contravariant (False).
+            Also specifies the number of tensor axes.
         precision: einsum precision, normally uses lower precision, use jax.lax.Precision.HIGHEST
             for testing equality in unit tests
 
     returns:
         the rotated image data
     """
-    spatial_dims, k = parse_shape(data.shape, D)
-    assert len(covariant_axes) == k, f"times_group_element: Must be {k} axes, got {covariant_axes}"
+    n_lead = data.ndim - D - len(covariant_axes)
+    spatial_dims, k = parse_shape(data.shape[n_lead:], D)
     sign, _ = jnp.linalg.slogdet(gg)
     parity_flip = sign**parity  # if parity=1, the flip operators don't flip the tensors
 
     rotated_spatial_dims = tuple(np.abs(gg @ np.array(spatial_dims)))
-    rotated_keys = get_rotated_keys(D, data, gg)
-    rotated_pixels = data[hash(D, data, rotated_keys)].reshape(rotated_spatial_dims + (D,) * k)
+    rotated_keys = get_rotated_keys(D, spatial_dims, gg)
+
+    # hash, then reshape keys
+    vmap_hash = jax.vmap(lambda x: x[hash(D, spatial_dims, rotated_keys)])
+    rotated_pixels = vmap_hash(data.reshape((-1,) + spatial_dims + (D,) * k)).reshape(
+        (data.shape[:n_lead] + rotated_spatial_dims + (D,) * k)
+    )
 
     if k == 0:
         newdata = 1.0 * rotated_pixels * parity_flip
@@ -667,6 +673,10 @@ def times_group_element(
         newdata = jnp.einsum(einstr, *tensor_inputs, precision=precision) * (parity_flip)
 
     return newdata
+
+
+def rotate_is_torus(is_torus: tuple[bool, ...], gg: np.ndarray) -> tuple[bool, ...]:
+    return tuple(is_torus[idx] for idx in np.abs(gg @ np.arange(len(is_torus))))
 
 
 def tensor_times_gg(

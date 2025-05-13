@@ -15,6 +15,7 @@ from ginjax.geometric.functional_geometric_image import (
     average_pool,
     norm,
     raise_lower,
+    rotate_is_torus,
     times_group_element,
 )
 from ginjax.geometric.geometric_image import GeometricImage, get_metric_inverse
@@ -755,17 +756,18 @@ class MultiImage:
         if self.metric_tensor_inv is not None:
             out.metric_tensor_inv = self.metric_tensor_inv.times_group_element(gg, precision)
 
-        vmap_rotate = jax.vmap(times_group_element, in_axes=(None, 0, None, None, None, None))
         for (k, parity), image_block in self.items():
-            rotated_img_block = vmap_rotate(
+            rotated_img_block = times_group_element(
                 self.D,
-                image_block.reshape((-1,) + self.get_spatial_dims() + (self.D,) * len(k)),
+                image_block,
                 parity,
                 gg,
                 k,
                 precision,
             )
-            out.append(k, parity, rotated_img_block.reshape(image_block.shape))
+            out.append(k, parity, rotated_img_block)
+
+        out.is_torus = rotate_is_torus(out.is_torus, gg)
 
         return out
 

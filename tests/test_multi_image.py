@@ -705,7 +705,6 @@ class TestMultiImage:
         N = 5
         channels = 3
 
-        vmap_times_gg = jax.vmap(geom.times_group_element, in_axes=(None, 0, None, None, None))
         key = random.PRNGKey(0)
         for D in [2, 3]:
             multi_image = geom.MultiImage({}, D)
@@ -725,8 +724,27 @@ class TestMultiImage:
                 rotated_multi_image = multi_image.times_group_element(gg)
 
                 for (k, parity), img_block in multi_image.items():
-                    rotated_block = vmap_times_gg(D, img_block, parity, gg, k)
+                    rotated_block = geom.times_group_element(D, img_block, parity, gg, k)
                     assert jnp.allclose(rotated_multi_image[(k, parity)], rotated_block)
+
+    def testTimesGroupElementSemiToroidal(self):
+        N = 5
+        channels = 3
+
+        # 2D
+        D = 2
+        ops = geom.make_all_operators(D)
+        multi_image1 = geom.MultiImage(
+            {((), 0): jnp.ones((channels,) + (N,) * D)}, D, (True, False)
+        )
+        assert multi_image1.times_gg_precise(ops[0]).is_torus == (True, False)  # id
+        assert multi_image1.times_gg_precise(ops[1]).is_torus == (True, False)  # flip y
+        assert multi_image1.times_gg_precise(ops[2]).is_torus == (True, False)  # flip x
+        assert multi_image1.times_gg_precise(ops[3]).is_torus == (True, False)  # flip x and y
+        assert multi_image1.times_gg_precise(ops[4]).is_torus == (False, True)  # rot 90 flip x
+        assert multi_image1.times_gg_precise(ops[5]).is_torus == (False, True)  # rot 90
+        assert multi_image1.times_gg_precise(ops[6]).is_torus == (False, True)  # rot 270
+        assert multi_image1.times_gg_precise(ops[7]).is_torus == (False, True)  # rot 90 flip y
 
     def testTimesGroupElementMetric(self):
         N = 5
@@ -1229,7 +1247,6 @@ class TestBatchMultiImage:
         batch = 4
         channels = 3
 
-        vmap_times_gg = jax.vmap(geom.times_group_element, in_axes=(None, 0, None, None, None))
         key = random.PRNGKey(0)
         for D in [2, 3]:
             spatial_dims = (N,) * D
@@ -1244,14 +1261,55 @@ class TestBatchMultiImage:
                         random.normal(subkey, shape=((batch, channels) + spatial_dims + (D,) * k)),
                     )
 
-            for gg in geom.make_all_operators(D):
+            operators = geom.make_all_operators(D)
+            for gg in operators:
+                rotated_multi_image = multi_image.times_gg_precise(gg)
+
+                for (k, parity), img_block in multi_image.items():
+                    rotated_block = geom.times_group_element(
+                        D,
+                        img_block,
+                        parity,
+                        gg,
+                        k,
+                        jax.lax.Precision.HIGHEST,
+                    )
+                    assert jnp.allclose(rotated_multi_image[(k, parity)], rotated_block)
+
+            for gg in operators:
+                assert multi_image.times_gg_precise(gg).times_gg_precise(gg.T) == multi_image
+
+    def testTimesGroupElementNonSquare(self):
+        N = 5
+        batch = 4
+        channels = 3
+
+        key = random.PRNGKey(0)
+        for D in [2, 3]:
+            spatial_dims = (N, 2 * N, N - 2)[:D]
+            multi_image = geom.MultiImage({}, D)
+
+            for parity in [0]:
+                for k in [0]:
+                    key, subkey = random.split(key)
+                    multi_image.append(
+                        k,
+                        parity,
+                        random.normal(subkey, shape=((batch, channels) + spatial_dims + (D,) * k)),
+                    )
+
+            # rotating multi image is same as rotating individual image
+            operators = geom.make_all_operators(D)
+            for gg in operators:
                 rotated_multi_image = multi_image.times_group_element(gg)
 
                 for (k, parity), img_block in multi_image.items():
-                    rotated_block = vmap_times_gg(
-                        D, img_block.reshape((-1,) + spatial_dims + (D,) * len(k)), parity, gg, k
-                    ).reshape(img_block.shape)
+                    rotated_block = geom.times_group_element(D, img_block, parity, gg, k)
                     assert jnp.allclose(rotated_multi_image[(k, parity)], rotated_block)
+
+            # rotating then inverse rotating is same as doing nothing
+            for gg in operators:
+                assert multi_image.times_gg_precise(gg).times_gg_precise(gg.T) == multi_image
 
     def testNorm(self):
         N = 5

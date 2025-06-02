@@ -71,7 +71,7 @@ To produce geometric images of smaller tensor order, the tensor contraction can 
 Convolution and contraction are combined into a single operation to form linear layers. 
 By restricting the convolution filters $C$ to rotation and reflection invariant filters, we can create linear layers which are rotation-, reflection-, and translation-equivariant.
 
-\[package name\] targets two main use cases:
+ginjax targets two main use cases:
 
 ## As a drop-in replacement for CNNs
 

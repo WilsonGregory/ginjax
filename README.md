@@ -18,6 +18,7 @@ See our readthedocs for <a href="https://ginjax.readthedocs.io/en/latest/">full 
 ## Table of Contents
 
 1. [Installation](#installation)
+    1. [Developer Installation](#developer-installation)
 2. [Features](#features)
     1. [GeometricImage](#geometricimage)
     2. [MultiImage](#multiimage)
@@ -26,12 +27,16 @@ See our readthedocs for <a href="https://ginjax.readthedocs.io/en/latest/">full 
 
 ## Installation
 
-- Install using pip: `pip install ginjax`.
-- Alternatively, you can install this repo as an editable install using pip.
-  - Clone the repository `git clone https://github.com/WilsonGregory/ginjax.git`
-  - Navigate to the ginjax directory `cd ginjax`
-  - Locally install the package `pip install -e .` (may have to use pip3 if your system has both python2 and python3 installed)
-  - In order to run JAX on a GPU, you will likely need to follow some additional steps detailed in https://github.com/google/jax#installation. You will probably need to know your CUDA version, which can be found with `nvidia-smi` and/or `nvcc --version`.
+Install using pip: `pip install ginjax`.
+
+### Developer Installation
+
+To work on this package, install the repo as an editable install by doing the following:
+- Clone the repository `git clone https://github.com/WilsonGregory/ginjax.git`
+- Navigate to the ginjax directory `cd ginjax`
+- Locally install the package `pip install -e .` (may have to use pip3 if your system has both python2 and python3 installed)
+- In order to run JAX on a GPU, you will likely need to follow some additional steps detailed in https://github.com/google/jax#installation. You will probably need to know your CUDA version, which can be found with `nvidia-smi` and/or `nvcc --version`.
+- In order to run the unit tests, install pytest `pip install pytest`. Then tests can be run by calling `pytest` from the package root directory.
 
 ## Features
 

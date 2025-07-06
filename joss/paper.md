@@ -71,17 +71,18 @@ To produce geometric images of smaller tensor order, the tensor contraction can 
 Convolution and contraction are combined into a single operation to form linear layers. 
 By restricting the convolution filters $C$ to rotation and reflection invariant filters, we can create linear layers which are rotation-, reflection-, and translation-equivariant.
 
-ginjax targets two main use cases:
+ginjax has two main target audiences:
 
-## As a drop-in replacement for CNNs
+## For machine learning practitioners
 
+The ginjax package can be used as a drop-in replacement for CNNs with minimal code changes required.
 We define equivariant versions for all the common CNN operations including convolutions, activation functions, group norms, pooling, and unpooling.
 Each of these layers require keeping track of the tensor order and parity of each geometric image, so we define a special data structure, the `MultiImage`, for these equivariant layers to operate on.
 We can then easily turn a non-equivariant CNN into an equivariant CNN by replacing the layers and converting the input to a `MultiImage`.
-For practitioners, we also provide full fledged model implementations such as the UNet, ResNet, and Dilated ResNet.
+We also provide full fledged model implementations such as the UNet, ResNet, and Dilated ResNet.
 
 This package is the only one implementing geometric convolutions, but there are alternative methods for solving $O(d)$-equivariant image problems.
-One such package is [escnn](https://github.com/QUVA-Lab/escnn) which uses Steerable CNNs [@cohen2016steerablecnns;@wweiler2021steerable].
+One such package is [escnn](https://github.com/QUVA-Lab/escnn) which uses Steerable CNNs [@cohen2016steerablecnns;@weiler2021steerable].
 Steerable CNNs use irreducible representations to derive a basis for $O(d)$-equivariant layers, but it is not straightforward to apply on higher order tensor images.
 
 Other alternative methods are those based on Clifford Algebras, in particular [@brandstetter2023clifford].
@@ -89,8 +90,8 @@ This method has been implemented in the [Clifford Layers](https://github.com/mic
 Clifford based methods can process vectors and pseudovectors, but cannot handle higher order tensors.
 Additionally, both these methods are built with pytorch, rather than `jax`.
 
-## For designing and understanding geometric images
-For equivariance researchers, we provide all the common operations on geometric images such as addition, scaling, convolution, contraction, transposition, norms, rotations, and reflections.
+## For equivariance researchers
+To allow researchers to explore the behavior of geometric images, we implement all the common operations such as addition, scaling, convolution, contraction, transposition, norms, rotations, and reflections.
 This makes it easy to generate group invariant images and experiment with equivariant functions.
 We also provide visualization methods to easily follow along the operations.
 

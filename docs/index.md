@@ -26,8 +26,15 @@ To work on this package, install the repo as an editable install by doing the fo
 ### GeometricImage
 
 The main concept of this package is an object called a `GeometricImage` which generalizes a normal image to include scalar images, vector images, or tensor images of any tensor order or parity.
-For example, suppose we have data of a 2 dimensional 3 by 3 vector image.
-We could construct the geometric image as follows: 
+For example, suppose we have a 16 by 16 vector image, that is a 2D image where every pixel is a vector in $\mathbb{R}^2$. 
+You can think of this as 16 x 16 x 2 numbers, but the key observation is that the components of the vector in each pixel are not independent, as would be the case of two channels of a scalar image.
+When you rotate a vector image 90 degrees to the right, the pixel locations rotate as well as the individual vectors in each pixel:
+<p float="left">
+  <img src="https://github.com/user-attachments/assets/1f6eadc4-8926-46ce-8c3e-e8b789aecddd" width="300" />
+  <img src="https://github.com/user-attachments/assets/4a4ad1c4-bee5-459f-bf7e-f014b4d9fbe0" width="300" /> 
+</p>
+
+To construct a geometric image in ginjax, do the following:
 ```python
 D = 2 # 2-dimensional image, we could also do 3D.
 # data, jax array of shape (3,3,2)

@@ -10,14 +10,19 @@ import jax.random as random
 import ginjax.geometric as geom
 ```
 
-First we construct our image. Suppose you have some data that forms a 3 by 3 vector image, so N=3, D=2, and k=1. Currently only D=2 or D=3 images are valid, and the side lengths must all be equal. The parity is how the image responds when it is reflected. Normal images have parity 0, an image of pseudovectors like angular velocity will have parity 1.
+First we construct our image. 
+Suppose you have some data that forms a 3 by 3 vector image.
+Thus the dimension D=2, the sidelength N=3, and the tensor order k=1 for a block of data N x N x D.
+Currently only D=2 or D=3 images are valid. 
+The parity is how the image responds when it is reflected. 
+Normal images have parity 0, an image of pseudovectors like angular velocity will have parity 1.
 ```
 key = random.PRNGKey(0)
 key, subkey = random.split(key)
 
-N = 3
-D = 2
-k = 1
+N = 3 # sidelength
+D = 2 # dimension
+k = 1 # tensor order
 parity = 0
 data = random.normal(subkey, shape=((N,)*D + (D,)*k))
 image = geom.GeometricImage(data, parity=0, D=2)

@@ -12,7 +12,7 @@
 The ginjax package implements the **G**eometric**I**mage**N**et in [jax](https://github.com/jax-ml/jax) (hence, ginjax) which allows for writing general functions from geometric images to geometric images. 
 Also, with an easy restriction to group invariant CNN filters, we can write CNNs that are equivariant to those groups for geometric images.
 
-See the paper for more details: https://royalsocietypublishing.org/doi/full/10.1098/rsta.2024.0247?af=R.
+See the paper for more details: [https://royalsocietypublishing.org/doi/full/10.1098/rsta.2024.0247?af=R](https://royalsocietypublishing.org/doi/full/10.1098/rsta.2024.0247?af=R).
 
 See our readthedocs for <a href="https://ginjax.readthedocs.io/en/latest/">full documentation</a>.
 

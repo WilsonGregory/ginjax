@@ -4,7 +4,7 @@
 
 This package implements the GeometricImageNet which allows for writing general functions from geometric images to geometric images. Also, with an easy restriction to group invariant CNN filters, we can write CNNs that are equivariant to those groups for geometric images.
 
-See the paper for more details: https://royalsocietypublishing.org/doi/full/10.1098/rsta.2024.0247?af=R.
+See the paper for more details: [https://royalsocietypublishing.org/doi/full/10.1098/rsta.2024.0247?af=R](https://royalsocietypublishing.org/doi/full/10.1098/rsta.2024.0247?af=R).
 
 This is the documentation for the package [https://github.com/WilsonGregory/ginjax](https://github.com/WilsonGregory/ginjax)
 

@@ -3,8 +3,7 @@ This page is intended to be a brief introduction to the mathematics behind this 
 Let $G$ be a group with an action on vector spaces $X$ and $Y$. 
 Let $f$ be a function from $X$ to $Y$. 
 Then we say $f$ is $G$-equivariant if for all $g \in G$, $x \in X$, we have $f(g \cdot x) = g \cdot f(x)$. 
-We will consider our group $G$ to be the _hyperoctahedral group_ of dimension $d$, denoted $G_{N,d}$. 
-This is the group of translations, rotations, and reflections of a $d$-dimensional hypercube. 
+We will consider our group $G$ to be $G_{N,d}$, the semidirect product of translations on the $d$-dimensional torus with sidelengh $N$ and rotations, and reflections of a $d$-dimensional hypercube. 
 This group will act on _geometric images_, that is images where every pixel is a scalar, vector, or higher order tensor. 
 
 Lets consider some examples of geometric images. 

@@ -49,6 +49,7 @@ Geometric images of a particular shape, tensor order, and parity form a vector s
 ```python
 # some other image using fill constructor
 image2 = geom.GeometricImage.fill(16, parity, D, fill=jnp.array([1,0])) 
+added_image = image + image2 # addition
 subtracted_image = image - image2 # subtraction
 scaled_image = image * 3 # scalar multiplication
 ```

@@ -55,8 +55,10 @@ When you rotate a vector image 90 degrees to the right, the pixel locations rota
 
 To construct a geometric image in ginjax, do the following:
 ```python
+import jax.numpy as jnp
+from ginjax.geometric import GeometricImage
 D = 2 # 2-dimensional image, we could also do 3D.
-# data, jax array of shape (16,16,2)
+data = jnp.arange(16*16*2).reshape((16,16,2))
 parity = 0 # even parity, its a vector image not a pseudovector image
 image = GeometricImage(data, parity, D)
 ```
@@ -64,6 +66,8 @@ Data is a jax numpy array with the shape spatial dimensions followed by `(D,)*k)
 When working with a metric that is not the flat Euclidean metric, you can define which tensor axes are contravariant (the default) or covariant.
 Geometric images of a particular shape, tensor order, and parity form a vector space so we have the usual operations of addition, subtraction, and scalar multiplication:
 ```python
+# some other image using fill constructor
+image2 = geom.GeometricImage.fill(16, parity, D, fill=jnp.array([1,0])) 
 added_image = image + image2 # addition
 subtracted_image = image - image2 # subtraction
 scaled_image = image * 3 # scalar multiplication

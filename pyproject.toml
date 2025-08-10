@@ -1,9 +1,11 @@
 [project]
 name = "ginjax"
-version = "0.1.5"
+version = "0.1.6"
 author = [
-    { name = "Wilson Gregory", email = "wilson.g.gregory@gmail.com"},
-    { name = "David Hogg"}
+    { name = "Wilson G. Gregory", email = "wilson.g.gregory@gmail.com" },
+    { name = "Kaze W. K. Wong" },
+    { name = "David W. Hogg" },
+    { name = "Soledad Villar" },
 ]
 license = { file = "LICENSE" }
 description = "Package for building Convolutional Neural Networks on images of tensors."

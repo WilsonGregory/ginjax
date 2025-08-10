@@ -27,7 +27,7 @@ affiliations:
    index: 1
  - name: Center for Cosmology and Particle Physics, Department of Physics, New York University, New York, NY, United States
    index: 2
- - name: Max-Planck-Institut f\"ur Astronomie, Heidelberg, Germany
+ - name: Max-Planck-Institut für Astronomie, Heidelberg, Germany
    index: 3
  - name: Center for Computational Astrophysics, Flatiron Institute, New York, NY, United States
    index: 4

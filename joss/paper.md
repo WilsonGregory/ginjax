@@ -14,27 +14,29 @@ authors:
     affiliation: 1 
   - name: Kaze W. K. Wong
     orcid: 0000-0001-8432-7788
-    affiliation: 1
+    affiliation: "1 2"
   - name: David W. Hogg
     orcid: 0000-0003-2866-9403
-    affiliation: "2, 3, 4"
+    affiliation: "3, 4, 5"
   - name: Soledad Villar
     orcid: 0000-0003-4968-3829
-    affiliation: "1, 5, 6"
+    affiliation: "1, 6, 7"
   
 affiliations:
  - name: Department of Applied Mathematics and Statistics, Johns Hopkins University, Baltimore, MD, United States
    index: 1
- - name: Center for Cosmology and Particle Physics, Department of Physics, New York University, New York, NY, United States
+ - name: Data Science and AI Institute, Johns Hopkins University, Baltimore, MD, United States
    index: 2
- - name: Max-Planck-Institut für Astronomie, Heidelberg, Germany
+ - name: Center for Cosmology and Particle Physics, Department of Physics, New York University, New York, NY, United States
    index: 3
- - name: Center for Computational Astrophysics, Flatiron Institute, New York, NY, United States
+ - name: Max-Planck-Institut für Astronomie, Heidelberg, Germany
    index: 4
- - name: Center for Computational Mathematics, Flatiron Institute, New York, NY, United States
+ - name: Center for Computational Astrophysics, Flatiron Institute, New York, NY, United States
    index: 5
- - name: Mathematical Institute for Data Science, Johns Hopkins University, Baltimore, MD, United States
+ - name: Center for Computational Mathematics, Flatiron Institute, New York, NY, United States
    index: 6
+ - name: Mathematical Institute for Data Science, Johns Hopkins University, Baltimore, MD, United States
+   index: 7
  
 date: 25 March 2025
 bibliography: paper.bib

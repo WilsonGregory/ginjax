@@ -14,7 +14,7 @@ authors:
     affiliation: 1 
   - name: Kaze W. K. Wong
     orcid: 0000-0001-8432-7788
-    affiliation: "1 2"
+    affiliation: "1, 2"
   - name: David W. Hogg
     orcid: 0000-0003-2866-9403
     affiliation: "3, 4, 5"

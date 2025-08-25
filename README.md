@@ -6,6 +6,9 @@
 <a href="https://github.com/WilsonGregory/ginjax/blob/main/LICENSE">
 <img src="https://badgen.net/badge/License/MIT/blue" alt="doc"/>
 </a>
+<a style="border-width:0" href="https://doi.org/10.21105/joss.08129">
+  <img src="https://joss.theoj.org/papers/10.21105/joss.08129/status.svg" alt="DOI badge" >
+</a>
 
 **Equivariant geometric convolutions for machine learning on tensor images**
 
@@ -130,22 +133,33 @@ See [Math Background](https://ginjax.readthedocs.io/en/latest/math/) for more de
 - **David W. Hogg** (NYU) (MPIA) (Flatiron)
 - **Soledad Villar** (JHU)
 
-If you use this package in your own work, please cite the following:
+If you use this package in your own work, please cite one of the following:
 
 ```
 @article{doi:10.1098/rsta.2024.0247,
-author = {Gregory, Wilson G.  and Hogg, David W.  and Blum-Smith, Ben  and Arias, Maria Teresa  and Wong, Kaze W. K.  and Villar, Soledad },
-title = {Equivariant geometric convolutions for dynamical systems on vector and tensor images},
-journal = {Philosophical Transactions of the Royal Society A: Mathematical, Physical and Engineering Sciences},
-volume = {383},
-number = {2298},
-pages = {20240247},
-year = {2025},
-doi = {10.1098/rsta.2024.0247},
-
-URL = {https://royalsocietypublishing.org/doi/abs/10.1098/rsta.2024.0247},
-eprint = {https://royalsocietypublishing.org/doi/pdf/10.1098/rsta.2024.0247},
+    author = {Gregory, Wilson G.  and Hogg, David W.  and Blum-Smith, Ben  and Arias, Maria Teresa  and Wong, Kaze W. K.  and Villar, Soledad },
+    title = {Equivariant geometric convolutions for dynamical systems on vector and tensor images},
+    journal = {Philosophical Transactions of the Royal Society A: Mathematical, Physical and Engineering Sciences},
+    volume = {383},
+    number = {2298},
+    pages = {20240247},
+    year = {2025},
+    doi = {10.1098/rsta.2024.0247},
+    URL = {https://royalsocietypublishing.org/doi/abs/10.1098/rsta.2024.0247},
+    eprint = {https://royalsocietypublishing.org/doi/pdf/10.1098/rsta.2024.0247},
 }
+
+@article{doi:10.21105/joss.08129,
+    doi = {10.21105/joss.08129},
+    url = {https://doi.org/10.21105/joss.08129},
+    year = {2025},
+    publisher = {The Open Journal},
+    volume = {10},
+    number = {112},
+    pages = {8129},
+    author = {Gregory, Wilson G. and Wong, Kaze W. k. and Hogg, David W. and Villar, Soledad},
+    title = {ginjax: E(d)-Equivariant CNN for Tensor Images}, journal = {Journal of Open Source Software},
+} 
 ```
 
 ## License

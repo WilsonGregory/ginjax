@@ -63,7 +63,7 @@ The key features and use cases are summarized below.
 
 # Statement of need
 
-The geometric convolutions introduced in [@gregory2024ginet] are defined on geometric images – images where every pixel is a tensor.
+The geometric convolutions introduced in @gregory2024ginet are defined on geometric images – images where every pixel is a tensor.
 If $A$ is a geometric image of tensor order $k$ and $C$ is a geometric image of tensor order $k'$, then the value of $A$ convolved with $C$ at pixel $\bar\imath$ is given by:
 
 $$
@@ -75,8 +75,6 @@ The result is a geometric image of tensor order $k+k'$.
 To produce geometric images of smaller tensor order, a tensor contraction can be applied to each pixel. 
 Convolution and contraction are combined into a single operation to form linear layers. 
 By restricting the convolution filters $C$ to rotation and reflection invariant filters, we can create linear layers which are rotation-, reflection-, and translation-equivariant.
-
-ginjax has two main target audiences:
 
 ## For machine learning practitioners
 
@@ -90,7 +88,7 @@ This package is the only one implementing geometric convolutions, but there are 
 One such package is [escnn](https://github.com/QUVA-Lab/escnn) which uses Steerable CNNs [@cohen2016steerablecnns;@weiler2021steerable].
 Steerable CNNs use irreducible representations to derive a basis for $O(d)$-equivariant layers, but it is not straightforward to apply on higher-order tensor images.
 
-Other alternative methods are those based on Clifford Algebras, in particular [@brandstetter2023clifford].
+Other alternative methods are those based on Clifford Algebras, in particular @brandstetter2023clifford.
 This method has been implemented in the [Clifford Layers](https://github.com/microsoft/cliffordlayers) package.
 Clifford based methods can process vectors and pseudovectors, but cannot handle higher-order tensors.
 Additionally, both these methods are built with pytorch, rather than `jax`.

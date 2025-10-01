@@ -2,6 +2,7 @@ import itertools as it
 import functools
 import numpy as np
 import matplotlib.axes
+import matplotlib.colors
 from typing_extensions import Any, Callable, Generator, Optional, Self, Sequence, Union
 
 import jax
@@ -777,6 +778,7 @@ class GeometricImage:
         vmin: Optional[float] = None,
         vmax: Optional[float] = None,
         colorbar: bool = False,
+        cmap: matplotlib.colors.Colormap | str | None = None,
         vector_scaling: float = 0.5,
     ) -> None:
         """
@@ -791,6 +793,7 @@ class GeometricImage:
             vmin: min value to plot, everything below this is cut off. If none, will use actual min
             vmax: max value to plot, everything above this is cut off. If none, will use actual max
             colorbar: whether to plot a colorbar
+            cmap: a colormap or string for the pixel fill, scalars and vectors have their defaults
             vector_scaling: how much to scale the vectors
         """
         # plot functions should fail gracefully
@@ -836,6 +839,7 @@ class GeometricImage:
                 symbols=symbols,
                 vmin=vmin,
                 vmax=vmax,
+                cmap=cmap,
                 colorbar=colorbar,
             )
         elif self.k == 1:
@@ -850,6 +854,7 @@ class GeometricImage:
                 fill=fill,
                 vmin=vmin,
                 vmax=vmax,
+                cmap=cmap,
                 scaling=vector_scaling,
             )
         else:  # self.k == 2

@@ -136,7 +136,7 @@ def plot_scalars(
     symbols: bool = True,
     vmin: float = -2.0,
     vmax: float = 2.0,
-    cmap: Union[matplotlib.colors.Colormap, str] = "BrBG",
+    cmap: matplotlib.colors.Colormap | str | None = "BrBG",
     colorbar: bool = False,
 ) -> None:
     """
@@ -159,6 +159,9 @@ def plot_scalars(
     if boxes:
         plot_boxes(ax, xs, ys)
     if fill:
+        if cmap is None:
+            cmap = "BrBG"
+
         fill_boxes(ax, xs, ys, ws, vmin, vmax, cmap, colorbar=colorbar)
     if symbols:
         height = ax.get_window_extent().height
@@ -183,7 +186,7 @@ def plot_vectors(
     fill: bool = True,
     vmin: float = 0.0,
     vmax: float = 2.0,
-    cmap: Union[matplotlib.colors.Colormap, str] = "PuRd",
+    cmap: matplotlib.colors.Colormap | str | None = "PuRd",
     scaling: float = 0.33,
 ) -> None:
     """
@@ -204,6 +207,9 @@ def plot_vectors(
     if boxes:
         plot_boxes(ax, xs, ys)
     if fill:
+        if cmap is None:
+            cmap = "PuRd"
+
         fill_boxes(ax, xs, ys, np.linalg.norm(ws, axis=-1), vmin, vmax, cmap, alpha=0.25)
 
     normws = np.linalg.norm(ws, axis=1)

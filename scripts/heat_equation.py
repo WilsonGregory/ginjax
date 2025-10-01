@@ -343,20 +343,3 @@ results = ml.benchmark(
     wandb_project=args.wandb_project,
     wandb_entity=args.wandb_entity,
 )
-
-# T = 5
-# fig, axes = plt.subplots(1, T, figsize=(6 * T, 6 * 1))
-
-# for t in range(T):
-#     x_t = heat_step(D, x0, t, k)
-#     xt_img = geom.GeometricImage(x_t[0], 0, D, False)
-#     xt_img.plot(
-#         axes[t],
-#         f"t={t}, mean={jnp.mean(x_t[0]):.3e}",
-#         vmin=0,
-#         vmax=max_temp,
-#         colorbar=True,
-#         cmap="hot",
-#     )
-
-# plt.savefig(f"../images/heat_equation/sample.png")

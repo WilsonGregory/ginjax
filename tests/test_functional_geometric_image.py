@@ -147,6 +147,27 @@ class TestFunctionalGeometricImage:
             ),
         )
 
+    def testConvolve1D(self):
+        """
+        Test 1 Dimensional convolution.
+        """
+        N = 8
+        D = 1
+        in_c = 1
+        out_c = 1
+        batch = 1
+
+        img = jnp.array([2, 3, 5, 1, -2, 0, 7, 2]).reshape((batch, in_c, N))
+        ff = jnp.array([1, 2, 1]).reshape((out_c, in_c, 3))
+
+        # on the torus
+        out = geom.convolve(D, img, ff, is_torus=True).reshape(-1)
+        assert jnp.allclose(out, jnp.array([9, 13, 14, 5, -3, 5, 16, 13]))
+
+        # not on the torus
+        out = geom.convolve(D, img, ff, is_torus=False).reshape(-1)
+        assert jnp.allclose(out, jnp.array([7, 13, 14, 5, -3, 5, 16, 11]))
+
     def testConvolveContract2D(self):
         """
         Test that convolve_contract is the same as convolving, then contracting in 2D

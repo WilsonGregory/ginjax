@@ -115,6 +115,7 @@ def get_unique_invariant_filters(
     D: int,
     operators: Sequence[np.ndarray],
     scale: str = "normalize",
+    exclude_corners: bool = False,
 ) -> list[GeometricFilter]:
     """
     Use group averaging to generate all the unique invariant filters
@@ -127,6 +128,8 @@ def get_unique_invariant_filters(
         operators: array of operators of a group
         scale: option for scaling the values of the filters, 'normalize' (default) to make amplitudes of each
             tensor +/- 1. 'one' to set them all to 1.
+        exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
+            ensures that D=100 has the same number of filters as D=1. Defaults to False.
 
     returns:
         the unique invariant filters
@@ -182,6 +185,20 @@ def get_unique_invariant_filters(
     # now do k-dependent rectification:
     filters = [ff.rectify() for ff in filters]
 
+    if D > 1 and exclude_corners:
+        assert (M % 2) == 1  # currently can only handle odd filters for cornerless
+        m = (M - 1) // 2
+        meshgrid_dims = (jnp.arange(-m, m + 1),) * D
+        idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, D))
+        corner_idxs = jnp.sum(idxs != 0, axis=1) > 1  # central idxs have at most 1 nonzero
+
+        cornerless_filters = []
+        for ff in filters:
+            if jnp.allclose(ff.data.reshape((M**D, D**k))[corner_idxs, :], 0):
+                cornerless_filters.append(ff)
+
+        filters = cornerless_filters
+
     return filters
 
 
@@ -192,6 +209,7 @@ def get_invariant_filters_dict(
     D: int,
     operators: Sequence[np.ndarray],
     scale: str = "normalize",
+    exclude_corners: bool = False,
 ) -> tuple[dict[tuple[int, int, int, int], list[GeometricFilter]], dict[tuple[int, int], int]]:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and
@@ -206,6 +224,8 @@ def get_invariant_filters_dict(
         operators: array of operators of a group
         scale: option for scaling the values of the filters, 'normalize' (default) to make
             amplitudes of each tensor +/- 1. 'one' to set them all to 1.
+        exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
+            ensures that D=100 has the same number of filters as D=1. Defaults to False.
 
     returns:
         allfilters: a dictionary of filters of the specified D, M, k, and parity
@@ -220,7 +240,9 @@ def get_invariant_filters_dict(
         for k in ks:  # tensor order
             for parity in parities:  # parity
                 key = (D, M, k, parity)
-                allfilters[key] = get_unique_invariant_filters(M, k, parity, D, operators, scale)
+                allfilters[key] = get_unique_invariant_filters(
+                    M, k, parity, D, operators, scale, exclude_corners
+                )
                 n = len(allfilters[key])
                 if n > maxn[(D, M)]:
                     maxn[(D, M)] = n
@@ -240,6 +262,7 @@ def get_invariant_filters_list(
     D: int,
     operators: Sequence[np.ndarray],
     scale: str = "normalize",
+    exclude_corners: bool = False,
 ) -> list[GeometricFilter]:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and
@@ -253,11 +276,15 @@ def get_invariant_filters_list(
         operators: array of operators of a group
         scale: option for scaling the values of the filters, 'normalize' (default) to make
             amplitudes of each tensor +/- 1. 'one' to set them all to 1.
+        exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
+            ensures that D=100 has the same number of filters as D=1. Defaults to False.
 
     returns:
         a list of filters of the specified D, M, k, and parity
     """
-    allfilters, _ = get_invariant_filters_dict(Ms, ks, parities, D, operators, scale)
+    allfilters, _ = get_invariant_filters_dict(
+        Ms, ks, parities, D, operators, scale, exclude_corners
+    )
     return list(it.chain(*list(allfilters.values())))  # list of GeometricFilters
 
 
@@ -268,6 +295,7 @@ def get_invariant_filters(
     D: int,
     operators: Sequence[np.ndarray],
     scale: str = "normalize",
+    exclude_corners: bool = False,
 ) -> MultiImage:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and
@@ -281,11 +309,15 @@ def get_invariant_filters(
         operators: array of operators of a group
         scale: option for scaling the values of the filters, 'normalize' (default) to make
             amplitudes of each tensor +/- 1. 'one' to set them all to 1.
+        exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
+            ensures that D=100 has the same number of filters as D=1. Defaults to False.
 
     returns:
         the filter of the specified D, M, k, and parity as a MultiImage
     """
-    allfilters_list = get_invariant_filters_list(Ms, ks, parities, D, operators, scale)
+    allfilters_list = get_invariant_filters_list(
+        Ms, ks, parities, D, operators, scale, exclude_corners
+    )
     return MultiImage.from_images(allfilters_list)
 
 

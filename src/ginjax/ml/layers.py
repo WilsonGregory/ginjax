@@ -211,7 +211,7 @@ class ConvContract(eqx.Module):
                     # this may get set multiple times, bound could be different but not a huge issue?
                     self.bias[(out_k, out_p)] = random.uniform(
                         subkey2,
-                        shape=(out_c,) + (1,) * (self.D + len(out_k)),
+                        shape=(out_c,),
                         minval=-bound,
                         maxval=bound,
                     )
@@ -429,13 +429,16 @@ class ConvContract(eqx.Module):
         if self.use_bias:
             biased_x = x.empty()
             for (k, p), image in x.items():
+                broadcast_shape = (len(self.bias[(k, p)]),) + (1,) * (self.D + len(k))
                 if (k, p) == ((), 0) and (self.use_bias == "scalar" or self.use_bias == "auto"):
-                    biased_x.append(k, p, image + self.bias[(k, p)])
+                    biased_x.append(k, p, image + self.bias[(k, p)].reshape(broadcast_shape))
                 elif ((k, p) != ((), 0) and self.use_bias == "auto") or self.use_bias == "mean":
                     mean_image = jnp.mean(
                         image, axis=tuple(range(1, 1 + self.invariant_filters.D)), keepdims=True
                     )
-                    biased_x.append(k, p, image + mean_image * self.bias[(k, p)])
+                    biased_x.append(
+                        k, p, image + mean_image * self.bias[(k, p)].reshape(broadcast_shape)
+                    )
 
             return biased_x
         else:

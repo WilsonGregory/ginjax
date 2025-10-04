@@ -265,7 +265,7 @@ def convolve(
     returns:
         convolved_image, shape (batch,out_c,spatial,tensor)
     """
-    assert (D == 2) or (D == 3)
+    assert 1 <= D <= 4  # for now
     assert image.shape[1] == filter_image.shape[1], (
         f"Second axis (in_channels) for image and filter_image "
         f"must equal, but got image {image.shape} and filter {filter_image.shape}"
@@ -340,7 +340,7 @@ def convolve_ravel(
     returns:
         convolved_image, shape (batch,spatial,tensor*out_c)
     """
-    assert (D == 2) or (D == 3)
+    assert 1 <= D <= 4  # for now
     assert (isinstance(is_torus, tuple) and len(is_torus) == D) or isinstance(is_torus, bool), (
         "geom::convolve" f" is_torus must be bool or tuple of bools, but got {is_torus}"
     )
@@ -383,6 +383,9 @@ def convolve_ravel(
     else:
         padding_literal = padding
 
+    spatial_l = ("XYZT")[:D]
+    dimension_numbers = ("N" + spatial_l + "C", spatial_l + "IO", "N" + spatial_l + "C")
+
     assert (image.shape[-1] // filter_image.shape[-2]) == (image.shape[-1] / filter_image.shape[-2])
     channel_length = image.shape[-1] // filter_image.shape[-2]
 
@@ -394,7 +397,7 @@ def convolve_ravel(
         padding_literal,
         lhs_dilation=lhs_dilation,
         rhs_dilation=rhs_dilation,
-        dimension_numbers=(("NHWC", "HWIO", "NHWC") if D == 2 else ("NHWDC", "HWDIO", "NHWDC")),
+        dimension_numbers=dimension_numbers,
         feature_group_count=channel_length,  # each tensor component is treated separately
     )
     return convolved_array

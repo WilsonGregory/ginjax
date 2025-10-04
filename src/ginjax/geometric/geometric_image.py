@@ -987,6 +987,7 @@ class GeometricFilter(GeometricImage):
         vmin: Optional[float] = None,
         vmax: Optional[float] = None,
         colorbar: bool = False,
+        cmap: matplotlib.colors.Colormap | str | None = None,
         vector_scaling: float = 0.33,
     ) -> None:
         """
@@ -1013,7 +1014,7 @@ class GeometricFilter(GeometricImage):
             vmax = 3.0 if vmax is None else vmax
 
         super(GeometricFilter, self).plot(
-            ax, title, boxes, fill, symbols, vmin, vmax, colorbar, vector_scaling
+            ax, title, boxes, fill, symbols, vmin, vmax, colorbar, cmap, vector_scaling
         )
 
 

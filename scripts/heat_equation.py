@@ -136,10 +136,11 @@ def get_data(
 class TwoLayerModel(models.MultiImageModule):
     layers: list[models.ConvBlock]
 
-    D: int
-    input_keys: geom.Signature
-    target_keys: geom.Signature
-    depth: int
+    D: int = eqx.field(static=True)
+    input_keys: geom.Signature = eqx.field(static=True)
+    target_keys: geom.Signature = eqx.field(static=True)
+    depth: int = eqx.field(static=True)
+    use_bias: bool | str = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -147,45 +148,91 @@ class TwoLayerModel(models.MultiImageModule):
         target_keys: geom.Signature,
         conv_filters: geom.MultiImage,
         depth: int,
+        use_bias: bool | str,
         key: jax.Array,
     ) -> None:
         self.D = conv_filters.D
         self.input_keys = input_keys
         self.target_keys = target_keys
         self.depth = depth
+        self.use_bias = use_bias
 
         mid_keys = geom.signature_union(input_keys, target_keys, depth)
 
         key, subkey1, subkey2 = random.split(key, num=3)
         self.layers = [
             models.ConvBlock(
-                D,
-                input_keys,
-                mid_keys,
-                "auto",
-                "gelu",
-                True,
-                conv_filters,
-                key=subkey1,
+                D, input_keys, mid_keys, use_bias, "gelu", True, conv_filters, key=subkey1
             ),
             models.ConvBlock(
-                D, mid_keys, target_keys, "auto", None, True, conv_filters, key=subkey2
+                D, mid_keys, target_keys, use_bias, None, True, conv_filters, key=subkey2
             ),
         ]
 
-    def convertD(self: Self, conv_filters: geom.MultiImage, key: jax.Array) -> Self:
-        new_model = self.__class__(self.input_keys, self.target_keys, conv_filters, self.depth, key)
+    @staticmethod
+    def _scale_weights(
+        weights: dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]],
+        old_filters: geom.MultiImage,
+        new_filters: geom.MultiImage,
+    ) -> dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]]:
+        new_weights = {}
 
-        # sets all the new weights equal to the old weights?
-        # this also resets the conv_filters
-        is_leaf = lambda n: eqx.is_array(n) or isinstance(n, geom.MultiImage)
-        get_weights = lambda m: jax.tree_util.tree_leaves(m, is_leaf)
-        old_weights = get_weights(self)
-        # we still want to use the new conv_filters, so set those back
-        # this wouldn't work if there are upsample filters as well
-        old_weights = [conv_filters if isinstance(x, geom.MultiImage) else x for x in old_weights]
+        for (in_k, in_p), in_weights in weights.items():
+            new_weights[(in_k, in_p)] = {}
+            for (out_k, out_p), old_weights_block in in_weights.items():
+                filter_key = ((False,) * (len(in_k) + len(out_k)), (in_p + out_p) % 2)
 
-        new_model = eqx.tree_at(get_weights, new_model, old_weights, is_leaf=is_leaf)
+                weights_mul = old_weights_block.reshape(
+                    old_weights_block.shape + (1,) * old_filters.D
+                )
+                old_weights_sum = jnp.sum(
+                    old_filters[filter_key][None, None] * weights_mul,
+                    axis=tuple(range(2, 3 + old_filters.D)),
+                )  # (out_c,in_c)
+
+                weights_mul = old_weights_block.reshape(
+                    old_weights_block.shape + (1,) * new_filters.D
+                )
+                new_weights_sum = jnp.sum(
+                    new_filters[filter_key][None, None] * weights_mul,
+                    axis=tuple(range(2, 3 + new_filters.D)),
+                )  # (out_c, in_c)
+
+                ratios = (old_weights_sum / new_weights_sum)[..., None]
+
+                new_weights[(in_k, in_p)][(out_k, out_p)] = old_weights_block * ratios
+
+        return new_weights
+
+    def convertD(
+        self: Self,
+        old_conv_filters: geom.MultiImage,
+        conv_filters: geom.MultiImage,
+        rescale: bool,
+        key: jax.Array,
+    ) -> Self:
+        new_model = self.__class__(
+            self.input_keys, self.target_keys, conv_filters, self.depth, self.use_bias, key
+        )
+        is_conv = lambda n: isinstance(n, ml.ConvContract)
+        get_weights = lambda m: [
+            x.weights for x in jax.tree_util.tree_leaves(m, is_leaf=is_conv) if is_conv(x)
+        ]
+        weights = get_weights(self)
+        if rescale:
+            new_weights = [
+                TwoLayerModel._scale_weights(weight, old_conv_filters, conv_filters)
+                for weight in weights
+            ]
+        else:
+            new_weights = weights
+
+        new_model = eqx.tree_at(get_weights, new_model, new_weights)
+
+        get_biases = lambda m: [
+            x.bias for x in jax.tree_util.tree_leaves(m, is_leaf=is_conv) if is_conv(x)
+        ]
+        new_model = eqx.tree_at(get_biases, new_model, get_biases(self))
 
         return new_model
 
@@ -217,6 +264,7 @@ def train_and_eval(
     model_name: str,
     model: models.MultiImageModule,
     lr: float,
+    conv_filters_d1: geom.MultiImage,
     conv_filters_d2: geom.MultiImage,
     conv_filters_d3: geom.MultiImage,
     batch_size: int,
@@ -313,7 +361,24 @@ def train_and_eval(
 
     assert isinstance(trained_model, TwoLayerModel)
     key, subkey = random.split(key)
-    trained_model_d2 = trained_model.convertD(conv_filters_d2, subkey)
+    trained_model_d2_unscaled = trained_model.convertD(
+        conv_filters_d1, conv_filters_d2, False, subkey
+    )
+
+    key, subkey = random.split(key)
+    test_loss_d2 = ml.map_loss_in_batches(
+        map_and_loss,
+        trained_model_d2_unscaled,
+        test_d2_X,
+        test_d2_Y,
+        batch_size,
+        subkey,
+        aux_data=batch_stats,
+    )
+    print(f"Test Loss D=2: {test_loss_d2}")
+
+    key, subkey = random.split(key)
+    trained_model_d2 = trained_model.convertD(conv_filters_d1, conv_filters_d2, True, subkey)
 
     key, subkey = random.split(key)
     test_loss_d2 = ml.map_loss_in_batches(
@@ -325,28 +390,34 @@ def train_and_eval(
         subkey,
         aux_data=batch_stats,
     )
-    print(f"Test Loss D=2: {test_loss_d2}")
+    print(f"Test Loss D=2 (rescaled): {test_loss_d2}")
 
-    key, subkey = random.split(key)
-    trained_model_d3 = trained_model.convertD(conv_filters_d3, subkey)
+    # key, subkey = random.split(key)
+    # trained_model_d3 = trained_model.convertD(conv_filters_d3, subkey)
 
-    key, subkey = random.split(key)
-    test_loss_d3 = ml.map_loss_in_batches(
-        map_and_loss,
-        trained_model_d3,
-        test_d3_X,
-        test_d3_Y,
-        batch_size,
-        subkey,
-        aux_data=batch_stats,
-    )
-    print(f"Test Loss D=3: {test_loss_d3}")
+    # key, subkey = random.split(key)
+    # test_loss_d3 = ml.map_loss_in_batches(
+    #     map_and_loss,
+    #     trained_model_d3,
+    #     test_d3_X,
+    #     test_d3_Y,
+    #     batch_size,
+    #     subkey,
+    #     aux_data=batch_stats,
+    # )
+    # print(f"Test Loss D=3: {test_loss_d3}")
+    test_loss_d3 = jnp.ones_like(test_loss_d2)
 
     if images_dir is not None:
         x0 = geom.GeometricImage(test_d2_X[(), 0][0, 0], 0, test_d2_X.D, test_d2_X.is_torus)
         xt = geom.GeometricImage(test_d2_Y[(), 0][0, 0], 0, test_d2_Y.D, test_d2_Y.is_torus)
 
-        xt_pred_multi_image, _ = trained_model(test_d2_X.get_one(keepdims=False), batch_stats)
+        if train_X.D == 2:
+            xt_pred_multi_image, _ = trained_model(test_d2_X.get_one(keepdims=False), batch_stats)
+        else:
+            xt_pred_multi_image, _ = trained_model_d2(
+                test_d2_X.get_one(keepdims=False), batch_stats
+            )
         xt_pred = geom.GeometricImage(
             xt_pred_multi_image[(), 0][0], 0, test_d2_Y.D, test_d2_Y.is_torus
         )
@@ -356,9 +427,11 @@ def train_and_eval(
         x0.plot(axes[0], "input", vmin=0, vmax=max_temp, colorbar=True, cmap="hot")
         xt.plot(axes[1], "truth", vmin=0, vmax=max_temp, colorbar=True, cmap="hot")
         xt_pred.plot(axes[2], "model prediction", vmin=0, vmax=max_temp, colorbar=True, cmap="hot")
-        (xt - xt_pred).plot(axes[3], "difference", colorbar=True)
+        diff = xt - xt_pred
+        diff_max = float(jnp.max(jnp.abs(diff.data)))
+        diff.plot(axes[3], "difference", vmin=-diff_max, vmax=diff_max, colorbar=True)
 
-        plt.savefig(f"../images/heat_equation/sample_model_D{test_d2_X.D}.png")
+        plt.savefig(f"{images_dir}/trained_D{train_X.D}_converted_D{test_d2_X.D}.png")
 
     return train_loss, val_loss, test_loss_d1, test_loss_d2, test_loss_d3
 
@@ -375,7 +448,7 @@ def handleArgs() -> argparse.Namespace:
 
 # MAIN
 args = handleArgs()
-D = 2
+D = 1
 N = 128
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
@@ -392,20 +465,39 @@ output_keys = data[1].get_signature()
 # start with basic 3x3 scalar, vector, and 2nd order tensor images
 group_actions_d1 = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(
-    Ms=[3], ks=[0], parities=[0], D=D, operators=group_actions_d1, exclude_corners=True
+    Ms=[3],
+    ks=[0],
+    parities=[0],
+    D=D,
+    operators=group_actions_d1,
+    scale="gaussian",
+    exclude_corners=True,
 )
 
 group_actions_d2 = geom.make_all_operators(2)
 conv_filters_d2 = geom.get_invariant_filters(
-    Ms=[3], ks=[0], parities=[0], D=2, operators=group_actions_d2, exclude_corners=True
+    Ms=[3],
+    ks=[0],
+    parities=[0],
+    D=2,
+    operators=group_actions_d2,
+    scale="gaussian",
+    exclude_corners=True,
 )
 
 group_actions_d3 = geom.make_all_operators(3)
 conv_filters_d3 = geom.get_invariant_filters(
-    Ms=[3], ks=[0], parities=[0], D=3, operators=group_actions_d3, exclude_corners=True
+    Ms=[3],
+    ks=[0],
+    parities=[0],
+    D=3,
+    operators=group_actions_d3,
+    scale="gaussian",
+    exclude_corners=True,
 )
 
 train_kwargs = {
+    "conv_filters_d1": conv_filters,
     "conv_filters_d2": conv_filters_d2,
     "conv_filters_d3": conv_filters_d3,
     "batch_size": args.batch,
@@ -423,13 +515,7 @@ model_list = [
         "two_layer",
         train_and_eval,
         {
-            "model": TwoLayerModel(
-                input_keys,
-                output_keys,
-                conv_filters,
-                10,
-                key=subkey,
-            ),
+            "model": TwoLayerModel(input_keys, output_keys, conv_filters, 10, "auto", key=subkey),
             "lr": 1e-2,
             **train_kwargs,
         },

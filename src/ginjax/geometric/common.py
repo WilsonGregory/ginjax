@@ -134,7 +134,7 @@ def get_unique_invariant_filters(
     returns:
         the unique invariant filters
     """
-    assert scale == "normalize" or scale == "one"
+    assert scale in {"normalize", "one", "gaussian"}
 
     # make the seed filters
     shape = (M,) * D + (D,) * k
@@ -175,15 +175,6 @@ def get_unique_invariant_filters(
 
     # order them
     filters = [GeometricFilter(aa.reshape(shape), parity, D) for aa in amps]
-    if scale == "normalize":
-        filters = [ff.normalize() for ff in filters]
-
-    norms = [ff.bigness() for ff in filters]
-    I = np.argsort(norms)
-    filters = [filters[i] for i in I]
-
-    # now do k-dependent rectification:
-    filters = [ff.rectify() for ff in filters]
 
     if D > 1 and exclude_corners:
         assert (M % 2) == 1  # currently can only handle odd filters for cornerless
@@ -198,6 +189,37 @@ def get_unique_invariant_filters(
                 cornerless_filters.append(ff)
 
         filters = cornerless_filters
+
+    if len(filters) > 0:
+        if scale == "normalize":
+            filters = [ff.normalize() for ff in filters]
+        elif scale == "gaussian":
+            filters = [ff.normalize() for ff in filters]  # first set the norms to 1
+            # scale according to the rbf kernel, or like a multivariate gaussian
+            assert (M % 2) == 1  # currently can only handle odd filters gaussian scaling
+            m = (M - 1) // 2
+            meshgrid_dims = (jnp.arange(-m, m + 1),) * D
+            idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, D))
+            dist_scaling = jnp.exp(-0.25 * (jnp.linalg.norm(idxs, axis=1) ** 2))
+            # I should maybe account for the fact that in k=2, some pixels have multiple filters
+            nonempty_pixels = jnp.any(
+                jnp.stack(
+                    [jnp.any(ff.data.reshape((M**D, D**k)) != 0, axis=1) for ff in filters], axis=1
+                ),
+                axis=1,
+            ).astype(int)
+            gaussian_sum = jnp.sum(dist_scaling * nonempty_pixels)
+            normalized_dist_scaling = GeometricFilter(
+                dist_scaling.reshape((M,) * D) / gaussian_sum, 0, D
+            )
+            filters = [ff * normalized_dist_scaling for ff in filters]
+
+    norms = [ff.bigness() for ff in filters]
+    I = np.argsort(norms)
+    filters = [filters[i] for i in I]
+
+    # now do k-dependent rectification:
+    filters = [ff.rectify() for ff in filters]
 
     return filters
 
@@ -231,7 +253,7 @@ def get_invariant_filters_dict(
         allfilters: a dictionary of filters of the specified D, M, k, and parity
         maxn: a dictionary that tracks the longest number of filters per key, for a particular D,M combo.
     """
-    assert scale == "normalize" or scale == "one"
+    assert scale in {"normalize", "one", "gaussian"}
 
     allfilters = {}
     maxn = {}

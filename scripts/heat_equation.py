@@ -3,6 +3,7 @@ import argparse
 import functools as ft
 import math
 import matplotlib.pyplot as plt
+import pathlib
 import time
 from typing_extensions import Self
 
@@ -44,7 +45,8 @@ def heat_step(D: int, x0: jax.Array, t: float, k: float, is_torus: bool) -> jax.
     # (spatial_size,D)
     idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, D))
     x1 = []
-    for idx in idxs:
+    for i, idx in enumerate(idxs):
+        print(f"{D},{batch}: {i}/{len(idxs)}")
         # (spatial_size,D)
         if is_torus:
             idxs_diff = jnp.abs(idxs - idx[None])
@@ -61,8 +63,72 @@ def heat_step(D: int, x0: jax.Array, t: float, k: float, is_torus: bool) -> jax.
     return jnp.stack(x1, axis=1).reshape(x0.shape)
 
 
+def get_data_d(
+    D: int,
+    N: int,
+    is_torus: bool,
+    k: float,
+    t: float,
+    max_temp: float,
+    batch: int,
+    key: jax.Array,
+    data_dir: pathlib.Path | None,
+    data_name: str,
+) -> tuple[geom.MultiImage, geom.MultiImage]:
+    """
+    Get an input, output data pair of heat diffusion after t timestep, diffusion coefficient k.
+    The initial data is uniform on the range 0 to max_temp.
+
+    args:
+        D: the dimension of the space
+        N: sidelength of a cube of data
+        is_torus: whether the data is on the torus
+        k: diffusion coefficient
+        t: size of timestep
+        max_temp: max temperature
+        batch: number of data points
+        key: key for randomness
+        data_dir: directory
+        data_name: name where to save the data
+
+    returns:
+        input multi image, output multi image
+    """
+    if data_dir is None:
+        raise ValueError
+
+    data_dir = (
+        data_dir
+        / f"{data_name}_N{N}_istorus{int(is_torus)}_n{batch}_k{k}_t{t}_maxtemp{max_temp}.npy"
+    )
+
+    if data_dir.is_file():
+        dataset = jnp.load(data_dir, allow_pickle=True).item()
+        x0 = dataset["x0"]
+        xt = dataset["xt"]
+    else:
+        key, subkey = random.split(key)
+        x0 = random.uniform(subkey, shape=(batch,) + (N,) * D, maxval=max_temp)
+        xt = heat_step(D, x0, t, k, is_torus)
+
+        print(f"saving at {data_dir}...")
+        jnp.save(data_dir, {"x0": x0, "xt": xt})
+
+    x0_img = geom.MultiImage({(0, 0): x0[:, None]}, D, is_torus)
+    xt_img = geom.MultiImage({(0, 0): xt[:, None]}, D, is_torus)
+
+    return x0_img, xt_img
+
+
 def get_data(
-    D: int, N: int, is_torus: bool, n_train: int, n_val: int, n_test: int, key: jax.Array
+    D: int,
+    N: int,
+    is_torus: bool,
+    n_train: int,
+    n_val: int,
+    n_test: int,
+    key: jax.Array,
+    data_dir: str | None,
 ) -> tuple[
     geom.MultiImage,
     geom.MultiImage,
@@ -90,46 +156,38 @@ def get_data(
         input multi image, output multi image
     """
     max_temp = 5
-    k = 1
+    k = 2
     t = 1
+    data_dir_path = pathlib.Path(data_dir) if data_dir is not None else None
 
-    key, subkey1, subkey2, subkey3 = random.split(key, num=4)
-    train_x0 = random.uniform(subkey1, shape=(n_train,) + (N,) * D, maxval=max_temp)
-    train_xt = heat_step(D, train_x0, t, k, is_torus)
-    val_x0 = random.uniform(subkey2, shape=(n_val,) + (N,) * D, maxval=max_temp)
-    val_xt = heat_step(D, val_x0, t, k, is_torus)
-    test_x0 = random.uniform(subkey3, shape=(n_test,) + (N,) * D, maxval=max_temp)
-    test_xt = heat_step(D, test_x0, t, k, is_torus)
-
-    test_d2_x0 = random.uniform(subkey3, shape=(n_test,) + (N,) * 2, maxval=max_temp)
-    test_d2_xt = heat_step(2, test_d2_x0, t, k, is_torus)
-    test_d3_x0 = random.uniform(subkey3, shape=(n_test,) + (N,) * 3, maxval=max_temp)
-    test_d3_xt = test_d3_x0  # its slow
-    # test_p2_xt = heat_step(3, test_d3_x0, t, k, is_torus)
-
-    train_x0_img = geom.MultiImage({(0, 0): train_x0[:, None]}, D, is_torus)
-    train_xt_img = geom.MultiImage({(0, 0): train_xt[:, None]}, D, is_torus)
-    val_x0_img = geom.MultiImage({(0, 0): val_x0[:, None]}, D, is_torus)
-    val_xt_img = geom.MultiImage({(0, 0): val_xt[:, None]}, D, is_torus)
-    test_x0_img = geom.MultiImage({(0, 0): test_x0[:, None]}, D, is_torus)
-    test_xt_img = geom.MultiImage({(0, 0): test_xt[:, None]}, D, is_torus)
-
-    test_d2_x0_img = geom.MultiImage({(0, 0): test_d2_x0[:, None]}, 2, is_torus)
-    test_d2_xt_img = geom.MultiImage({(0, 0): test_d2_xt[:, None]}, 2, is_torus)
-    test_d3_x0_img = geom.MultiImage({(0, 0): test_d3_x0[:, None]}, 3, is_torus)
-    test_d3_xt_img = geom.MultiImage({(0, 0): test_d3_xt[:, None]}, 3, is_torus)
+    key, subkey1, subkey2, subkey3, subkey4, subkey5 = random.split(key, num=6)
+    train_x0, train_xt = get_data_d(
+        D, N, is_torus, k, t, max_temp, n_train, subkey1, data_dir_path, f"train_D{D}"
+    )
+    val_x0, val_xt = get_data_d(
+        D, N, is_torus, k, t, max_temp, n_val, subkey2, data_dir_path, f"val_D{D}"
+    )
+    test_x0, test_xt = get_data_d(
+        D, N, is_torus, k, t, max_temp, n_test, subkey3, data_dir_path, f"test_D{D}"
+    )
+    test_d2_x0, test_d2_xt = get_data_d(
+        2, N, is_torus, k, t, max_temp, n_test, subkey4, data_dir_path, "test_d2"
+    )
+    test_d3_x0, test_d3_xt = get_data_d(
+        3, N, is_torus, k, t, max_temp, n_test, subkey5, data_dir_path, "test_d3"
+    )
 
     return (
-        train_x0_img,
-        train_xt_img,
-        val_x0_img,
-        val_xt_img,
-        test_x0_img,
-        test_xt_img,
-        test_d2_x0_img,
-        test_d2_xt_img,
-        test_d3_x0_img,
-        test_d3_xt_img,
+        train_x0,
+        train_xt,
+        val_x0,
+        val_xt,
+        test_x0,
+        test_xt,
+        test_d2_x0,
+        test_d2_xt,
+        test_d3_x0,
+        test_d3_xt,
     )
 
 
@@ -392,20 +450,38 @@ def train_and_eval(
     )
     print(f"Test Loss D=2 (rescaled): {test_loss_d2}")
 
-    # key, subkey = random.split(key)
-    # trained_model_d3 = trained_model.convertD(conv_filters_d3, subkey)
+    key, subkey = random.split(key)
+    trained_model_d3_unscaled = trained_model.convertD(
+        conv_filters_d1, conv_filters_d3, False, subkey
+    )
 
-    # key, subkey = random.split(key)
-    # test_loss_d3 = ml.map_loss_in_batches(
-    #     map_and_loss,
-    #     trained_model_d3,
-    #     test_d3_X,
-    #     test_d3_Y,
-    #     batch_size,
-    #     subkey,
-    #     aux_data=batch_stats,
-    # )
-    # print(f"Test Loss D=3: {test_loss_d3}")
+    key, subkey = random.split(key)
+    test_loss_d3 = ml.map_loss_in_batches(
+        map_and_loss,
+        trained_model_d3_unscaled,
+        test_d3_X,
+        test_d3_Y,
+        batch_size,
+        subkey,
+        aux_data=batch_stats,
+    )
+    print(f"Test Loss D=3: {test_loss_d3}")
+    test_loss_d3 = jnp.ones_like(test_loss_d2)
+
+    key, subkey = random.split(key)
+    trained_model_d3 = trained_model.convertD(conv_filters_d1, conv_filters_d3, True, subkey)
+
+    key, subkey = random.split(key)
+    test_loss_d3 = ml.map_loss_in_batches(
+        map_and_loss,
+        trained_model_d3,
+        test_d3_X,
+        test_d3_Y,
+        batch_size,
+        subkey,
+        aux_data=batch_stats,
+    )
+    print(f"Test Loss D=3 (rescaled): {test_loss_d3}")
     test_loss_d3 = jnp.ones_like(test_loss_d2)
 
     if images_dir is not None:
@@ -456,7 +532,7 @@ key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(
 key, subkey = random.split(key)
 print("Generating data...", end="", flush=True)
 t_start = time.time()
-data = get_data(D, N, True, args.n_train, args.n_val, args.n_test, subkey)
+data = get_data(D, N, True, args.n_train, args.n_val, args.n_test, subkey, args.data)
 print(f"done. ({time.time() - t_start:.2f}s)", flush=True)
 
 input_keys = data[0].get_signature()

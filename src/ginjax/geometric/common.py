@@ -134,7 +134,7 @@ def get_unique_invariant_filters(
     returns:
         the unique invariant filters
     """
-    assert scale in {"normalize", "one", "gaussian"}
+    assert scale in {"normalize", "one", "gaussian", "zero_sum"}
 
     # make the seed filters
     shape = (M,) * D + (D,) * k
@@ -174,7 +174,10 @@ def get_unique_invariant_filters(
     amps /= jnp.max(jnp.abs(amps), axis=1, keepdims=True)
 
     # order them
-    filters = [GeometricFilter(aa.reshape(shape), parity, D) for aa in amps]
+    filters = sorted([GeometricFilter(aa.reshape(shape), parity, D) for aa in amps])
+
+    # now do k-dependent rectification:
+    filters = [ff.rectify() for ff in filters]
 
     if D > 1 and exclude_corners:
         assert (M % 2) == 1  # currently can only handle odd filters for cornerless
@@ -196,15 +199,18 @@ def get_unique_invariant_filters(
         elif scale == "gaussian":
             filters = [ff.normalize() for ff in filters]  # first set the norms to 1
             # scale according to the rbf kernel, or like a multivariate gaussian
-            assert (M % 2) == 1  # currently can only handle odd filters gaussian scaling
-            m = (M - 1) // 2
-            meshgrid_dims = (jnp.arange(-m, m + 1),) * D
+            meshgrid_dims = tuple(jnp.arange(M1) for M1 in filters[0].image_shape())
             idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, D))
+            idxs -= jnp.array(filters[0].image_shape()) / 2
             dist_scaling = jnp.exp(-0.25 * (jnp.linalg.norm(idxs, axis=1) ** 2))
             # I should maybe account for the fact that in k=2, some pixels have multiple filters
             nonempty_pixels = jnp.any(
                 jnp.stack(
-                    [jnp.any(ff.data.reshape((M**D, D**k)) != 0, axis=1) for ff in filters], axis=1
+                    [
+                        jnp.any(~jnp.isclose(ff.data.reshape((M**D, D**k)), 0), axis=1)
+                        for ff in filters
+                    ],
+                    axis=1,
                 ),
                 axis=1,
             ).astype(int)
@@ -213,13 +219,36 @@ def get_unique_invariant_filters(
                 dist_scaling.reshape((M,) * D) / gaussian_sum, 0, D
             )
             filters = [ff * normalized_dist_scaling for ff in filters]
+        elif scale == "zero_sum":
+            filters = [ff.normalize() for ff in filters]  # first set the norms to 1
 
-    norms = [ff.bigness() for ff in filters]
-    I = np.argsort(norms)
-    filters = [filters[i] for i in I]
+            assert k < 2, f"zero_sum only currently valid for k equals 0 or 1, but got {k}"
 
-    # now do k-dependent rectification:
-    filters = [ff.rectify() for ff in filters]
+            # George's recommended scaling. Sum of the filters has to equal 0.
+
+            # vector filters already add up to 0
+            if k == 0:  # scalar
+                center_ff = filters[0] * -1
+
+                # (M**D,offcenter_filters)
+                nonempty_pixels = jnp.stack(
+                    [
+                        jnp.any(~jnp.isclose(ff.data.reshape((M**D, D**k)), 0), axis=1)
+                        for ff in filters[1:]
+                    ],
+                    axis=1,
+                )
+
+                pixel_sum = int(jnp.sum(nonempty_pixels))
+                offcenter_filters = [ff * (1 / pixel_sum) for ff in filters[1:]]
+
+                filters = [center_ff] + offcenter_filters
+
+            filter_sum = jnp.sum(
+                jnp.stack([ff.data.reshape((M**D,) + (D,) * ff.k) for ff in filters], axis=0),
+                axis=(0, 1),
+            )
+            assert jnp.allclose(filter_sum, 0, rtol=TINY, atol=TINY)
 
     return filters
 
@@ -253,7 +282,7 @@ def get_invariant_filters_dict(
         allfilters: a dictionary of filters of the specified D, M, k, and parity
         maxn: a dictionary that tracks the longest number of filters per key, for a particular D,M combo.
     """
-    assert scale in {"normalize", "one", "gaussian"}
+    assert scale in {"normalize", "one", "gaussian", "zero_sum"}
 
     allfilters = {}
     maxn = {}

@@ -234,6 +234,12 @@ class GeometricImage:
         plus_Ns = (0,) * self.D if (plus_Ns is None) else plus_Ns
         return tuple(N + plus_N for N, plus_N in zip(self.spatial_dims, plus_Ns))
 
+    def image_size(self: Self) -> int:
+        """
+        Return the total number of pixels in the image.
+        """
+        return functools.reduce(lambda c, v: c * v, self.image_shape(), 1)
+
     def pixel_shape(self: Self) -> tuple[int, ...]:
         """
         Return the shape of the data block that is the ktensor, aka the pixel of the image.
@@ -886,6 +892,7 @@ class GeometricImage:
         return cls(*children, **aux_data)
 
 
+@functools.total_ordering
 @register_pytree_node_class
 class GeometricFilter(GeometricImage):
     """
@@ -952,6 +959,55 @@ class GeometricFilter(GeometricImage):
 
         denominator = float(jnp.sum(norms))
         return numerator / denominator
+
+    def __lt__(self: Self, other: Self) -> bool:
+        """
+        Compare two GeometricFilters on "bigness". The resulting definition may be slightly
+        different, but I think its a better definition. The order of comparisons is D, image shape
+        in order, k, parity, distance of nonempty pixels from the center, and finally total pixel
+        norms.
+
+        args:
+            other: the other GeometricFilter to compare to this one
+
+        returns:
+            returns self < other
+        """
+        if self.D != other.D:
+            return self.D < other.D
+
+        if self.image_shape() != other.image_shape():
+            for N1, N2 in zip(self.image_shape(), other.image_shape()):
+                if N1 != N2:
+                    return N1 < N2
+
+        if self.k != other.k:
+            return self.k < other.k
+
+        if self.parity != other.parity:
+            return self.parity < other.parity
+
+        meshgrid_dims = tuple(jnp.arange(M) for M in self.image_shape())
+        idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, self.D))
+        idxs_centered = idxs - (jnp.array(self.image_shape()).reshape((-1, self.D)) / 2)
+
+        self_nonempty_pixels = jnp.any(
+            self.data.reshape((self.image_size(), self.pixel_size())) != 0, axis=1
+        )
+        self_nonempty_sum = float(
+            jnp.sum(jnp.linalg.norm(idxs_centered[self_nonempty_pixels], axis=1))
+        )
+
+        other_nonempty_pixels = jnp.any(
+            other.data.reshape((self.image_size(), self.pixel_size())) != 0, axis=1
+        )
+        other_nonempty_sum = float(
+            jnp.sum(jnp.linalg.norm(idxs_centered[other_nonempty_pixels], axis=1))
+        )
+        if self_nonempty_sum != other_nonempty_sum:
+            return self_nonempty_sum < other_nonempty_sum
+
+        return float(jnp.sum(self.norm().data)) < float(jnp.sum(other.norm().data))
 
     def rectify(self: Self) -> Self:
         """

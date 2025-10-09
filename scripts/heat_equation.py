@@ -149,8 +149,11 @@ def get_data(
         D: the dimension of the space
         N: sidelength of a cube of data
         is_torus: whether the data is on the torus
-        batch: number of data points
+        n_train: number of training data points
+        n_val: number of validation data points
+        ntest: number of test data points for each test dimension
         key: key for randomness
+        data_dir: location to save or load the data from
 
     returns:
         input multi image, output multi image
@@ -199,6 +202,7 @@ class TwoLayerModel(models.MultiImageModule):
     target_keys: geom.Signature = eqx.field(static=True)
     depth: int = eqx.field(static=True)
     use_bias: bool | str = eqx.field(static=True)
+    learn_residual: bool = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -207,6 +211,7 @@ class TwoLayerModel(models.MultiImageModule):
         conv_filters: geom.MultiImage,
         depth: int,
         use_bias: bool | str,
+        learn_residual: bool,
         key: jax.Array,
     ) -> None:
         self.D = conv_filters.D
@@ -214,6 +219,7 @@ class TwoLayerModel(models.MultiImageModule):
         self.target_keys = target_keys
         self.depth = depth
         self.use_bias = use_bias
+        self.learn_residual = learn_residual
 
         mid_keys = geom.signature_union(input_keys, target_keys, depth)
 
@@ -270,7 +276,13 @@ class TwoLayerModel(models.MultiImageModule):
         key: jax.Array,
     ) -> Self:
         new_model = self.__class__(
-            self.input_keys, self.target_keys, conv_filters, self.depth, self.use_bias, key
+            self.input_keys,
+            self.target_keys,
+            conv_filters,
+            self.depth,
+            self.use_bias,
+            self.learn_residual,
+            key,
         )
         is_conv = lambda n: isinstance(n, ml.ConvContract)
         get_weights = lambda m: [
@@ -297,10 +309,11 @@ class TwoLayerModel(models.MultiImageModule):
     def __call__(
         self: Self, x: geom.MultiImage, aux_data: eqx.nn.State | None = None
     ) -> tuple[geom.MultiImage, eqx.nn.State | None]:
+        in_x = x
         for layer in self.layers:
             x, aux_data = layer(x, aux_data)
 
-        return x, aux_data
+        return (in_x + x, aux_data) if self.learn_residual else (x, aux_data)
 
 
 @eqx.filter_jit
@@ -327,6 +340,7 @@ def train_and_eval(
     conv_filters_d3: geom.MultiImage,
     batch_size: int,
     epochs: int,
+    learn_residual: bool,
     save_model: str | None,
     load_model: str | None,
     images_dir: str | None,
@@ -505,15 +519,31 @@ def train_and_eval(
         xt_pred.plot(axes[2], "model prediction", vmin=0, vmax=max_temp, colorbar=True, cmap="hot")
         diff = xt - xt_pred
         diff_max = float(jnp.max(jnp.abs(diff.data)))
-        diff.plot(axes[3], "difference", vmin=-diff_max, vmax=diff_max, colorbar=True)
+        diff_l2 = jnp.mean(diff.data**2)
+        diff_rel_err = jnp.mean(jnp.abs(diff.data / xt.data)) * 100
+        diff.plot(
+            axes[3],
+            f"difference (l2: {diff_l2:.3e}, rel. err: {diff_rel_err:.2f}%)",
+            vmin=-diff_max,
+            vmax=diff_max,
+            colorbar=True,
+        )
 
-        plt.savefig(f"{images_dir}/trained_D{train_X.D}_converted_D{test_d2_X.D}.png")
+        plt.savefig(
+            f"{images_dir}/trained_D{train_X.D}_converted_D{test_d2_X.D}_residual{int(learn_residual)}.png"
+        )
 
     return train_loss, val_loss, test_loss_d1, test_loss_d2, test_loss_d3
 
 
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
+    parser.add_argument(
+        "--learn-residual",
+        help="whether to learn the residual vs. state at time t, default to True",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     # need do to --wandb to activate, also need --wandb-entity your_wandb_name_here
     parser.add_argument(
         "--wandb-project", help="the wandb project", type=str, default="heat-equation"
@@ -540,13 +570,14 @@ output_keys = data[1].get_signature()
 
 # start with basic 3x3 scalar, vector, and 2nd order tensor images
 group_actions_d1 = geom.make_all_operators(D)
+filter_scale = "zero_sum"
 conv_filters = geom.get_invariant_filters(
     Ms=[3],
     ks=[0],
     parities=[0],
     D=D,
     operators=group_actions_d1,
-    scale="gaussian",
+    scale=filter_scale,
     exclude_corners=True,
 )
 
@@ -557,7 +588,7 @@ conv_filters_d2 = geom.get_invariant_filters(
     parities=[0],
     D=2,
     operators=group_actions_d2,
-    scale="gaussian",
+    scale=filter_scale,
     exclude_corners=True,
 )
 
@@ -568,7 +599,7 @@ conv_filters_d3 = geom.get_invariant_filters(
     parities=[0],
     D=3,
     operators=group_actions_d3,
-    scale="gaussian",
+    scale=filter_scale,
     exclude_corners=True,
 )
 
@@ -578,6 +609,7 @@ train_kwargs = {
     "conv_filters_d3": conv_filters_d3,
     "batch_size": args.batch,
     "epochs": args.epochs,
+    "learn_residual": args.learn_residual,
     "save_model": args.save_model,
     "load_model": args.load_model,
     "images_dir": args.images_dir,
@@ -591,7 +623,9 @@ model_list = [
         "two_layer",
         train_and_eval,
         {
-            "model": TwoLayerModel(input_keys, output_keys, conv_filters, 10, "auto", key=subkey),
+            "model": TwoLayerModel(
+                input_keys, output_keys, conv_filters, 10, "auto", args.learn_residual, key=subkey
+            ),
             "lr": 1e-2,
             **train_kwargs,
         },

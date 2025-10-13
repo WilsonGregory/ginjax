@@ -254,8 +254,38 @@ class TwoLayerModel(models.MultiImageModule):
                     axis=tuple(range(2, 3 + old_filters.D)),
                 )  # (out_c,in_c)
 
-                weights_mul = old_weights_block.reshape(
-                    old_weights_block.shape + (1,) * new_filters.D
+                n_new_filters = len(new_filters[filter_key]) - len(old_filters[filter_key])
+                if n_new_filters > 0:
+                    if (len(filter_key[0]) % 2) == 0:  # scalar, 2-tensor, etc.
+                        offcenter_old_weights = old_weights_block[:, :, 1:]
+
+                        additional_weights = jnp.full(
+                            old_weights_block.shape[:2] + (n_new_filters,),
+                            jnp.mean(offcenter_old_weights, axis=2, keepdims=True),
+                        )
+
+                        new_weights_block = jnp.concatenate(
+                            [
+                                old_weights_block[:, :, :1],
+                                offcenter_old_weights,
+                                additional_weights,
+                            ],
+                            axis=2,
+                        )
+                    else:  # vector, 3-tensor, etc.
+                        additional_weights = jnp.full(
+                            old_weights_block.shape[:2] + (n_new_filters,),
+                            jnp.mean(old_weights_block, axis=2, keepdims=True),
+                        )
+
+                        new_weights_block = jnp.concatenate(
+                            [old_weights_block, additional_weights], axis=2
+                        )
+                else:
+                    new_weights_block = old_weights_block
+
+                weights_mul = new_weights_block.reshape(
+                    new_weights_block.shape + (1,) * new_filters.D
                 )
                 new_weights_sum = jnp.sum(
                     new_filters[filter_key][None, None] * weights_mul,
@@ -264,7 +294,7 @@ class TwoLayerModel(models.MultiImageModule):
 
                 ratios = (old_weights_sum / new_weights_sum)[..., None]
 
-                new_weights[(in_k, in_p)][(out_k, out_p)] = old_weights_block * ratios
+                new_weights[(in_k, in_p)][(out_k, out_p)] = new_weights_block * ratios
 
         return new_weights
 
@@ -432,22 +462,6 @@ def train_and_eval(
     print(f"Test Loss D=1: {test_loss_d1}")
 
     assert isinstance(trained_model, TwoLayerModel)
-    key, subkey = random.split(key)
-    trained_model_d2_unscaled = trained_model.convertD(
-        conv_filters_d1, conv_filters_d2, False, subkey
-    )
-
-    key, subkey = random.split(key)
-    test_loss_d2 = ml.map_loss_in_batches(
-        map_and_loss,
-        trained_model_d2_unscaled,
-        test_d2_X,
-        test_d2_Y,
-        batch_size,
-        subkey,
-        aux_data=batch_stats,
-    )
-    print(f"Test Loss D=2: {test_loss_d2}")
 
     key, subkey = random.split(key)
     trained_model_d2 = trained_model.convertD(conv_filters_d1, conv_filters_d2, True, subkey)
@@ -465,24 +479,6 @@ def train_and_eval(
     print(f"Test Loss D=2 (rescaled): {test_loss_d2}")
 
     key, subkey = random.split(key)
-    trained_model_d3_unscaled = trained_model.convertD(
-        conv_filters_d1, conv_filters_d3, False, subkey
-    )
-
-    key, subkey = random.split(key)
-    test_loss_d3 = ml.map_loss_in_batches(
-        map_and_loss,
-        trained_model_d3_unscaled,
-        test_d3_X,
-        test_d3_Y,
-        batch_size,
-        subkey,
-        aux_data=batch_stats,
-    )
-    print(f"Test Loss D=3: {test_loss_d3}")
-    test_loss_d3 = jnp.ones_like(test_loss_d2)
-
-    key, subkey = random.split(key)
     trained_model_d3 = trained_model.convertD(conv_filters_d1, conv_filters_d3, True, subkey)
 
     key, subkey = random.split(key)
@@ -496,7 +492,6 @@ def train_and_eval(
         aux_data=batch_stats,
     )
     print(f"Test Loss D=3 (rescaled): {test_loss_d3}")
-    test_loss_d3 = jnp.ones_like(test_loss_d2)
 
     if images_dir is not None:
         x0 = geom.GeometricImage(test_d2_X[(), 0][0, 0], 0, test_d2_X.D, test_d2_X.is_torus)
@@ -530,7 +525,7 @@ def train_and_eval(
         )
 
         plt.savefig(
-            f"{images_dir}/trained_D{train_X.D}_converted_D{test_d2_X.D}_residual{int(learn_residual)}.png"
+            f"{images_dir}/train_D{train_X.D}_test_D{test_d2_X.D}_residual{int(learn_residual)}_corners.png"
         )
 
     return train_loss, val_loss, test_loss_d1, test_loss_d2, test_loss_d3
@@ -571,6 +566,7 @@ output_keys = data[1].get_signature()
 # start with basic 3x3 scalar, vector, and 2nd order tensor images
 group_actions_d1 = geom.make_all_operators(D)
 filter_scale = "zero_sum"
+exclude_corners = False
 conv_filters = geom.get_invariant_filters(
     Ms=[3],
     ks=[0],
@@ -578,7 +574,7 @@ conv_filters = geom.get_invariant_filters(
     D=D,
     operators=group_actions_d1,
     scale=filter_scale,
-    exclude_corners=True,
+    exclude_corners=exclude_corners,
 )
 
 group_actions_d2 = geom.make_all_operators(2)
@@ -589,7 +585,7 @@ conv_filters_d2 = geom.get_invariant_filters(
     D=2,
     operators=group_actions_d2,
     scale=filter_scale,
-    exclude_corners=True,
+    exclude_corners=exclude_corners,
 )
 
 group_actions_d3 = geom.make_all_operators(3)
@@ -600,7 +596,7 @@ conv_filters_d3 = geom.get_invariant_filters(
     D=3,
     operators=group_actions_d3,
     scale=filter_scale,
-    exclude_corners=True,
+    exclude_corners=exclude_corners,
 )
 
 train_kwargs = {

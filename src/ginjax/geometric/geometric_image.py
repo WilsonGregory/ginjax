@@ -921,7 +921,7 @@ class GeometricFilter(GeometricImage):
                 but for a flat Euclidean metric these vectors are numerically identical, so we will
                 not enforce this.
         """
-        super(GeometricFilter, self).__init__(data, parity, D, is_torus, covariant_axes)
+        super().__init__(data, parity, D, is_torus, covariant_axes)
         assert (
             self.spatial_dims == (self.spatial_dims[0],) * self.D
         ), "GeometricFilter: Filters must be square."  # I could remove  this requirement in the future
@@ -960,6 +960,27 @@ class GeometricFilter(GeometricImage):
         denominator = float(jnp.sum(norms))
         return numerator / denominator
 
+    def nonempty_pixels(self: Self) -> jax.Array:
+        """
+        Get the nonempty pixels in shape (image_size,).
+        """
+        return jnp.any(
+            ~jnp.isclose(
+                self.data.reshape((self.image_size(), self.pixel_size())), 0.0, rtol=TINY, atol=TINY
+            ),
+            axis=1,
+        )
+
+    def nonempty_pixel_idxs(self: Self) -> jax.Array:
+        """
+        Get the nonempty pixels indices in shape (image_size,D)
+        """
+        meshgrid_dims = tuple(jnp.arange(M) for M in self.image_shape())
+        idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, self.D))
+        idxs_centered = idxs - (jnp.array(self.image_shape()).reshape((-1, self.D)) / 2)
+
+        return idxs_centered[self.nonempty_pixels()]
+
     def __lt__(self: Self, other: Self) -> bool:
         """
         Compare two GeometricFilters on "bigness". The resulting definition may be slightly
@@ -987,25 +1008,40 @@ class GeometricFilter(GeometricImage):
         if self.parity != other.parity:
             return self.parity < other.parity
 
-        meshgrid_dims = tuple(jnp.arange(M) for M in self.image_shape())
-        idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, self.D))
-        idxs_centered = idxs - (jnp.array(self.image_shape()).reshape((-1, self.D)) / 2)
+        self_nonempty_sum = float(jnp.sum(jnp.linalg.norm(self.nonempty_pixel_idxs(), axis=1)))
+        other_nonempty_sum = float(jnp.sum(jnp.linalg.norm(other.nonempty_pixel_idxs(), axis=1)))
 
-        self_nonempty_pixels = jnp.any(
-            self.data.reshape((self.image_size(), self.pixel_size())) != 0, axis=1
-        )
-        self_nonempty_sum = float(
-            jnp.sum(jnp.linalg.norm(idxs_centered[self_nonempty_pixels], axis=1))
-        )
-
-        other_nonempty_pixels = jnp.any(
-            other.data.reshape((self.image_size(), self.pixel_size())) != 0, axis=1
-        )
-        other_nonempty_sum = float(
-            jnp.sum(jnp.linalg.norm(idxs_centered[other_nonempty_pixels], axis=1))
-        )
         if self_nonempty_sum != other_nonempty_sum:
             return self_nonempty_sum < other_nonempty_sum
+
+        if self.D == 2 and self.k == 2:
+
+            self_pixels = self.data.reshape((-1, 2, 2))
+            self_trace = jnp.einsum("...ii", self_pixels) / self.D
+            self_trace_matrix = self_trace[:, None, None] * (jnp.eye(self.D)[None])
+            self_antisym = (self_pixels - jnp.transpose(self_pixels, (0, 2, 1))) / 2
+            self_sym = (self_pixels + jnp.transpose(self_pixels, (0, 2, 1))) / 2 - self_trace_matrix
+
+            other_pixels = other.data.reshape((-1, 2, 2))
+            other_trace = jnp.einsum("...ii", other_pixels) / other.D
+            other_trace_matrix = other_trace[:, None, None] * (jnp.eye(other.D)[None])
+            other_antisym = (other_pixels - jnp.transpose(other_pixels, (0, 2, 1))) / 2
+            other_sym = (
+                other_pixels + jnp.transpose(other_pixels, (0, 2, 1))
+            ) / 2 - other_trace_matrix
+
+            self_sym_total = float(jnp.sum(jnp.linalg.norm(self_sym[:, :, 0], axis=1)))
+            other_sym_total = float(jnp.sum(jnp.linalg.norm(other_sym[:, :, 0], axis=1)))
+            if self_sym_total != other_sym_total:
+                return self_sym_total < other_sym_total
+
+            if float(jnp.sum(self_antisym[:, 0, 1])) != float(jnp.sum(other_antisym[:, 0, 1])):
+                return float(jnp.sum(self_antisym[:, 0, 1])) < float(
+                    jnp.sum(other_antisym[:, 0, 1])
+                )
+
+            if float(jnp.sum(self_trace)) != float(jnp.sum(other_trace)):
+                return float(jnp.sum(self_trace)) < float(jnp.sum(other_trace))
 
         return float(jnp.sum(self.norm().data)) < float(jnp.sum(other.norm().data))
 
@@ -1069,9 +1105,7 @@ class GeometricFilter(GeometricImage):
             vmin = 0.0 if vmin is None else vmin
             vmax = 3.0 if vmax is None else vmax
 
-        super(GeometricFilter, self).plot(
-            ax, title, boxes, fill, symbols, vmin, vmax, colorbar, cmap, vector_scaling
-        )
+        super().plot(ax, title, boxes, fill, symbols, vmin, vmax, colorbar, cmap, vector_scaling)
 
 
 def get_kronecker_delta_image(N: int, D: int) -> GeometricImage:

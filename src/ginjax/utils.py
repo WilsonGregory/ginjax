@@ -1,10 +1,11 @@
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.axes
 import matplotlib.colors
 import matplotlib.figure
 from matplotlib.collections import PatchCollection
-from matplotlib.patches import Wedge
+from matplotlib.patches import Arrow, Circle, Wedge
 import argparse
 from typing_extensions import Any, Optional, Union
 
@@ -400,7 +401,12 @@ def plot_one_tensor(
 
 
 def plot_tensors(
-    ax: matplotlib.axes.Axes, xs: np.ndarray, ys: np.ndarray, ws: np.ndarray, boxes: bool = True
+    ax: matplotlib.axes.Axes,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    Ts: np.ndarray,
+    boxes: bool = True,
+    arrow_scaling: float = 0.33,
 ) -> None:
     """
     Plot a tensor image.
@@ -414,10 +420,48 @@ def plot_tensors(
     """
     if boxes:
         plot_boxes(ax, xs, ys)
-    for x, y, w in zip(xs, ys, ws):
-        normw = np.linalg.norm(w)
-        if normw > TINY:
-            plot_one_tensor(ax, x, y, w, zorder=100)
+
+    # untested for D=3
+    T_shape = Ts.shape[1:]
+    assert T_shape == (2, 2), f"Can only plot D=2 tensor images, got {T_shape} tensor."
+    Ts_trace = np.einsum("...ii", Ts) / 2
+    Ts_antisym = ((Ts - np.transpose(Ts, (0, 2, 1))) / 2)[:, 0, 1]
+    Ts_sym = ((Ts + np.transpose(Ts, (0, 2, 1))) / 2) - Ts_trace[:, None, None] * np.eye(
+        T_shape[0]
+    )[None]
+
+    # -3,3 is the scalar filters default
+    fill_boxes(ax, xs, ys, Ts_trace, -3.0, 3.0, cmap="BrBG")
+
+    patches = []
+    for x, y, T_trace, T_antisym, T_sym in zip(xs, ys, Ts_trace, Ts_antisym, Ts_sym):
+        if np.abs(T_antisym) > TINY:
+            patches.append(
+                Circle(
+                    (x, y),
+                    radius=0.25,
+                    color=matplotlib.colormaps["bwr"](T_antisym),
+                    zorder=0,
+                    alpha=0.25,
+                )
+            )
+
+        arrow_val = T_sym[:, 0]
+        arrow_norm = np.linalg.norm(arrow_val)
+        if arrow_norm > TINY:
+            patches.append(
+                Arrow(
+                    x - arrow_scaling * arrow_val[0],
+                    y - arrow_scaling * arrow_val[1],
+                    2 * arrow_scaling * arrow_val[0],
+                    2 * arrow_scaling * arrow_val[1],
+                    width=float(0.5 * arrow_norm),
+                    color="k",
+                    zorder=100,
+                )
+            )
+
+    ax.add_collection(PatchCollection(patches, match_original=True))
 
 
 def plot_nothing(ax: matplotlib.axes.Axes) -> None:

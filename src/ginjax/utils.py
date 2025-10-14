@@ -256,7 +256,11 @@ def plot_tensors(
 
     # untested for D=3
     T_shape = Ts.shape[1:]
-    assert T_shape == (2, 2), f"Can only plot D=2 tensor images, got {T_shape} tensor."
+
+    if T_shape != (2, 2):
+        print(f"plot_tensors: Can only plot D=2 tensor images, got {T_shape} tensor.")
+        return  # don't want plotting ever to break
+
     Ts_trace = np.einsum("...ii", Ts) / 2
     Ts_antisym = ((Ts - np.transpose(Ts, (0, 2, 1))) / 2)[:, 0, 1]
     Ts_sym = ((Ts + np.transpose(Ts, (0, 2, 1))) / 2) - Ts_trace[:, None, None] * np.eye(

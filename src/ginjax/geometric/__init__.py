@@ -12,6 +12,7 @@ from .functional_geometric_image import (
     parse_shape as parse_shape,
     raise_lower as raise_lower,
     rotate_is_torus as rotate_is_torus,
+    times_D8_element as times_D8_element,
     times_group_element as times_group_element,
     tensor_times_gg as tensor_times_gg,
 )
@@ -39,6 +40,7 @@ from .constants import (
 
 from .common import (
     make_all_operators as make_all_operators,
+    make_D8_group as make_D8_group,
     make_C2_group as make_C2_group,
     get_unique_invariant_filters as get_unique_invariant_filters,
     get_invariant_filters_dict as get_invariant_filters_dict,

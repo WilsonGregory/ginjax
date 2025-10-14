@@ -8,10 +8,10 @@ import jax.numpy as jnp
 import jax.lax
 import jax
 
-from ginjax.geometric.constants import TINY
+from ginjax.geometric.constants import TINY, LeviCivitaSymbol
 from ginjax.geometric.geometric_image import GeometricImage, GeometricFilter
 from ginjax.geometric.multi_image import MultiImage
-from ginjax.geometric.functional_geometric_image import times_group_element
+from ginjax.geometric.functional_geometric_image import times_group_element, times_D8_element
 
 # ------------------------------------------------------------------------------
 # PART 1: Make and test a complete group
@@ -66,6 +66,32 @@ def make_all_operators(D: int) -> list[np.ndarray]:
             )
         )
     )
+
+
+def make_D8_group(D: int) -> list[np.ndarray]:
+    """
+    Construct D_8, the Dihedral group with 16 elements, aka rotations of 45 degrees and flips.
+    In D=2 this is the symmetries of an octagon.
+    """
+    if D == 1:
+        return make_C2_group(D)
+    elif D == 2:
+        ggs = []
+        for i in range(8):
+            theta = 2 * jnp.pi * i / 8
+            ggs.append(
+                np.array([[jnp.cos(theta), -jnp.sin(theta)], [jnp.sin(theta), jnp.cos(theta)]])
+            )
+
+        for i in range(8):
+            theta = 2 * jnp.pi * i / 8
+            ggs.append(
+                np.array([[jnp.cos(theta), jnp.sin(theta)], [jnp.sin(theta), -jnp.cos(theta)]])
+            )
+
+        return ggs
+    else:
+        raise NotImplementedError
 
 
 def make_C2_group(D: int) -> list[np.ndarray]:
@@ -139,12 +165,45 @@ def get_unique_invariant_filters(
     # make the seed filters
     shape = (M,) * D + (D,) * k
 
-    basis = get_basis("image", shape)  # (N**D * D**k, (N,)*D, (D,)*k)
+    if k == 2 and D == 2:
+        # this specific basis is for the irreducibles of O(2), and is nicer for visualizing
+        # the basis elements of that one
+        levi_civita = LeviCivitaSymbol.get(D)
+        basis = []
+        for i in range(M):
+            for j in range(M):
+                # kronecker delta coefficient (trace)
+                elem = np.zeros((M,) * D + (D,) * k)
+                elem[i, j] = np.eye(D)
+                basis.append(elem)
+
+                # levi civita coefficient (antisymmetric matrix)
+                elem = np.zeros((M,) * D + (D,) * k)
+                elem[i, j] = levi_civita
+                basis.append(elem)
+
+                # symmetric traceless matrix, diagonal
+                elem = np.zeros((M,) * D + (D,) * k)
+                elem[i, j, 0, 0] = 1
+                elem[i, j, 1, 1] = -1
+                basis.append(elem)
+
+                # symmetric traceless matrix, off-diagonal
+                elem = np.zeros((M,) * D + (D,) * k)
+                elem[i, j, 0, 1] = 1
+                elem[i, j, 1, 0] = 1
+                basis.append(elem)
+
+        basis = jnp.stack(basis)
+    else:
+        basis = get_basis("image", shape)  # (N**D * D**k, (N,)*D, (D,)*k)
+
     # not a true vmap because we can't vmap over the operators, but equivalent (if slower)
     # covariant axes should maybe be true? For G = O(D), they are equivalent.
     vmap_times_group = lambda ff: jnp.stack(
         [
             times_group_element(D, ff, parity, gg, (False,) * k, jax.lax.Precision.HIGHEST)
+            # times_D8_element(D, ff, parity, gg, (False,) * k, jax.lax.Precision.HIGHEST)
             for gg in operators
         ]
     )
@@ -153,7 +212,13 @@ def get_unique_invariant_filters(
     filter_matrix = group_average(basis).reshape(len(basis), -1)
 
     # remove rows of all zeros
-    filter_matrix = filter_matrix[jnp.sum(jnp.abs(filter_matrix), axis=1) != 0.0]
+    filter_matrix = filter_matrix[
+        ~jnp.isclose(jnp.sum(jnp.abs(filter_matrix), axis=1), 0.0, rtol=TINY, atol=TINY)
+    ]
+    # Scale filters so that they all add up to 1
+    filter_matrix /= jnp.sum(jnp.abs(filter_matrix), axis=1, keepdims=True)
+    # D4 operators are only +/- 1, but D8 are fractions so tiny values distinct from 0 are there
+    filter_matrix = jnp.round(filter_matrix, 5)
     # get the leading signs of each row
     leading_signs = jnp.sign(
         filter_matrix[(jnp.arange(len(filter_matrix)), jnp.argmax(filter_matrix != 0, axis=1))]
@@ -194,6 +259,8 @@ def get_unique_invariant_filters(
         filters = cornerless_filters
 
     if len(filters) > 0:
+        if scale == "one":
+            filters = [ff * float(1 / jnp.max(jnp.abs(ff.data))) for ff in filters]
         if scale == "normalize":
             filters = [ff.normalize() for ff in filters]
         elif scale == "gaussian":

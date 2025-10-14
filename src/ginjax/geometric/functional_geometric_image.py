@@ -682,6 +682,79 @@ def rotate_is_torus(is_torus: tuple[bool, ...], gg: np.ndarray) -> tuple[bool, .
     return tuple(is_torus[idx] for idx in np.abs(gg @ np.arange(len(is_torus))))
 
 
+def times_D8_element(
+    D: int,
+    data: jax.Array,
+    parity: int,
+    gg: np.ndarray,
+    covariant_axes: tuple[bool, ...],
+    precision: Optional[jax.lax.Precision] = None,
+) -> jax.Array:
+    """
+    For the very limited case of a 3x3 GeometricImage, we define the group action of D8 as treating
+    the 8 pixels around the center pixel as if they were equally spaced radially around the center.
+
+    args:
+        D: dimension of the data
+        data: data block of image data to rotate, shape (batch,spatial,tensor)
+        parity: parity of the data, 0 for even parity, 1 for odd parity
+        gg: a DxD matrix that rotates the tensor. Note that you cannot vmap by this argument
+            because it needs to deal with concrete values
+        covariant_axes: which axes of the tensor are covariant (True) or contravariant (False).
+            Also specifies the number of tensor axes.
+        precision: einsum precision, normally uses lower precision, use jax.lax.Precision.HIGHEST
+            for testing equality in unit tests
+
+    returns:
+        the rotated image data
+    """
+    n_lead = data.ndim - D - len(covariant_axes)
+    spatial_dims, k = parse_shape(data.shape[n_lead:], D)
+    sign, _ = jnp.linalg.slogdet(gg)
+    parity_flip = sign**parity  # if parity=1, the flip operators don't flip the tensors
+
+    # this function is only defined for cubes with sidelength 3
+    assert spatial_dims == (3,) * D
+
+    centering_coords = (np.array(spatial_dims).reshape((1, D)) - 1) / 2
+
+    # (3**D,D)
+    key_array = np.array([key for key in it.product(*list(range(N) for N in spatial_dims))])
+    shifted_key_array = key_array - centering_coords
+    rotated_keys = shifted_key_array @ gg
+    # leave the all zeros center key alone, but scale the others so the max value is 1
+    rotated_keys = np.where(
+        np.all(np.isclose(rotated_keys, 0, atol=TINY, rtol=TINY), axis=1, keepdims=True),
+        np.zeros_like(rotated_keys),
+        rotated_keys / np.max(np.abs(rotated_keys) + 1e-5, axis=1, keepdims=True),
+    )
+    rotated_keys = np.rint(rotated_keys + centering_coords)
+
+    # hash, then reshape keys
+    vmap_hash = jax.vmap(lambda x: x[hash(D, spatial_dims, rotated_keys)])
+    rotated_pixels = vmap_hash(data.reshape((-1,) + spatial_dims + (D,) * k)).reshape(
+        (data.shape[:n_lead] + spatial_dims + (D,) * k)
+    )
+
+    if k == 0:
+        newdata = 1.0 * rotated_pixels * parity_flip
+    else:
+        # applying the rotation to tensors is essentially multiplying each index, which we can think of as a
+        # vector, by the group action. The image pixels have already been rotated.
+        einstr = f"...{LETTERS[:k]},"
+        einstr += ",".join(
+            [
+                LETTERS[i] + LETTERS[i + 13] if covariant else LETTERS[i + 13] + LETTERS[i]
+                for i, covariant in enumerate(covariant_axes)
+            ]
+        )
+        einstr += f"->...{LETTERS[13:13+k]}"
+        tensor_inputs = (rotated_pixels,) + tuple(gg.T if cov else gg for cov in covariant_axes)
+        newdata = jnp.einsum(einstr, *tensor_inputs, precision=precision) * (parity_flip)
+
+    return newdata
+
+
 def tensor_times_gg(
     tensor: jax.Array,
     parity: int,

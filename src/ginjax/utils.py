@@ -1,10 +1,11 @@
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.axes
 import matplotlib.colors
 import matplotlib.figure
 from matplotlib.collections import PatchCollection
-from matplotlib.patches import Wedge
+from matplotlib.patches import Arrow, Circle, Wedge
 import argparse
 from typing_extensions import Any, Optional, Union
 
@@ -232,175 +233,13 @@ def plot_vectors(
         )
 
 
-def plot_one_tensor(
-    ax: matplotlib.axes.Axes,
-    x: float,
-    y: float,
-    T: np.ndarray,
-    zorder: int = 0,
-    scaling: float = 0.33,
-) -> None:
-    """
-    Plot a tensor a particular coordinate on the axis.
-
-    args:
-        ax: the axis we are plotting on
-        x: the pixel x coordinate
-        y: the pixel y coordinate
-        T: the tensor
-        zorder: whether to put this plot in front or behind other plots
-        scaling: how much to scale the tensor
-    """
-    if np.abs(T[0, 0]) > TINY:
-        # plot a double-headed arrow
-        ax.arrow(
-            x - scaling,
-            y,
-            2 * scaling * np.abs(T[0, 0]),
-            0,
-            length_includes_head=True,
-            head_width=0.24 * scaling,
-            head_length=0.72 * scaling,
-            color="g" if T[0, 0] > TINY else "k",
-            zorder=zorder,
-        )
-        ax.arrow(
-            x + scaling,
-            y,
-            -2 * scaling * np.abs(T[0, 0]),
-            0,
-            length_includes_head=True,
-            head_width=0.24 * scaling,
-            head_length=0.72 * scaling,
-            color="g" if T[0, 0] > TINY else "k",
-            zorder=zorder,
-        )
-    if np.abs(T[1, 1]) > TINY:
-        # plot a double-headed arrow
-        ax.arrow(
-            x,
-            y - scaling,
-            0,
-            2 * scaling * np.abs(T[1, 1]),
-            length_includes_head=True,
-            head_width=0.24 * scaling,
-            head_length=0.72 * scaling,
-            color="g" if T[1, 1] > TINY else "k",
-            zorder=zorder,
-        )
-        ax.arrow(
-            x,
-            y + scaling,
-            0,
-            -2 * scaling * np.abs(T[1, 1]),
-            length_includes_head=True,
-            head_width=0.24 * scaling,
-            head_length=0.72 * scaling,
-            color="g" if T[1, 1] > TINY else "k",
-            zorder=zorder,
-        )
-
-    patches = []
-    # plot the petals
-    if T[0, 1] > TINY:
-        patches.append(
-            Wedge(
-                (x - 0.25, y - 0.25),
-                0.25 * np.abs(T[0, 1]),
-                45,
-                225,
-                color="b",
-                zorder=zorder,
-                alpha=0.25,
-            )
-        )
-        patches.append(
-            Wedge(
-                (x + 0.25, y + 0.25),
-                0.25 * np.abs(T[0, 1]),
-                -135,
-                45,
-                color="b",
-                zorder=zorder,
-                alpha=0.25,
-            )
-        )
-    if T[0, 1] < -TINY:
-        patches.append(
-            Wedge(
-                (x - 0.25, y + 0.25),
-                0.25 * np.abs(T[0, 1]),
-                135,
-                315,
-                color="b",
-                zorder=zorder,
-                alpha=0.25,
-            )
-        )
-        patches.append(
-            Wedge(
-                (x + 0.25, y - 0.25),
-                0.25 * np.abs(T[0, 1]),
-                -45,
-                135,
-                color="b",
-                zorder=zorder,
-                alpha=0.25,
-            )
-        )
-    if T[1, 0] > TINY:
-        patches.append(
-            Wedge(
-                (x - 0.25, y - 0.25),
-                0.25 * np.abs(T[1, 0]),
-                -135,
-                45,
-                color="b",
-                zorder=zorder,
-                alpha=0.25,
-            )
-        )
-        patches.append(
-            Wedge(
-                (x + 0.25, y + 0.25),
-                0.25 * np.abs(T[1, 0]),
-                45,
-                225,
-                color="b",
-                zorder=zorder,
-                alpha=0.25,
-            )
-        )
-    if T[1, 0] < -TINY:
-        patches.append(
-            Wedge(
-                (x - 0.25, y + 0.25),
-                0.25 * np.abs(T[1, 0]),
-                -45,
-                135,
-                color="b",
-                zorder=zorder,
-                alpha=0.25,
-            )
-        )
-        patches.append(
-            Wedge(
-                (x + 0.25, y - 0.25),
-                0.25 * np.abs(T[1, 0]),
-                135,
-                315,
-                color="b",
-                zorder=zorder,
-                alpha=0.25,
-            )
-        )
-
-    p = PatchCollection(patches, alpha=0.4)
-    ax.add_collection(p)
-
-
 def plot_tensors(
-    ax: matplotlib.axes.Axes, xs: np.ndarray, ys: np.ndarray, ws: np.ndarray, boxes: bool = True
+    ax: matplotlib.axes.Axes,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    Ts: np.ndarray,
+    boxes: bool = True,
+    arrow_scaling: float = 0.33,
 ) -> None:
     """
     Plot a tensor image.
@@ -414,10 +253,52 @@ def plot_tensors(
     """
     if boxes:
         plot_boxes(ax, xs, ys)
-    for x, y, w in zip(xs, ys, ws):
-        normw = np.linalg.norm(w)
-        if normw > TINY:
-            plot_one_tensor(ax, x, y, w, zorder=100)
+
+    # untested for D=3
+    T_shape = Ts.shape[1:]
+
+    if T_shape != (2, 2):
+        print(f"plot_tensors: Can only plot D=2 tensor images, got {T_shape} tensor.")
+        return  # don't want plotting ever to break
+
+    Ts_trace = np.einsum("...ii", Ts) / 2
+    Ts_antisym = ((Ts - np.transpose(Ts, (0, 2, 1))) / 2)[:, 0, 1]
+    Ts_sym = ((Ts + np.transpose(Ts, (0, 2, 1))) / 2) - Ts_trace[:, None, None] * np.eye(
+        T_shape[0]
+    )[None]
+
+    # -3,3 is the scalar filters default
+    fill_boxes(ax, xs, ys, Ts_trace, -3.0, 3.0, cmap="BrBG")
+
+    patches = []
+    for x, y, T_trace, T_antisym, T_sym in zip(xs, ys, Ts_trace, Ts_antisym, Ts_sym):
+        if np.abs(T_antisym) > TINY:
+            patches.append(
+                Circle(
+                    (x, y),
+                    radius=0.25,
+                    color=matplotlib.colormaps["bwr"](T_antisym),
+                    zorder=0,
+                    alpha=0.25,
+                )
+            )
+
+        arrow_val = T_sym[:, 0]
+        arrow_norm = np.linalg.norm(arrow_val)
+        if arrow_norm > TINY:
+            patches.append(
+                Arrow(
+                    x - arrow_scaling * arrow_val[0],
+                    y - arrow_scaling * arrow_val[1],
+                    2 * arrow_scaling * arrow_val[0],
+                    2 * arrow_scaling * arrow_val[1],
+                    width=float(0.5 * arrow_norm),
+                    color="k",
+                    zorder=100,
+                )
+            )
+
+    ax.add_collection(PatchCollection(patches, match_original=True))
 
 
 def plot_nothing(ax: matplotlib.axes.Axes) -> None:

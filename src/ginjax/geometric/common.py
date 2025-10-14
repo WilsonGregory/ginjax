@@ -215,16 +215,16 @@ def get_unique_invariant_filters(
     filter_matrix = filter_matrix[
         ~jnp.isclose(jnp.sum(jnp.abs(filter_matrix), axis=1), 0.0, rtol=TINY, atol=TINY)
     ]
+    # Scale filters so that they all add up to 1
+    filter_matrix /= jnp.sum(jnp.abs(filter_matrix), axis=1, keepdims=True)
+    # D4 operators are only +/- 1, but D8 are fractions so tiny values distinct from 0 are there
+    filter_matrix = jnp.round(filter_matrix, 5)
     # get the leading signs of each row
     leading_signs = jnp.sign(
         filter_matrix[(jnp.arange(len(filter_matrix)), jnp.argmax(filter_matrix != 0, axis=1))]
     )
     # set the leading signs to positive
     filter_matrix = filter_matrix * leading_signs[:, None]
-    # Scale filters so that they all add up to 1
-    filter_matrix /= jnp.sum(jnp.abs(filter_matrix), axis=1, keepdims=True)
-    # D4 operators are only +/- 1, but D8 are fractions so tiny values distinct from 0 are there
-    filter_matrix = jnp.round(filter_matrix, 5)
     # jax unique has issues (https://github.com/jax-ml/jax/issues/17370), do it with numpy
     amps = jnp.array(np.unique(np.array(filter_matrix), axis=0))
 

@@ -114,6 +114,104 @@ def make_C2_group(D: int) -> list[np.ndarray]:
 basis_cache = {}
 
 
+def get_k2_irrep_basis(M: int, k: int, D: int):
+    shape = (M,) * D + (D,) * k
+    actual_key = "k2_irrep_basis:" + str(shape)
+    if actual_key not in basis_cache:
+        if D == 1:
+            basis = jnp.eye(M**D).reshape((M**D,) + (M,) * D + (D,) * k)
+        elif D == 2:
+            # this specific basis is for the irreducibles of O(2), and is nicer for visualizing
+            # the basis elements of that one
+            levi_civita = LeviCivitaSymbol.get(D)
+            basis = []
+            for i in range(M):
+                for j in range(M):
+                    # kronecker delta coefficient (trace)
+                    elem = np.zeros((M,) * D + (D,) * k)
+                    elem[i, j] = np.eye(D)
+                    basis.append(elem)
+
+                    # levi civita coefficient (antisymmetric matrix)
+                    elem = np.zeros((M,) * D + (D,) * k)
+                    elem[i, j] = levi_civita
+                    basis.append(elem)
+
+                    # symmetric traceless matrix, diagonal
+                    elem = np.zeros((M,) * D + (D,) * k)
+                    elem[i, j, 0, 0] = 1
+                    elem[i, j, 1, 1] = -1
+                    basis.append(elem)
+
+                    # symmetric traceless matrix, off-diagonal
+                    elem = np.zeros((M,) * D + (D,) * k)
+                    elem[i, j, 0, 1] = 1
+                    elem[i, j, 1, 0] = 1
+                    basis.append(elem)
+
+            basis = jnp.stack(basis)
+        elif D == 3:
+            basis = []
+            for i in range(M):
+                for j in range(M):
+                    for l in range(M):
+                        # kronecker delta coefficient (trace)
+                        elem = np.zeros((M,) * D + (D,) * k)
+                        elem[i, j, l] = np.eye(D)
+                        basis.append(elem)
+
+                        # levi civita coefficient (antisymmetric matrix)
+                        elem = np.zeros((M,) * D + (D,) * k)
+                        elem[i, j, l, 0, 1] = 1
+                        elem[i, j, l, 1, 0] = -1
+                        basis.append(elem)
+
+                        elem = np.zeros((M,) * D + (D,) * k)
+                        elem[i, j, l, 0, 2] = 1
+                        elem[i, j, l, 2, 0] = -1
+                        basis.append(elem)
+
+                        elem = np.zeros((M,) * D + (D,) * k)
+                        elem[i, j, l, 1, 2] = 1
+                        elem[i, j, l, 2, 1] = -1
+                        basis.append(elem)
+
+                        # symmetric traceless matrix, diagonal
+                        elem = np.zeros((M,) * D + (D,) * k)
+                        elem[i, j, l, 0, 0] = 1
+                        elem[i, j, l, 2, 2] = -1
+                        basis.append(elem)
+
+                        elem = np.zeros((M,) * D + (D,) * k)
+                        elem[i, j, l, 1, 1] = 1
+                        elem[i, j, l, 2, 2] = -1
+                        basis.append(elem)
+
+                        # symmetric traceless matrix, off-diagonal
+                        elem = np.zeros((M,) * D + (D,) * k)
+                        elem[i, j, l, 0, 1] = 1
+                        elem[i, j, l, 1, 0] = 1
+                        basis.append(elem)
+
+                        elem = np.zeros((M,) * D + (D,) * k)
+                        elem[i, j, l, 0, 2] = 1
+                        elem[i, j, l, 2, 0] = 1
+                        basis.append(elem)
+
+                        elem = np.zeros((M,) * D + (D,) * k)
+                        elem[i, j, l, 1, 2] = 1
+                        elem[i, j, l, 2, 1] = 1
+                        basis.append(elem)
+
+            basis = jnp.stack(basis)
+        else:
+            raise NotImplementedError(f"k2_irrep_basis only implemented for D=2,3, but got D={D}")
+
+        basis_cache[actual_key] = basis
+
+    return basis_cache[actual_key]
+
+
 def get_basis(key: str, shape: tuple[int, ...]) -> jax.Array:
     """
     Return a basis for the given shape. Bases are cached so we only have to calculate them once. The
@@ -142,6 +240,7 @@ def get_unique_invariant_filters(
     operators: Sequence[np.ndarray],
     scale: str = "normalize",
     exclude_corners: bool = False,
+    k2_irreps_basis: bool = True,
 ) -> list[GeometricFilter]:
     """
     Use group averaging to generate all the unique invariant filters
@@ -156,6 +255,7 @@ def get_unique_invariant_filters(
             tensor +/- 1. 'one' to set them all to 1.
         exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
             ensures that D=100 has the same number of filters as D=1. Defaults to False.
+        k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
 
     returns:
         the unique invariant filters
@@ -165,38 +265,10 @@ def get_unique_invariant_filters(
     # make the seed filters
     shape = (M,) * D + (D,) * k
 
-    if k == 2 and D == 2:
-        # this specific basis is for the irreducibles of O(2), and is nicer for visualizing
-        # the basis elements of that one
-        levi_civita = LeviCivitaSymbol.get(D)
-        basis = []
-        for i in range(M):
-            for j in range(M):
-                # kronecker delta coefficient (trace)
-                elem = np.zeros((M,) * D + (D,) * k)
-                elem[i, j] = np.eye(D)
-                basis.append(elem)
-
-                # levi civita coefficient (antisymmetric matrix)
-                elem = np.zeros((M,) * D + (D,) * k)
-                elem[i, j] = levi_civita
-                basis.append(elem)
-
-                # symmetric traceless matrix, diagonal
-                elem = np.zeros((M,) * D + (D,) * k)
-                elem[i, j, 0, 0] = 1
-                elem[i, j, 1, 1] = -1
-                basis.append(elem)
-
-                # symmetric traceless matrix, off-diagonal
-                elem = np.zeros((M,) * D + (D,) * k)
-                elem[i, j, 0, 1] = 1
-                elem[i, j, 1, 0] = 1
-                basis.append(elem)
-
-        basis = jnp.stack(basis)
-    else:
-        basis = get_basis("image", shape)  # (N**D * D**k, (N,)*D, (D,)*k)
+    # (N**D * D**k, (N,)*D, (D,)*k)
+    basis = (
+        get_k2_irrep_basis(M, k, D) if (k == 2 and k2_irreps_basis) else get_basis("image", shape)
+    )
 
     # not a true vmap because we can't vmap over the operators, but equivalent (if slower)
     # covariant axes should maybe be true? For G = O(D), they are equivalent.
@@ -328,6 +400,7 @@ def get_invariant_filters_dict(
     operators: Sequence[np.ndarray],
     scale: str = "normalize",
     exclude_corners: bool = False,
+    k2_irreps_basis: bool = True,
 ) -> tuple[dict[tuple[int, int, int, int], list[GeometricFilter]], dict[tuple[int, int], int]]:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and
@@ -344,6 +417,7 @@ def get_invariant_filters_dict(
             amplitudes of each tensor +/- 1. 'one' to set them all to 1.
         exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
             ensures that D=100 has the same number of filters as D=1. Defaults to False.
+        k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
 
     returns:
         allfilters: a dictionary of filters of the specified D, M, k, and parity
@@ -359,7 +433,7 @@ def get_invariant_filters_dict(
             for parity in parities:  # parity
                 key = (D, M, k, parity)
                 allfilters[key] = get_unique_invariant_filters(
-                    M, k, parity, D, operators, scale, exclude_corners
+                    M, k, parity, D, operators, scale, exclude_corners, k2_irreps_basis
                 )
                 n = len(allfilters[key])
                 if n > maxn[(D, M)]:
@@ -381,6 +455,7 @@ def get_invariant_filters_list(
     operators: Sequence[np.ndarray],
     scale: str = "normalize",
     exclude_corners: bool = False,
+    k2_irreps_basis: bool = True,
 ) -> list[GeometricFilter]:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and
@@ -396,12 +471,13 @@ def get_invariant_filters_list(
             amplitudes of each tensor +/- 1. 'one' to set them all to 1.
         exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
             ensures that D=100 has the same number of filters as D=1. Defaults to False.
+        k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
 
     returns:
         a list of filters of the specified D, M, k, and parity
     """
     allfilters, _ = get_invariant_filters_dict(
-        Ms, ks, parities, D, operators, scale, exclude_corners
+        Ms, ks, parities, D, operators, scale, exclude_corners, k2_irreps_basis
     )
     return list(it.chain(*list(allfilters.values())))  # list of GeometricFilters
 
@@ -414,6 +490,7 @@ def get_invariant_filters(
     operators: Sequence[np.ndarray],
     scale: str = "normalize",
     exclude_corners: bool = False,
+    k2_irreps_basis: bool = True,
 ) -> MultiImage:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and
@@ -429,12 +506,13 @@ def get_invariant_filters(
             amplitudes of each tensor +/- 1. 'one' to set them all to 1.
         exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
             ensures that D=100 has the same number of filters as D=1. Defaults to False.
+        k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
 
     returns:
         the filter of the specified D, M, k, and parity as a MultiImage
     """
     allfilters_list = get_invariant_filters_list(
-        Ms, ks, parities, D, operators, scale, exclude_corners
+        Ms, ks, parities, D, operators, scale, exclude_corners, k2_irreps_basis
     )
     return MultiImage.from_images(allfilters_list)
 

@@ -194,7 +194,7 @@ def get_data(
     )
 
 
-class TwoLayerModel(models.MultiImageModule):
+class TwoLayerModel(models.AnyDimensionalModule):
     layers: list[models.ConvBlock]
 
     D: int = eqx.field(static=True)
@@ -233,78 +233,18 @@ class TwoLayerModel(models.MultiImageModule):
             ),
         ]
 
-    @staticmethod
-    def _scale_weights(
-        weights: dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]],
-        old_filters: geom.MultiImage,
-        new_filters: geom.MultiImage,
-    ) -> dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]]:
-        new_weights = {}
+    def convertD(self: Self, conv_filters: geom.MultiImage, rescale: bool, key: jax.Array) -> Self:
+        """
+        Construct a new model with filters in a higher dimension.
 
-        for (in_k, in_p), in_weights in weights.items():
-            new_weights[(in_k, in_p)] = {}
-            for (out_k, out_p), old_weights_block in in_weights.items():
-                filter_key = ((False,) * (len(in_k) + len(out_k)), (in_p + out_p) % 2)
+        args:
+            conv_filters: the new conv filters we are swapping to, probably in a higher dimension
+            rescale: whether to force the sum of the filters in the new dimension to be equal
+            key: key to initialize the weights, since they are overruled it won't matter
 
-                weights_mul = old_weights_block.reshape(
-                    old_weights_block.shape + (1,) * old_filters.D
-                )
-                old_weights_sum = jnp.sum(
-                    old_filters[filter_key][None, None] * weights_mul,
-                    axis=tuple(range(2, 3 + old_filters.D)),
-                )  # (out_c,in_c)
-
-                n_new_filters = len(new_filters[filter_key]) - len(old_filters[filter_key])
-                if n_new_filters > 0:
-                    if (len(filter_key[0]) % 2) == 0:  # scalar, 2-tensor, etc.
-                        offcenter_old_weights = old_weights_block[:, :, 1:]
-
-                        additional_weights = jnp.full(
-                            old_weights_block.shape[:2] + (n_new_filters,),
-                            jnp.mean(offcenter_old_weights, axis=2, keepdims=True),
-                        )
-
-                        new_weights_block = jnp.concatenate(
-                            [
-                                old_weights_block[:, :, :1],
-                                offcenter_old_weights,
-                                additional_weights,
-                            ],
-                            axis=2,
-                        )
-                    else:  # vector, 3-tensor, etc.
-                        additional_weights = jnp.full(
-                            old_weights_block.shape[:2] + (n_new_filters,),
-                            jnp.mean(old_weights_block, axis=2, keepdims=True),
-                        )
-
-                        new_weights_block = jnp.concatenate(
-                            [old_weights_block, additional_weights], axis=2
-                        )
-                else:
-                    new_weights_block = old_weights_block
-
-                weights_mul = new_weights_block.reshape(
-                    new_weights_block.shape + (1,) * new_filters.D
-                )
-                new_weights_sum = jnp.sum(
-                    new_filters[filter_key][None, None] * weights_mul,
-                    axis=tuple(range(2, 3 + new_filters.D)),
-                )  # (out_c, in_c)
-
-                ratios = (old_weights_sum / new_weights_sum)[..., None]
-
-                new_weights[(in_k, in_p)][(out_k, out_p)] = new_weights_block * ratios
-
-        return new_weights
-
-    def convertD(
-        self: Self,
-        old_conv_filters: geom.MultiImage,
-        conv_filters: geom.MultiImage,
-        rescale: bool,
-        key: jax.Array,
-    ) -> Self:
+        returns:
+            a new model with new filters but the old weights
+        """
         new_model = self.__class__(
             self.input_keys,
             self.target_keys,
@@ -314,27 +254,8 @@ class TwoLayerModel(models.MultiImageModule):
             self.learn_residual,
             key,
         )
-        is_conv = lambda n: isinstance(n, ml.ConvContract)
-        get_weights = lambda m: [
-            x.weights for x in jax.tree_util.tree_leaves(m, is_leaf=is_conv) if is_conv(x)
-        ]
-        weights = get_weights(self)
-        if rescale:
-            new_weights = [
-                TwoLayerModel._scale_weights(weight, old_conv_filters, conv_filters)
-                for weight in weights
-            ]
-        else:
-            new_weights = weights
 
-        new_model = eqx.tree_at(get_weights, new_model, new_weights)
-
-        get_biases = lambda m: [
-            x.bias for x in jax.tree_util.tree_leaves(m, is_leaf=is_conv) if is_conv(x)
-        ]
-        new_model = eqx.tree_at(get_biases, new_model, get_biases(self))
-
-        return new_model
+        return self.transfer_weights(new_model, rescale)
 
     def __call__(
         self: Self, x: geom.MultiImage, aux_data: eqx.nn.State | None = None
@@ -363,9 +284,8 @@ def train_and_eval(
     data: tuple[geom.MultiImage, ...],
     key: jax.Array,
     model_name: str,
-    model: models.MultiImageModule,
+    model: models.AnyDimensionalModule,
     lr: float,
-    conv_filters_d1: geom.MultiImage,
     conv_filters_d2: geom.MultiImage,
     conv_filters_d3: geom.MultiImage,
     batch_size: int,
@@ -461,10 +381,10 @@ def train_and_eval(
     )
     print(f"Test Loss D=1: {test_loss_d1}")
 
-    assert isinstance(trained_model, TwoLayerModel)
+    assert isinstance(trained_model, models.AnyDimensionalModule)
 
     key, subkey = random.split(key)
-    trained_model_d2 = trained_model.convertD(conv_filters_d1, conv_filters_d2, True, subkey)
+    trained_model_d2 = trained_model.convertD(conv_filters_d2, True, subkey)
 
     key, subkey = random.split(key)
     test_loss_d2 = ml.map_loss_in_batches(
@@ -479,7 +399,7 @@ def train_and_eval(
     print(f"Test Loss D=2 (rescaled): {test_loss_d2}")
 
     key, subkey = random.split(key)
-    trained_model_d3 = trained_model.convertD(conv_filters_d1, conv_filters_d3, True, subkey)
+    trained_model_d3 = trained_model.convertD(conv_filters_d3, True, subkey)
 
     key, subkey = random.split(key)
     test_loss_d3 = ml.map_loss_in_batches(
@@ -600,7 +520,6 @@ conv_filters_d3 = geom.get_invariant_filters(
 )
 
 train_kwargs = {
-    "conv_filters_d1": conv_filters,
     "conv_filters_d2": conv_filters_d2,
     "conv_filters_d3": conv_filters_d3,
     "batch_size": args.batch,

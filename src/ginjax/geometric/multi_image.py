@@ -344,8 +344,10 @@ class MultiImage:
 
         if len(k) > 0:  # light shape checking
             assert image_block.shape[-len(k) :] == (self.D,) * len(k)
-        if self.D == 1:
-            assert k == (), "MultiImage::append: 1D images can only have scalars and pseudoscalars"
+
+        # TODO: ensure that 1D vectors transform properly
+        # if self.D == 1:
+        #     assert k == (), "MultiImage::append: 1D images can only have scalars and pseudoscalars"
 
         if (k, parity) in self:
             self[(k, parity)] = jnp.concatenate((self[(k, parity)], image_block), axis=axis)

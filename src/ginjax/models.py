@@ -192,6 +192,165 @@ class MultiImageModule(eqx.Module):
         return x, aux_data
 
 
+class AnyDimensionalModel(MultiImageModule):
+    """
+    A MultiImage model that implements a convertD function that can convert to work on different
+    dimensional input. This also provides the helper functions transfer_weights to get this done.
+    """
+
+    @staticmethod
+    def _transfer_conv_weights(
+        weights: dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]],
+        old_filters: geom.MultiImage,
+        new_filters: geom.MultiImage,
+        rescale: bool,
+    ) -> dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]]:
+        """
+        Transfer the conv weights from old filters to new filters of possibly a different dimension.
+        If rescale is true, then scale the weights so that the sum of the filter basis of a particular
+        order scaled by the weights is equal for the old filters and the new.
+
+        args:
+            weights: a weights dictionary from a ml.ConvContract layer
+            old_filters: the old filters that the weights came from
+            new_filters: the new filters that we will be using the weights for
+            rescale: if True, ensure the linear combination of the filters by weights is equal
+
+        returns:
+            a new weights dictionary
+        """
+        new_weights = {}
+
+        for (in_k, in_p), in_weights in weights.items():
+            new_weights[(in_k, in_p)] = {}
+            for (out_k, out_p), old_weights_block in in_weights.items():
+                filter_key = ((False,) * (len(in_k) + len(out_k)), (in_p + out_p) % 2)
+
+                weights_mul = old_weights_block.reshape(
+                    old_weights_block.shape + (1,) * old_filters.D
+                )
+                old_weights_sum = jnp.sum(
+                    old_filters[filter_key][None, None] * weights_mul,
+                    axis=tuple(range(2, 3 + old_filters.D)),
+                )  # (out_c,in_c)
+
+                n_new_filters = len(new_filters[filter_key]) - len(old_filters[filter_key])
+                if n_new_filters > 0:
+                    if (len(filter_key[0]) % 2) == 0:  # scalar, 2-tensor, etc.
+                        offcenter_old_weights = old_weights_block[:, :, 1:]
+
+                        additional_weights = jnp.full(
+                            old_weights_block.shape[:2] + (n_new_filters,),
+                            jnp.mean(offcenter_old_weights, axis=2, keepdims=True),
+                        )
+
+                        new_weights_block = jnp.concatenate(
+                            [
+                                old_weights_block[:, :, :1],
+                                offcenter_old_weights,
+                                additional_weights,
+                            ],
+                            axis=2,
+                        )
+                    else:  # vector, 3-tensor, etc.
+                        additional_weights = jnp.full(
+                            old_weights_block.shape[:2] + (n_new_filters,),
+                            jnp.mean(old_weights_block, axis=2, keepdims=True),
+                        )
+
+                        new_weights_block = jnp.concatenate(
+                            [old_weights_block, additional_weights], axis=2
+                        )
+                else:
+                    new_weights_block = old_weights_block
+
+                weights_mul = new_weights_block.reshape(
+                    new_weights_block.shape + (1,) * new_filters.D
+                )
+                new_weights_sum = jnp.sum(
+                    new_filters[filter_key][None, None] * weights_mul,
+                    axis=tuple(range(2, 3 + new_filters.D)),
+                )  # (out_c, in_c)
+
+                if rescale:
+                    ratios = (old_weights_sum / new_weights_sum)[..., None]
+                else:
+                    ratios = jnp.ones_like(new_weights_block)
+
+                new_weights[(in_k, in_p)][(out_k, out_p)] = new_weights_block * ratios
+
+        return new_weights
+
+    def transfer_weights(self: Self, new_model: Self, rescale: bool) -> Self:
+        """
+        Transfer the weights and biases from an old model to a new model. This allows converting
+        between dimensions as well. This works by copying all jax arrays from the old model to the new
+        model, then resetting the new models conv filters to the new conv filters, then doing any
+        conv filter related weight scaling.
+
+        In the future, it may make sense for the updates to be defined on the individual layers, and
+        then the tree_at recursively calls those functions.
+
+        args:
+            old_model: the old model
+            new_model: the new model
+            old_conv_filters: the convolution filters used in the old model
+            conv_filters: the convolution filters to use in the new model, can have different D
+            rescale: rescale the conv weights if necessary to ensure the same sum. Depending on how
+                the filters are scaled, this may be always true anyways.
+
+        returns:
+            a new model with the old weights except conv weights which are adjusted, and new filters
+        """
+        # get the new filters
+        is_conv = lambda n: isinstance(n, ml.ConvContract)
+        get_filters = lambda m: [
+            x.invariant_filters for x in jax.tree_util.tree_leaves(m, is_leaf=is_conv) if is_conv(x)
+        ]
+        new_filters = get_filters(new_model)
+
+        # now replace all jax arrays
+        get_all_weights = lambda m: jax.tree_util.tree_leaves(m, is_leaf=eqx.is_array)
+        new_model = eqx.tree_at(get_all_weights, new_model, get_all_weights(self))
+
+        # now reset the proper conv filters
+        new_model = eqx.tree_at(get_filters, new_model, new_filters)
+
+        # now set the proper weights
+        get_conv_weights = lambda m: [
+            x.weights for x in jax.tree_util.tree_leaves(m, is_leaf=is_conv) if is_conv(x)
+        ]
+        conv_weights = get_conv_weights(self)
+        new_weights = [
+            self.__class__._transfer_conv_weights(weight, old_filter, new_filter, rescale)
+            for weight, old_filter, new_filter in zip(conv_weights, get_filters(self), new_filters)
+        ]
+        new_model = eqx.tree_at(get_conv_weights, new_model, new_weights)
+
+        return new_model
+
+    def convertD(
+        self: Self, conv_filters: geom.MultiImage, rescale: bool, key: jax.Array, **kwargs
+    ) -> Self:
+        """
+        Placeholder function, must be overwritten by the inheriting class.
+
+        Construct a new model with filters in a higher dimension. This only works for equivariant
+        models.
+
+        args:
+            conv_filters: the new conv filters we are swapping to, probably in a higher dimension
+            rescale: whether to force the sum of the filters in the new dimension to be equal
+            key: key to initialize the weights, since they are overruled it won't matter
+
+        returns:
+            a new model with new filters but the old weights
+        """
+        raise NotImplementedError(
+            f"AnyDimensionalModel::convertD: derived class {self.__class__} does not implement convertD."
+        )
+
+
 class ConvBlock(MultiImageModule):
     """
     A convolution block consisting of a convolution, a nonlinearity, and a GroupNorm/BatchNorm.
@@ -320,7 +479,7 @@ class ConvBlock(MultiImageModule):
         return x, batch_stats
 
 
-class UNet(MultiImageModule):
+class UNet(AnyDimensionalModel):
     """
     Implementation of the UNet: https://arxiv.org/abs/1505.04597.
     This model defaults to the equivariant version, but can also be the non-equivariant version.
@@ -333,8 +492,14 @@ class UNet(MultiImageModule):
 
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
+    use_bias: bool | str = eqx.field(static=True)
+    activation_f: Callable | str = eqx.field(static=True)
+    use_group_norm: bool = eqx.field(static=True)
     use_batch_norm: bool = eqx.field(static=True)
+    input_keys: geom.Signature = eqx.field(static=True)
     output_keys: geom.Signature = eqx.field(static=True)
+    mid_keys: geom.Signature = eqx.field(static=True)
+    padding_mode: str = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -363,7 +528,8 @@ class UNet(MultiImageModule):
             D: the dimension of the space
             input_keys: the MultiImage Signature for the input
             output_keys: the MultiImage Signature for the output
-            depth: the number of channelsat the highest level of the unet
+            depth: the number of channels at the highest level of the unet. This is overwritten if
+                mid_keys is provided
             num_downsamples: number of convolution blocks followed by a max pool
             num_conv: number of convolutions per level
             use_bias: whether to use a bias
@@ -380,6 +546,7 @@ class UNet(MultiImageModule):
         assert num_conv > 0
         assert key is not None
 
+        self.input_keys = input_keys
         self.output_keys = output_keys
         if equivariant:
             if mid_keys is None:
@@ -398,7 +565,12 @@ class UNet(MultiImageModule):
 
         self.D = D
         self.equivariant = equivariant
+        self.use_bias = use_bias
+        self.activation_f = activation_f
+        self.use_group_norm = use_group_norm
         self.use_batch_norm = use_batch_norm
+        self.mid_keys = mid_keys
+        self.padding_mode = padding_mode
 
         # embedding layers
         self.embedding = []
@@ -428,11 +600,11 @@ class UNet(MultiImageModule):
 
             for conv_idx in range(num_conv):
                 out_keys = geom.Signature(
-                    tuple((k_p, depth * (2**downsample)) for k_p, _ in mid_keys)
+                    tuple((k_p, _depth * (2**downsample)) for k_p, _depth in mid_keys)
                 )
                 if conv_idx == 0:
                     in_keys = geom.Signature(
-                        tuple((k_p, depth * (2 ** (downsample - 1))) for k_p, _ in mid_keys)
+                        tuple((k_p, _depth * (2 ** (downsample - 1))) for k_p, _depth in mid_keys)
                     )
                 else:
                     in_keys = out_keys
@@ -460,9 +632,11 @@ class UNet(MultiImageModule):
         self.upsample_blocks = []
         for upsample in reversed(range(num_downsamples)):
             in_keys = geom.Signature(
-                tuple((k_p, depth * (2 ** (upsample + 1))) for k_p, _ in mid_keys)
+                tuple((k_p, _depth * (2 ** (upsample + 1))) for k_p, _depth in mid_keys)
             )
-            out_keys = geom.Signature(tuple((k_p, depth * (2**upsample)) for k_p, _ in mid_keys))
+            out_keys = geom.Signature(
+                tuple((k_p, _depth * (2**upsample)) for k_p, _depth in mid_keys)
+            )
             key, subkey = random.split(key)
             # perform the transposed convolution. For non-equivariant, padding and stride should
             # instead be the padding and stride for the forward direction convolution.
@@ -495,11 +669,11 @@ class UNet(MultiImageModule):
 
             for conv_idx in range(num_conv):
                 out_keys = geom.Signature(
-                    tuple((k_p, depth * (2**upsample)) for k_p, _ in mid_keys)
+                    tuple((k_p, _depth * (2**upsample)) for k_p, _depth in mid_keys)
                 )
                 if conv_idx == 0:  # due to adding the residual layer back, in_c is doubled again
                     in_keys = geom.Signature(
-                        tuple((k_p, depth * (2 ** (upsample + 1))) for k_p, _ in mid_keys)
+                        tuple((k_p, _depth * (2 ** (upsample + 1))) for k_p, _depth in mid_keys)
                     )
                 else:
                     in_keys = out_keys
@@ -537,6 +711,50 @@ class UNet(MultiImageModule):
             padding_mode=padding_mode,
             key=subkey,
         )
+
+    def convertD(
+        self: Self,
+        conv_filters: geom.MultiImage,
+        rescale: bool,
+        key: jax.Array,
+        **kwargs,
+    ) -> Self:
+        """
+        Construct a new model with filters in a higher dimension. This only works for equivariant
+        models.
+
+        args:
+            old_conv_filters: the current conv filters for the model
+            conv_filters: the new conv filters we are swapping to, probably in a higher dimension
+            rescale: whether to force the sum of the filters in the new dimension to be equal
+            key: key to initialize the weights, since they are overruled it won't matter
+
+        returns:
+            a new model with new filters but the old weights
+        """
+        assert self.equivariant
+        assert "upsample_filters" in kwargs
+        new_model = self.__class__(
+            self.D,
+            self.input_keys,
+            self.output_keys,
+            0,  # ignored since mid_keys is provided
+            len(self.downsample_blocks),
+            len(self.embedding),
+            self.use_bias,
+            self.activation_f,
+            self.equivariant,
+            conv_filters,
+            kwargs["upsample_filters"],
+            0,  # ignored for equivariant model
+            self.use_group_norm,
+            self.use_batch_norm,
+            self.mid_keys,
+            self.padding_mode,
+            key,
+        )
+
+        return self.transfer_weights(new_model, rescale)
 
     def __call__(
         self: Self, x: geom.MultiImage, batch_stats: Optional[eqx.nn.State] = None

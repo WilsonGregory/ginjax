@@ -186,9 +186,6 @@ class TestGeometricImage:
         with pytest.raises(AssertionError):
             geom.GeometricImage(random.uniform(key, shape=(10, 10, 3, 3)), 0, 2)
 
-        with pytest.raises(AssertionError):
-            geom.GeometricImage(random.uniform(key, shape=(5, 1)), 0, 1)
-
         # too many covariant axes
         with pytest.raises(AssertionError):
             geom.GeometricImage(jnp.ones((5, 5, 2)), 0, 2, covariant_axes=(True, False))

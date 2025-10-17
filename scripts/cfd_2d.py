@@ -447,12 +447,13 @@ data = get_data(
 input_keys = data[0].get_signature()
 output_keys = data[1].get_signature()  # (((0, 0), 2), ((1, 0), 1))
 
+# use k2_irreps_basis=False for old checkpoints
 group_actions = geom.make_all_operators(D)
 conv_filters = geom.get_invariant_filters(
-    Ms=[3], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions
+    Ms=[3], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions, k2_irreps_basis=False
 )
 upsample_filters = geom.get_invariant_filters(
-    Ms=[2], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions
+    Ms=[2], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions, k2_irreps_basis=False
 )
 assert conv_filters is not None
 assert upsample_filters is not None

@@ -142,8 +142,6 @@ class GeometricImage:
         assert data.shape[D:] == self.k * (
             self.D,
         ), "GeometricImage: each pixel must be D cross D, k times"
-        if self.D == 1:
-            assert self.k == 0, "GeometricImage: 1D images must be a scalar or pseudoscalar"
 
         if isinstance(covariant_axes, bool):
             covariant_axes = (covariant_axes,) * self.k
@@ -803,11 +801,6 @@ class GeometricImage:
             vector_scaling: how much to scale the vectors
         """
         # plot functions should fail gracefully
-        if self.D != 2 and self.D != 3:
-            print(
-                f"GeometricImage::plot: Can only plot dimension 2 or 3 images, but got D={self.D}"
-            )
-            return
         if self.k > 2:
             print(
                 f"GeometricImage::plot: Can only plot tensor order 0,1, or 2 images, but got k={self.k}"
@@ -819,9 +812,34 @@ class GeometricImage:
 
         ax = utils.setup_plot() if ax is None else ax
 
+        if self.D == 1:
+            # convert image to a 2D image that is N,1
+            data_2d = self.data.reshape((len(self.data), 1) + (1,) * self.k)
+            mul_img = 1
+            if self.k == 1:
+                mul_img = jnp.concatenate(
+                    [jnp.ones_like(data_2d), jnp.zeros_like(data_2d)], axis=-1
+                )
+            elif self.k == 2 and self.parity == 0:  # kronecker delta coefficient
+                mul_img = jnp.full((self.D, 1) + (2, 2), jnp.eye(2)[None, None])
+            elif self.k == 2 and self.parity == 1:  # levi civita coefficient
+                mul_img = jnp.full((self.D, 1) + (2, 2), LeviCivitaSymbol.get(2)[None, None])
+            elif self.k > 2:
+                print(f"GeometricImage::plot: Not implemented for D=1, k={self.k}")
+                return
+
+            # GeometricFilters must be square, so make it a GeometricImage
+            image_2d = GeometricImage(
+                data_2d * mul_img, self.parity, 2, self.is_torus[0], self.covariant_axes
+            )
+            image_2d.plot(
+                ax, title, boxes, fill, symbols, vmin, vmax, colorbar, cmap, vector_scaling
+            )
+            return
+
         # This was breaking earlier with jax arrays, not sure why. I really don't want plotting to break,
         # so I am will swap to numpy arrays just in case.
-        key_array_transpose = np.array(self.key_array()).T
+        key_array_transpose = np.array(self.key_array()).T  # (D,N**D)
         xs = key_array_transpose[0]
         ys = key_array_transpose[1]
         zs = key_array_transpose[2:]
@@ -1008,21 +1026,15 @@ class GeometricFilter(GeometricImage):
         if self.parity != other.parity:
             return self.parity < other.parity
 
-        self_nonempty_sum = float(jnp.sum(jnp.linalg.norm(self.nonempty_pixel_idxs(), axis=1)))
-        other_nonempty_sum = float(jnp.sum(jnp.linalg.norm(other.nonempty_pixel_idxs(), axis=1)))
+        if self.k == 2:  # works for D=2,3, and should work for higher D
 
-        if self_nonempty_sum != other_nonempty_sum:
-            return self_nonempty_sum < other_nonempty_sum
-
-        if self.D == 2 and self.k == 2:
-
-            self_pixels = self.data.reshape((-1, 2, 2))
+            self_pixels = self.data.reshape((-1,) + (self.D,) * self.k)
             self_trace = jnp.einsum("...ii", self_pixels) / self.D
             self_trace_matrix = self_trace[:, None, None] * (jnp.eye(self.D)[None])
             self_antisym = (self_pixels - jnp.transpose(self_pixels, (0, 2, 1))) / 2
             self_sym = (self_pixels + jnp.transpose(self_pixels, (0, 2, 1))) / 2 - self_trace_matrix
 
-            other_pixels = other.data.reshape((-1, 2, 2))
+            other_pixels = other.data.reshape((-1,) + (other.D,) * other.k)
             other_trace = jnp.einsum("...ii", other_pixels) / other.D
             other_trace_matrix = other_trace[:, None, None] * (jnp.eye(other.D)[None])
             other_antisym = (other_pixels - jnp.transpose(other_pixels, (0, 2, 1))) / 2
@@ -1030,18 +1042,28 @@ class GeometricFilter(GeometricImage):
                 other_pixels + jnp.transpose(other_pixels, (0, 2, 1))
             ) / 2 - other_trace_matrix
 
-            self_sym_total = float(jnp.sum(jnp.linalg.norm(self_sym[:, :, 0], axis=1)))
-            other_sym_total = float(jnp.sum(jnp.linalg.norm(other_sym[:, :, 0], axis=1)))
+            # norm of elements along diagonal (except for last) and above
+            sym_norm_f = jax.vmap(lambda x: jnp.linalg.norm(x[jnp.triu_indices(self.D)][:-1]))
+            self_sym_total = float(jnp.sum(sym_norm_f(self_sym)))
+            other_sym_total = float(jnp.sum(sym_norm_f(other_sym)))
             if self_sym_total != other_sym_total:
                 return self_sym_total < other_sym_total
 
-            if float(jnp.sum(self_antisym[:, 0, 1])) != float(jnp.sum(other_antisym[:, 0, 1])):
-                return float(jnp.sum(self_antisym[:, 0, 1])) < float(
-                    jnp.sum(other_antisym[:, 0, 1])
-                )
+            # norm of elements above the main diagonal
+            antisym_norm_f = jax.vmap(lambda x: jnp.linalg.norm(x[jnp.triu_indices(self.D, 1)]))
+            self_antisym_total = float(jnp.sum(antisym_norm_f(self_antisym)))
+            other_antisym_total = float(jnp.sum(antisym_norm_f(other_antisym)))
+            if self_antisym_total != other_antisym_total:
+                return self_antisym_total < other_antisym_total
 
             if float(jnp.sum(self_trace)) != float(jnp.sum(other_trace)):
                 return float(jnp.sum(self_trace)) < float(jnp.sum(other_trace))
+
+        self_nonempty_sum = float(jnp.mean(jnp.linalg.norm(self.nonempty_pixel_idxs(), axis=1)))
+        other_nonempty_sum = float(jnp.mean(jnp.linalg.norm(other.nonempty_pixel_idxs(), axis=1)))
+
+        if self_nonempty_sum != other_nonempty_sum:
+            return self_nonempty_sum < other_nonempty_sum
 
         return float(jnp.sum(self.norm().data)) < float(jnp.sum(other.norm().data))
 

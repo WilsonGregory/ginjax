@@ -814,24 +814,23 @@ class GeometricImage:
 
         if self.D == 1:
             # convert image to a 2D image that is N,1
-            data_2d = self.data[:, None]
+            data_2d = self.data.reshape((len(self.data), 1) + (1,) * self.k)
+            mul_img = 1
             if self.k == 1:
-                data_2d = jnp.concatenate([data_2d, jnp.zeros_like(data_2d)], axis=-1)
-            elif self.k == 2:
-                data_2d = self.data.reshape(self.data.shape + (1,))  # already has (1,) for tensor
-                if self.parity == 0:  # kronecker delta coefficient
-                    mul_img = jnp.full((self.D, 1) + (2, 2), jnp.eye(2)[None, None])
-                else:  # parity == 1, levi civita coefficient
-                    mul_img = jnp.full((self.D, 1) + (2, 2), LeviCivitaSymbol.get(2)[None, None])
-
-                data_2d = data_2d * mul_img
+                mul_img = jnp.concatenate(
+                    [jnp.ones_like(data_2d), jnp.zeros_like(data_2d)], axis=-1
+                )
+            elif self.k == 2 and self.parity == 0:  # kronecker delta coefficient
+                mul_img = jnp.full((self.D, 1) + (2, 2), jnp.eye(2)[None, None])
+            elif self.k == 2 and self.parity == 1:  # levi civita coefficient
+                mul_img = jnp.full((self.D, 1) + (2, 2), LeviCivitaSymbol.get(2)[None, None])
             elif self.k > 2:
                 print(f"GeometricImage::plot: Not implemented for D=1, k={self.k}")
                 return
 
             # GeometricFilters must be square, so make it a GeometricImage
             image_2d = GeometricImage(
-                data_2d, self.parity, 2, self.is_torus[0], self.covariant_axes
+                data_2d * mul_img, self.parity, 2, self.is_torus[0], self.covariant_axes
             )
             image_2d.plot(
                 ax, title, boxes, fill, symbols, vmin, vmax, colorbar, cmap, vector_scaling

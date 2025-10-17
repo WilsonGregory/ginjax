@@ -192,7 +192,7 @@ class MultiImageModule(eqx.Module):
         return x, aux_data
 
 
-class AnyDimensionalModule(MultiImageModule):
+class AnyDimensionalModel(MultiImageModule):
     """
     A MultiImage model that implements a convertD function that can convert to work on different
     dimensional input. This also provides the helper functions transfer_weights to get this done.
@@ -346,7 +346,9 @@ class AnyDimensionalModule(MultiImageModule):
         returns:
             a new model with new filters but the old weights
         """
-        return self
+        raise NotImplementedError(
+            f"AnyDimensionalModel::convertD: derived class {self.__class__} does not implement convertD."
+        )
 
 
 class ConvBlock(MultiImageModule):
@@ -477,7 +479,7 @@ class ConvBlock(MultiImageModule):
         return x, batch_stats
 
 
-class UNet(AnyDimensionalModule):
+class UNet(AnyDimensionalModel):
     """
     Implementation of the UNet: https://arxiv.org/abs/1505.04597.
     This model defaults to the equivariant version, but can also be the non-equivariant version.

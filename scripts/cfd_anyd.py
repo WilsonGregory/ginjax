@@ -78,7 +78,7 @@ def get_data(
     pressures = []
     velocities = []
     for D, fname in zip(
-        [1, 2, 3],  # ignore D=1 for now
+        [1, 2, 3],
         [
             "1D_CFD_Rand_Eta1.e-8_Zeta1.e-8_periodic_Train.hdf5",
             "2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5",
@@ -190,111 +190,6 @@ def get_data(
     )
 
 
-def plot_multi_image(
-    test_multi_image: geom.MultiImage,
-    actual_multi_image: geom.MultiImage,
-    save_loc: str,
-    future_steps: int,
-    component: int = 0,
-    show_power: bool = False,
-    title: str = "",
-    minimal: bool = False,
-):
-    """
-    Plot all timesteps of a particular component of two MultiImages, and the differences between them.
-    args:
-        test_multi_image: the predicted MultiImage
-        actual_multi_image: the ground truth MultiImage
-        save_loc: file location to save the image
-        future_steps: the number future time steps in the MultiImage
-        component: index of the component to plot, default to 0
-        show_power: whether to also plot the power spectrum
-        title: additional str to add to title, will be "test {title} {col}"
-            "actual {title} {col}"
-        minimal: if minimal, no titles, colorbars, or axes labels
-    """
-    if test_multi_image.get_n_leading() == 2:
-        test_multi_image = test_multi_image.get_one(keepdims=False)
-
-    if actual_multi_image.get_n_leading() == 2:
-        actual_multi_image = actual_multi_image.get_one(keepdims=False)
-
-    test_multi_image_comp = test_multi_image.get_component(component, future_steps)
-    actual_multi_image_comp = actual_multi_image.get_component(component, future_steps)
-
-    test_images = test_multi_image_comp.to_images()
-    actual_images = actual_multi_image_comp.to_images()
-
-    img_arr = jnp.concatenate([test_multi_image_comp[((), 0)], actual_multi_image_comp[((), 0)]])
-    vmax = float(jnp.max(jnp.abs(img_arr)))
-    vmin = -1 * vmax
-
-    nrows = 4 if show_power else 3
-
-    # figsize is 6 per col, 6 per row, (cols,rows)
-    fig, axes = plt.subplots(nrows=nrows, ncols=future_steps, figsize=(6 * future_steps, 6 * nrows))
-    for col, (test_image, actual_image) in enumerate(zip(test_images, actual_images)):
-        diff = (actual_image - test_image).norm()
-        if minimal:
-            test_title = ""
-            actual_title = ""
-            diff_title = ""
-            colorbar = False
-            hide_ticks = True
-            xlabel = ""
-            ylabel = ""
-        else:
-            test_title = f"test {title} {col}"
-            actual_title = f"actual {title} {col}"
-            diff_title = f"diff {title} {col} (mse: {jnp.mean(diff.data)})"
-            colorbar = True
-            hide_ticks = False
-            xlabel = "unnormalized wavenumber"
-            ylabel = "unnormalized power"
-
-        test_image.plot(axes[0, col], title=test_title, vmin=vmin, vmax=vmax, colorbar=colorbar)
-        actual_image.plot(axes[1, col], title=actual_title, vmin=vmin, vmax=vmax, colorbar=colorbar)
-        diff.plot(axes[2, col], title=diff_title, vmin=vmin, vmax=vmax, colorbar=colorbar)
-
-        if show_power:
-            utils.plot_power(
-                [test_image.data[None, None], actual_image.data[None, None]],
-                ["test", "actual"] if col == 0 else None,
-                axes[3, col],
-                xlabel=xlabel,
-                ylabel=ylabel,
-                hide_ticks=hide_ticks,
-            )
-
-    plt.tight_layout()
-    plt.savefig(save_loc)
-    plt.close(fig)
-
-
-def plot_timestep_power(
-    multi_images: list[geom.MultiImage],
-    labels: list[str],
-    save_loc: str,
-    future_steps: int,
-    component: int = 0,
-    title: str = "",
-):
-    fig, axes = plt.subplots(nrows=1, ncols=future_steps, figsize=(8 * future_steps, 6 * 1))
-    for i, ax in enumerate(axes):
-        utils.plot_power(
-            [
-                multi_image.batch_get_component(component, future_steps)[(0, 0)][:, i : i + 1]
-                for multi_image in multi_images
-            ],
-            labels,
-            ax,
-            title=f"{title} {i}",
-        )
-
-    plt.savefig(save_loc)
-    plt.close(fig)
-
-
 @eqx.filter_jit
 def map_and_loss(
     model: models.MultiImageModule,
@@ -331,7 +226,7 @@ def train_and_eval(
     data: tuple[geom.MultiImage, ...],
     key: ArrayLike,
     model_name: str,
-    model: models.AnyDimensionalModule,
+    model: models.AnyDimensionalModel,
     lr: float,
     conv_filters_d2: geom.MultiImage,
     upsample_filters_d2: geom.MultiImage,
@@ -339,13 +234,10 @@ def train_and_eval(
     upsample_filters_d3: geom.MultiImage,
     batch_size: int,
     epochs: int,
-    rollout_steps: int,
     save_model: Optional[str],
     load_model: Optional[str],
-    images_dir: Optional[str],
     has_aux: bool = False,
     verbose: int = 1,
-    plot_component: int = 0,
     is_wandb: bool = False,
 ) -> tuple[Optional[ArrayLike], ...]:
     (
@@ -415,7 +307,7 @@ def train_and_eval(
             aux_data=batch_stats,
         )
 
-    assert isinstance(trained_model, models.AnyDimensionalModule)
+    assert isinstance(trained_model, models.AnyDimensionalModel)
     test_losses = []
     for test_X, test_Y, conv_filters, upsample_filters in [
         (test_d1_X, test_d1_Y, None, None),
@@ -444,26 +336,6 @@ def train_and_eval(
         )
         print(f"Test Loss D={test_X.D}: {test_loss}")
         test_losses.append(test_loss)
-
-    if images_dir is not None:
-        components = ["density", "pressure", "velocity_x", "velocity_y"]
-        plot_multi_image(
-            rollout_multi_image.get_one(),
-            test_rollout_Y.get_one(),
-            f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}_rollout.png",
-            future_steps=rollout_steps,
-            component=plot_component,
-            show_power=True,
-            title=f"{components[plot_component]}",
-        )
-        plot_timestep_power(
-            [rollout_multi_image, test_rollout_Y],
-            ["test", "actual"],
-            f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}_{components[plot_component]}_power_spectrum.png",
-            future_steps=rollout_steps,
-            component=plot_component,
-            title=f"{components[plot_component]}",
-        )
 
     return train_loss, val_loss, *test_losses
 
@@ -546,12 +418,9 @@ train_kwargs = {
     "upsample_filters_d3": upsample_filters_d3,
     "batch_size": args.batch,
     "epochs": args.epochs,
-    "rollout_steps": args.rollout_steps,
     "save_model": args.save_model,
     "load_model": args.load_model,
-    "images_dir": args.images_dir,
     "verbose": args.verbose,
-    "plot_component": args.plot_component,
     "is_wandb": args.wandb,
 }
 
@@ -589,7 +458,7 @@ results = ml.benchmark(
     [0],
     benchmark_type=ml.BENCHMARK_NONE,
     num_trials=args.n_trials,
-    num_results=3 + args.rollout_steps,
+    num_results=3 + (3 - D),
     is_wandb=args.wandb,
     wandb_project=args.wandb_project,
     wandb_entity=args.wandb_entity,

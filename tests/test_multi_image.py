@@ -257,10 +257,6 @@ class TestMultiImage:
         multi_image3.append(0, 1, jnp.ones((5,) + (N,) * D))
         assert multi_image3[((), 1)].shape == (5, N)
 
-        # add a vector to a 1d image, which doesn't make sense
-        with pytest.raises(AssertionError):
-            multi_image3.append(1, 0, jnp.ones((10,) + (N,) * D + (D,)))
-
     def testConcat(self):
         key = random.PRNGKey(time.time_ns())
         D = 2
@@ -1248,7 +1244,7 @@ class TestBatchMultiImage:
         channels = 3
 
         key = random.PRNGKey(0)
-        for D in [2, 3]:
+        for D in [1, 2, 3]:
             spatial_dims = (N,) * D
             multi_image = geom.MultiImage({}, D)
 

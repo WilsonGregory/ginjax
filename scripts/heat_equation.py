@@ -194,7 +194,7 @@ def get_data(
     )
 
 
-class TwoLayerModel(models.AnyDimensionalModule):
+class TwoLayerModel(models.AnyDimensionalModel):
     layers: list[models.ConvBlock]
 
     D: int = eqx.field(static=True)
@@ -284,7 +284,7 @@ def train_and_eval(
     data: tuple[geom.MultiImage, ...],
     key: jax.Array,
     model_name: str,
-    model: models.AnyDimensionalModule,
+    model: models.AnyDimensionalModel,
     lr: float,
     conv_filters_d2: geom.MultiImage,
     conv_filters_d3: geom.MultiImage,
@@ -381,7 +381,7 @@ def train_and_eval(
     )
     print(f"Test Loss D=1: {test_loss_d1}")
 
-    assert isinstance(trained_model, models.AnyDimensionalModule)
+    assert isinstance(trained_model, models.AnyDimensionalModel)
 
     key, subkey = random.split(key)
     trained_model_d2 = trained_model.convertD(conv_filters_d2, True, subkey)

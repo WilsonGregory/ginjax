@@ -1,7 +1,6 @@
 from __future__ import annotations
-from typing import Optional, Sequence
+from typing import Sequence
 
-import enum
 import itertools as it
 import numpy as np
 
@@ -123,8 +122,7 @@ def get_k2_irrep_basis(M: int, k: int, D: int) -> list[jax.Array]:
         antisym_basis = []
         sym_basis = []
         if D == 1:
-            trace_basis = jnp.eye(M**D).reshape((M**D,) + (M,) * D + (D,) * k)
-            basis_cache[actual_key] = [trace_basis]
+            basis_cache[actual_key] = [jnp.eye(M**D).reshape((M**D,) + (M,) * D + (D,) * k)]
         elif D == 2:
             # this specific basis is for the irreducibles of O(2), and is nicer for visualizing
             # the basis elements of that one
@@ -153,10 +151,11 @@ def get_k2_irrep_basis(M: int, k: int, D: int) -> list[jax.Array]:
                     elem[i, j, 1, 0] = 1
                     sym_basis.append(elem)
 
-            trace_basis = jnp.stack(trace_basis)
-            antisym_basis = jnp.stack(antisym_basis)
-            sym_basis = jnp.stack(sym_basis)
-            basis_cache[actual_key] = [trace_basis, antisym_basis, sym_basis]
+            basis_cache[actual_key] = [
+                jnp.stack(trace_basis),
+                jnp.stack(antisym_basis),
+                jnp.stack(sym_basis),
+            ]
         elif D == 3:
             for i in range(M):
                 for j in range(M):
@@ -209,10 +208,11 @@ def get_k2_irrep_basis(M: int, k: int, D: int) -> list[jax.Array]:
                         elem[i, j, l, 2, 1] = 1
                         sym_basis.append(elem)
 
-            trace_basis = jnp.stack(trace_basis)
-            antisym_basis = jnp.stack(antisym_basis)
-            sym_basis = jnp.stack(sym_basis)
-            basis_cache[actual_key] = [trace_basis, antisym_basis, sym_basis]
+            basis_cache[actual_key] = [
+                jnp.stack(trace_basis),
+                jnp.stack(antisym_basis),
+                jnp.stack(sym_basis),
+            ]
         else:
             raise NotImplementedError(f"k2_irrep_basis only implemented for D=1,2,3, but got D={D}")
 
@@ -349,7 +349,25 @@ def get_unique_irrep_filters(
     k2_irreps_basis: bool = True,
 ) -> list[GeometricFilter]:
     """
-    basis shape (N**D * D**k, (N,)*D, (D,)*k)
+    Use group averaging to generate all the unique invariant filters
+
+    args:
+        M: filter side length
+        k: tensor order
+        parity:  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
+        D: image dimension
+        operators: array of operators of a group
+        basis: basis elements of the filters for the group operators to act on
+        scale: option for scaling the values of the filters, NORMALIZE (default) to make amplitudes
+            of each tensor +/- 1, ONE to set them all to 1, GAUSSIAN to scale them according to a
+            gaussian kernel, ZERO_SUM so they add up to zero, or ZERO_SUM_L2_DIST so they add up to
+            zero scaled by the distance from the center pixel.
+        exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
+            ensures that D=100 has the same number of filters as D=1. Defaults to False.
+        k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
+
+    returns:
+        the unique invariant filters
     """
     shape = (M,) * D + (D,) * k
     # not a true vmap because we can't vmap over the operators, but equivalent (if slower)
@@ -449,14 +467,6 @@ def get_unique_invariant_filters(
     """
     assert isinstance(scale, FilterScaling)
 
-    # make the seed filters
-    shape = (M,) * D + (D,) * k
-
-    # (N**D * D**k, (N,)*D, (D,)*k)
-    basis = (
-        get_k2_irrep_basis(M, k, D) if (k == 2 and k2_irreps_basis) else get_basis("image", shape)
-    )
-
     filters = []
     if k == 2 and k2_irreps_basis:
         basis_irreps = get_k2_irrep_basis(M, k, D)
@@ -467,7 +477,7 @@ def get_unique_invariant_filters(
 
         filters = sorted(filters)  # resort the combined list
     else:
-        basis = get_basis("image", shape)
+        basis = get_basis("image", (M,) * D + (D,) * k)
         filters = get_unique_irrep_filters(
             M, k, parity, D, operators, basis, scale, exclude_corners, k2_irreps_basis
         )

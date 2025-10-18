@@ -1,11 +1,22 @@
 import itertools as it
 import numpy as np
 from typing_extensions import Sequence
+import enum
 
 import jax.numpy as jnp
 
 TINY = 1.0e-5
 LETTERS = "abcdefghijklmnopqrstuvwxyxABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+@enum.unique
+class FilterScaling(enum.Enum):
+    NORMALIZE = enum.auto()
+    ONE = enum.auto()
+    GAUSSIAN = enum.auto()
+    ZERO_SUM = enum.auto()
+    ZERO_SUM_L2_DIST = enum.auto()
+    ZERO_SUM_GAUSSIAN_DIST = enum.auto()
 
 
 class KroneckerDeltaSymbol:

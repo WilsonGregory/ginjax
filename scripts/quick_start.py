@@ -49,7 +49,7 @@ invariant_filters = geom.get_invariant_filters_list(
     parities=[0, 1],
     D=D,
     operators=operators,
-    scale="one",  # all the values of the filter are 1, can also 'normalize' so the norm of the tensor pixel is 1
+    scale=geom.FilterScaling.ONE,  # all the values of the filter are 1, can also 'normalize' so the norm of the tensor pixel is 1
 )
 print("Number of invariant filters N=3, k=0,1 parity=0,1:", len(invariant_filters))
 

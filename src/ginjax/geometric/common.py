@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Optional, Sequence
 
+import enum
 import itertools as it
 import numpy as np
 
@@ -8,7 +9,7 @@ import jax.numpy as jnp
 import jax.lax
 import jax
 
-from ginjax.geometric.constants import TINY, LeviCivitaSymbol
+from ginjax.geometric.constants import TINY, LeviCivitaSymbol, FilterScaling
 from ginjax.geometric.geometric_image import GeometricImage, GeometricFilter
 from ginjax.geometric.multi_image import MultiImage
 from ginjax.geometric.functional_geometric_image import times_group_element, times_D8_element
@@ -114,100 +115,106 @@ def make_C2_group(D: int) -> list[np.ndarray]:
 basis_cache = {}
 
 
-def get_k2_irrep_basis(M: int, k: int, D: int):
+def get_k2_irrep_basis(M: int, k: int, D: int) -> list[jax.Array]:
     shape = (M,) * D + (D,) * k
     actual_key = "k2_irrep_basis:" + str(shape)
     if actual_key not in basis_cache:
+        trace_basis = []
+        antisym_basis = []
+        sym_basis = []
         if D == 1:
-            basis = jnp.eye(M**D).reshape((M**D,) + (M,) * D + (D,) * k)
+            trace_basis = jnp.eye(M**D).reshape((M**D,) + (M,) * D + (D,) * k)
+            basis_cache[actual_key] = [trace_basis]
         elif D == 2:
             # this specific basis is for the irreducibles of O(2), and is nicer for visualizing
             # the basis elements of that one
             levi_civita = LeviCivitaSymbol.get(D)
-            basis = []
             for i in range(M):
                 for j in range(M):
                     # kronecker delta coefficient (trace)
                     elem = np.zeros((M,) * D + (D,) * k)
                     elem[i, j] = np.eye(D)
-                    basis.append(elem)
+                    trace_basis.append(elem)
 
                     # levi civita coefficient (antisymmetric matrix)
                     elem = np.zeros((M,) * D + (D,) * k)
                     elem[i, j] = levi_civita
-                    basis.append(elem)
+                    antisym_basis.append(elem)
 
                     # symmetric traceless matrix, diagonal
                     elem = np.zeros((M,) * D + (D,) * k)
                     elem[i, j, 0, 0] = 1
                     elem[i, j, 1, 1] = -1
-                    basis.append(elem)
+                    sym_basis.append(elem)
 
                     # symmetric traceless matrix, off-diagonal
                     elem = np.zeros((M,) * D + (D,) * k)
                     elem[i, j, 0, 1] = 1
                     elem[i, j, 1, 0] = 1
-                    basis.append(elem)
+                    sym_basis.append(elem)
 
-            basis = jnp.stack(basis)
+            trace_basis = jnp.stack(trace_basis)
+            antisym_basis = jnp.stack(antisym_basis)
+            sym_basis = jnp.stack(sym_basis)
+            basis_cache[actual_key] = [trace_basis, antisym_basis, sym_basis]
         elif D == 3:
-            basis = []
             for i in range(M):
                 for j in range(M):
                     for l in range(M):
                         # kronecker delta coefficient (trace)
                         elem = np.zeros((M,) * D + (D,) * k)
                         elem[i, j, l] = np.eye(D)
-                        basis.append(elem)
+                        trace_basis.append(elem)
 
                         # levi civita coefficient (antisymmetric matrix)
                         elem = np.zeros((M,) * D + (D,) * k)
                         elem[i, j, l, 0, 1] = 1
                         elem[i, j, l, 1, 0] = -1
-                        basis.append(elem)
+                        antisym_basis.append(elem)
 
                         elem = np.zeros((M,) * D + (D,) * k)
                         elem[i, j, l, 0, 2] = 1
                         elem[i, j, l, 2, 0] = -1
-                        basis.append(elem)
+                        antisym_basis.append(elem)
 
                         elem = np.zeros((M,) * D + (D,) * k)
                         elem[i, j, l, 1, 2] = 1
                         elem[i, j, l, 2, 1] = -1
-                        basis.append(elem)
+                        antisym_basis.append(elem)
 
                         # symmetric traceless matrix, diagonal
                         elem = np.zeros((M,) * D + (D,) * k)
                         elem[i, j, l, 0, 0] = 1
                         elem[i, j, l, 2, 2] = -1
-                        basis.append(elem)
+                        sym_basis.append(elem)
 
                         elem = np.zeros((M,) * D + (D,) * k)
                         elem[i, j, l, 1, 1] = 1
                         elem[i, j, l, 2, 2] = -1
-                        basis.append(elem)
+                        sym_basis.append(elem)
 
                         # symmetric traceless matrix, off-diagonal
                         elem = np.zeros((M,) * D + (D,) * k)
                         elem[i, j, l, 0, 1] = 1
                         elem[i, j, l, 1, 0] = 1
-                        basis.append(elem)
+                        sym_basis.append(elem)
 
                         elem = np.zeros((M,) * D + (D,) * k)
                         elem[i, j, l, 0, 2] = 1
                         elem[i, j, l, 2, 0] = 1
-                        basis.append(elem)
+                        sym_basis.append(elem)
 
                         elem = np.zeros((M,) * D + (D,) * k)
                         elem[i, j, l, 1, 2] = 1
                         elem[i, j, l, 2, 1] = 1
-                        basis.append(elem)
+                        sym_basis.append(elem)
 
-            basis = jnp.stack(basis)
+            trace_basis = jnp.stack(trace_basis)
+            antisym_basis = jnp.stack(antisym_basis)
+            sym_basis = jnp.stack(sym_basis)
+            basis_cache[actual_key] = [trace_basis, antisym_basis, sym_basis]
         else:
-            raise NotImplementedError(f"k2_irrep_basis only implemented for D=2,3, but got D={D}")
-
-        basis_cache[actual_key] = basis
+            raise NotImplementedError(f"k2_irrep_basis only implemented for D=1,2,3, but got D={D}")
 
     return basis_cache[actual_key]
 
@@ -232,44 +239,119 @@ def get_basis(key: str, shape: tuple[int, ...]) -> jax.Array:
     return basis_cache[actual_key]
 
 
-def get_unique_invariant_filters(
+def scale_filters(
+    filters: list[GeometricFilter], scale: FilterScaling, k2_irreps_basis: bool
+) -> list[GeometricFilter]:
+    """
+    Scale the filters according to a specific FilterScaling. Filters are assumed to have identical
+    D, spatial shape, k, and parity.
+
+    args:
+        filters: list of GeometricFilters
+        scale: the scaling strategy, NORMALIZE (default) to make amplitudes
+            of each tensor +/- 1, ONE to set them all to 1, GAUSSIAN to scale them according to a
+            gaussian kernel, ZERO_SUM so they add up to zero, or ZERO_SUM_L2_DIST so they add up to
+            zero scaled by the distance from the center pixel.
+        k2_irreps_basis: whether k2 is using the irreducible representations basis, which is
+            required for ZERO_SUM and ZERO_SUM_L2_DIST
+
+    returns:
+        list of geometric filters scaled appropriately
+    """
+    if len(filters) == 0:
+        return filters
+
+    M = len(filters[0].data)
+    D, k = filters[0].D, filters[0].k
+
+    if scale is FilterScaling.ONE:
+        filters = [ff * float(1 / jnp.max(jnp.abs(ff.data))) for ff in filters]
+    elif scale is FilterScaling.NORMALIZE:
+        filters = [ff.normalize() for ff in filters]
+    elif scale is FilterScaling.GAUSSIAN:
+        filters = [ff.normalize() for ff in filters]  # first set the norms to 1
+        # scale according to the rbf kernel, or like a multivariate gaussian
+        meshgrid_dims = tuple(jnp.arange(M1) for M1 in filters[0].image_shape())
+        idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, D))
+        idxs -= (jnp.array(filters[0].image_shape()) - 1) / 2
+        dist_scaling = jnp.exp(-0.25 * (jnp.linalg.norm(idxs, axis=1) ** 2))
+        # I should maybe account for the fact that in k=2, some pixels have multiple filters
+        nonempty_pixels = jnp.any(
+            jnp.stack(
+                [jnp.any(~jnp.isclose(ff.data.reshape((M**D, D**k)), 0), axis=1) for ff in filters],
+                axis=1,
+            ),
+            axis=1,
+        ).astype(int)
+        gaussian_sum = jnp.sum(dist_scaling * nonempty_pixels)
+        normalized_dist_scaling = GeometricFilter(
+            dist_scaling.reshape((M,) * D) / gaussian_sum, 0, D
+        )
+        filters = [ff * normalized_dist_scaling for ff in filters]
+    elif (
+        scale is FilterScaling.ZERO_SUM
+        or scale is FilterScaling.ZERO_SUM_L2_DIST
+        or scale is FilterScaling.ZERO_SUM_GAUSSIAN_DIST
+    ):
+        # George's stencil based scaling. Sum of the filters has to equal 0.
+        if k == 2:
+            assert k2_irreps_basis, f"{scale} must use the k2_irrep_basis for k==2"
+
+        filters = [ff.normalize() for ff in filters]  # first set the norms to 1
+
+        # TODO: how to properly handle M=2? or even M in general?
+        if jnp.allclose(filters[0].nonempty_pixel_idxs(), jnp.zeros(D), rtol=TINY, atol=TINY):
+            center_ff = filters[0] * -1
+            offcenter_ffs = filters[1:]
+
+            # (nonempty_pixels,D)
+            idxs = jnp.stack(jnp.meshgrid(*((jnp.arange(M),) * D), indexing="ij"), axis=-1)
+            idxs_centered = idxs - ((jnp.array((M,) * D) - 1) / 2)
+
+            if scale is FilterScaling.ZERO_SUM:
+                idxs_dist = jnp.ones((M,) * D)
+            elif scale is FilterScaling.ZERO_SUM_L2_DIST:
+                idxs_dist = 1 / (jnp.linalg.norm(idxs_centered, axis=-1) + 1e-5)  # (M,)*D
+            elif scale is FilterScaling.ZERO_SUM_GAUSSIAN_DIST:
+                # similar to Gaussian, but sum to 0 instead of 1
+                idxs_dist = jnp.exp(-0.25 * jnp.linalg.norm(idxs_centered, axis=-1) ** 2)
+
+            nonempty_pixels = jnp.sum(
+                jnp.stack([ff.nonempty_pixels() for ff in offcenter_ffs], axis=1), axis=1
+            ).reshape((M,) * D)
+            pixel_sum = jnp.sum(idxs_dist * nonempty_pixels)
+
+            # construct a scalar image of the distances
+            dist_img = GeometricFilter(idxs_dist / pixel_sum, 0, D, filters[0].is_torus)
+
+            offcenter_ffs = [ff * dist_img for ff in offcenter_ffs]
+
+            filters = [center_ff] + offcenter_ffs
+
+        filter_sum = jnp.sum(
+            jnp.stack([ff.data.reshape((M**D,) + (D,) * ff.k) for ff in filters], axis=0),
+            axis=(0, 1),
+        )
+        assert jnp.allclose(filter_sum, 0, rtol=TINY, atol=TINY)
+
+    return filters
+
+
+def get_unique_irrep_filters(
     M: int,
     k: int,
     parity: int,
     D: int,
     operators: Sequence[np.ndarray],
-    scale: str = "normalize",
+    basis: jax.Array,
+    scale: FilterScaling = FilterScaling.NORMALIZE,
     exclude_corners: bool = False,
     k2_irreps_basis: bool = True,
 ) -> list[GeometricFilter]:
     """
-    Use group averaging to generate all the unique invariant filters
-
-    args:
-        M: filter side length
-        k: tensor order
-        parity:  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
-        D: image dimension
-        operators: array of operators of a group
-        scale: option for scaling the values of the filters, 'normalize' (default) to make amplitudes of each
-            tensor +/- 1. 'one' to set them all to 1.
-        exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
-            ensures that D=100 has the same number of filters as D=1. Defaults to False.
-        k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
-
-    returns:
-        the unique invariant filters
+    basis shape (N**D * D**k, (N,)*D, (D,)*k)
     """
-    assert scale in {"normalize", "one", "gaussian", "zero_sum"}
-
-    # make the seed filters
     shape = (M,) * D + (D,) * k
-
-    # (N**D * D**k, (N,)*D, (D,)*k)
-    basis = (
-        get_k2_irrep_basis(M, k, D) if (k == 2 and k2_irreps_basis) else get_basis("image", shape)
-    )
-
     # not a true vmap because we can't vmap over the operators, but equivalent (if slower)
     # covariant axes should maybe be true? For G = O(D), they are equivalent.
     vmap_times_group = lambda ff: jnp.stack(
@@ -330,64 +412,65 @@ def get_unique_invariant_filters(
 
         filters = cornerless_filters
 
-    if len(filters) > 0:
-        if scale == "one":
-            filters = [ff * float(1 / jnp.max(jnp.abs(ff.data))) for ff in filters]
-        if scale == "normalize":
-            filters = [ff.normalize() for ff in filters]
-        elif scale == "gaussian":
-            filters = [ff.normalize() for ff in filters]  # first set the norms to 1
-            # scale according to the rbf kernel, or like a multivariate gaussian
-            meshgrid_dims = tuple(jnp.arange(M1) for M1 in filters[0].image_shape())
-            idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, D))
-            idxs -= jnp.array(filters[0].image_shape()) / 2
-            dist_scaling = jnp.exp(-0.25 * (jnp.linalg.norm(idxs, axis=1) ** 2))
-            # I should maybe account for the fact that in k=2, some pixels have multiple filters
-            nonempty_pixels = jnp.any(
-                jnp.stack(
-                    [
-                        jnp.any(~jnp.isclose(ff.data.reshape((M**D, D**k)), 0), axis=1)
-                        for ff in filters
-                    ],
-                    axis=1,
-                ),
-                axis=1,
-            ).astype(int)
-            gaussian_sum = jnp.sum(dist_scaling * nonempty_pixels)
-            normalized_dist_scaling = GeometricFilter(
-                dist_scaling.reshape((M,) * D) / gaussian_sum, 0, D
+    filters = scale_filters(filters, scale, k2_irreps_basis)
+
+    return filters
+
+
+def get_unique_invariant_filters(
+    M: int,
+    k: int,
+    parity: int,
+    D: int,
+    operators: Sequence[np.ndarray],
+    scale: FilterScaling = FilterScaling.NORMALIZE,
+    exclude_corners: bool = False,
+    k2_irreps_basis: bool = True,
+) -> list[GeometricFilter]:
+    """
+    Use group averaging to generate all the unique invariant filters
+
+    args:
+        M: filter side length
+        k: tensor order
+        parity:  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
+        D: image dimension
+        operators: array of operators of a group
+        scale: option for scaling the values of the filters, NORMALIZE (default) to make amplitudes
+            of each tensor +/- 1, ONE to set them all to 1, GAUSSIAN to scale them according to a
+            gaussian kernel, ZERO_SUM so they add up to zero, or ZERO_SUM_L2_DIST so they add up to
+            zero scaled by the distance from the center pixel.
+        exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
+            ensures that D=100 has the same number of filters as D=1. Defaults to False.
+        k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
+
+    returns:
+        the unique invariant filters
+    """
+    assert isinstance(scale, FilterScaling)
+
+    # make the seed filters
+    shape = (M,) * D + (D,) * k
+
+    # (N**D * D**k, (N,)*D, (D,)*k)
+    basis = (
+        get_k2_irrep_basis(M, k, D) if (k == 2 and k2_irreps_basis) else get_basis("image", shape)
+    )
+
+    filters = []
+    if k == 2 and k2_irreps_basis:
+        basis_irreps = get_k2_irrep_basis(M, k, D)
+        for basis in basis_irreps:
+            filters += get_unique_irrep_filters(
+                M, k, parity, D, operators, basis, scale, exclude_corners, k2_irreps_basis
             )
-            filters = [ff * normalized_dist_scaling for ff in filters]
-        elif scale == "zero_sum":
-            filters = [ff.normalize() for ff in filters]  # first set the norms to 1
 
-            assert k < 2, f"zero_sum only currently valid for k equals 0 or 1, but got {k}"
-
-            # George's recommended scaling. Sum of the filters has to equal 0.
-
-            # vector filters already add up to 0
-            if k == 0:  # scalar
-                center_ff = filters[0] * -1
-
-                # (M**D,offcenter_filters)
-                nonempty_pixels = jnp.stack(
-                    [
-                        jnp.any(~jnp.isclose(ff.data.reshape((M**D, D**k)), 0), axis=1)
-                        for ff in filters[1:]
-                    ],
-                    axis=1,
-                )
-
-                pixel_sum = int(jnp.sum(nonempty_pixels))
-                offcenter_filters = [ff * (1 / pixel_sum) for ff in filters[1:]]
-
-                filters = [center_ff] + offcenter_filters
-
-            filter_sum = jnp.sum(
-                jnp.stack([ff.data.reshape((M**D,) + (D,) * ff.k) for ff in filters], axis=0),
-                axis=(0, 1),
-            )
-            assert jnp.allclose(filter_sum, 0, rtol=TINY, atol=TINY)
+        filters = sorted(filters)  # resort the combined list
+    else:
+        basis = get_basis("image", shape)
+        filters = get_unique_irrep_filters(
+            M, k, parity, D, operators, basis, scale, exclude_corners, k2_irreps_basis
+        )
 
     return filters
 
@@ -398,7 +481,7 @@ def get_invariant_filters_dict(
     parities: Sequence[int],
     D: int,
     operators: Sequence[np.ndarray],
-    scale: str = "normalize",
+    scale: FilterScaling = FilterScaling.NORMALIZE,
     exclude_corners: bool = False,
     k2_irreps_basis: bool = True,
 ) -> tuple[dict[tuple[int, int, int, int], list[GeometricFilter]], dict[tuple[int, int], int]]:
@@ -413,8 +496,10 @@ def get_invariant_filters_dict(
         parities:  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
         D: image dimension
         operators: array of operators of a group
-        scale: option for scaling the values of the filters, 'normalize' (default) to make
-            amplitudes of each tensor +/- 1. 'one' to set them all to 1.
+        scale: option for scaling the values of the filters, NORMALIZE (default) to make amplitudes
+            of each tensor +/- 1, ONE to set them all to 1, GAUSSIAN to scale them according to a
+            gaussian kernel, ZERO_SUM so they add up to zero, or ZERO_SUM_L2_DIST so they add up to
+            zero scaled by the distance from the center pixel.
         exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
             ensures that D=100 has the same number of filters as D=1. Defaults to False.
         k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
@@ -423,7 +508,7 @@ def get_invariant_filters_dict(
         allfilters: a dictionary of filters of the specified D, M, k, and parity
         maxn: a dictionary that tracks the longest number of filters per key, for a particular D,M combo.
     """
-    assert scale in {"normalize", "one", "gaussian", "zero_sum"}
+    assert isinstance(scale, FilterScaling)
 
     allfilters = {}
     maxn = {}
@@ -453,7 +538,7 @@ def get_invariant_filters_list(
     parities: Sequence[int],
     D: int,
     operators: Sequence[np.ndarray],
-    scale: str = "normalize",
+    scale: FilterScaling = FilterScaling.NORMALIZE,
     exclude_corners: bool = False,
     k2_irreps_basis: bool = True,
 ) -> list[GeometricFilter]:
@@ -467,8 +552,10 @@ def get_invariant_filters_list(
         parities:  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
         D: image dimension
         operators: array of operators of a group
-        scale: option for scaling the values of the filters, 'normalize' (default) to make
-            amplitudes of each tensor +/- 1. 'one' to set them all to 1.
+        scale: option for scaling the values of the filters, NORMALIZE (default) to make amplitudes
+            of each tensor +/- 1, ONE to set them all to 1, GAUSSIAN to scale them according to a
+            gaussian kernel, ZERO_SUM so they add up to zero, or ZERO_SUM_L2_DIST so they add up to
+            zero scaled by the distance from the center pixel.
         exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
             ensures that D=100 has the same number of filters as D=1. Defaults to False.
         k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
@@ -488,7 +575,7 @@ def get_invariant_filters(
     parities: Sequence[int],
     D: int,
     operators: Sequence[np.ndarray],
-    scale: str = "normalize",
+    scale: FilterScaling = FilterScaling.NORMALIZE,
     exclude_corners: bool = False,
     k2_irreps_basis: bool = True,
 ) -> MultiImage:
@@ -502,8 +589,10 @@ def get_invariant_filters(
         parities:  0 or 1, 0 is for normal tensors, 1 for pseudo-tensors
         D: image dimension
         operators: array of operators of a group
-        scale: option for scaling the values of the filters, 'normalize' (default) to make
-            amplitudes of each tensor +/- 1. 'one' to set them all to 1.
+        scale: option for scaling the values of the filters, NORMALIZE (default) to make amplitudes
+            of each tensor +/- 1, ONE to set them all to 1, GAUSSIAN to scale them according to a
+            gaussian kernel, ZERO_SUM so they add up to zero, or ZERO_SUM_L2_DIST so they add up to
+            zero scaled by the distance from the center pixel.
         exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
             ensures that D=100 has the same number of filters as D=1. Defaults to False.
         k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.

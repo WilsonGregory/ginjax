@@ -980,7 +980,10 @@ class GeometricFilter(GeometricImage):
 
     def nonempty_pixels(self: Self) -> jax.Array:
         """
-        Get the nonempty pixels in shape (image_size,).
+        Get the nonempty pixels as a true/false array.
+
+        returns:
+            a true/false array of flattened shape (image_size,)
         """
         return jnp.any(
             ~jnp.isclose(
@@ -991,11 +994,14 @@ class GeometricFilter(GeometricImage):
 
     def nonempty_pixel_idxs(self: Self) -> jax.Array:
         """
-        Get the nonempty pixels indices in shape (image_size,D)
+        Get the centered idxs of nonempty pixels, ordered in the flattened image order.
+
+        returns:
+            Nonempty pixels idxs, shape (num_pixels,D)
         """
         meshgrid_dims = tuple(jnp.arange(M) for M in self.image_shape())
         idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, self.D))
-        idxs_centered = idxs - (jnp.array(self.image_shape()).reshape((-1, self.D)) / 2)
+        idxs_centered = idxs - ((jnp.array(self.image_shape()).reshape((-1, self.D)) - 1) / 2)
 
         return idxs_centered[self.nonempty_pixels()]
 
@@ -1026,6 +1032,9 @@ class GeometricFilter(GeometricImage):
         if self.parity != other.parity:
             return self.parity < other.parity
 
+        self_nonempty_sum = float(jnp.mean(jnp.linalg.norm(self.nonempty_pixel_idxs(), axis=1)))
+        other_nonempty_sum = float(jnp.mean(jnp.linalg.norm(other.nonempty_pixel_idxs(), axis=1)))
+
         if self.k == 2:  # works for D=2,3, and should work for higher D
 
             self_pixels = self.data.reshape((-1,) + (self.D,) * self.k)
@@ -1046,23 +1055,41 @@ class GeometricFilter(GeometricImage):
             sym_norm_f = jax.vmap(lambda x: jnp.linalg.norm(x[jnp.triu_indices(self.D)][:-1]))
             self_sym_total = float(jnp.sum(sym_norm_f(self_sym)))
             other_sym_total = float(jnp.sum(sym_norm_f(other_sym)))
-            if self_sym_total != other_sym_total:
-                return self_sym_total < other_sym_total
 
             # norm of elements above the main diagonal
             antisym_norm_f = jax.vmap(lambda x: jnp.linalg.norm(x[jnp.triu_indices(self.D, 1)]))
             self_antisym_total = float(jnp.sum(antisym_norm_f(self_antisym)))
             other_antisym_total = float(jnp.sum(antisym_norm_f(other_antisym)))
-            if self_antisym_total != other_antisym_total:
+
+            self_trace_total = float(jnp.sum(self_trace))
+            other_trace_total = float(jnp.sum(other_trace))
+
+            self_min_component = (
+                int(self_trace_total != 0)
+                + int(self_antisym_total != 0) * 10
+                + int(self_sym_total) * 100
+            )
+            other_min_component = (
+                int(other_trace_total != 0)
+                + int(other_antisym_total != 0) * 10
+                + int(other_sym_total) * 100
+            )
+            if self_min_component != other_min_component:
+                return self_min_component < other_min_component
+
+            if abs(self_nonempty_sum - other_nonempty_sum) < TINY:
+                return self_nonempty_sum < other_nonempty_sum
+
+            if abs(self_sym_total - other_sym_total) < TINY:
+                return self_sym_total < other_sym_total
+
+            if abs(self_antisym_total - other_antisym_total) < TINY:
                 return self_antisym_total < other_antisym_total
 
-            if float(jnp.sum(self_trace)) != float(jnp.sum(other_trace)):
-                return float(jnp.sum(self_trace)) < float(jnp.sum(other_trace))
+            if abs(self_trace_total - other_trace_total) < TINY:
+                return self_trace_total < other_trace_total
 
-        self_nonempty_sum = float(jnp.mean(jnp.linalg.norm(self.nonempty_pixel_idxs(), axis=1)))
-        other_nonempty_sum = float(jnp.mean(jnp.linalg.norm(other.nonempty_pixel_idxs(), axis=1)))
-
-        if self_nonempty_sum != other_nonempty_sum:
+        if abs(self_nonempty_sum - other_nonempty_sum) < TINY:
             return self_nonempty_sum < other_nonempty_sum
 
         return float(jnp.sum(self.norm().data)) < float(jnp.sum(other.norm().data))

@@ -233,7 +233,9 @@ class TwoLayerModel(models.AnyDimensionalModel):
             ),
         ]
 
-    def convertD(self: Self, conv_filters: geom.MultiImage, rescale: bool, key: jax.Array) -> Self:
+    def convertD(
+        self: Self, conv_filters: geom.MultiImage, rescale: bool, key: jax.Array, **kwargs
+    ) -> Self:
         """
         Construct a new model with filters in a higher dimension.
 
@@ -369,49 +371,33 @@ def train_and_eval(
             aux_data=batch_stats,
         )
 
-    key, subkey = random.split(key)
-    test_loss_d1 = ml.map_loss_in_batches(
-        map_and_loss,
-        trained_model,
-        test_d1_X,
-        test_d1_Y,
-        batch_size,
-        subkey,
-        aux_data=batch_stats,
-    )
-    print(f"Test Loss D=1: {test_loss_d1}")
-
     assert isinstance(trained_model, models.AnyDimensionalModel)
+    test_losses = []
+    for test_X, test_Y, conv_filters in [
+        (test_d1_X, test_d1_Y, None),
+        (test_d2_X, test_d2_Y, conv_filters_d2),
+        (test_d3_X, test_d3_Y, conv_filters_d3),
+    ]:
+        if test_X.D < train_X.D:
+            continue
+        elif test_X.D == train_X.D:
+            trained_model_d = trained_model
+        else:
+            key, subkey = random.split(key)
+            trained_model_d = trained_model.convertD(conv_filters, True, subkey)
 
-    key, subkey = random.split(key)
-    trained_model_d2 = trained_model.convertD(conv_filters_d2, True, subkey)
-
-    key, subkey = random.split(key)
-    test_loss_d2 = ml.map_loss_in_batches(
-        map_and_loss,
-        trained_model_d2,
-        test_d2_X,
-        test_d2_Y,
-        batch_size,
-        subkey,
-        aux_data=batch_stats,
-    )
-    print(f"Test Loss D=2 (rescaled): {test_loss_d2}")
-
-    key, subkey = random.split(key)
-    trained_model_d3 = trained_model.convertD(conv_filters_d3, True, subkey)
-
-    key, subkey = random.split(key)
-    test_loss_d3 = ml.map_loss_in_batches(
-        map_and_loss,
-        trained_model_d3,
-        test_d3_X,
-        test_d3_Y,
-        batch_size,
-        subkey,
-        aux_data=batch_stats,
-    )
-    print(f"Test Loss D=3 (rescaled): {test_loss_d3}")
+        key, subkey = random.split(key)
+        test_loss = ml.map_loss_in_batches(
+            map_and_loss,
+            trained_model_d,
+            test_X,
+            test_Y,
+            batch_size,
+            subkey,
+            aux_data=batch_stats,
+        )
+        print(f"Test Loss D={test_X.D}: {test_loss}")
+        test_losses.append(test_loss)
 
     if images_dir is not None:
         x0 = geom.GeometricImage(test_d2_X[(), 0][0, 0], 0, test_d2_X.D, test_d2_X.is_torus)
@@ -420,6 +406,8 @@ def train_and_eval(
         if train_X.D == 2:
             xt_pred_multi_image, _ = trained_model(test_d2_X.get_one(keepdims=False), batch_stats)
         else:
+            key, subkey = random.split(key)
+            trained_model_d2 = trained_model.convertD(conv_filters_d2, True, subkey)
             xt_pred_multi_image, _ = trained_model_d2(
                 test_d2_X.get_one(keepdims=False), batch_stats
             )
@@ -448,7 +436,7 @@ def train_and_eval(
             f"{images_dir}/train_D{train_X.D}_test_D{test_d2_X.D}_residual{int(learn_residual)}_corners.png"
         )
 
-    return train_loss, val_loss, test_loss_d1, test_loss_d2, test_loss_d3
+    return train_loss, val_loss, *test_losses
 
 
 def handleArgs() -> argparse.Namespace:
@@ -485,7 +473,7 @@ output_keys = data[1].get_signature()
 
 # start with basic 3x3 scalar, vector, and 2nd order tensor images
 group_actions_d1 = geom.make_all_operators(D)
-filter_scale = "zero_sum"
+filter_scale = geom.FilterScaling.ZERO_SUM
 exclude_corners = False
 conv_filters = geom.get_invariant_filters(
     Ms=[3],

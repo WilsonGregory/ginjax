@@ -187,7 +187,7 @@ class TestPropositions:
             [0, 1],
             D,
             group_operators,
-            scale="one",
+            scale=geom.FilterScaling.ONE,
         )
         for k in range(max_k - 1):
             for parity in [0, 1]:

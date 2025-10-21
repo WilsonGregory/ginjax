@@ -1308,6 +1308,23 @@ class TestGeometricImage:
 
         # TODO: add tests for using comparator image
 
+    def testMaxPool1D(self):
+        image1 = geom.GeometricImage(jnp.array([4, 1, 0, 1, -2, 0.5, 5, 12]), 0, 1)
+
+        img1_pool2 = image1.max_pool(2, use_norm=False)
+        assert img1_pool2.spatial_dims == (4,)
+        assert img1_pool2.parity == 0
+        assert img1_pool2.D == 1
+        assert img1_pool2.k == 0
+        assert jnp.allclose(img1_pool2.data, jnp.array([4, 1, 0.5, 12]))
+
+        img1_pool2 = image1.max_pool(2, use_norm=True)
+        assert img1_pool2.spatial_dims == (4,)
+        assert img1_pool2.parity == 0
+        assert img1_pool2.D == 1
+        assert img1_pool2.k == 0
+        assert jnp.allclose(img1_pool2.data, jnp.array([4, 1, -2, 12]))
+
     def testAveragePool(self):
         image1 = geom.GeometricImage(
             jnp.array(

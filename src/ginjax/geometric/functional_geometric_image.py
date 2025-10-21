@@ -833,7 +833,7 @@ def max_pool(
     is true, then finally the image_data otherwise.
 
     args:
-        D: the dimension of the space
+        D: the dimension of the space, must be between 1 and 4 inclusive
         image_data: the image data, shape (spatial,tensor)
         patch_len: the side length of the patches, must evenly divide all spatial dims
         use_norm: if true, use the norm (over the tensor) of the image as the comparator image
@@ -842,8 +842,12 @@ def max_pool(
     returns:
         the image data that has been max pooled, shape (spatial,tensor)
     """
+    assert 1 <= D <= 4
     spatial_dims, k = parse_shape(image_data.shape, D)
     assert (comparator_image is not None) or use_norm or (k == 0)
+
+    spatial_l = ("XYZT")[:D]
+    dimension_numbers = ("N" + spatial_l + "C", "OI" + spatial_l, "NC" + spatial_l)
 
     # TODO: use the batch dimension of dilated_patches correctly
     patches = jax.lax.conv_general_dilated_patches(
@@ -851,7 +855,7 @@ def max_pool(
         filter_shape=(patch_len,) * D,  # filter_shape
         window_strides=(patch_len,) * D,
         padding=((0, 0),) * D,  # padding
-        dimension_numbers=(("NHWDC", "OIHWD", "NCHWD") if D == 3 else ("NHWC", "OIHW", "NCHW")),
+        dimension_numbers=dimension_numbers,
     )[
         0
     ]  # no batch. Out shape (batch,channels,spatial)
@@ -866,7 +870,7 @@ def max_pool(
             filter_shape=(patch_len,) * D,  # filter_shape
             window_strides=(patch_len,) * D,
             padding=((0, 0),) * D,  # padding
-            dimension_numbers=(("NHWDC", "OIHWD", "NCHWD") if D == 3 else ("NHWC", "OIHW", "NCHW")),
+            dimension_numbers=dimension_numbers,
         )[0]
         comparator_patches = comparator_patches.reshape((patch_len**D, -1))
     elif use_norm:

@@ -37,7 +37,7 @@ def read_one_h5(D: int, filename: pathlib.Path, num_trajectories: int) -> tuple:
 
     # all of these are shape (num_trajectories, timesteps, spatial, tensor)
     # 1D: (10K,101,1024,tensor)
-    # 2D: (1K,21,512,512,tensor)
+    # 2D: (1K,21,512,512,tensor) or (10K,21,128,128,tensor)
     # 3D: (100,21,128,128,128,tensor)
     density = jax.device_put(
         jnp.array(data_dict["density"][:num_trajectories][()]), jax.devices("cpu")[0]
@@ -61,30 +61,40 @@ def read_one_h5(D: int, filename: pathlib.Path, num_trajectories: int) -> tuple:
 
 def get_data(
     train_D: int,
+    range_test_D: list[int],
     data_dir: str,
     n_train: int,
     n_val: int,
     n_test: int,
     past_steps: int,
     normalize: bool = True,
-) -> tuple[geom.MultiImage, ...]:
+) -> tuple[
+    geom.MultiImage,
+    geom.MultiImage,
+    geom.MultiImage,
+    geom.MultiImage,
+    list[geom.MultiImage],
+    list[geom.MultiImage],
+]:
+    if train_D != range_test_D[0]:
+        raise ValueError()
+
     data_dir_path = pathlib.Path(data_dir)
     is_torus = True
     density_mean, density_std = 0, 1
     pressure_mean, pressure_std = 0, 1
     velocity_norm_std = 1
 
+    fnames = [
+        "1D_CFD_Rand_Eta0.01_Zeta0.01_periodic_Train.hdf5",
+        "2D_CFD_Rand_M0.1_Eta0.01_Zeta0.01_periodic_128_Train.hdf5",
+        "3D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_Train.hdf5",
+    ]
+
     densities = []
     pressures = []
     velocities = []
-    for D, fname in zip(
-        [1, 2, 3],
-        [
-            "1D_CFD_Rand_Eta1.e-8_Zeta1.e-8_periodic_Train.hdf5",
-            "2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_512_Train.hdf5",
-            "3D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_Train.hdf5",
-        ],
-    ):
+    for D, fname in zip(range_test_D, fnames[range_test_D[0] - 1 : range_test_D[-1]]):
         fpath = data_dir_path / f"cfd_{D}d" / fname
         n_traj = n_train + n_val + n_test if D == train_D else n_test
 
@@ -106,9 +116,7 @@ def get_data(
     test_Xs = []
     test_Ys = []
     train_X, train_Y, val_X, val_Y = None, None, None, None
-    for D, total_steps, density, pressure, velocity in zip(
-        [1, 2, 3], [101, 21, 21], densities, pressures, velocities
-    ):
+    for D, density, pressure, velocity in zip(range_test_D, densities, pressures, velocities):
         constant_fields = geom.MultiImage({}, D, is_torus)
 
         if normalize:
@@ -133,7 +141,7 @@ def get_data(
                     is_torus,
                 ),
                 constant_fields,
-                total_steps,
+                velocity.shape[1],
                 past_steps,
                 1,
             )
@@ -147,7 +155,7 @@ def get_data(
                     is_torus,
                 ),
                 constant_fields,
-                total_steps,
+                velocity.shape[1],
                 past_steps,
                 1,
             )
@@ -163,31 +171,17 @@ def get_data(
                 {(0, 0): density_pressure[start:stop], (1, 0): velocity[start:stop]}, D, is_torus
             ),
             constant_fields,
-            total_steps,
+            velocity.shape[1],
             past_steps,
             1,
         )
         test_Xs.append(test_X)
         test_Ys.append(test_Y)
 
-    test_d1_X, test_d2_X, test_d3_X = test_Xs
-    test_d1_Y, test_d2_Y, test_d3_Y = test_Ys
-
     assert (train_X is not None) and (train_Y is not None)
     assert (val_X is not None) and (val_Y is not None)
 
-    return (
-        train_X,
-        train_Y,
-        val_X,
-        val_Y,
-        test_d1_X,
-        test_d1_Y,
-        test_d2_X,
-        test_d2_Y,
-        test_d3_X,
-        test_d3_Y,
-    )
+    return train_X, train_Y, val_X, val_Y, test_Xs, test_Ys
 
 
 @eqx.filter_jit
@@ -196,42 +190,27 @@ def map_and_loss(
     multi_image_x: geom.MultiImage,
     multi_image_y: geom.MultiImage,
     aux_data: Optional[eqx.nn.State] = None,
-    future_steps: int = 1,
-    return_map: bool = False,
-) -> Union[
-    tuple[jax.Array, Optional[eqx.nn.State], geom.MultiImage],
-    tuple[jax.Array, Optional[eqx.nn.State]],
-]:
-    vmap_autoregressive = jax.vmap(
-        ml.autoregressive_map,
-        in_axes=(None, 0, None, None, None),
-        out_axes=(0, None),
-        axis_name="batch",
+) -> tuple[jax.Array, Optional[eqx.nn.State]]:
+    pred_y, aux_data = jax.vmap(model, in_axes=(0, None), out_axes=(0, None), axis_name="batch")(
+        multi_image_x, aux_data
     )
-    out, aux_data = vmap_autoregressive(
-        model,
-        multi_image_x,
-        aux_data,
-        multi_image_x[((False,), 0)].shape[1],  # past_steps
-        future_steps,
-    )
-
-    loss = ml.timestep_smse_loss(out, multi_image_y, future_steps)
-    loss = loss[0] if future_steps == 1 else loss
-
-    return (loss, aux_data, out) if return_map else (loss, aux_data)
+    return ml.smse_loss(pred_y, multi_image_y), aux_data
 
 
 def train_and_eval(
-    data: tuple[geom.MultiImage, ...],
+    data: tuple[
+        geom.MultiImage,
+        geom.MultiImage,
+        geom.MultiImage,
+        geom.MultiImage,
+        list[geom.MultiImage],
+        list[geom.MultiImage],
+    ],
     key: ArrayLike,
     model_name: str,
     model: models.AnyDimensionalModel,
     lr: float,
-    conv_filters_d2: geom.MultiImage,
-    upsample_filters_d2: geom.MultiImage,
-    conv_filters_d3: geom.MultiImage,
-    upsample_filters_d3: geom.MultiImage,
+    test_conv_filters: list[tuple[geom.MultiImage, geom.MultiImage]],
     batch_size: int,
     epochs: int,
     save_model: Optional[str],
@@ -240,18 +219,7 @@ def train_and_eval(
     verbose: int = 1,
     is_wandb: bool = False,
 ) -> tuple[Optional[ArrayLike], ...]:
-    (
-        train_X,
-        train_Y,
-        val_X,
-        val_Y,
-        test_d1_X,
-        test_d1_Y,
-        test_d2_X,
-        test_d2_Y,
-        test_d3_X,
-        test_d3_Y,
-    ) = data
+    train_X, train_Y, val_X, val_Y, test_d_X, test_d_Y = data
     batch_stats = eqx.nn.State(model) if has_aux else None
 
     print(f"Model params: {models.count_params(model):,}")
@@ -309,14 +277,10 @@ def train_and_eval(
 
     assert isinstance(trained_model, models.AnyDimensionalModel)
     test_losses = []
-    for test_X, test_Y, conv_filters, upsample_filters in [
-        (test_d1_X, test_d1_Y, None, None),
-        (test_d2_X, test_d2_Y, conv_filters_d2, upsample_filters_d2),
-        (test_d3_X, test_d3_Y, conv_filters_d3, upsample_filters_d3),
-    ]:
-        if test_X.D < train_X.D:
-            continue
-        elif test_X.D == train_X.D:
+    for test_X, test_Y, (conv_filters, upsample_filters) in zip(
+        test_d_X, test_d_Y, test_conv_filters
+    ):
+        if test_X.D == train_X.D:
             trained_model_d = trained_model
         else:
             key, subkey = random.split(key)
@@ -343,11 +307,14 @@ def train_and_eval(
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
-        "--plot-component",
-        help="which component to plot, one of 0-3",
+        "--train-D", help="dimension of data to train on", choices=[1, 2, 3], default=1, type=int
+    )
+    parser.add_argument(
+        "--max-test-D",
+        help="maximum dimension of data to test on",
+        choices=[1, 2, 3],
+        default=2,
         type=int,
-        default=0,
-        choices=[0, 1, 2, 3],
     )
     parser.add_argument(
         "--rollout-steps",
@@ -366,8 +333,9 @@ def handleArgs() -> argparse.Namespace:
 
 # Main
 args = handleArgs()
+assert args.train_D <= args.max_test_D
 
-D = 2  # dimension of the training data
+range_test_D = list(range(args.train_D, args.max_test_D + 1))
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
 
@@ -376,7 +344,8 @@ n_test = args.batch if args.n_test is None else args.n_test
 n_val = args.batch if args.n_val is None else args.n_val
 
 data = get_data(
-    D,
+    args.train_D,
+    range_test_D,
     args.data,
     args.n_train,
     n_val,
@@ -387,35 +356,28 @@ data = get_data(
 input_keys = data[0].get_signature()
 output_keys = data[1].get_signature()  # (((0, 0), 2), ((1, 0), 1))
 
-group_actions = geom.make_all_operators(D)
+group_actions = geom.make_all_operators(args.train_D)
 conv_filters = geom.get_invariant_filters(
-    Ms=[3], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions
+    Ms=[3], ks=[0, 1], parities=[0], D=args.train_D, operators=group_actions
 )
 upsample_filters = geom.get_invariant_filters(
-    Ms=[2], ks=[0, 1, 2], parities=[0, 1], D=D, operators=group_actions
+    Ms=[2], ks=[0, 1], parities=[0], D=args.train_D, operators=group_actions
 )
 
-group_actions_d2 = geom.make_all_operators(2)
-conv_filters_d2 = geom.get_invariant_filters(
-    Ms=[3], ks=[0, 1, 2], parities=[0, 1], D=2, operators=group_actions_d2
-)
-upsample_filters_d2 = geom.get_invariant_filters(
-    Ms=[2], ks=[0, 1, 2], parities=[0, 1], D=2, operators=group_actions_d2
-)
+test_conv_filters = []
+for D in range_test_D:
+    group_actions_d = geom.make_all_operators(D)
+    conv_filters_d = geom.get_invariant_filters(
+        Ms=[3], ks=[0, 1], parities=[0], D=D, operators=group_actions_d
+    )
+    upsample_filters_d = geom.get_invariant_filters(
+        Ms=[2], ks=[0, 1], parities=[0], D=D, operators=group_actions_d
+    )
+    test_conv_filters.append((conv_filters_d, upsample_filters_d))
 
-group_actions_d3 = geom.make_all_operators(3)
-conv_filters_d3 = geom.get_invariant_filters(
-    Ms=[3], ks=[0, 1, 2], parities=[0, 1], D=3, operators=group_actions_d3
-)
-upsample_filters_d3 = geom.get_invariant_filters(
-    Ms=[2], ks=[0, 1, 2], parities=[0, 1], D=3, operators=group_actions_d3
-)
 
 train_kwargs = {
-    "conv_filters_d2": conv_filters_d2,
-    "upsample_filters_d2": upsample_filters_d2,
-    "conv_filters_d3": conv_filters_d3,
-    "upsample_filters_d3": upsample_filters_d3,
+    "test_conv_filters": test_conv_filters,
     "batch_size": args.batch,
     "epochs": args.epochs,
     "save_model": args.save_model,
@@ -424,7 +386,7 @@ train_kwargs = {
     "is_wandb": args.wandb,
 }
 
-padding_mode = "CIRCULAR" if data[0].is_torus == (True,) * D else "ZEROS"
+padding_mode = "CIRCULAR" if data[0].is_torus == (True,) * args.train_D else "ZEROS"
 key, *subkeys = random.split(key, num=13)
 model_list = [
     (
@@ -432,7 +394,7 @@ model_list = [
         train_and_eval,
         {
             "model": models.UNet(
-                D,
+                args.train_D,
                 input_keys,
                 output_keys,
                 depth=48,
@@ -458,7 +420,7 @@ results = ml.benchmark(
     [0],
     benchmark_type=ml.BENCHMARK_NONE,
     num_trials=args.n_trials,
-    num_results=3 + (3 - D),
+    num_results=2 + len(range_test_D),
     is_wandb=args.wandb,
     wandb_project=args.wandb_project,
     wandb_entity=args.wandb_entity,

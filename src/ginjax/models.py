@@ -493,7 +493,7 @@ class UNet(AnyDimensionalModel):
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
     use_bias: bool | str = eqx.field(static=True)
-    activation_f: Callable | str = eqx.field(static=True)
+    activation_f: Callable | str | None = eqx.field(static=True)
     use_group_norm: bool = eqx.field(static=True)
     use_batch_norm: bool = eqx.field(static=True)
     input_keys: geom.Signature = eqx.field(static=True)
@@ -510,7 +510,7 @@ class UNet(AnyDimensionalModel):
         num_downsamples: int = 4,
         num_conv: int = 2,
         use_bias: Union[bool, str] = "auto",
-        activation_f: Union[Callable, str] = jax.nn.gelu,
+        activation_f: Callable | str | None = jax.nn.gelu,
         equivariant: bool = True,
         conv_filters: Optional[geom.MultiImage] = None,
         upsample_filters: Optional[geom.MultiImage] = None,

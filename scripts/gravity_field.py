@@ -16,6 +16,7 @@ import equinox as eqx
 import ginjax.geometric as geom
 import ginjax.ml as ml
 import ginjax.models as models
+from ginjax import layers
 
 # Generate data for the gravity problem
 
@@ -93,10 +94,10 @@ def plot_results(
 
 
 class Model(models.MultiImageModule):
-    embedding: ml.ConvContract
-    first_layers: list[ml.ConvContract]
-    second_layers: list[ml.ConvContract]
-    last_layer: ml.ConvContract
+    embedding: layers.ConvContract
+    first_layers: list[layers.ConvContract]
+    second_layers: list[layers.ConvContract]
+    last_layer: layers.ConvContract
 
     def __init__(
         self: Self,
@@ -111,13 +112,13 @@ class Model(models.MultiImageModule):
         mid_keys = geom.signature_union(input_keys, target_keys, depth)
 
         key, subkey = random.split(key)
-        self.embedding = ml.ConvContract(input_keys, mid_keys, conv_filters, key=subkey)
+        self.embedding = layers.ConvContract(input_keys, mid_keys, conv_filters, key=subkey)
 
         self.first_layers = []
         for dilation in range(1, spatial_dims[0]):  # dilations in parallel
             key, subkey = random.split(key)
             self.first_layers.append(
-                ml.ConvContract(
+                layers.ConvContract(
                     mid_keys, mid_keys, conv_filters, rhs_dilation=(dilation,) * D, key=subkey
                 )
             )
@@ -126,13 +127,13 @@ class Model(models.MultiImageModule):
         for dilation in range(1, int(spatial_dims[0] / 2)):  # dilations in parallel
             key, subkey = random.split(key)
             self.first_layers.append(
-                ml.ConvContract(
+                layers.ConvContract(
                     mid_keys, mid_keys, conv_filters, rhs_dilation=(dilation,) * D, key=subkey
                 )
             )
 
         key, subkey = random.split(key)
-        self.last_layer = ml.ConvContract(mid_keys, target_keys, conv_filters, key=subkey)
+        self.last_layer = layers.ConvContract(mid_keys, target_keys, conv_filters, key=subkey)
 
     def __call__(
         self: Self, x: geom.MultiImage, aux_data: Optional[eqx.nn.State] = None

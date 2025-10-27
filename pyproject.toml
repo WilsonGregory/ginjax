@@ -1,6 +1,6 @@
 [project]
 name = "ginjax"
-version = "0.1.6"
+version = "0.1.7"
 author = [
     { name = "Wilson G. Gregory", email = "wilson.g.gregory@gmail.com" },
     { name = "Kaze W. K. Wong" },

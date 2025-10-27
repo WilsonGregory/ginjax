@@ -2,11 +2,12 @@ import time
 import itertools as it
 import pytest
 
-import ginjax.geometric as geom
-import ginjax.ml as ml
 import jax.numpy as jnp
 from jax import random, vmap
 import jax.lax
+
+import ginjax.geometric as geom
+from ginjax import layers
 
 
 class TestPropositions:
@@ -375,7 +376,7 @@ class TestPropositions:
                 for subkey, ((k, parity), _) in zip(subkeys, input_keys)
             }
             multi_image = geom.MultiImage(data, D)
-            layer_norm = ml.LayerNorm(multi_image.get_signature(), D, eps=0)
+            layer_norm = layers.LayerNorm(multi_image.get_signature(), D, eps=0)
 
             # assert that layer norm (group_norm with groups=1) is equivariant
             for gg in geom.make_all_operators(D):
@@ -394,7 +395,7 @@ class TestPropositions:
             key, subkey = random.split(key)
             image_block = random.normal(subkey, shape=(channels,) + (N,) * D + (D,))
 
-            whitened_data = ml.layers._group_norm_K1(D, image_block, 1, eps=0)
+            whitened_data = layers._group_norm_K1(D, image_block, 1, eps=0)
 
             # mean centered
             assert jnp.allclose(jnp.mean(whitened_data), 0, atol=geom.TINY, rtol=geom.TINY)
@@ -421,7 +422,7 @@ class TestPropositions:
             multi_image = geom.MultiImage(data, D)
 
             key, subkey = random.split(key)
-            vn_nonlinear = ml.VectorNeuronNonlinear(
+            vn_nonlinear = layers.VectorNeuronNonlinear(
                 multi_image.get_signature(), D, eps=0, key=subkey
             )
 

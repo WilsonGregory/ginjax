@@ -10,8 +10,8 @@ import jax
 import equinox as eqx
 
 import ginjax.geometric as geom
-import ginjax.ml as ml
 import ginjax.models as models
+from ginjax import layers
 
 
 class TestModels:
@@ -55,7 +55,7 @@ class TestModels:
                 )
 
                 key, subkey = random.split(key)
-                conv = ml.ConvContract(
+                conv = layers.ConvContract(
                     input_keys, target_keys, conv_filters, use_bias=False, key=subkey
                 )
                 if conv.missing_filter:
@@ -103,7 +103,7 @@ class TestModels:
                 )
 
                 key, subkey = random.split(key)
-                conv = ml.ConvContract(
+                conv = layers.ConvContract(
                     input_keys, target_keys, conv_filters, use_bias=False, key=subkey
                 )
                 if conv.missing_filter:
@@ -149,7 +149,7 @@ class TestModels:
         )
         key, subkey = random.split(key)
         out_signature = geom.Signature(((((True,), 0), in_c),))
-        conv = ml.ConvContract(
+        conv = layers.ConvContract(
             multi_image1.get_signature(), out_signature, conv_filters, use_bias=False, key=subkey
         )
 
@@ -176,7 +176,7 @@ class TestModels:
         )
 
         key, subkey = random.split(key)
-        conv = ml.ConvContract(
+        conv = layers.ConvContract(
             multi_image2.get_signature(),
             multi_image2.get_signature(),
             conv_filters,
@@ -191,7 +191,7 @@ class TestModels:
 
         with pytest.raises(AssertionError):
             key, subkey = random.split(key)
-            conv = ml.ConvContract(
+            conv = layers.ConvContract(
                 multi_image2.get_signature(),
                 multi_image2.get_signature(),
                 conv_filters,
@@ -243,7 +243,7 @@ class TestModels:
 
         key, subkey = random.split(key)
         # define ConvContract lower -> upper
-        conv = ml.ConvContract(
+        conv = layers.ConvContract(
             multi_image2.get_signature(),
             multi_image1.get_signature(),
             conv_filters,
@@ -252,7 +252,7 @@ class TestModels:
         )
 
         # this conv goes upper -> upper
-        conv_upper = ml.ConvContract(
+        conv_upper = layers.ConvContract(
             multi_image1.get_signature(),
             multi_image1.get_signature(),
             conv_filters,
@@ -277,14 +277,14 @@ class TestModels:
         multi_image4 = multi_image3.lower_all(jax.lax.Precision.HIGHEST)
 
         # conv for all lower
-        conv = ml.ConvContract(
+        conv = layers.ConvContract(
             multi_image4.get_signature(),
             multi_image2.get_signature(),  # lower vector output
             conv_filters,
             use_bias=False,
             key=subkey,
         )
-        conv_mixed = ml.ConvContract(
+        conv_mixed = layers.ConvContract(
             multi_image3.get_signature(),
             multi_image2.get_signature(),  # lower vector output
             conv_filters,

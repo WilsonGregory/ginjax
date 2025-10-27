@@ -4,16 +4,6 @@ from .losses import (
     normalized_smse_loss as normalized_smse_loss,
 )
 
-from .layers import (
-    ConvContract as ConvContract,
-    GroupNorm as GroupNorm,
-    LayerNorm as LayerNorm,
-    VectorNeuronNonlinear as VectorNeuronNonlinear,
-    MaxNormPool as MaxNormPool,
-    LayerWrapper as LayerWrapper,
-    LayerWrapperAux as LayerWrapperAux,
-)
-
 from .stopping_conditions import (
     EpochStop as EpochStop,
     TrainLoss as TrainLoss,

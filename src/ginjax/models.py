@@ -9,7 +9,7 @@ from jaxtyping import ArrayLike
 import equinox as eqx
 
 import ginjax.geometric as geom
-import ginjax.ml as ml
+from ginjax import layers
 
 ACTIVATION_REGISTRY = {
     "relu": jax.nn.relu,
@@ -43,19 +43,19 @@ def handle_activation(
             return lambda x: x
         elif isinstance(activation_f, str):
             assert activation_f in ACTIVATION_REGISTRY
-            return ml.VectorNeuronNonlinear(
+            return layers.VectorNeuronNonlinear(
                 input_keys, D, ACTIVATION_REGISTRY[activation_f], key=key
             )
         else:
-            return ml.VectorNeuronNonlinear(input_keys, D, activation_f, key=key)
+            return layers.VectorNeuronNonlinear(input_keys, D, activation_f, key=key)
     else:
         if activation_f is None:
-            return ml.LayerWrapper(eqx.nn.Identity(), input_keys)
+            return layers.LayerWrapper(eqx.nn.Identity(), input_keys)
         elif isinstance(activation_f, str):
             assert activation_f in ACTIVATION_REGISTRY
-            return ml.LayerWrapper(ACTIVATION_REGISTRY[activation_f], input_keys)
+            return layers.LayerWrapper(ACTIVATION_REGISTRY[activation_f], input_keys)
         else:
-            return ml.LayerWrapper(activation_f, input_keys)
+            return layers.LayerWrapper(activation_f, input_keys)
 
 
 def make_conv(
@@ -72,7 +72,7 @@ def make_conv(
     rhs_dilation: Union[int, tuple[int, ...]] = 1,
     padding_mode: str = "ZEROS",
     key: Any = None,  # any instead of arraylike because split cannot handle None
-) -> Union[ml.ConvContract, ml.LayerWrapper]:
+) -> Union[layers.ConvContract, layers.LayerWrapper]:
     """
     Factory for convolution layer which makes ConvContract if equivariant and makes a regular conv
     otherwise.
@@ -98,7 +98,7 @@ def make_conv(
     """
     if equivariant:
         assert invariant_filters is not None
-        return ml.ConvContract(
+        return layers.ConvContract(
             input_keys,
             target_keys,
             invariant_filters,
@@ -118,7 +118,7 @@ def make_conv(
         use_bias = True if use_bias == "auto" else use_bias
         assert isinstance(use_bias, bool)
         if lhs_dilation is None:
-            return ml.LayerWrapper(
+            return layers.LayerWrapper(
                 eqx.nn.Conv(
                     D,
                     input_keys[0][1],
@@ -135,7 +135,7 @@ def make_conv(
             )
         else:
             # if there is lhs_dilation, assume its a transpose convolution
-            return ml.LayerWrapper(
+            return layers.LayerWrapper(
                 eqx.nn.ConvTranspose(
                     D,
                     input_keys[0][1],
@@ -211,7 +211,7 @@ class AnyDimensionalModel(MultiImageModule):
         order scaled by the weights is equal for the old filters and the new.
 
         args:
-            weights: a weights dictionary from a ml.ConvContract layer
+            weights: a weights dictionary from a layers.ConvContract layer
             old_filters: the old filters that the weights came from
             new_filters: the new filters that we will be using the weights for
             rescale: if True, ensure the linear combination of the filters by weights is equal
@@ -303,7 +303,7 @@ class AnyDimensionalModel(MultiImageModule):
             a new model with the old weights except conv weights which are adjusted, and new filters
         """
         # get the new filters
-        is_conv = lambda n: isinstance(n, ml.ConvContract)
+        is_conv = lambda n: isinstance(n, layers.ConvContract)
         get_filters = lambda m: [
             x.invariant_filters for x in jax.tree_util.tree_leaves(m, is_leaf=is_conv) if is_conv(x)
         ]
@@ -357,10 +357,10 @@ class ConvBlock(MultiImageModule):
     Can be equivariant or not, in typical order or in preactivation order.
     """
 
-    conv: Union[ml.ConvContract, ml.LayerWrapper]
-    group_norm: Optional[Union[ml.GroupNorm, ml.LayerWrapper]]
-    batch_norm: Optional[ml.LayerWrapperAux]
-    nonlinearity: Union[ml.VectorNeuronNonlinear, ml.LayerWrapper, Callable]
+    conv: layers.ConvContract | layers.LayerWrapper
+    group_norm: layers.GroupNorm | layers.LayerWrapper | None
+    batch_norm: layers.LayerWrapperAux | None
+    nonlinearity: layers.VectorNeuronNonlinear | layers.LayerWrapper | Callable
 
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
@@ -423,16 +423,16 @@ class ConvBlock(MultiImageModule):
 
         if use_group_norm:
             if self.equivariant:
-                self.group_norm = ml.LayerNorm(output_keys, self.D)
+                self.group_norm = layers.LayerNorm(output_keys, self.D)
             else:
-                self.group_norm = ml.LayerWrapper(
+                self.group_norm = layers.LayerWrapper(
                     eqx.nn.GroupNorm(1, output_keys[0][1]), output_keys
                 )
         else:
             self.group_norm = None
 
         if use_batch_norm:
-            self.batch_norm = ml.LayerWrapperAux(
+            self.batch_norm = layers.LayerWrapperAux(
                 eqx.nn.BatchNorm(output_keys[0][1], axis_name=["pmap_batch", "batch"]), output_keys
             )
         else:
@@ -486,9 +486,9 @@ class UNet(AnyDimensionalModel):
     """
 
     embedding: list[ConvBlock]
-    downsample_blocks: list[tuple[ml.MaxNormPool, list[ConvBlock]]]
-    upsample_blocks: list[tuple[Union[ml.ConvContract, ml.LayerWrapper], list[ConvBlock]]]
-    decode: Union[ml.ConvContract, ml.LayerWrapper]
+    downsample_blocks: list[tuple[layers.MaxNormPool, list[ConvBlock]]]
+    upsample_blocks: list[tuple[layers.ConvContract | layers.LayerWrapper, list[ConvBlock]]]
+    decode: layers.ConvContract | layers.LayerWrapper
 
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
@@ -596,7 +596,7 @@ class UNet(AnyDimensionalModel):
 
         self.downsample_blocks = []
         for downsample in range(1, num_downsamples + 1):
-            down_layers = (ml.MaxNormPool(2, equivariant), [])
+            down_layers = (layers.MaxNormPool(2, equivariant), [])
 
             for conv_idx in range(num_conv):
                 out_keys = geom.Signature(

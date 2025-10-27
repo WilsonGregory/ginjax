@@ -15,6 +15,7 @@ import equinox as eqx
 import ginjax.geometric as geom
 import ginjax.ml as ml
 import ginjax.models as models
+from ginjax import layers
 
 
 class MLP(eqx.Module):
@@ -79,7 +80,7 @@ class VanillaModel(eqx.Module):
 
 
 class Model(eqx.Module):
-    layers: list[ml.ConvContract]
+    layers: list[layers.ConvContract]
     D: int
 
     def __init__(
@@ -102,7 +103,7 @@ class Model(eqx.Module):
             self.layers.append(
                 (
                     "conv_contract",
-                    ml.ConvContract(
+                    layers.ConvContract(
                         input_keys, target_keys, conv_filters, use_bias=False, key=subkey1
                     ),
                 )
@@ -111,7 +112,9 @@ class Model(eqx.Module):
                 self.layers.append(
                     (
                         "activation",
-                        ml.VectorNeuronNonlinear(target_keys, self.D, activation_f, key=subkey2),
+                        layers.VectorNeuronNonlinear(
+                            target_keys, self.D, activation_f, key=subkey2
+                        ),
                     )
                 )
 

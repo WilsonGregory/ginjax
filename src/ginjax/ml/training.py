@@ -511,7 +511,7 @@ BENCHMARK_NONE = "benchmark_none"
 
 
 def benchmark(
-    get_data: Callable[[Any], tuple[geom.MultiImage, ...]],
+    get_data: Callable,
     models: list[tuple[str, Callable, dict]],
     rand_key: ArrayLike,
     benchmark: str,

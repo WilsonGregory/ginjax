@@ -204,12 +204,21 @@ class AnyDimensionalModel(MultiImageModule):
         filter_key: tuple[tuple[bool, ...], int],
         old_filters: geom.MultiImage,
         new_filters: geom.MultiImage,
-    ):
+    ) -> jax.Array:
         """
-        Given a
+        Given a set of weights associated with old_filters, extend the weights to new_filters.
+        For offcenter weights (associated with a set of filters that has a center filter) and for
+        balanced weights (associated with a set of filters which has no center filter), the new
+        weights are the average of the old weights.
 
         args:
             old_weights_block: the old weights, shape (out_c,in_c,n_filters)
+            filter_key: the key for the filters we are extending weights for
+            old_filters: the old filters
+            new_filters: the new filters
+
+        returns:
+            the weights associated with the new filters
         """
         k = len(filter_key[0])
         if k not in {0, 1, 2}:
@@ -251,7 +260,6 @@ class AnyDimensionalModel(MultiImageModule):
                 old_weights_block.shape[:2] + (n_add_unbalanced,),
                 jnp.mean(offcenter_old_weights, axis=2, keepdims=True),
             )
-            # TODO: jnp.mean does not preserve the equality of the sums when starting D != 1
 
             new_unbalanced_weights = jnp.concatenate(
                 [center_weight, offcenter_old_weights, additional_weights], axis=2
@@ -298,37 +306,37 @@ class AnyDimensionalModel(MultiImageModule):
                 filter_k = in_k + out_k
                 filter_key = (filter_k, (in_p + out_p) % 2)
 
-                # (out_c, in_c, n_filters) -> (out_c,in_c,n_filters,(1,)*D,(1,)*k)
-                weights_mul = old_weights_block.reshape(
-                    old_weights_block.shape + (1,) * old_filters.D + (1,) * len(filter_k)
-                )
-                # old_filters: (n_filters,spatial,tensor)
-                old_weights_sum = jnp.sum(
-                    (old_filters[filter_key][None, None] * weights_mul),
-                    axis=tuple(range(2, 3 + old_filters.D)),  # sum over n_filters,spatial
-                )  # (out_c,in_c,tensor)
-
-                old_weights_sum = jnp.linalg.norm(
-                    old_weights_sum.reshape(old_weights_sum.shape[:2] + (-1,)), axis=2
-                )  # (out_c,in_c)
-
                 new_weights_block = AnyDimensionalModel._extend_weights(
                     old_weights_block, filter_key, old_filters, new_filters
                 )
 
-                weights_mul = new_weights_block.reshape(
-                    new_weights_block.shape + (1,) * new_filters.D + (1,) * len(filter_k)
-                )
-                new_weights_sum = jnp.sum(
-                    (new_filters[filter_key][None, None] * weights_mul),
-                    axis=tuple(range(2, 3 + new_filters.D)),  # sum over n_filters,spatial
-                )  # (out_c,in_c,tensor)
-
-                new_weights_sum = jnp.linalg.norm(
-                    new_weights_sum.reshape(new_weights_sum.shape[:2] + (-1,)), axis=2
-                )  # (out_c,in_c)
-
                 if rescale:
+                    # (out_c, in_c, n_filters) -> (out_c,in_c,n_filters,(1,)*D,(1,)*k)
+                    weights_mul = old_weights_block.reshape(
+                        old_weights_block.shape + (1,) * old_filters.D + (1,) * len(filter_k)
+                    )
+                    # old_filters: (n_filters,spatial,tensor)
+                    old_weights_sum = jnp.sum(
+                        (old_filters[filter_key][None, None] * weights_mul),
+                        axis=tuple(range(2, 3 + old_filters.D)),  # sum over n_filters,spatial
+                    )  # (out_c,in_c,tensor)
+
+                    old_weights_sum = jnp.linalg.norm(
+                        old_weights_sum.reshape(old_weights_sum.shape[:2] + (-1,)), axis=2
+                    )  # (out_c,in_c)
+
+                    weights_mul = new_weights_block.reshape(
+                        new_weights_block.shape + (1,) * new_filters.D + (1,) * len(filter_k)
+                    )
+                    new_weights_sum = jnp.sum(
+                        (new_filters[filter_key][None, None] * weights_mul),
+                        axis=tuple(range(2, 3 + new_filters.D)),  # sum over n_filters,spatial
+                    )  # (out_c,in_c,tensor)
+
+                    new_weights_sum = jnp.linalg.norm(
+                        new_weights_sum.reshape(new_weights_sum.shape[:2] + (-1,)), axis=2
+                    )  # (out_c,in_c)
+
                     ratios = (old_weights_sum / (new_weights_sum + geom.TINY))[..., None]
                 else:
                     ratios = jnp.ones_like(new_weights_block)

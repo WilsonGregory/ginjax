@@ -315,6 +315,7 @@ def train_and_eval(
             trained_model_d = trained_model
         else:
             key, subkey = random.split(key)
+            # rescale can be true or false when using zero_sum, the effect is small
             trained_model_d = trained_model.convertD(
                 conv_filters, False, subkey, upsample_filters=upsample_filters
             )
@@ -345,40 +346,6 @@ def train_and_eval(
         print(f"Test Relative Error D={test_X.D}: {test_rel_error:.4f}%")
         test_losses.append(test_loss)
 
-        if test_X.D == train_X.D:
-            trained_model_rescale_d = trained_model
-        else:
-            key, subkey = random.split(key)
-            trained_model_rescale_d = trained_model.convertD(
-                conv_filters, True, subkey, upsample_filters=upsample_filters
-            )
-
-        key, subkey = random.split(key)
-        test_loss = ml.map_loss_in_batches(
-            map_and_loss,
-            trained_model_rescale_d,
-            test_X,
-            test_Y,
-            test_batch_size,
-            subkey,
-            aux_data=batch_stats,
-        )
-        print(f"Test Loss rescale D={test_X.D}: {test_loss}")
-        test_losses.append(test_loss)
-
-        key, subkey = random.split(key)
-        test_rel_error = ml.map_loss_in_batches(
-            map_and_rel_error,
-            trained_model_rescale_d,
-            test_X,
-            test_Y,
-            test_batch_size,
-            subkey,
-            aux_data=batch_stats,
-        )
-        print(f"Test Relative Error rescale D={test_X.D}: {test_rel_error:.4f}%")
-        test_losses.append(test_loss)
-
     if images_dir:
         pred_y, _ = jax.vmap(trained_model, in_axes=(0, None), out_axes=(0, None))(
             val_X.get_one(), batch_stats
@@ -407,17 +374,13 @@ def handleArgs() -> argparse.Namespace:
     )
     parser.add_argument("-N", help="spatial size", type=int, default=128)
     parser.add_argument(
-        "--rollout-steps",
-        help="number of steps to rollout in test",
-        type=int,
-        default=5,
-    )
-    parser.add_argument(
         "--past-steps", help="number of past steps to use as input", type=int, default=4
     )
     parser.add_argument("--test-batch", help="batch size for test data", type=int, default=1)
     # need do to --wandb to activate, also need --wandb-entity your_wandb_name_here
-    parser.add_argument("--wandb-project", help="the wandb project", type=str, default="cfd-anyd")
+    parser.add_argument(
+        "--wandb-project", help="the wandb project", type=str, default="burgers-anyd"
+    )
 
     return parser.parse_args()
 
@@ -460,7 +423,7 @@ upsample_filters = geom.get_invariant_filters(
     parities=[0],
     D=args.train_D,
     operators=group_actions,
-    scale=geom.FilterScaling.ZERO_SUM,  # don't want zero sum for M=2
+    scale=geom.FilterScaling.ZERO_SUM,
 )
 
 test_conv_filters = []
@@ -480,7 +443,7 @@ for D in range_test_D:
         parities=[0],
         D=D,
         operators=group_actions_d,
-        scale=geom.FilterScaling.ZERO_SUM,  # don't want zero sum for M=2
+        scale=geom.FilterScaling.ZERO_SUM,
     )
     test_conv_filters.append((conv_filters_d, upsample_filters_d))
 
@@ -532,19 +495,14 @@ results = ml.benchmark(
     [0],
     benchmark_type=ml.BENCHMARK_NONE,
     num_trials=args.n_trials,
-    num_results=2 + len(range_test_D),
+    num_results=2 + len(range_test_D) * 2,  # train,val, l2 and rel error per test
     is_wandb=args.wandb,
     wandb_project=args.wandb_project,
     wandb_entity=args.wandb_entity,
-)
+)  # (trials,benchmark,models,outputs)
 
-rollout_res = results[..., 3:]
-non_rollout_res = jnp.concatenate(
-    [results[..., :3], jnp.sum(rollout_res, axis=-1, keepdims=True)], axis=-1
-)
-print(non_rollout_res)
-mean_results = jnp.mean(
-    non_rollout_res, axis=0
-)  # includes the sum of rollout. (benchmark_vals,models,outputs)
-std_results = jnp.std(non_rollout_res, axis=0)
-print("Mean", mean_results, sep="\n")
+print(results)
+mean_results = jnp.mean(results, axis=0)  # (benchmark_vals,models,outputs)
+std_results = jnp.std(results, axis=0)
+print("Mean over trials", mean_results, sep="\n")
+print("Stdev over trials", std_results, sep="\n")

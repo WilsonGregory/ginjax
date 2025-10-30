@@ -294,6 +294,7 @@ def scale_filters(
         or scale is FilterScaling.ZERO_SUM_GAUSSIAN_DIST
     ):
         # George's stencil based scaling. Sum of the filters has to equal 0.
+        # Filters are scaled by the number of nonempty pixels and by the number of filters.
         if k == 2:
             assert k2_irreps_basis, f"{scale} must use the k2_irrep_basis for k==2"
 

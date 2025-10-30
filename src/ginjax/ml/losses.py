@@ -139,6 +139,7 @@ def l1_rel_error(
         multi_image_x: predicted data, image_blocks are shape (batch,channels,spatial,tensor)
         multi_image_y: target data, image_blocks are shape (batch,channels,spatial,tensor)
         reduce: how to reduce over batch. Either "mean" or None.
+        eps: epsilon to add to the denominator to avoid divide by zero errors
 
     returns:
         average percent relative error with respect to the second input.
@@ -149,7 +150,7 @@ def l1_rel_error(
     ), f"l1_rel_error: reduce={reduce} must be one of {reduce_options}"
     assert (
         multi_image_x.get_n_leading() == multi_image_x.get_n_leading() == 2
-    ), "smse_loss: MultiImages must have batch and channel axes"
+    ), "l1_rel_error: MultiImages must have batch and channel axes"
 
     batch = multi_image_x.get_L()
     error_per_batch = jnp.zeros((batch, 0))
@@ -161,7 +162,4 @@ def l1_rel_error(
 
     error_per_batch = jnp.mean(error_per_batch, axis=1) * 100  # convert to percent
 
-    if reduce == "mean":
-        return jnp.mean(error_per_batch)
-    else:
-        return error_per_batch
+    return jnp.mean(error_per_batch) if reduce == "mean" else error_per_batch

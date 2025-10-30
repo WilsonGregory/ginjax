@@ -1,6 +1,7 @@
 import argparse
 import numpy as np
 import time
+import matplotlib.pyplot as plt
 
 import jax
 import jax.numpy as jnp
@@ -79,7 +80,7 @@ def get_data(
     key, subkey = random.split(key)
     test_seeds = random.randint(subkey, shape=(len(range_test_D),), minval=0, maxval=10000)
     for D, test_seed in zip(range_test_D, test_seeds):
-        print("test", D)
+        print(f"Generating test data, D={D}")
         _, test_data, _ = apebench.scraper.scrape_data_and_metadata(
             None,
             scenario="diff_burgers",
@@ -109,6 +110,99 @@ def get_data(
     return train_X, train_Y, val_X, val_Y, test_Xs, test_Ys
 
 
+def plot_multi_image(
+    test_multi_image: geom.MultiImage,
+    actual_multi_image: geom.MultiImage,
+    save_loc: str,
+    title: str = "",
+    minimal: bool = False,
+):
+    """
+    Plot vector x and y components of two MultiImages, and the differences between them. Each row
+    is is a component, and the columns are test, actual, and diff
+
+    args:
+        test_multi_image: the predicted MultiImage
+        actual_multi_image: the ground truth MultiImage
+        save_loc: file location to save the image
+        title: additional str to add to title, will be "test {title} {col}"
+            "actual {title} {col}"
+        minimal: if minimal, no titles, colorbars, or axes labels
+    """
+    print(f"in print: {ml.l1_rel_error(test_multi_image, actual_multi_image):.4f}%")
+
+    if test_multi_image.get_n_leading() == 2:
+        test_multi_image = test_multi_image.get_one(keepdims=False)
+
+    if actual_multi_image.get_n_leading() == 2:
+        actual_multi_image = actual_multi_image.get_one(keepdims=False)
+
+    img_arr = jnp.stack([test_multi_image[((False,), 0)], actual_multi_image[((False,), 0)]])
+    vmax = float(jnp.max(jnp.abs(img_arr)))
+    vmin = -1 * vmax
+
+    nrows = test_multi_image.D
+    ncols = 3
+    # figsize is 6 per col, 6 per row, (cols,rows)
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(6 * ncols, 6 * nrows))
+    for component in range(test_multi_image.D):
+
+        test_multi_image_comp = test_multi_image.get_component(component)
+        actual_multi_image_comp = actual_multi_image.get_component(component)
+
+        test_image = test_multi_image_comp.to_images()[0]
+        actual_image = actual_multi_image_comp.to_images()[0]
+
+        diff = actual_image - test_image
+        diff_max = float(jnp.max(jnp.abs(diff.data)))
+        diff_l2 = jnp.mean(diff.data**2)
+        diff_rel_err = jnp.mean(jnp.abs(diff.data / actual_image.data)) * 100
+
+        if minimal:
+            test_title = ""
+            actual_title = ""
+            diff_title = ""
+            colorbar = False
+        else:
+            test_title = f"test {title} {'y' if component else 'x'}"
+            actual_title = f"actual {title} {'y' if component else 'x'}"
+            diff_title = f"diff (l2: {diff_l2:.3e}, rel. err: {diff_rel_err:.2f}%)"
+            colorbar = True
+
+        test_image.plot(
+            axes[component, 0], title=test_title, vmin=vmin, vmax=vmax, colorbar=colorbar
+        )
+        actual_image.plot(
+            axes[component, 1], title=actual_title, vmin=vmin, vmax=vmax, colorbar=colorbar
+        )
+        diff.plot(
+            axes[component, 2], title=diff_title, vmin=-diff_max, vmax=diff_max, colorbar=colorbar
+        )
+
+    plt.tight_layout()
+    plt.savefig(save_loc)
+    plt.close(fig)
+
+
+@eqx.filter_jit
+def map_and_rel_error(
+    model: models.MultiImageModule,
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
+    aux_data: eqx.nn.State | None = None,
+) -> tuple[jax.Array, eqx.nn.State | None]:
+    residual, aux_data = jax.vmap(model, in_axes=(0, None), out_axes=(0, None), axis_name="batch")(
+        multi_image_x, aux_data
+    )
+
+    # add the last timestep to the residual
+    pred_y = residual.empty()
+    for ((k, parity), img_in), img_resid in zip(multi_image_x.items(), residual.values()):
+        pred_y.append(k, parity, img_in[:, -1:] + img_resid)
+
+    return ml.l1_rel_error(pred_y, multi_image_y), aux_data
+
+
 @eqx.filter_jit
 def map_and_loss(
     model: models.MultiImageModule,
@@ -116,9 +210,15 @@ def map_and_loss(
     multi_image_y: geom.MultiImage,
     aux_data: eqx.nn.State | None = None,
 ) -> tuple[jax.Array, eqx.nn.State | None]:
-    pred_y, aux_data = jax.vmap(model, in_axes=(0, None), out_axes=(0, None), axis_name="batch")(
+    residual, aux_data = jax.vmap(model, in_axes=(0, None), out_axes=(0, None), axis_name="batch")(
         multi_image_x, aux_data
     )
+
+    # add the last timestep to the residual. Maybe I already have a function for this?
+    pred_y = residual.empty()
+    for ((k, parity), img_in), img_resid in zip(multi_image_x.items(), residual.values()):
+        pred_y.append(k, parity, img_in[:, -1:] + img_resid)
+
     return ml.smse_loss(pred_y, multi_image_y), aux_data
 
 
@@ -137,14 +237,17 @@ def train_and_eval(
     lr: float,
     test_conv_filters: list[tuple[geom.MultiImage, geom.MultiImage]],
     batch_size: int,
+    test_batch_size: int,
     epochs: int,
     save_model: str | None,
     load_model: str | None,
+    images_dir: str | None,
     has_aux: bool = False,
     verbose: int = 1,
     is_wandb: bool = False,
 ) -> tuple[jax.Array | None, ...]:
     train_X, train_Y, val_X, val_Y, test_d_X, test_d_Y = data
+    N = train_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
 
     print(f"Model params: {models.count_params(model):,}")
@@ -174,10 +277,13 @@ def train_and_eval(
 
         if save_model is not None:
             # TODO: need to save batch_stats as well
-            ml.save(f"{save_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model)
+            ml.save(
+                f"{save_model}{model_name}_L{train_X.get_L()}_N{N}_e{epochs}_model.eqx",
+                trained_model,
+            )
     else:
         trained_model = ml.load(
-            f"{load_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model
+            f"{load_model}{model_name}_L{train_X.get_L()}_N{N}_e{epochs}_model.eqx", model
         )
 
         key, subkey1, subkey2 = random.split(key, num=3)
@@ -210,7 +316,7 @@ def train_and_eval(
         else:
             key, subkey = random.split(key)
             trained_model_d = trained_model.convertD(
-                conv_filters, True, subkey, upsample_filters=upsample_filters
+                conv_filters, False, subkey, upsample_filters=upsample_filters
             )
 
         key, subkey = random.split(key)
@@ -219,12 +325,70 @@ def train_and_eval(
             trained_model_d,
             test_X,
             test_Y,
-            batch_size,
+            test_batch_size,
             subkey,
             aux_data=batch_stats,
         )
         print(f"Test Loss D={test_X.D}: {test_loss}")
         test_losses.append(test_loss)
+
+        key, subkey = random.split(key)
+        test_rel_error = ml.map_loss_in_batches(
+            map_and_rel_error,
+            trained_model_d,
+            test_X,
+            test_Y,
+            test_batch_size,
+            subkey,
+            aux_data=batch_stats,
+        )
+        print(f"Test Relative Error D={test_X.D}: {test_rel_error:.4f}%")
+        test_losses.append(test_loss)
+
+        if test_X.D == train_X.D:
+            trained_model_rescale_d = trained_model
+        else:
+            key, subkey = random.split(key)
+            trained_model_rescale_d = trained_model.convertD(
+                conv_filters, True, subkey, upsample_filters=upsample_filters
+            )
+
+        key, subkey = random.split(key)
+        test_loss = ml.map_loss_in_batches(
+            map_and_loss,
+            trained_model_rescale_d,
+            test_X,
+            test_Y,
+            test_batch_size,
+            subkey,
+            aux_data=batch_stats,
+        )
+        print(f"Test Loss rescale D={test_X.D}: {test_loss}")
+        test_losses.append(test_loss)
+
+        key, subkey = random.split(key)
+        test_rel_error = ml.map_loss_in_batches(
+            map_and_rel_error,
+            trained_model_rescale_d,
+            test_X,
+            test_Y,
+            test_batch_size,
+            subkey,
+            aux_data=batch_stats,
+        )
+        print(f"Test Relative Error rescale D={test_X.D}: {test_rel_error:.4f}%")
+        test_losses.append(test_loss)
+
+    if images_dir:
+        pred_y, _ = jax.vmap(trained_model, in_axes=(0, None), out_axes=(0, None))(
+            val_X.get_one(), batch_stats
+        )
+        plot_multi_image(
+            pred_y,
+            val_Y.get_one(),
+            f"{images_dir}{model_name}_L{train_X.get_L()}_e{epochs}.png",
+            "burgers vector",
+        )
 
     return train_loss, val_loss, *test_losses
 
@@ -241,6 +405,7 @@ def handleArgs() -> argparse.Namespace:
         default=3,
         type=int,
     )
+    parser.add_argument("-N", help="spatial size", type=int, default=128)
     parser.add_argument(
         "--rollout-steps",
         help="number of steps to rollout in test",
@@ -250,6 +415,7 @@ def handleArgs() -> argparse.Namespace:
     parser.add_argument(
         "--past-steps", help="number of past steps to use as input", type=int, default=4
     )
+    parser.add_argument("--test-batch", help="batch size for test data", type=int, default=1)
     # need do to --wandb to activate, also need --wandb-entity your_wandb_name_here
     parser.add_argument("--wandb-project", help="the wandb project", type=str, default="cfd-anyd")
 
@@ -263,11 +429,17 @@ assert args.train_D <= args.max_test_D
 range_test_D = list(range(args.train_D, args.max_test_D + 1))
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
-N = 128
 
 key, subkey = random.split(key)
 data = get_data(
-    args.train_D, range_test_D, N, args.n_train, args.n_val, args.n_test, args.past_steps, subkey
+    args.train_D,
+    range_test_D,
+    args.N,
+    args.n_train,
+    args.n_val,
+    args.n_test,
+    args.past_steps,
+    subkey,
 )
 
 input_keys = data[0].get_signature()
@@ -275,20 +447,40 @@ output_keys = data[1].get_signature()
 
 group_actions = geom.make_all_operators(args.train_D)
 conv_filters = geom.get_invariant_filters(
-    Ms=[3], ks=[0, 1], parities=[0], D=args.train_D, operators=group_actions
+    Ms=[3],
+    ks=[0, 1, 2],
+    parities=[0],
+    D=args.train_D,
+    operators=group_actions,
+    scale=geom.FilterScaling.ZERO_SUM,
 )
 upsample_filters = geom.get_invariant_filters(
-    Ms=[2], ks=[0, 1], parities=[0], D=args.train_D, operators=group_actions
+    Ms=[2],
+    ks=[0, 1, 2],
+    parities=[0],
+    D=args.train_D,
+    operators=group_actions,
+    scale=geom.FilterScaling.ZERO_SUM,  # don't want zero sum for M=2
 )
 
 test_conv_filters = []
 for D in range_test_D:
     group_actions_d = geom.make_all_operators(D)
     conv_filters_d = geom.get_invariant_filters(
-        Ms=[3], ks=[0, 1], parities=[0], D=D, operators=group_actions_d
+        Ms=[3],
+        ks=[0, 1, 2],
+        parities=[0],
+        D=D,
+        operators=group_actions_d,
+        scale=geom.FilterScaling.ZERO_SUM,
     )
     upsample_filters_d = geom.get_invariant_filters(
-        Ms=[2], ks=[0, 1], parities=[0], D=D, operators=group_actions_d
+        Ms=[2],
+        ks=[0, 1, 2],
+        parities=[0],
+        D=D,
+        operators=group_actions_d,
+        scale=geom.FilterScaling.ZERO_SUM,  # don't want zero sum for M=2
     )
     test_conv_filters.append((conv_filters_d, upsample_filters_d))
 
@@ -296,9 +488,11 @@ for D in range_test_D:
 train_kwargs = {
     "test_conv_filters": test_conv_filters,
     "batch_size": args.batch,
+    "test_batch_size": args.test_batch,
     "epochs": args.epochs,
     "save_model": args.save_model,
     "load_model": args.load_model,
+    "images_dir": args.images_dir,
     "verbose": args.verbose,
     "is_wandb": args.wandb,
 }
@@ -315,6 +509,7 @@ model_list = [
                 input_keys,
                 output_keys,
                 depth=48,
+                num_downsamples=3 if args.N <= 64 else 4,
                 activation_f=jax.nn.gelu,
                 conv_filters=conv_filters,
                 upsample_filters=upsample_filters,

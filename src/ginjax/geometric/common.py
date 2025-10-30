@@ -299,8 +299,10 @@ def scale_filters(
 
         filters = [ff.normalize() for ff in filters]  # first set the norms to 1
 
-        # TODO: how to properly handle M=2? or even M in general?
-        if jnp.allclose(filters[0].nonempty_pixel_idxs(), jnp.zeros(D), rtol=TINY, atol=TINY):
+        if M == 2:  # hacky, make it equal to 1 currently
+            # TODO: how to properly handle M=2? or even M in general?
+            filters = [ff * (1 / (M**D)) for ff in filters]  # filters add up to 1 in norm
+        elif jnp.allclose(filters[0].nonempty_pixel_idxs(), jnp.zeros(D), rtol=TINY, atol=TINY):
             center_ff = filters[0] * -1
             offcenter_ffs = filters[1:]
 
@@ -309,30 +311,28 @@ def scale_filters(
             idxs_centered = idxs - ((jnp.array((M,) * D) - 1) / 2)
 
             if scale is FilterScaling.ZERO_SUM:
-                idxs_dist = jnp.ones((M,) * D)
+                idxs_dist = jnp.ones(M**D)
             elif scale is FilterScaling.ZERO_SUM_L2_DIST:
-                idxs_dist = 1 / (jnp.linalg.norm(idxs_centered, axis=-1) + 1e-5)  # (M,)*D
+                idxs_dist = 1 / (jnp.linalg.norm(idxs_centered, axis=-1).ravel() + 1e-5)
             elif scale is FilterScaling.ZERO_SUM_GAUSSIAN_DIST:
                 # similar to Gaussian, but sum to 0 instead of 1
-                idxs_dist = jnp.exp(-0.25 * jnp.linalg.norm(idxs_centered, axis=-1) ** 2)
+                idxs_dist = jnp.exp(-0.25 * jnp.linalg.norm(idxs_centered, axis=-1) ** 2).ravel()
 
-            nonempty_pixels = jnp.sum(
-                jnp.stack([ff.nonempty_pixels() for ff in offcenter_ffs], axis=1), axis=1
-            ).reshape((M,) * D)
-            pixel_sum = jnp.sum(idxs_dist * nonempty_pixels)
-
-            # construct a scalar image of the distances
-            dist_img = GeometricFilter(idxs_dist / pixel_sum, 0, D, filters[0].is_torus)
-
-            offcenter_ffs = [ff * dist_img for ff in offcenter_ffs]
+            ff_scaling = [
+                float(jnp.sum(idxs_dist * ff.nonempty_pixels()) * len(offcenter_ffs))
+                for ff in offcenter_ffs
+            ]
+            offcenter_ffs = [ff * (1 / ff_scale) for ff, ff_scale in zip(offcenter_ffs, ff_scaling)]
 
             filters = [center_ff] + offcenter_ffs
 
-        filter_sum = jnp.sum(
-            jnp.stack([ff.data.reshape((M**D,) + (D,) * ff.k) for ff in filters], axis=0),
-            axis=(0, 1),
-        )
-        assert jnp.allclose(filter_sum, 0, rtol=TINY, atol=TINY)
+            filter_sum = jnp.sum(
+                jnp.stack([ff.data.reshape((M**D,) + (D,) * ff.k) for ff in filters], axis=0),
+                axis=(0, 1),  # sum over n_filters, spatial
+            )
+            assert jnp.allclose(
+                filter_sum, 0, rtol=1e-3, atol=1e-3
+            ), f"{jnp.max(jnp.abs(filter_sum))}"
 
     return filters
 

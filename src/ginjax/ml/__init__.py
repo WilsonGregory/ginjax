@@ -1,8 +1,4 @@
-from .losses import (
-    timestep_smse_loss as timestep_smse_loss,
-    smse_loss as smse_loss,
-    normalized_smse_loss as normalized_smse_loss,
-)
+from .losses import *
 
 from .stopping_conditions import (
     EpochStop as EpochStop,

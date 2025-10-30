@@ -199,6 +199,77 @@ class AnyDimensionalModel(MultiImageModule):
     """
 
     @staticmethod
+    def _extend_weights(
+        old_weights_block: jax.Array,
+        filter_key: tuple[tuple[bool, ...], int],
+        old_filters: geom.MultiImage,
+        new_filters: geom.MultiImage,
+    ):
+        """
+        Given a
+
+        args:
+            old_weights_block: the old weights, shape (out_c,in_c,n_filters)
+        """
+        k = len(filter_key[0])
+        if k not in {0, 1, 2}:
+            raise NotImplementedError()
+
+        n_add_unbalanced = 0
+        n_add_balanced = 0
+        center_weight = None
+        offcenter_old_weights = None
+        balanced_weights = None
+        if k == 0:
+            center_weight = old_weights_block[:, :, :1]
+            offcenter_old_weights = old_weights_block[:, :, 1:]
+            n_add_unbalanced = len(new_filters[filter_key]) - len(old_filters[filter_key])
+        elif k == 1:
+            balanced_weights = old_weights_block
+            n_add_balanced = len(new_filters[filter_key]) - len(old_filters[filter_key])
+        elif k == 2:
+            # for k==2, the first set of filters follows the scalar filters
+            assert ((), 0) in old_filters
+            n_old_unbalanced = len(old_filters[(), 0])
+            center_weight = old_weights_block[:, :, :1]
+            offcenter_old_weights = old_weights_block[:, :, 1:n_old_unbalanced]
+            n_add_unbalanced = len(new_filters[(), 0]) - n_old_unbalanced
+
+            balanced_weights = old_weights_block[:, :, n_old_unbalanced:]
+            # gap between new filters and (old filters plus the additional unbalanced filter)
+            n_add_balanced = len(new_filters[filter_key]) - (
+                len(old_filters[filter_key]) + n_add_unbalanced
+            )
+
+        assert n_add_unbalanced >= 0
+        assert n_add_balanced >= 0
+
+        new_unbalanced_weights = jnp.zeros(old_weights_block.shape[:2] + (0,))
+        if center_weight is not None and offcenter_old_weights is not None:
+            # TODO: check what happens when n_add_unbalanced = 0
+            additional_weights = jnp.full(
+                old_weights_block.shape[:2] + (n_add_unbalanced,),
+                jnp.mean(offcenter_old_weights, axis=2, keepdims=True),
+            )
+            # TODO: jnp.mean does not preserve the equality of the sums when starting D != 1
+
+            new_unbalanced_weights = jnp.concatenate(
+                [center_weight, offcenter_old_weights, additional_weights], axis=2
+            )
+
+        new_balanced_weights = jnp.zeros(old_weights_block.shape[:2] + (0,))
+        if balanced_weights is not None:
+            assert balanced_weights is not None
+            additional_weights = jnp.full(
+                old_weights_block.shape[:2] + (n_add_balanced,),
+                jnp.mean(balanced_weights, axis=2, keepdims=True),
+            )
+
+            new_balanced_weights = jnp.concatenate([balanced_weights, additional_weights], axis=2)
+
+        return jnp.concatenate([new_unbalanced_weights, new_balanced_weights], axis=2)
+
+    @staticmethod
     def _transfer_conv_weights(
         weights: dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]],
         old_filters: geom.MultiImage,
@@ -224,56 +295,41 @@ class AnyDimensionalModel(MultiImageModule):
         for (in_k, in_p), in_weights in weights.items():
             new_weights[(in_k, in_p)] = {}
             for (out_k, out_p), old_weights_block in in_weights.items():
-                filter_key = ((False,) * (len(in_k) + len(out_k)), (in_p + out_p) % 2)
+                filter_k = in_k + out_k
+                filter_key = (filter_k, (in_p + out_p) % 2)
 
+                # (out_c, in_c, n_filters) -> (out_c,in_c,n_filters,(1,)*D,(1,)*k)
                 weights_mul = old_weights_block.reshape(
-                    old_weights_block.shape + (1,) * old_filters.D
+                    old_weights_block.shape + (1,) * old_filters.D + (1,) * len(filter_k)
                 )
+                # old_filters: (n_filters,spatial,tensor)
                 old_weights_sum = jnp.sum(
-                    old_filters[filter_key][None, None] * weights_mul,
-                    axis=tuple(range(2, 3 + old_filters.D)),
+                    (old_filters[filter_key][None, None] * weights_mul),
+                    axis=tuple(range(2, 3 + old_filters.D)),  # sum over n_filters,spatial
+                )  # (out_c,in_c,tensor)
+
+                old_weights_sum = jnp.linalg.norm(
+                    old_weights_sum.reshape(old_weights_sum.shape[:2] + (-1,)), axis=2
                 )  # (out_c,in_c)
 
-                n_new_filters = len(new_filters[filter_key]) - len(old_filters[filter_key])
-                if n_new_filters > 0:
-                    if (len(filter_key[0]) % 2) == 0:  # scalar, 2-tensor, etc.
-                        offcenter_old_weights = old_weights_block[:, :, 1:]
-
-                        additional_weights = jnp.full(
-                            old_weights_block.shape[:2] + (n_new_filters,),
-                            jnp.mean(offcenter_old_weights, axis=2, keepdims=True),
-                        )
-
-                        new_weights_block = jnp.concatenate(
-                            [
-                                old_weights_block[:, :, :1],
-                                offcenter_old_weights,
-                                additional_weights,
-                            ],
-                            axis=2,
-                        )
-                    else:  # vector, 3-tensor, etc.
-                        additional_weights = jnp.full(
-                            old_weights_block.shape[:2] + (n_new_filters,),
-                            jnp.mean(old_weights_block, axis=2, keepdims=True),
-                        )
-
-                        new_weights_block = jnp.concatenate(
-                            [old_weights_block, additional_weights], axis=2
-                        )
-                else:
-                    new_weights_block = old_weights_block
+                new_weights_block = AnyDimensionalModel._extend_weights(
+                    old_weights_block, filter_key, old_filters, new_filters
+                )
 
                 weights_mul = new_weights_block.reshape(
-                    new_weights_block.shape + (1,) * new_filters.D
+                    new_weights_block.shape + (1,) * new_filters.D + (1,) * len(filter_k)
                 )
                 new_weights_sum = jnp.sum(
-                    new_filters[filter_key][None, None] * weights_mul,
-                    axis=tuple(range(2, 3 + new_filters.D)),
-                )  # (out_c, in_c)
+                    (new_filters[filter_key][None, None] * weights_mul),
+                    axis=tuple(range(2, 3 + new_filters.D)),  # sum over n_filters,spatial
+                )  # (out_c,in_c,tensor)
+
+                new_weights_sum = jnp.linalg.norm(
+                    new_weights_sum.reshape(new_weights_sum.shape[:2] + (-1,)), axis=2
+                )  # (out_c,in_c)
 
                 if rescale:
-                    ratios = (old_weights_sum / new_weights_sum)[..., None]
+                    ratios = (old_weights_sum / (new_weights_sum + geom.TINY))[..., None]
                 else:
                     ratios = jnp.ones_like(new_weights_block)
 
@@ -322,7 +378,7 @@ class AnyDimensionalModel(MultiImageModule):
         ]
         conv_weights = get_conv_weights(self)
         new_weights = [
-            self.__class__._transfer_conv_weights(weight, old_filter, new_filter, rescale)
+            AnyDimensionalModel._transfer_conv_weights(weight, old_filter, new_filter, rescale)
             for weight, old_filter, new_filter in zip(conv_weights, get_filters(self), new_filters)
         ]
         new_model = eqx.tree_at(get_conv_weights, new_model, new_weights)
@@ -735,7 +791,7 @@ class UNet(AnyDimensionalModel):
         assert self.equivariant
         assert "upsample_filters" in kwargs
         new_model = self.__class__(
-            self.D,
+            conv_filters.D,
             self.input_keys,
             self.output_keys,
             0,  # ignored since mid_keys is provided

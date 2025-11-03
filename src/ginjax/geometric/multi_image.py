@@ -814,7 +814,7 @@ class MultiImage:
         fields into a single block of data (future_steps,spatial,channels*tensor) then pick the
         ith channel in the last axis, where i = component. For example, if the MultiImage has
         density (scalar), pressure (scalar), and velocity (vector) then i=0 -> density, i=1 ->
-        pressure, i=2 -> velocity 1, and i=3 -> velocity 2. This assumes D=2.
+        pressure, i=2 -> velocity 1, and i=3 -> velocity 2 (when D==2)
 
         args:
             component: which component to select

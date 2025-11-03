@@ -533,6 +533,11 @@ model_list = [
             **train_kwargs,
         },
     ),
+    (
+        "lastStepIdentity",
+        train_and_eval,
+        {"model": models.LastStepIdentity(residual=True), "lr": 1, **train_kwargs},
+    ),
 ]
 
 key, subkey = random.split(key)

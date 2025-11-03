@@ -1501,3 +1501,49 @@ class Climate1D(MultiImageModule):
                     new_signature[((), 1)] += size * n_lats
 
         return geom.Signature(tuple(new_signature.items()))
+
+
+class LastStepIdentity(AnyDimensionalModel):
+
+    residual: bool = eqx.field(static=True)
+
+    def __init__(self: Self, residual: bool = False):
+        self.residual = residual
+
+    def convertD(
+        self: Self, conv_filters: geom.MultiImage, rescale: bool, key: jax.Array, **kwargs
+    ) -> Self:
+        """
+        Convert model to a different dimension.
+
+        args:
+            conv_filters: the new conv filters we are swapping to, probably in a higher dimension
+            rescale: whether to force the sum of the filters in the new dimension to be equal
+            key: key to initialize the weights, since they are overruled it won't matter
+
+        returns:
+            a new model with new filters but the old weights
+        """
+        return self.__class__(self.residual)
+
+    def __call__(
+        self: Self, x: geom.MultiImage, batch_stats: eqx.nn.State | None = None
+    ) -> tuple[geom.MultiImage, eqx.nn.State | None]:
+        """
+        Callable function.
+
+        args:
+            x: the input MultiImage
+            batch_stats: batch stats for BatchNorm if present
+
+        returns:
+            the output MultiImage and batch_stats
+        """
+
+        out = x.empty()
+        for (k, parity), img_block in x.items():
+            # If it is a residual model, make it all zeros to add it
+            out_img_block = jnp.zeros_like(img_block[-1:]) if self.residual else img_block[-1:]
+            out.append(k, parity, out_img_block)
+
+        return out, batch_stats

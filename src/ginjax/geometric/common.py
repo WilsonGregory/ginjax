@@ -334,6 +334,27 @@ def scale_filters(
             assert jnp.allclose(
                 filter_sum, 0, rtol=1e-3, atol=1e-3
             ), f"{jnp.max(jnp.abs(filter_sum))}"
+    elif scale is FilterScaling.OONA_PURI_SCALED:
+        if k != 0:
+            raise NotImplementedError(f"scale_filters: Oona-Puri Scaled not implemented for k=={k}")
+
+        if M != 3:
+            raise ValueError(f"scale_filters: Oona-Puri Scaled only implemented for M=3, got M={M}")
+
+        filters = [ff.normalize() for ff in filters]  # first set the norms to 1
+
+        if D == 1:
+            filters = [ff * scale for ff, scale in zip(filters, [-4 / 3, 2 / 3])]
+        elif D == 2:
+            filters = [ff * scale for ff, scale in zip(filters, [-8 / 9, 4 / 9, -2 / 9])]
+        elif D == 3:
+            # TODO: fix the order of D=3 filters
+            # should be: [-16 / 27, 8 / 27, -4 / 27, 2 / 27]
+            filters = [
+                ff * scale for ff, scale in zip(filters, [-16 / 27, 8 / 27, 2 / 27, -4 / 27])
+            ]
+        else:
+            raise NotImplementedError(f"scale_filters: Oona-Puri Scaled not implemented for D={D}")
 
     return filters
 

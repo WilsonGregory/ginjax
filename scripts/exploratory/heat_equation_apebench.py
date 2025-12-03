@@ -12,11 +12,14 @@ import jax.numpy as jnp
 import jax.random as random
 import equinox as eqx
 import optax
+import apebench
+import exponax
 
 import ginjax.geometric as geom
 import ginjax.ml as ml
 import ginjax.models as models
 import ginjax.utils as utils
+import ginjax.data as gc_data
 
 
 def heat_step(D: int, x0: jax.Array, t: float, k: float, is_torus: bool) -> jax.Array:
@@ -46,8 +49,7 @@ def heat_step(D: int, x0: jax.Array, t: float, k: float, is_torus: bool) -> jax.
     idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, D))
     x1 = []
     for i, idx in enumerate(idxs):
-        if (i % (len(idxs) // 10)) == 0:
-            print(f"{D},{batch}: {i}/{len(idxs)}")
+        print(f"{D},{batch}: {i}/{len(idxs)}")
         # (spatial_size,D)
         if is_torus:
             idxs_diff = jnp.abs(idxs - idx[None])
@@ -64,73 +66,17 @@ def heat_step(D: int, x0: jax.Array, t: float, k: float, is_torus: bool) -> jax.
     return jnp.stack(x1, axis=1).reshape(x0.shape)
 
 
-def get_data_d(
-    D: int,
-    N: int,
-    is_torus: bool,
-    k: float,
-    t: float,
-    max_temp: float,
-    batch: int,
-    key: jax.Array,
-    data_dir: pathlib.Path | None,
-    data_name: str,
-) -> tuple[geom.MultiImage, geom.MultiImage]:
-    """
-    Get an input, output data pair of heat diffusion after t timestep, diffusion coefficient k.
-    The initial data is uniform on the range 0 to max_temp.
-
-    args:
-        D: the dimension of the space
-        N: sidelength of a cube of data
-        is_torus: whether the data is on the torus
-        k: diffusion coefficient
-        t: size of timestep
-        max_temp: max temperature
-        batch: number of data points
-        key: key for randomness
-        data_dir: directory
-        data_name: name where to save the data
-
-    returns:
-        input multi image, output multi image
-    """
-    if data_dir is None:
-        raise ValueError
-
-    data_dir = (
-        data_dir
-        / f"{data_name}_N{N}_istorus{int(is_torus)}_n{batch}_k{k}_t{t}_maxtemp{max_temp}.npy"
-    )
-
-    if data_dir.is_file():
-        dataset = jnp.load(data_dir, allow_pickle=True).item()
-        x0 = dataset["x0"]
-        xt = dataset["xt"]
-    else:
-        key, subkey = random.split(key)
-        x0 = random.uniform(subkey, shape=(batch,) + (N,) * D, minval=-max_temp, maxval=max_temp)
-        xt = heat_step(D, x0, t, k, is_torus)
-
-        print(f"saving at {data_dir}...")
-        jnp.save(data_dir, {"x0": x0, "xt": xt})
-
-    x0_img = geom.MultiImage({(0, 0): x0[:, None]}, D, is_torus)
-    xt_img = geom.MultiImage({(0, 0): xt[:, None]}, D, is_torus)
-
-    return x0_img, xt_img
-
-
 def get_data(
+    data_dir: str,
     train_D: int,
-    test_D_range: tuple[int, ...],
+    range_test_D: list[int],
     N: int,
-    is_torus: bool,
     n_train: int,
     n_val: int,
     n_test: int,
+    subsample: int,
+    past_steps: int,
     key: jax.Array,
-    data_dir: str | None,
 ) -> tuple[
     geom.MultiImage,
     geom.MultiImage,
@@ -139,47 +85,247 @@ def get_data(
     list[geom.MultiImage],
     list[geom.MultiImage],
 ]:
-    """
-    Get an input, output data pair of heat diffusion after 1 timestep, diffusion constant 10.
-    The initial data is uniform on the range 0 to 5.
+    if train_D != range_test_D[0]:
+        raise ValueError()
 
-    args:
-        D: the dimension of the space
-        N: sidelength of a cube of data
-        is_torus: whether the data is on the torus
-        n_train: number of training data points
-        n_val: number of validation data points
-        ntest: number of test data points for each test dimension
-        key: key for randomness
-        data_dir: location to save or load the data from
+    is_torus = True
+    n_timesteps = 2  # 50?
+    n_timesteps_int = n_timesteps * subsample  # integrator time steps
+    n_warmup_steps = 1  # in 3D, seems like there is an initial problem
+    dt = 1
 
-    returns:
-        input multi image, output multi image
-    """
-    max_temp = math.sqrt(3)
-    k = 2
-    t = 1
-    data_dir_path = pathlib.Path(data_dir) if data_dir is not None else None
+    diffusion_coef = 2.0  # default for difficulty.Diffusion
 
-    key, subkey1, subkey2 = random.split(key, num=3)
-    train_x0, train_xt = get_data_d(
-        train_D, N, is_torus, k, t, max_temp, n_train, subkey1, data_dir_path, f"train_D{train_D}"
-    )
-    val_x0, val_xt = get_data_d(
-        train_D, N, is_torus, k, t, max_temp, n_val, subkey2, data_dir_path, f"val_D{train_D}"
+    diffusion_stepper = exponax.stepper.Diffusion(
+        train_D, domain_extent=N, num_points=N, dt=dt, diffusivity=diffusion_coef
     )
 
-    test_d_x0 = []
-    test_d_xt = []
-    for D in test_D_range:
+    # train_name = f"{train_D}D_{scenario}_N{N}_timesteps{n_timesteps_int}_diffusion{diffusion_coef * scaler(train_D)}"
+    print(f"Generating train data D={train_D}")
+    key, subkey = random.split(key)
+    cpu = jax.devices("cpu")[0]
+
+    train_ic_gen = exponax.ic.GaussianRandomField(train_D, zero_mean=True, std_one=True)
+    # train_x0 = exponax.build_ic_set(train_ic_gen, num_points=N, num_samples=n_train, key=subkey)
+    train_x0 = random.normal(subkey, shape=(n_train, 1) + (N,) * train_D)
+    train_xt = heat_step(train_D, train_x0[:, 0], dt, diffusion_coef, is_torus)[:, None]
+    # train_xt = diffusion_stepper.step(train_x0)  # (batch,channels,spatial)
+
+    train_x0 = jax.device_put(train_x0, cpu)
+    train_xt = jax.device_put(train_xt, cpu)
+
+    train_X = geom.MultiImage({(0, 0): train_x0}, train_D, is_torus)
+    train_Y = geom.MultiImage({(0, 0): train_xt}, train_D, is_torus)
+
+    key, subkey = random.split(key)
+    val_x0 = random.normal(subkey, shape=(n_val, 1) + (N,) * train_D)
+    # val_x0 = exponax.build_ic_set(train_ic_gen, num_points=N, num_samples=n_val, key=subkey)
+    val_xt = heat_step(train_D, val_x0[:, 0], dt, diffusion_coef, is_torus)[:, None]
+    # val_xt = diffusion_stepper.step(val_x0)  # (batch,spatial)
+
+    val_x0 = jax.device_put(val_x0, cpu)
+    val_xt = jax.device_put(val_xt, cpu)
+
+    val_X = geom.MultiImage({(0, 0): val_x0}, train_D, is_torus)
+    val_Y = geom.MultiImage({(0, 0): val_xt}, train_D, is_torus)
+
+    test_Xs = []
+    test_Ys = []
+    for D in range_test_D:
+        # if D=3, N=128, baseline timesteps=50, subsample=8, that takes 10Gb of memory, so split it up
+
+        test_ic_gen = exponax.ic.GaussianRandomField(D, zero_mean=True, std_one=True)
         key, subkey = random.split(key)
-        test_x0, test_xt = get_data_d(
-            D, N, is_torus, k, t, max_temp, n_test, subkey, data_dir_path, f"test_D{D}"
-        )
-        test_d_x0.append(test_x0)
-        test_d_xt.append(test_xt)
+        # test_x0 = exponax.build_ic_set(test_ic_gen, num_points=N, num_samples=n_test, key=subkey)
+        test_x0 = random.normal(subkey, shape=(n_test, 1) + (N,) * D)
+        test_xt = heat_step(D, test_x0[:, 0], dt, diffusion_coef, is_torus)[:, None]
+        # test_xt = diffusion_stepper.step(test_x0)  # (batch,spatial)
 
-    return (train_x0, train_xt, val_x0, val_xt, test_d_x0, test_d_xt)
+        test_x0 = jax.device_put(test_x0, cpu)
+        test_xt = jax.device_put(test_xt, cpu)
+
+        test_X = geom.MultiImage({(0, 0): test_x0}, D, is_torus)
+        test_Y = geom.MultiImage({(0, 0): test_xt}, D, is_torus)
+
+        test_Xs.append(test_X)
+        test_Ys.append(test_Y)
+
+    return train_X, train_Y, val_X, val_Y, test_Xs, test_Ys
+
+
+def get_data_old(
+    data_dir: str,
+    train_D: int,
+    range_test_D: list[int],
+    N: int,
+    n_train: int,
+    n_val: int,
+    n_test: int,
+    subsample: int,
+    past_steps: int,
+    key: jax.Array,
+) -> tuple[
+    geom.MultiImage,
+    geom.MultiImage,
+    geom.MultiImage,
+    geom.MultiImage,
+    list[geom.MultiImage],
+    list[geom.MultiImage],
+]:
+    if train_D != range_test_D[0]:
+        raise ValueError()
+
+    is_torus = True
+    n_timesteps = 2  # 50?
+    n_timesteps_int = n_timesteps * subsample  # integrator time steps
+    n_warmup_steps = 1  # in 3D, seems like there is an initial problem
+    scenario = "diff_diff"
+
+    # apebench.scenarios.physical.Diffusion()
+    # apebench.scenarios.normalized.Diffusion()
+    # apebench.scenarios.difficulty.Diffusion()
+
+    diffusion_coef = 4  # default for difficulty.Diffusion
+    # diffusion_coef = 0.00008  # default for norm.Diffusion is 0.0008
+    # diffusion_coef = 0.00008  # default for physical.Diffusion is 0.00008
+    scaler = lambda d: d
+
+    train_name = f"{train_D}D_{scenario}_N{N}_timesteps{n_timesteps_int}_diffusion{diffusion_coef * scaler(train_D)}"
+    print(train_name)
+    train_path = pathlib.Path(f"{data_dir}") / f"{train_name}_train.npy"
+    val_path = pathlib.Path(f"{data_dir}") / f"{train_name}_test.npy"
+    if not train_path.is_file() or not val_path.is_file():
+        print(f"Generating train data D={train_D}")
+        key, subkey = random.split(key)
+        train_seed, test_seed = random.randint(subkey, shape=(2,), minval=0, maxval=10000)
+
+        apebench.scraper.scrape_data_and_metadata(
+            data_dir,
+            scenario=scenario,
+            name=train_name,
+            num_spatial_dims=train_D,
+            num_points=N,
+            num_warmup_steps=n_warmup_steps,
+            num_train_samples=n_train,
+            num_test_samples=n_val,
+            train_seed=int(train_seed),
+            test_seed=int(test_seed),
+            train_temporal_horizon=n_timesteps_int - 1,
+            test_temporal_horizon=n_timesteps_int - 1,
+            # diffusion_coef=diffusion_coef * scaler(train_D),
+            # diffusion_alpha=diffusion_coef * scaler(train_D),
+            diffusion_gamma=diffusion_coef * scaler(train_D),
+        )
+
+    cpu = jax.devices("cpu")[0]
+    # (batch,timesteps,tensor,spatial) -> (batch,timesteps,spatial)
+    train_data = jax.device_put(jnp.load(train_path)[:, ::subsample, 0], cpu)
+    val_data = jax.device_put(jnp.load(val_path)[:, ::subsample, 0], cpu)
+    # subsample here for memory efficiency
+
+    train_data /= jnp.std(train_data[:, :1])
+    val_data /= jnp.std(train_data[:, :1])
+
+    constant_fields = geom.MultiImage({}, train_D, is_torus)
+    train_X, train_Y = gc_data.batch_time_series(
+        geom.MultiImage({(0, 0): train_data}, train_D, is_torus),
+        constant_fields,
+        n_timesteps,
+        past_steps,
+        1,
+    )
+    val_X, val_Y = gc_data.batch_time_series(
+        geom.MultiImage({(0, 0): val_data}, train_D, is_torus),
+        constant_fields,
+        n_timesteps,
+        past_steps,
+        1,
+    )
+
+    test_Xs = []
+    test_Ys = []
+    key, subkey = random.split(key)
+    test_seeds = random.randint(subkey, shape=(len(range_test_D),), minval=0, maxval=10000)
+    for D, test_seed in zip(range_test_D, test_seeds):
+        # if D=3, N=128, baseline timesteps=50, subsample=8, that takes 10Gb of memory, so split it up
+        batch = 1 if D == 3 else n_test
+
+        test_data = jax.device_put(jnp.zeros((0, n_timesteps) + (N,) * D), cpu)
+        for i in range(n_test // batch):
+            # diff_burgers scales diffusion_gamma and convection_delta by D, so we unscale them so
+            # that the equation is the same across dimensions.
+
+            # a little awkward because it will say test_test at the end
+            test_name = f"{D}D_{scenario}_N{N}_timesteps{n_timesteps_int}_diffusion{diffusion_coef * scaler(D)}_i{i}_test"
+            test_path = pathlib.Path(f"{data_dir}") / f"{test_name}_test.npy"
+            if not test_path.is_file():
+                print(f"Generating test data, D={D}")
+                key, subkey = random.split(key)
+                train_seed, test_seed = random.randint(subkey, shape=(2,), minval=0, maxval=10000)
+
+                apebench.scraper.scrape_data_and_metadata(
+                    data_dir,
+                    scenario=scenario,
+                    name=test_name,
+                    num_spatial_dims=D,
+                    num_points=N,
+                    num_warmup_steps=n_warmup_steps,
+                    num_train_samples=0,
+                    num_test_samples=batch,
+                    test_seed=int(test_seed),
+                    train_temporal_horizon=n_timesteps_int - 1,
+                    test_temporal_horizon=n_timesteps_int - 1,
+                    # diffusion_coef=diffusion_coef * scaler(D),  # may have to scale relative to D
+                    # diffusion_alpha=diffusion_coef * scaler(D),  # may have to scale relative to D
+                    diffusion_gamma=diffusion_coef * scaler(D),  # may have to scale relative to D
+                )
+
+            # subsample here for memory efficiency
+            test_data_i = jax.device_put(jnp.load(test_path)[:, ::subsample, 0], cpu)
+            test_data = jnp.concatenate([test_data, test_data_i], axis=0)
+
+        test_data /= jnp.std(test_data[:, :1])
+
+        print(f"{D}, ({jnp.mean(test_data[:, 0]):.4e}, {jnp.std(test_data[:,0]):.3f})", end=" ")
+        for i in range(1, n_timesteps):
+            prev = jnp.std(test_data[:, i - 1])
+            cur = jnp.std(test_data[:, i])
+            print(f"({jnp.std(test_data[:,i]):.4e}, {(prev - cur)*100/ prev:.1f}%)", end=" ")
+
+            # print(f"({jnp.mean(test_data[:, i]):.4e}, {jnp.std(test_data[:,i]):.3f})", end=" ")
+
+            # print(
+            #     test_data.shape,
+            #     jnp.mean(jnp.abs(test_data[:, 0] - test_data[:, 1])),
+            #     jnp.mean(jnp.abs(test_data[:, 0] - test_data[:, 1]) / jnp.abs(test_data[:, 1])),
+            #     jnp.mean(jnp.abs(test_data[:, 0])),
+            #     jnp.mean(jnp.abs(test_data[:, 1])),
+            # )
+
+            # print(
+            #     test_data.shape,
+            #     jnp.mean(jnp.abs(test_data[:, 1] - test_data[:, 2])),
+            #     jnp.mean(jnp.abs(test_data[:, 1] - test_data[:, 2]) / jnp.abs(test_data[:, 2])),
+            #     jnp.mean(jnp.abs(test_data[:, 1])),
+            #     jnp.mean(jnp.abs(test_data[:, 2])),
+            # )
+
+        print("")
+
+        constant_fields = geom.MultiImage({}, D, is_torus)
+
+        test_X, test_Y = gc_data.batch_time_series(
+            geom.MultiImage({(0, 0): test_data}, D, is_torus),
+            constant_fields,
+            n_timesteps,
+            past_steps,
+            1,
+        )
+
+        test_Xs.append(test_X)
+        test_Ys.append(test_Y)
+
+    return train_X, train_Y, val_X, val_Y, test_Xs, test_Ys
 
 
 def plot_multi_image(
@@ -238,52 +384,60 @@ def plot_multi_image(
     vmax = float(jnp.max(jnp.abs(img_arr)))
     vmin = -1 * vmax
 
-    nrows = 1
+    nrows = test_multi_image.D
     ncols = 4
     # figsize is 6 per col, 6 per row, (cols,rows)
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(6 * ncols, 6 * nrows))
+    for component in range(test_multi_image.D):
+        comp_name = ["x", "y", "z"][component]
 
-    input_image = input_multi_image.to_images()[0]
-    if input_image.D == 3:
-        input_image = geom.GeometricImage(input_image.data[N // 2], input_image.parity, 2)
+        input_image = input_multi_image.get_component(component).to_images()[0]
+        if input_image.D == 3:
+            input_image = geom.GeometricImage(input_image.data[N // 2], input_image.parity, 2)
 
-    input_image.plot(axes[0], title=f"input {title}", vmin=vmin, vmax=vmax, colorbar=True)
+        input_image.plot(
+            axes[component, 0],
+            title=f"input {title} {comp_name}",
+            vmin=vmin,
+            vmax=vmax,
+            colorbar=True,
+        )
 
-    actual_image = actual_multi_image.to_images()[0]
-    test_image = test_multi_image.to_images()[0]
+        actual_image = actual_multi_image.get_component(component).to_images()[0]
+        test_image = test_multi_image.get_component(component).to_images()[0]
 
-    if actual_image.D == 3:
-        actual_image = geom.GeometricImage(actual_image.data[N // 2], actual_image.parity, 2)
-    if test_image.D == 3:
-        test_image = geom.GeometricImage(test_image.data[N // 2], test_image.parity, 2)
+        if actual_image.D == 3:
+            actual_image = geom.GeometricImage(actual_image.data[N // 2], actual_image.parity, 2)
+        if test_image.D == 3:
+            test_image = geom.GeometricImage(test_image.data[N // 2], test_image.parity, 2)
 
-    diff = actual_image - test_image
-    diff_max = float(jnp.max(jnp.abs(diff.data)))
-    diff_l2 = jnp.mean(diff.data**2)
-    diff_rel_err = jnp.mean(jnp.abs(diff.data / actual_image.data)) * 100
-    diff_title = f"diff (l2: {diff_l2:.3e}, rel. err: {diff_rel_err:.2f}%)"
+        diff = actual_image - test_image
+        diff_max = float(jnp.max(jnp.abs(diff.data)))
+        diff_l2 = jnp.mean(diff.data**2)
+        diff_rel_err = jnp.mean(jnp.abs(diff.data / actual_image.data)) * 100
+        diff_title = f"diff (l2: {diff_l2:.3e}, rel. err: {diff_rel_err:.2f}%)"
 
-    actual_image.plot(
-        axes[1],
-        title=f"output {title}",
-        vmin=vmin,
-        vmax=vmax,
-        colorbar=True,
-    )
-    test_image.plot(
-        axes[2],
-        title=f"pred {title}",
-        vmin=vmin,
-        vmax=vmax,
-        colorbar=True,
-    )
-    diff.plot(
-        axes[3],
-        title=diff_title,
-        vmin=-diff_max,
-        vmax=diff_max,
-        colorbar=True,
-    )
+        actual_image.plot(
+            axes[component, 1],
+            title=f"output {title} {comp_name}",
+            vmin=vmin,
+            vmax=vmax,
+            colorbar=True,
+        )
+        test_image.plot(
+            axes[component, 2],
+            title=f"pred {title} {comp_name}",
+            vmin=vmin,
+            vmax=vmax,
+            colorbar=True,
+        )
+        diff.plot(
+            axes[component, 3],
+            title=diff_title,
+            vmin=-diff_max,
+            vmax=diff_max,
+            colorbar=True,
+        )
 
     plt.tight_layout()
     plt.savefig(save_loc)
@@ -392,7 +546,7 @@ def map_and_loss_rel_error(
     pred_y, aux_data = map_residual(model, multi_image_x, aux_data)
 
     loss = ml.smse_loss(pred_y, multi_image_y)
-    rel_error = ml.l2_rel_error(pred_y, multi_image_y)
+    rel_error = ml.l2_rel_error(pred_y, multi_image_y, eps=1e-8)
     return jnp.stack([loss, rel_error]), aux_data
 
 
@@ -518,14 +672,16 @@ def train_and_eval(
         test_losses.append(test_loss[0])
         test_losses.append(test_loss[1])
 
-        if images_dir and test_X.D == 2:
-            pred_y, _ = map_residual(trained_model_d, test_X.get_one(), batch_stats)
+        if images_dir:
+            pred_y, _ = jax.vmap(trained_model_d, in_axes=(0, None), out_axes=(0, None))(
+                test_X.get_one(), batch_stats
+            )
 
             plot_multi_image(
                 test_X.get_one(),
                 test_Y.get_one(),
                 pred_y.get_one(),
-                f"{images_dir}{model_name_extended}_D{test_X.D}_trainD{train_X.D}.png",
+                f"{images_dir}{model_name_extended}_D{test_X.D}.png",
                 "heat",
             )
 
@@ -534,40 +690,63 @@ def train_and_eval(
 
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
+    parser.add_argument(
+        "--train-D", help="dimension of data to train on", choices=[1, 2, 3], default=1, type=int
+    )
+    parser.add_argument(
+        "--max-test-D",
+        help="maximum dimension of data to test on",
+        choices=[1, 2, 3],
+        default=3,
+        type=int,
+    )
+    parser.add_argument("-N", help="spatial size", type=int, default=128)
+    parser.add_argument(
+        "--past-steps", help="number of past steps to use as input", type=int, default=1
+    )
+    parser.add_argument(
+        "--subsample", help="how much to subsample the trajectories", type=int, default=8
+    )
+    parser.add_argument("--test-batch", help="batch size for test data", type=int, default=1)
     # need do to --wandb to activate, also need --wandb-entity your_wandb_name_here
     parser.add_argument(
-        "--wandb-project", help="the wandb project", type=str, default="heat-equation"
+        "--wandb-project", help="the wandb project", type=str, default="heat-equation-apebench"
     )
 
     return parser.parse_args()
 
 
-# MAIN
+# Main
 args = handleArgs()
-train_D = 2
-N = 128
-max_D = 2
-test_D_range = tuple(range(train_D, max_D + 1))
+assert args.train_D <= args.max_test_D
+
+range_test_D = list(range(args.train_D, args.max_test_D + 1))
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
 
 key, subkey = random.split(key)
-print("Generating data...", end="", flush=True)
-t_start = time.time()
 data = get_data(
-    train_D, test_D_range, N, True, args.n_train, args.n_val, args.n_test, subkey, args.data
+    args.data,
+    args.train_D,
+    range_test_D,
+    args.N,
+    args.n_train,
+    args.n_val,
+    args.n_test,
+    args.subsample,
+    args.past_steps,
+    subkey,
 )
-print(f"done. ({time.time() - t_start:.2f}s)", flush=True)
 
 input_keys = data[0].get_signature()
 output_keys = data[1].get_signature()
 
-group_actions = geom.make_all_operators(train_D)
+group_actions = geom.make_all_operators(args.train_D)
 conv_filters = geom.get_invariant_filters(
     Ms=[3],
     ks=[0],
     parities=[0],
-    D=train_D,
+    D=args.train_D,
     operators=group_actions,
     scale=geom.FilterScaling.ZERO_SUM,
 )
@@ -575,13 +754,13 @@ upsample_filters = geom.get_invariant_filters(
     Ms=[2],
     ks=[0],
     parities=[0],
-    D=train_D,
+    D=args.train_D,
     operators=group_actions,
     scale=geom.FilterScaling.ZERO_SUM,
 )
 
 test_conv_filters = []
-for D in test_D_range:
+for D in range(args.train_D, 4):
     group_actions_d = geom.make_all_operators(D)
     conv_filters_d = geom.get_invariant_filters(
         Ms=[3],
@@ -632,58 +811,23 @@ model_list = [
         train_and_eval,
         {"model": models.LastStepIdentity(residual=True), "lr": 1, **train_kwargs},
     ),
-    (
-        "unetBase_equiv48",
-        train_and_eval,
-        {
-            "model": models.UNet(
-                train_D,
-                input_keys,
-                output_keys,
-                depth=48,
-                num_downsamples=3 if N <= 64 else 4,
-                activation_f=jax.nn.gelu,
-                conv_filters=conv_filters,
-                upsample_filters=upsample_filters,
-                key=subkeys[1],
-            ),
-            "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-            **train_kwargs,
-        },
-    ),
-    (
-        "resnet_equiv_42",
-        train_and_eval,
-        {
-            "model": models.ResNet(
-                train_D,
-                input_keys,
-                output_keys,
-                depth=42,
-                conv_filters=conv_filters,
-                use_group_norm=True,  # want this to be true, not implemented yet
-                key=subkeys[2],
-            ),
-            "lr": 7e-4,
-            **train_kwargs,
-        },
-    ),
-    (
-        "dil_resnet_equiv20",
-        train_and_eval,
-        {
-            "model": models.DilResNet(
-                train_D,
-                input_keys,
-                output_keys,
-                depth=20,
-                conv_filters=conv_filters,
-                key=subkeys[3],
-            ),
-            "lr": 1e-3,
-            **train_kwargs,
-        },
-    ),
+    # (
+    #     "resnet_equiv_42",
+    #     train_and_eval,
+    #     {
+    #         "model": models.ResNet(
+    #             args.train_D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=42,
+    #             conv_filters=conv_filters,
+    #             use_group_norm=False,
+    #             key=subkeys[1],
+    #         ),
+    #         "lr": 7e-4,
+    #         **train_kwargs,
+    #     },
+    # ),
 ]
 
 key, subkey = random.split(key)

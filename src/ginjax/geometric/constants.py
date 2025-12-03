@@ -17,6 +17,7 @@ class FilterScaling(enum.Enum):
     ZERO_SUM = enum.auto()
     ZERO_SUM_L2_DIST = enum.auto()
     ZERO_SUM_GAUSSIAN_DIST = enum.auto()
+    OONA_PURI_SCALED = enum.auto()
 
 
 class KroneckerDeltaSymbol:

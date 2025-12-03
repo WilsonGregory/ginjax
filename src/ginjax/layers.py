@@ -454,9 +454,9 @@ class GroupNorm(eqx.Module):
     bias: dict[tuple[tuple[bool, ...], int], jax.Array]
     vanilla_norm: dict[tuple[tuple[bool, ...], int], eqx.nn.GroupNorm]
 
-    D: int = eqx.field(static=False)
-    groups: int = eqx.field(static=False)
-    eps: float = eqx.field(static=False)
+    D: int = eqx.field(static=True)
+    groups: int = eqx.field(static=True)
+    eps: float = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -490,8 +490,8 @@ class GroupNorm(eqx.Module):
             if len(k) == 0:
                 self.vanilla_norm[(k, p)] = eqx.nn.GroupNorm(groups, in_c, eps)
             elif len(k) == 1:
-                self.scale[(k, p)] = jnp.ones((in_c,) + (1,) * (D + len(k)))
-                self.bias[(k, p)] = jnp.zeros((in_c,) + (1,) * (D + len(k)))
+                self.scale[(k, p)] = jnp.ones(in_c)
+                self.bias[(k, p)] = jnp.zeros(in_c)
             elif len(k) > 1:
                 raise NotImplementedError(
                     f"ml::group_norm: Equivariant group_norm not implemented for k>1, but k={k}",
@@ -518,7 +518,9 @@ class GroupNorm(eqx.Module):
                     k
                 )
                 whitened_data = _group_norm_K1(self.D, image_block, self.groups, eps=self.eps)
-                whitened_data = whitened_data * self.scale[(k, p)] + self.bias[(k, p)] * mean_vec
+                scale_mul = self.scale[(k, p)].reshape((-1,) + (1,) * (self.D + len(k)))
+                bias_mul = self.bias[(k, p)].reshape((-1,) + (1,) * (self.D + len(k)))
+                whitened_data = whitened_data * scale_mul + mean_vec * bias_mul
             else:  # k > 1
                 raise NotImplementedError(
                     f"ml::group_norm: Equivariant group_norm not implemented for k>1, but k={k}",

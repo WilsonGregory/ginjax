@@ -162,12 +162,18 @@ def count_params(model: eqx.Module) -> int:
     returns:
         number of parameters
     """
-    return sum(
-        [
-            0 if x is None else x.size
-            for x in eqx.filter(jax.tree_util.tree_leaves(model), eqx.is_array)
-        ]
-    )
+    # get the new filters
+    is_conv = lambda n: isinstance(n, layers.ConvContract)
+    get_filters = lambda m: [
+        x.invariant_filters for x in jax.tree_util.tree_leaves(m, is_leaf=is_conv) if is_conv(x)
+    ]
+    get_array_sizes = lambda m: [
+        x.size for x in jax.tree_util.tree_leaves(m, is_leaf=eqx.is_array) if eqx.is_array(x)
+    ]
+
+    total_size = sum(get_array_sizes(model))
+    filter_size = sum(get_array_sizes(get_filters(model)))
+    return total_size - filter_size
 
 
 class MultiImageModule(eqx.Module):
@@ -863,7 +869,7 @@ class UNet(AnyDimensionalModel):
         return out, batch_stats
 
 
-class DilResNet(MultiImageModule):
+class DilResNet(AnyDimensionalModel):
     """
     The Dilated ResNet from https://arxiv.org/abs/2112.15275.
     """
@@ -873,8 +879,14 @@ class DilResNet(MultiImageModule):
     decoder: list[ConvBlock]
 
     D: int = eqx.field(static=True)
-    equivariant: bool = eqx.field(static=True)
     output_keys: geom.Signature = eqx.field(static=True)
+    input_keys: geom.Signature = eqx.field(static=True)
+    use_bias: bool | str = eqx.field(static=True)
+    activation_f: Callable | str | None = eqx.field(static=True)
+    equivariant: bool = eqx.field(static=True)
+    use_group_norm: bool = eqx.field(static=True)
+    mid_keys: geom.Signature = eqx.field(static=True)
+    padding_mode: str = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -883,13 +895,13 @@ class DilResNet(MultiImageModule):
         output_keys: geom.Signature,
         depth: int,
         num_blocks: int = 4,
-        use_bias: Union[bool, str] = "auto",
-        activation_f: Optional[Union[Callable, str]] = jax.nn.relu,
+        use_bias: bool | str = "auto",
+        activation_f: Callable | str | None = jax.nn.relu,
         equivariant: bool = True,
-        conv_filters: Optional[geom.MultiImage] = None,
-        kernel_size: Optional[Union[int, Sequence[int]]] = None,
+        conv_filters: geom.MultiImage | None = None,
+        kernel_size: int | Sequence[int] | None = None,
         use_group_norm: bool = False,
-        mid_keys: Optional[geom.Signature] = None,
+        mid_keys: geom.Signature | None = None,
         padding_mode: str = "ZEROS",
         key: Any = None,
     ) -> None:
@@ -915,6 +927,7 @@ class DilResNet(MultiImageModule):
         self.D = D
         self.equivariant = equivariant
         self.output_keys = output_keys
+        self.input_keys = input_keys
 
         if equivariant:
             if mid_keys is None:
@@ -930,6 +943,12 @@ class DilResNet(MultiImageModule):
             output_keys = geom.Signature(
                 ((((), 0), sum(out_c * (D ** len(k)) for (k, _), out_c in output_keys)),)
             )
+
+        self.use_bias = use_bias
+        self.activation_f = activation_f
+        self.use_group_norm = use_group_norm
+        self.mid_keys = mid_keys
+        self.padding_mode = padding_mode
 
         # encoder
         key, subkey1, subkey2 = random.split(key, num=3)
@@ -1050,8 +1069,49 @@ class DilResNet(MultiImageModule):
 
         return out, aux_data
 
+    def convertD(
+        self: Self,
+        conv_filters: geom.MultiImage,
+        rescale: bool,
+        key: jax.Array,
+        **kwargs,
+    ) -> Self:
+        """
+        Construct a new model with filters in a higher dimension. This only works for equivariant
+        models.
 
-class ResNet(MultiImageModule):
+        args:
+            old_conv_filters: the current conv filters for the model
+            conv_filters: the new conv filters we are swapping to, probably in a higher dimension
+            rescale: whether to force the sum of the filters in the new dimension to be equal
+            key: key to initialize the weights, since they are overruled it won't matter
+
+        returns:
+            a new model with new filters but the old weights
+        """
+        assert self.equivariant
+
+        new_model = self.__class__(
+            conv_filters.D,
+            self.input_keys,
+            self.output_keys,
+            0,  # ignored since mid_keys is provided
+            len(self.blocks),
+            self.use_bias,
+            self.activation_f,
+            self.equivariant,
+            conv_filters,
+            0,  # ignored for equivariant model
+            self.use_group_norm,
+            self.mid_keys,
+            self.padding_mode,
+            key,
+        )
+
+        return self.transfer_weights(new_model, rescale)
+
+
+class ResNet(AnyDimensionalModel):
     """
     A typical ResNet.
     """
@@ -1063,6 +1123,15 @@ class ResNet(MultiImageModule):
     D: int = eqx.field(static=True)
     equivariant: bool = eqx.field(static=True)
     output_keys: geom.Signature = eqx.field(static=True)
+    input_keys: geom.Signature = eqx.field(static=True)
+    use_bias: bool | str = eqx.field(static=True)
+    activation_f: Callable | str = eqx.field(static=True)
+    use_group_norm: bool = eqx.field(static=True)
+    preactivation_order: bool = eqx.field(static=True)
+    input_keys: geom.Signature = eqx.field(static=True)
+    output_keys: geom.Signature = eqx.field(static=True)
+    mid_keys: geom.Signature = eqx.field(static=True)
+    padding_mode: str = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -1072,14 +1141,14 @@ class ResNet(MultiImageModule):
         depth: int,
         num_blocks: int = 8,
         num_conv: int = 2,
-        use_bias: Union[bool, str] = "auto",
-        activation_f: Union[Callable, str] = jax.nn.gelu,
+        use_bias: bool | str = "auto",
+        activation_f: Callable | str = jax.nn.gelu,
         equivariant: bool = True,
-        conv_filters: Optional[geom.MultiImage] = None,
-        kernel_size: Optional[Union[int, Sequence[int]]] = None,
+        conv_filters: geom.MultiImage | None = None,
+        kernel_size: int | Sequence[int] | None = None,
         use_group_norm: bool = True,
         preactivation_order: bool = True,
-        mid_keys: Optional[geom.Signature] = None,
+        mid_keys: geom.Signature | None = None,
         padding_mode: str = "ZEROS",
         key: Any = None,
     ) -> None:
@@ -1107,6 +1176,7 @@ class ResNet(MultiImageModule):
         self.D = D
         self.equivariant = equivariant
         self.output_keys = output_keys
+        self.input_keys = input_keys
 
         if equivariant:
             if mid_keys is None:
@@ -1122,6 +1192,13 @@ class ResNet(MultiImageModule):
             output_keys = geom.Signature(
                 ((((), 0), sum(out_c * (D ** len(k)) for (k, _), out_c in output_keys)),)
             )
+
+        self.use_bias = use_bias
+        self.activation_f = activation_f
+        self.use_group_norm = use_group_norm
+        self.preactivation_order = preactivation_order
+        self.mid_keys = mid_keys
+        self.padding_mode = padding_mode
 
         # encoder
         key, subkey1, subkey2 = random.split(key, num=3)
@@ -1241,6 +1318,49 @@ class ResNet(MultiImageModule):
             out = geom.MultiImage.from_scalar_multi_image(x, self.output_keys)
 
         return out, aux_data
+
+    def convertD(
+        self: Self,
+        conv_filters: geom.MultiImage,
+        rescale: bool,
+        key: jax.Array,
+        **kwargs,
+    ) -> Self:
+        """
+        Construct a new model with filters in a higher dimension. This only works for equivariant
+        models.
+
+        args:
+            old_conv_filters: the current conv filters for the model
+            conv_filters: the new conv filters we are swapping to, probably in a higher dimension
+            rescale: whether to force the sum of the filters in the new dimension to be equal
+            key: key to initialize the weights, since they are overruled it won't matter
+
+        returns:
+            a new model with new filters but the old weights
+        """
+        assert self.equivariant
+
+        new_model = self.__class__(
+            conv_filters.D,
+            self.input_keys,
+            self.output_keys,
+            0,  # ignored since mid_keys is provided
+            len(self.blocks),
+            len(self.blocks[0]),
+            self.use_bias,
+            self.activation_f,
+            self.equivariant,
+            conv_filters,
+            0,  # ignored for equivariant model
+            self.use_group_norm,
+            self.preactivation_order,
+            self.mid_keys,
+            self.padding_mode,
+            key,
+        )
+
+        return self.transfer_weights(new_model, rescale)
 
 
 class ModelWrapper(MultiImageModule):

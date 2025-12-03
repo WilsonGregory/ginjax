@@ -101,7 +101,6 @@ def get_data(
         # if D=3, N=128, baseline timesteps=50, subsample=8, that takes 10Gb of memory, so split it up
         batch = 1 if D == 3 else n_test
 
-        # TODO: might break on D=1
         test_data = jax.device_put(jnp.zeros((0, n_timesteps) + (N,) * D + (D,)), cpu)
         for i in range(n_test // batch):
             # diff_burgers scales diffusion_gamma and convection_delta by D, so we unscale them so
@@ -136,6 +135,9 @@ def get_data(
             )
             test_data = jnp.concatenate([test_data, test_data_i], axis=0)
 
+        if D == 1:
+            test_data = test_data[..., 0]
+
         constant_fields = geom.MultiImage({}, D, is_torus)
 
         test_X, test_Y = gc_data.batch_time_series(
@@ -158,7 +160,6 @@ def plot_multi_image(
     test_multi_image: geom.MultiImage,
     save_loc: str,
     title: str = "",
-    minimal: bool = False,
 ):
     """
     Plot vector x and y components of two MultiImages, and the differences between them. Each row
@@ -172,10 +173,9 @@ def plot_multi_image(
         save_loc: file location to save the image
         title: additional str to add to title, will be "test {title} {col}"
             "actual {title} {col}"
-        minimal: if minimal, no titles, colorbars, or axes labels
     """
     print(
-        f"Printed image relative error: {ml.l1_rel_error(test_multi_image, actual_multi_image):.4f}%"
+        f"Printed image relative error: {ml.l2_rel_error(test_multi_image, actual_multi_image):.4f}%"
     )
 
     if input_multi_image.get_n_leading() == 2:
@@ -307,7 +307,7 @@ def map_and_loss_rel_error(
     pred_y, aux_data = map_residual(model, multi_image_x, aux_data)
 
     loss = ml.smse_loss(pred_y, multi_image_y)
-    rel_error = ml.l1_rel_error(pred_y, multi_image_y)
+    rel_error = ml.l2_rel_error(pred_y, multi_image_y)
     return jnp.stack([loss, rel_error]), aux_data
 
 
@@ -568,7 +568,7 @@ model_list = [
                 activation_f=jax.nn.gelu,
                 conv_filters=conv_filters,
                 upsample_filters=upsample_filters,
-                key=subkeys[8],
+                key=subkeys[0],
             ),
             "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
             **train_kwargs,
@@ -578,6 +578,23 @@ model_list = [
         "lastStepIdentity",
         train_and_eval,
         {"model": models.LastStepIdentity(residual=True), "lr": 1, **train_kwargs},
+    ),
+    (
+        "resnet_equiv_42",
+        train_and_eval,
+        {
+            "model": models.ResNet(
+                args.train_D,
+                input_keys,
+                output_keys,
+                depth=42,
+                conv_filters=conv_filters,
+                use_group_norm=False,
+                key=subkeys[1],
+            ),
+            "lr": 7e-4,
+            **train_kwargs,
+        },
     ),
 ]
 

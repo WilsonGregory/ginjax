@@ -123,14 +123,14 @@ def normalized_smse_loss(
     return jnp.mean(order_loss)
 
 
-def l1_rel_error(
+def l2_rel_error(
     multi_image_x: geom.MultiImage,
     multi_image_y: geom.MultiImage,
     reduce: str | None = "mean",
-    eps: float = 1e-6,
+    eps: float = 0,
 ) -> jax.Array:
     """
-    Average per component relative error as a percentage. The error is relative to the second input.
+    Average per tensor relative error as a percentage. The error is relative to the second input.
 
     The average is taken over each pixel, channel, and component. If reduce is 'mean' it is also
     taken over the batch.
@@ -149,16 +149,18 @@ def l1_rel_error(
         reduce in reduce_options
     ), f"l1_rel_error: reduce={reduce} must be one of {reduce_options}"
     assert (
-        multi_image_x.get_n_leading() == multi_image_x.get_n_leading() == 2
+        multi_image_x.get_n_leading() == multi_image_y.get_n_leading() == 2
     ), "l1_rel_error: MultiImages must have batch and channel axes"
 
     batch = multi_image_x.get_L()
+    D = multi_image_x.D
     error_per_batch = jnp.zeros((batch, 0))
     for image_a, image_b in zip(multi_image_x.values(), multi_image_y.values()):
-        error_per_batch = jnp.concatenate(
-            [error_per_batch, jnp.abs((image_a - image_b) / (image_b + eps)).reshape((batch, -1))],
-            axis=1,
-        )
+        diff_norm = geom.norm(D + 2, image_a - image_b)
+        image_b_norm = geom.norm(D + 2, image_b)
+        rel_error = jnp.where(image_b_norm == 0.0, 0.0, diff_norm / image_b_norm)
+        # rel_error = geom.norm(D + 2, image_a - image_b) / (geom.norm(D + 2, image_b) + eps)
+        error_per_batch = jnp.concatenate([error_per_batch, rel_error.reshape((batch, -1))], axis=1)
 
     error_per_batch = jnp.mean(error_per_batch, axis=1) * 100  # convert to percent
 

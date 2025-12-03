@@ -162,60 +162,61 @@ def convertPoly(poly: SPoly, false_bases: set[str]) -> dict[tuple[str, ...], str
     return new_new_dict
 
 
-# N = 3
-# D = 1
-# A = [SPoly("a-1"), SPoly("a0"), SPoly("a1")]
-# ff1 = [SPoly("x"), SPoly("x", -2), SPoly("x")]
-# ff2 = [SPoly("x"), SPoly.from_dict({("x",): -2, ("1",): 2}), SPoly("x")]
+print("\n~~~~~~~~ D=1 ~~~~~~~~")
+N = 3
+D = 1
+A = [SPoly("a-1"), SPoly("a0"), SPoly("a1")]
+ff1 = [SPoly("x"), SPoly("x", -2), SPoly("x")]
+ff2 = [SPoly("x"), SPoly.from_dict({("x",): -2, ("1",): 2}), SPoly("x")]
 
-# A_ff1 = conv1d(A, ff1)
-# A_ff2 = conv1d(A, ff2)
+A_ff1 = conv1d(A, ff1)
+A_ff2 = conv1d(A, ff2)
 
-# A_prod = prod1d(A_ff1, A_ff2)
+A_prod = prod1d(A_ff1, A_ff2)
 
-# out = sum(A_prod, start=SPoly())
+out = sum(A_prod, start=SPoly())
 
-# print(convertPoly(out, {"x"}))
+print(convertPoly(out, {"x"}))
 
-# ~~~~~~~~ D=2 ~~~~~~~~
-# N = 3
-# D = 2
-# A = [
-#     [SPoly("a-1-1"), SPoly("a-10"), SPoly("a-11")],
-#     [SPoly("a0-1"), SPoly("a00"), SPoly("a01")],
-#     [SPoly("a1-1"), SPoly("a10"), SPoly("a11")],
-# ]
-# ff1 = [
-#     [SPoly("x"), SPoly("y"), SPoly("x")],
-#     [SPoly("y"), SPoly.from_dict({("x",): -4, ("y",): -4}), SPoly("y")],
-#     [SPoly("x"), SPoly("y"), SPoly("x")],
-# ]
-# ff2 = [
-#     [SPoly("x"), SPoly("y"), SPoly("x")],
-#     [SPoly("y"), SPoly.from_dict({("x",): -4, ("y",): -4, ("1",): 2}), SPoly("y")],
-#     [SPoly("x"), SPoly("y"), SPoly("x")],
-# ]
+print("\n~~~~~~~~ D=2 ~~~~~~~~")
 
-# A_ff1 = conv2d(A, ff1)
-# A_ff2 = conv2d(A, ff2)
+N = 3
+D = 2
+A = [
+    [SPoly("a-1-1"), SPoly("a-10"), SPoly("a-11")],
+    [SPoly("a0-1"), SPoly("a00"), SPoly("a01")],
+    [SPoly("a1-1"), SPoly("a10"), SPoly("a11")],
+]
+ff1 = [
+    [SPoly("x"), SPoly("y"), SPoly("x")],
+    [SPoly("y"), SPoly.from_dict({("x",): -4, ("y",): -4}), SPoly("y")],
+    [SPoly("x"), SPoly("y"), SPoly("x")],
+]
+ff2 = [
+    [SPoly("x"), SPoly("y"), SPoly("x")],
+    [SPoly("y"), SPoly.from_dict({("x",): -4, ("y",): -4, ("1",): 2}), SPoly("y")],
+    [SPoly("x"), SPoly("y"), SPoly("x")],
+]
 
-# A_prod = prod1d(A_ff1, A_ff2)
+A_ff1 = conv2d(A, ff1)
+A_ff2 = conv2d(A, ff2)
 
-# out = sum(A_prod, start=SPoly())
-# # print(out)
-# consolidated_out = convertPoly(out, {"x", "y"})
-# print(consolidated_out)
+A_prod = prod1d(A_ff1, A_ff2)
 
-# reversed_dict = {}
-# for k, v in consolidated_out.items():
-#     if v in reversed_dict:
-#         reversed_dict[v].append("".join(k))
-#     else:
-#         reversed_dict[v] = ["".join(k)]
+out = sum(A_prod, start=SPoly())
+consolidated_out = convertPoly(out, {"x", "y"})
+# print(consolidated_out) # can uncomment this to see the full out
 
-# print("~~~~~~~~~~~~~~~~~~~~~~")
-# print("REVERSED DICT")
-# print(reversed_dict)
+reversed_dict = {}
+for k, v in consolidated_out.items():
+    if v in reversed_dict:
+        reversed_dict[v].append("".join(k))
+    else:
+        reversed_dict[v] = ["".join(k)]
+
+print("~~~~~~~~~~~~~~~~~~~~~~")
+print("REVERSED DICT")
+print(reversed_dict)
 
 # unique terms
 # -8x + -8y + 20xx + 20yy + 32xy
@@ -227,7 +228,7 @@ def convertPoly(poly: SPoly, false_bases: set[str]) -> dict[tuple[str, ...], str
 # -14xx + -8xy + 4x + 4yy
 # -7xx -4xy + 2x + 2yy
 
-# ~~~~~~~ D = 3 ~~~~~~~
+print("\n~~~~~~~ D = 3 ~~~~~~~")
 N = 3
 D = 3
 
@@ -291,9 +292,8 @@ A_ff2 = conv3d(A, ff2)
 A_prod = prod1d(A_ff1, A_ff2)
 
 out = sum(A_prod, start=SPoly())
-# print(out)
 consolidated_out = convertPoly(out, {"x", "y", "z"})
-print(consolidated_out)
+# print(consolidated_out) # can uncomment this to see the full output
 
 reversed_dict = {}
 for k, v in consolidated_out.items():

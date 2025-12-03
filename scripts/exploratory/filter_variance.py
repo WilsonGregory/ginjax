@@ -17,6 +17,7 @@ key, subkey = random.split(key)
 data = random.normal(subkey, shape=(N,) * D)
 A = geom.GeometricImage(data, 0, D, True)
 
+ff = None
 if D == 1:
     ff = geom.GeometricFilter(jnp.array([1, -2, 1]), 0, D)
 elif D == 2:
@@ -115,60 +116,14 @@ elif D == 3:
         D,
     )
 
-    print(ff.data)
-    print(jnp.mean(jnp.einsum("ijk,lmn", ff.data, ff.data)))
-
-
-# print("A", jnp.mean(A.data), jnp.var(A.data))
-
-# A_ff = A.convolve_with(ff)
-
-# print("A_ff", jnp.mean(A_ff.data), jnp.var(A_ff.data))
-
-# out = A + A.convolve_with(ff)
-# print("out", jnp.mean(out.data), jnp.var(out.data))
-# print(
-#     jnp.var(out.data),
-#     jnp.var(A.data),
-#     jnp.mean((A_ff * A_ff).data),
-#     2 * jnp.mean((A * A_ff).data),
-#     jnp.var(A.data) + jnp.mean((A_ff * A_ff).data) + 2 * jnp.mean((A * A_ff).data),
-# )
-
-
-# for alpha in jnp.linspace(0, 1, 10):
-#     ff_scaled = ff * (alpha)
-#     A_ff = A.convolve_with(ff_scaled)
-#     print(
-#         f"scale={alpha:.3f}: {jnp.var(A.data):.3f} + {jnp.mean((A_ff * A_ff).data):.3f} + {2 * jnp.mean((A * A_ff).data):.3f} = {jnp.var(A.data) + jnp.mean((A_ff * A_ff).data) + 2 * jnp.mean((A * A_ff).data):.3f}"
-#     )
+assert isinstance(ff, geom.GeometricFilter)
+einstr = f"{geom.LETTERS[:D]},{geom.LETTERS[D:2*D]}"
+print(f"E[C^2]={jnp.mean(jnp.einsum(einstr, ff.data, ff.data))} (in tensor product sense)")
 
 A_ff = A.convolve_with(ff)
 A_ff_prime = A.convolve_with(ff_prime)
+print("var(A) + E[(A*C)^2] + 2E[A x A*C]: (here multiplication is pointwise)")
 print(
     f"{jnp.var(A.data):.3f} + {jnp.mean((A_ff * A_ff).data):.3f} + {2 * jnp.mean((A * A_ff).data):.3f} = {jnp.var(A.data) + jnp.mean((A_ff * A_ff).data) + 2 * jnp.mean((A * A_ff).data):.3f}"
 )
 print(jnp.var((A + A_ff).data))
-print(
-    jnp.mean((A_ff * A_ff).data) + 2 * jnp.mean((A * A_ff).data), jnp.mean((A_ff * A_ff_prime).data)
-)
-# print(jnp.mean((A_ff * A_ff).data) + 2 * jnp.mean((A * A_ff).data))
-
-
-# def func(alpha):
-#     A_ff = A.convolve_with(ff * alpha)
-#     return (jnp.mean((A_ff * A_ff).data) + 2 * jnp.mean((A * A_ff).data)) ** 2
-
-
-# optimizer = jaxopt.ScipyMinimize(fun=func)
-# out = optimizer.run(0.333)
-
-# # out = jax.scipy.optimize.minimize(func, 0.333)
-# print(out.params)
-
-# alpha = out.params
-# ff_scaled = ff * (alpha)
-# A_ff = A.convolve_with(ff_scaled)
-# print(
-#     f"scale={alpha:.3f}: {jnp.var(A.data):.3f} + {jnp.mean((A_ff * A_ff).data):.3f} + {2 * jnp.mean((A * A_ff).data):.3f} = {jnp.var(A.data) + jnp.mean((A_ff * A_ff).data) + 2 * jnp.mean((A * A_ff).data):.3f}"
-# )

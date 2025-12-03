@@ -162,7 +162,7 @@ def count_params(model: eqx.Module) -> int:
     returns:
         number of parameters
     """
-    # get the new filters
+    # get the filters
     is_conv = lambda n: isinstance(n, layers.ConvContract)
     get_filters = lambda m: [
         x.invariant_filters for x in jax.tree_util.tree_leaves(m, is_leaf=is_conv) if is_conv(x)
@@ -171,6 +171,7 @@ def count_params(model: eqx.Module) -> int:
         x.size for x in jax.tree_util.tree_leaves(m, is_leaf=eqx.is_array) if eqx.is_array(x)
     ]
 
+    # filters are arrays, but they aren't params so we subtract them from the total array size
     total_size = sum(get_array_sizes(model))
     filter_size = sum(get_array_sizes(get_filters(model)))
     return total_size - filter_size

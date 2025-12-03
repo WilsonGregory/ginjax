@@ -158,8 +158,7 @@ def l2_rel_error(
     for image_a, image_b in zip(multi_image_x.values(), multi_image_y.values()):
         diff_norm = geom.norm(D + 2, image_a - image_b)
         image_b_norm = geom.norm(D + 2, image_b)
-        rel_error = jnp.where(image_b_norm == 0.0, 0.0, diff_norm / image_b_norm)
-        # rel_error = geom.norm(D + 2, image_a - image_b) / (geom.norm(D + 2, image_b) + eps)
+        rel_error = jnp.where(image_b_norm == 0.0, 0.0, diff_norm / (image_b_norm + eps))
         error_per_batch = jnp.concatenate([error_per_batch, rel_error.reshape((batch, -1))], axis=1)
 
     error_per_batch = jnp.mean(error_per_batch, axis=1) * 100  # convert to percent

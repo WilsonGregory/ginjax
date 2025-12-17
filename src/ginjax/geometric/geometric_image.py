@@ -1032,9 +1032,9 @@ class GeometricFilter(GeometricImage):
         if self.parity != other.parity:
             return self.parity < other.parity
 
-        self_nonempty_sum = float(jnp.mean(jnp.linalg.norm(self.nonempty_pixel_idxs(), axis=1)))
-        other_nonempty_sum = float(jnp.mean(jnp.linalg.norm(other.nonempty_pixel_idxs(), axis=1)))
-
+        self_sym_total = other_sym_total = 0
+        self_antisym_total = other_antisym_total = 0
+        self_trace_total = other_trace_total = 0
         if self.k == 2:  # works for D=2,3, and should work for higher D
 
             self_pixels = self.data.reshape((-1,) + (self.D,) * self.k)
@@ -1061,36 +1061,46 @@ class GeometricFilter(GeometricImage):
             self_antisym_total = float(jnp.sum(antisym_norm_f(self_antisym)))
             other_antisym_total = float(jnp.sum(antisym_norm_f(other_antisym)))
 
-            self_trace_total = float(jnp.sum(self_trace))
-            other_trace_total = float(jnp.sum(other_trace))
+            self_trace_total = float(jnp.sum(jnp.abs(self_trace)))
+            other_trace_total = float(jnp.sum(jnp.abs(other_trace)))
 
             self_min_component = (
                 int(self_trace_total != 0)
                 + int(self_antisym_total != 0) * 10
-                + int(self_sym_total) * 100
+                + int(self_sym_total != 0) * 100
             )
             other_min_component = (
                 int(other_trace_total != 0)
                 + int(other_antisym_total != 0) * 10
-                + int(other_sym_total) * 100
+                + int(other_sym_total != 0) * 100
             )
+
+            # check whether the filters are in the same irrep
             if self_min_component != other_min_component:
                 return self_min_component < other_min_component
 
-            if abs(self_nonempty_sum - other_nonempty_sum) < TINY:
-                return self_nonempty_sum < other_nonempty_sum
+        self_nonempty_l1 = float(jnp.max(jnp.sum(jnp.abs(self.nonempty_pixel_idxs()), axis=1)))
+        other_nonempty_l1 = float(jnp.max(jnp.sum(jnp.abs(other.nonempty_pixel_idxs()), axis=1)))
 
-            if abs(self_sym_total - other_sym_total) < TINY:
+        self_nonempty_l2 = float(jnp.max(jnp.linalg.norm(self.nonempty_pixel_idxs(), axis=1)))
+        other_nonempty_l2 = float(jnp.max(jnp.linalg.norm(other.nonempty_pixel_idxs(), axis=1)))
+
+        # sort by l1 distance, then l2 distance
+        if abs(self_nonempty_l1 - other_nonempty_l1) > TINY:
+            return self_nonempty_l1 < other_nonempty_l1
+
+        if abs(self_nonempty_l2 - other_nonempty_l2) > TINY:
+            return self_nonempty_l2 < other_nonempty_l2
+
+        if self.k == 2:
+            if abs(self_sym_total - other_sym_total) > TINY:
                 return self_sym_total < other_sym_total
 
-            if abs(self_antisym_total - other_antisym_total) < TINY:
+            if abs(self_antisym_total - other_antisym_total) > TINY:
                 return self_antisym_total < other_antisym_total
 
-            if abs(self_trace_total - other_trace_total) < TINY:
+            if abs(self_trace_total - other_trace_total) > TINY:
                 return self_trace_total < other_trace_total
-
-        if abs(self_nonempty_sum - other_nonempty_sum) < TINY:
-            return self_nonempty_sum < other_nonempty_sum
 
         return float(jnp.sum(self.norm().data)) < float(jnp.sum(other.norm().data))
 

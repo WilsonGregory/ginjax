@@ -157,7 +157,7 @@ def get_data(
         input multi image, output multi image
     """
     max_temp = math.sqrt(3)
-    k = 2
+    k = 1
     t = 1
     data_dir_path = pathlib.Path(data_dir) if data_dir is not None else None
 
@@ -176,6 +176,7 @@ def get_data(
         test_x0, test_xt = get_data_d(
             D, N, is_torus, k, t, max_temp, n_test, subkey, data_dir_path, f"test_D{D}"
         )
+        print(f"D={D}, x0:{jnp.std(test_x0[((),0)]):.3e}, xt:{jnp.std(test_xt[((),0)]):.3e}")
         test_d_x0.append(test_x0)
         test_d_xt.append(test_xt)
 
@@ -296,7 +297,7 @@ class TwoLayerModel(models.AnyDimensionalModel):
     D: int = eqx.field(static=True)
     input_keys: geom.Signature = eqx.field(static=True)
     target_keys: geom.Signature = eqx.field(static=True)
-    depth: int = eqx.field(static=True)
+    width: int = eqx.field(static=True)
     use_bias: bool | str = eqx.field(static=True)
 
     def __init__(
@@ -304,17 +305,17 @@ class TwoLayerModel(models.AnyDimensionalModel):
         input_keys: geom.Signature,
         target_keys: geom.Signature,
         conv_filters: geom.MultiImage,
-        depth: int,
+        width: int,
         use_bias: bool | str,
         key: jax.Array,
     ) -> None:
         self.D = conv_filters.D
         self.input_keys = input_keys
         self.target_keys = target_keys
-        self.depth = depth
+        self.width = width
         self.use_bias = use_bias
 
-        mid_keys = geom.signature_union(input_keys, target_keys, depth)
+        mid_keys = geom.signature_union(input_keys, target_keys, width)
 
         key, subkey1, subkey2 = random.split(key, num=3)
         self.layers = [
@@ -344,7 +345,7 @@ class TwoLayerModel(models.AnyDimensionalModel):
             self.input_keys,
             self.target_keys,
             conv_filters,
-            self.depth,
+            self.width,
             self.use_bias,
             key,
         )
@@ -534,6 +535,17 @@ def train_and_eval(
 
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
+    parser.add_argument(
+        "--train-D", help="dimension of data to train on", choices=[1, 2, 3], default=1, type=int
+    )
+    parser.add_argument(
+        "--max-test-D",
+        help="maximum dimension of data to test on",
+        choices=[1, 2, 3],
+        default=3,
+        type=int,
+    )
+    parser.add_argument("-N", help="spatial size", type=int, default=128)
     # need do to --wandb to activate, also need --wandb-entity your_wandb_name_here
     parser.add_argument(
         "--wandb-project", help="the wandb project", type=str, default="heat-equation"
@@ -544,10 +556,7 @@ def handleArgs() -> argparse.Namespace:
 
 # MAIN
 args = handleArgs()
-train_D = 2
-N = 128
-max_D = 2
-test_D_range = tuple(range(train_D, max_D + 1))
+test_D_range = tuple(range(args.train_D, args.max_test_D + 1))
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
 
@@ -555,27 +564,39 @@ key, subkey = random.split(key)
 print("Generating data...", end="", flush=True)
 t_start = time.time()
 data = get_data(
-    train_D, test_D_range, N, True, args.n_train, args.n_val, args.n_test, subkey, args.data
+    args.train_D,
+    test_D_range,
+    args.N,
+    True,
+    args.n_train,
+    args.n_val,
+    args.n_test,
+    subkey,
+    args.data,
 )
 print(f"done. ({time.time() - t_start:.2f}s)", flush=True)
 
 input_keys = data[0].get_signature()
 output_keys = data[1].get_signature()
 
-group_actions = geom.make_all_operators(train_D)
+scaling = geom.FilterScaling.INVERSE_COUNT
+max_pixel_l1 = 2
+group_actions = geom.make_all_operators(args.train_D)
 conv_filters = geom.get_invariant_filters(
-    Ms=[3],
+    Ms=[5],
     ks=[0],
     parities=[0],
-    D=train_D,
+    D=args.train_D,
     operators=group_actions,
-    scale=geom.FilterScaling.ZERO_SUM,
+    scale=scaling,
+    max_pixel_l1=max_pixel_l1,
+    combine_equal_l1=True,
 )
 upsample_filters = geom.get_invariant_filters(
     Ms=[2],
     ks=[0],
     parities=[0],
-    D=train_D,
+    D=args.train_D,
     operators=group_actions,
     scale=geom.FilterScaling.ZERO_SUM,
 )
@@ -584,13 +605,21 @@ test_conv_filters = []
 for D in test_D_range:
     group_actions_d = geom.make_all_operators(D)
     conv_filters_d = geom.get_invariant_filters(
-        Ms=[3],
+        Ms=[5],
         ks=[0],
         parities=[0],
         D=D,
         operators=group_actions_d,
-        scale=geom.FilterScaling.ZERO_SUM,
+        scale=scaling,
+        max_pixel_l1=max_pixel_l1,
+        combine_equal_l1=True,
     )
+
+    # laplacian_filters = conv_filters_d[((), 0)]  # (n_filters, shape)
+    # filter_sum = jnp.sum(laplacian_filters, axis=0).ravel()
+    # print(
+    #     f"D={D}, shape {laplacian_filters.shape}, {jnp.mean(jnp.einsum("i,j", filter_sum, filter_sum))}"
+    # )
     upsample_filters_d = geom.get_invariant_filters(
         Ms=[2],
         ks=[0],
@@ -621,7 +650,7 @@ model_list = [
         train_and_eval,
         {
             "model": TwoLayerModel(
-                input_keys, output_keys, conv_filters, 10, "auto", key=subkeys[0]
+                input_keys, output_keys, conv_filters, 10, use_bias="auto", key=subkeys[0]
             ),
             "lr": 1e-2,
             **train_kwargs,
@@ -632,31 +661,32 @@ model_list = [
         train_and_eval,
         {"model": models.LastStepIdentity(residual=True), "lr": 1, **train_kwargs},
     ),
-    (
-        "unetBase_equiv48",
-        train_and_eval,
-        {
-            "model": models.UNet(
-                train_D,
-                input_keys,
-                output_keys,
-                depth=48,
-                num_downsamples=3 if N <= 64 else 4,
-                activation_f=jax.nn.gelu,
-                conv_filters=conv_filters,
-                upsample_filters=upsample_filters,
-                key=subkeys[1],
-            ),
-            "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-            **train_kwargs,
-        },
-    ),
+    # comment out for now, upsample and orthoplex filters might not be working properly
+    # (
+    #     "unetBase_equiv48",
+    #     train_and_eval,
+    #     {
+    #         "model": models.UNet(
+    #             args.train_D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=48,
+    #             num_downsamples=3 if args.N <= 64 else 4,
+    #             activation_f=jax.nn.gelu,
+    #             conv_filters=conv_filters,
+    #             upsample_filters=upsample_filters,
+    #             key=subkeys[1],
+    #         ),
+    #         "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+    #         **train_kwargs,
+    #     },
+    # ),
     (
         "resnet_equiv_42",
         train_and_eval,
         {
             "model": models.ResNet(
-                train_D,
+                args.train_D,
                 input_keys,
                 output_keys,
                 depth=42,
@@ -673,7 +703,7 @@ model_list = [
         train_and_eval,
         {
             "model": models.DilResNet(
-                train_D,
+                args.train_D,
                 input_keys,
                 output_keys,
                 depth=20,

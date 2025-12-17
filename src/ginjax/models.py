@@ -290,6 +290,7 @@ class AnyDimensionalModel(MultiImageModule):
         old_filters: geom.MultiImage,
         new_filters: geom.MultiImage,
         rescale: bool,
+        verbose: bool = False,
     ) -> dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]]:
         """
         Transfer the conv weights from old filters to new filters of possibly a different dimension.
@@ -301,6 +302,8 @@ class AnyDimensionalModel(MultiImageModule):
             old_filters: the old filters that the weights came from
             new_filters: the new filters that we will be using the weights for
             rescale: if True, ensure the linear combination of the filters by weights is equal
+            verbose: print the ratio of the squared sum of filters new/old after transfering the
+                weights, default to False.
 
         returns:
             a new weights dictionary
@@ -316,6 +319,32 @@ class AnyDimensionalModel(MultiImageModule):
                 new_weights_block = AnyDimensionalModel._extend_weights(
                     old_weights_block, filter_key, old_filters, new_filters
                 )
+
+                if verbose:
+                    weights_shaped = old_weights_block.reshape(
+                        old_weights_block.shape + (1,) * old_filters.D
+                    )  # (out,in,num_filters,spatial)
+                    filters_shaped = old_filters[filter_key].reshape(
+                        (1, 1) + old_filters[filter_key].shape
+                    )  # (out,in,num_filters,spatial)
+                    weights_prod_old = jnp.sum(
+                        weights_shaped * filters_shaped, axis=2
+                    )  # (out,in,spatial)
+
+                    weights_shaped = new_weights_block.reshape(
+                        new_weights_block.shape + (1,) * new_filters.D
+                    )
+                    filters_shaped = new_filters[filter_key].reshape(
+                        (1, 1) + new_filters[filter_key].shape
+                    )
+                    weights_prod_new = jnp.sum(
+                        weights_shaped * filters_shaped, axis=2
+                    )  # (out,in,spatial)
+
+                    print(
+                        f"square sum ratio {jnp.sum(weights_prod_new**2) / jnp.sum(weights_prod_old**2):.2f}%"
+                    )
+                    print(f"sum ratio {jnp.sum(weights_prod_new) / jnp.sum(weights_prod_old):.2f}%")
 
                 if rescale:
                     # (out_c, in_c, n_filters) -> (out_c,in_c,n_filters,(1,)*D,(1,)*k)

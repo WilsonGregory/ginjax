@@ -356,6 +356,30 @@ def scale_filters(
         else:
             raise NotImplementedError(f"scale_filters: Oona-Puri Scaled not implemented for D={D}")
 
+    elif scale is FilterScaling.STENCIL:
+        # if the first filter is the identity map, later filters have that one as a negative
+        if jnp.allclose(filters[0].nonempty_pixel_idxs(), jnp.zeros(D), rtol=TINY, atol=TINY):
+            center_ff = filters[0]
+            new_offcenter_ffs = []
+            for offcenter_ff in filters[1:]:
+                nonempty_pixel_count = int(jnp.sum(offcenter_ff.nonempty_pixels()))
+                beta = 1 / (nonempty_pixel_count * (nonempty_pixel_count + 1))
+                new_offcenter_ffs.append(
+                    (offcenter_ff + center_ff * (nonempty_pixel_count * -1)) * beta
+                )
+
+            filters = [center_ff] + new_offcenter_ffs
+
+    elif scale is FilterScaling.INVERSE_COUNT:
+        filters = [ff.normalize() for ff in filters]
+
+        scaled_filters = []
+        for ff in filters:
+            nonempty_pixel_count = int(jnp.sum(ff.nonempty_pixels()))
+            scaled_filters.append(ff * (1 / nonempty_pixel_count))
+
+        filters = scaled_filters
+
     return filters
 
 
@@ -367,8 +391,9 @@ def get_unique_irrep_filters(
     operators: Sequence[np.ndarray],
     basis: jax.Array,
     scale: FilterScaling = FilterScaling.NORMALIZE,
-    exclude_corners: bool = False,
+    max_pixel_l1: int | None = None,
     k2_irreps_basis: bool = True,
+    combine_equal_l1: bool = False,
 ) -> list[GeometricFilter]:
     """
     Use group averaging to generate all the unique invariant filters
@@ -384,9 +409,10 @@ def get_unique_irrep_filters(
             of each tensor +/- 1, ONE to set them all to 1, GAUSSIAN to scale them according to a
             gaussian kernel, ZERO_SUM so they add up to zero, or ZERO_SUM_L2_DIST so they add up to
             zero scaled by the distance from the center pixel.
-        exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
-            ensures that D=100 has the same number of filters as D=1. Defaults to False.
+        max_pixel_l1: The max pixel l1 distance of the filters. These filters transfer to higher
+            dimensions more easily. Defaults to None, so filters are determined by M.
         k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
+        combine_equal_li: Combine filters whose nonempty pixels are equal l1 dist, default False.
 
     returns:
         the unique invariant filters
@@ -438,19 +464,22 @@ def get_unique_irrep_filters(
     # now do k-dependent rectification:
     filters = [ff.rectify() for ff in filters]
 
-    if D > 1 and exclude_corners:
-        assert (M % 2) == 1  # currently can only handle odd filters for cornerless
-        m = (M - 1) // 2
-        meshgrid_dims = (jnp.arange(-m, m + 1),) * D
-        idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, D))
-        corner_idxs = jnp.sum(idxs != 0, axis=1) > 1  # central idxs have at most 1 nonzero
+    filters_max_l1 = [jnp.max(jnp.sum(jnp.abs(ff.nonempty_pixel_idxs()), axis=1)) for ff in filters]
 
-        cornerless_filters = []
-        for ff in filters:
-            if jnp.allclose(ff.data.reshape((M**D, D**k))[corner_idxs, :], 0):
-                cornerless_filters.append(ff)
+    if max_pixel_l1 is not None:
+        filters = [ff for ff, ff_l1 in zip(filters, filters_max_l1) if ff_l1 <= max_pixel_l1]
+        filters_max_l1 = list(filter(lambda ff_l1: ff_l1 <= max_pixel_l1, filters_max_l1))
 
-        filters = cornerless_filters
+    if combine_equal_l1:
+        filters_by_l1 = {}
+        for ff, ff_l1 in zip(filters, filters_max_l1):
+            ff_l1_round = round(float(ff_l1), 5)
+            if ff_l1_round in filters_by_l1:
+                filters_by_l1[ff_l1_round] = filters_by_l1[ff_l1_round] + ff
+            else:
+                filters_by_l1[ff_l1_round] = ff
+
+        filters = list(filters_by_l1.values())
 
     filters = scale_filters(filters, scale, k2_irreps_basis)
 
@@ -464,8 +493,9 @@ def get_unique_invariant_filters(
     D: int,
     operators: Sequence[np.ndarray],
     scale: FilterScaling = FilterScaling.NORMALIZE,
-    exclude_corners: bool = False,
+    max_pixel_l1: int | None = None,
     k2_irreps_basis: bool = True,
+    combine_equal_l1: bool = False,
 ) -> list[GeometricFilter]:
     """
     Use group averaging to generate all the unique invariant filters
@@ -480,9 +510,10 @@ def get_unique_invariant_filters(
             of each tensor +/- 1, ONE to set them all to 1, GAUSSIAN to scale them according to a
             gaussian kernel, ZERO_SUM so they add up to zero, or ZERO_SUM_L2_DIST so they add up to
             zero scaled by the distance from the center pixel.
-        exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
-            ensures that D=100 has the same number of filters as D=1. Defaults to False.
+        max_pixel_l1: The max pixel l1 distance of the filters. These filters transfer to higher
+            dimensions more easily. Defaults to None, so filters are determined by M.
         k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
+        combine_equal_li: Combine filters whose nonempty pixels are equal l1 dist, default False.
 
     returns:
         the unique invariant filters
@@ -494,14 +525,32 @@ def get_unique_invariant_filters(
         basis_irreps = get_k2_irrep_basis(M, k, D)
         for basis in basis_irreps:
             filters += get_unique_irrep_filters(
-                M, k, parity, D, operators, basis, scale, exclude_corners, k2_irreps_basis
+                M,
+                k,
+                parity,
+                D,
+                operators,
+                basis,
+                scale,
+                max_pixel_l1,
+                k2_irreps_basis,
+                combine_equal_l1,
             )
 
         filters = sorted(filters)  # resort the combined list
     else:
         basis = get_basis("image", (M,) * D + (D,) * k)
         filters = get_unique_irrep_filters(
-            M, k, parity, D, operators, basis, scale, exclude_corners, k2_irreps_basis
+            M,
+            k,
+            parity,
+            D,
+            operators,
+            basis,
+            scale,
+            max_pixel_l1,
+            k2_irreps_basis,
+            combine_equal_l1,
         )
 
     return filters
@@ -514,8 +563,9 @@ def get_invariant_filters_dict(
     D: int,
     operators: Sequence[np.ndarray],
     scale: FilterScaling = FilterScaling.NORMALIZE,
-    exclude_corners: bool = False,
+    max_pixel_l1: int | None = None,
     k2_irreps_basis: bool = True,
+    combine_equal_l1: bool = False,
 ) -> tuple[dict[tuple[int, int, int, int], list[GeometricFilter]], dict[tuple[int, int], int]]:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and
@@ -532,9 +582,10 @@ def get_invariant_filters_dict(
             of each tensor +/- 1, ONE to set them all to 1, GAUSSIAN to scale them according to a
             gaussian kernel, ZERO_SUM so they add up to zero, or ZERO_SUM_L2_DIST so they add up to
             zero scaled by the distance from the center pixel.
-        exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
-            ensures that D=100 has the same number of filters as D=1. Defaults to False.
+        max_pixel_l1: The max pixel l1 distance of the filters. These filters transfer to higher
+            dimensions more easily. Defaults to None, so filters are determined by Ms.
         k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
+        combine_equal_li: Combine filters whose nonempty pixels are equal l1 dist, default False.
 
     returns:
         allfilters: a dictionary of filters of the specified D, M, k, and parity
@@ -550,7 +601,15 @@ def get_invariant_filters_dict(
             for parity in parities:  # parity
                 key = (D, M, k, parity)
                 allfilters[key] = get_unique_invariant_filters(
-                    M, k, parity, D, operators, scale, exclude_corners, k2_irreps_basis
+                    M,
+                    k,
+                    parity,
+                    D,
+                    operators,
+                    scale,
+                    max_pixel_l1,
+                    k2_irreps_basis,
+                    combine_equal_l1,
                 )
                 n = len(allfilters[key])
                 if n > maxn[(D, M)]:
@@ -571,8 +630,9 @@ def get_invariant_filters_list(
     D: int,
     operators: Sequence[np.ndarray],
     scale: FilterScaling = FilterScaling.NORMALIZE,
-    exclude_corners: bool = False,
+    max_pixel_l1: int | None = None,
     k2_irreps_basis: bool = True,
+    combine_equal_l1: bool = False,
 ) -> list[GeometricFilter]:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and
@@ -588,15 +648,16 @@ def get_invariant_filters_list(
             of each tensor +/- 1, ONE to set them all to 1, GAUSSIAN to scale them according to a
             gaussian kernel, ZERO_SUM so they add up to zero, or ZERO_SUM_L2_DIST so they add up to
             zero scaled by the distance from the center pixel.
-        exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
-            ensures that D=100 has the same number of filters as D=1. Defaults to False.
+        max_pixel_l1: The max pixel l1 distance of the filters. These filters transfer to higher
+            dimensions more easily. Defaults to None, so filters are determined by Ms.
         k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
+        combine_equal_li: Combine filters whose nonempty pixels are equal l1 dist, default False.
 
     returns:
         a list of filters of the specified D, M, k, and parity
     """
     allfilters, _ = get_invariant_filters_dict(
-        Ms, ks, parities, D, operators, scale, exclude_corners, k2_irreps_basis
+        Ms, ks, parities, D, operators, scale, max_pixel_l1, k2_irreps_basis, combine_equal_l1
     )
     return list(it.chain(*list(allfilters.values())))  # list of GeometricFilters
 
@@ -608,8 +669,9 @@ def get_invariant_filters(
     D: int,
     operators: Sequence[np.ndarray],
     scale: FilterScaling = FilterScaling.NORMALIZE,
-    exclude_corners: bool = False,
+    max_pixel_l1: int | None = None,
     k2_irreps_basis: bool = True,
+    combine_equal_l1: bool = False,
 ) -> MultiImage:
     """
     Use group averaging to generate all the unique invariant filters for the ranges of Ms, ks, and
@@ -625,15 +687,16 @@ def get_invariant_filters(
             of each tensor +/- 1, ONE to set them all to 1, GAUSSIAN to scale them according to a
             gaussian kernel, ZERO_SUM so they add up to zero, or ZERO_SUM_L2_DIST so they add up to
             zero scaled by the distance from the center pixel.
-        exclude_corners: if true, only keep filters that are copies/rotations of D=1 filters. This
-            ensures that D=100 has the same number of filters as D=1. Defaults to False.
+        max_pixel_l1: The max pixel l1 distance of the filters. These filters transfer to higher
+            dimensions more easily. Defaults to None, so filters are determined by Ms.
         k2_irreps_basis: for D=2, k=2 filters, use the irreps basis. Defaults to True.
+        combine_equal_li: Combine filters whose nonempty pixels are equal l1 dist, default False.
 
     returns:
         the filter of the specified D, M, k, and parity as a MultiImage
     """
     allfilters_list = get_invariant_filters_list(
-        Ms, ks, parities, D, operators, scale, exclude_corners, k2_irreps_basis
+        Ms, ks, parities, D, operators, scale, max_pixel_l1, k2_irreps_basis, combine_equal_l1
     )
     return MultiImage.from_images(allfilters_list)
 

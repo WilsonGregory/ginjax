@@ -598,7 +598,7 @@ upsample_filters = geom.get_invariant_filters(
     parities=[0],
     D=args.train_D,
     operators=group_actions,
-    scale=geom.FilterScaling.ZERO_SUM,
+    scale=scaling,
 )
 
 test_conv_filters = []
@@ -615,18 +615,13 @@ for D in test_D_range:
         combine_equal_l1=True,
     )
 
-    # laplacian_filters = conv_filters_d[((), 0)]  # (n_filters, shape)
-    # filter_sum = jnp.sum(laplacian_filters, axis=0).ravel()
-    # print(
-    #     f"D={D}, shape {laplacian_filters.shape}, {jnp.mean(jnp.einsum("i,j", filter_sum, filter_sum))}"
-    # )
     upsample_filters_d = geom.get_invariant_filters(
         Ms=[2],
         ks=[0],
         parities=[0],
         D=D,
         operators=group_actions_d,
-        scale=geom.FilterScaling.ZERO_SUM,
+        scale=scaling,
     )
     test_conv_filters.append((conv_filters_d, upsample_filters_d))
 

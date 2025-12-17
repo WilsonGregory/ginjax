@@ -9,7 +9,7 @@ import ginjax.geometric as geom
 
 
 N = 3
-D = 3
+D = 1
 
 key = random.PRNGKey(time.time_ns())
 key, subkey = random.split(key)
@@ -19,7 +19,8 @@ A = geom.GeometricImage(data, 0, D, True)
 
 ff = None
 if D == 1:
-    ff = geom.GeometricFilter(jnp.array([1, -2, 1]), 0, D)
+    ff = geom.GeometricFilter(jnp.array([1, -2, 1]), 0, D) * (2 / 3)
+    ff_prime = ff + geom.GeometricFilter(jnp.array([0, 2, 0]), 0, D)
 elif D == 2:
     ff1 = geom.GeometricFilter(jnp.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]]), 0, D)
     ff2 = geom.GeometricFilter(jnp.array([[1, 0, 1], [0, -4, 0], [1, 0, 1]]), 0, D)

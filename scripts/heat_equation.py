@@ -176,7 +176,10 @@ def get_data(
         test_x0, test_xt = get_data_d(
             D, N, is_torus, k, t, max_temp, n_test, subkey, data_dir_path, f"test_D{D}"
         )
-        print(f"D={D}, x0:{jnp.std(test_x0[((),0)]):.3e}, xt:{jnp.std(test_xt[((),0)]):.3e}")
+        x0_std = jnp.std(test_x0[((), 0)])
+        xt_std = jnp.std(test_xt[((), 0)])
+        xt_resid_std = jnp.std(test_xt[((), 0)] - test_x0[((), 0)])
+        print(f"D={D}, x0:{x0_std:.3e}, xt:{xt_std:.3e}, xt_resid:{xt_resid_std:.3e}")
         test_d_x0.append(test_x0)
         test_d_xt.append(test_xt)
 
@@ -500,6 +503,28 @@ def train_and_eval(
             key, subkey = random.split(key)
             # rescale can be true or false when using zero_sum, the effect is small
             trained_model_d = trained_model.convertD(
+                conv_filters, True, subkey, upsample_filters=upsample_filters
+            )
+
+        key, subkey = random.split(key)
+        test_loss = ml.map_loss_in_batches(
+            map_and_loss_rel_error,
+            trained_model_d,
+            test_X,
+            test_Y,
+            test_batch_size,
+            subkey,
+            aux_data=batch_stats,
+        )
+        print(f"Test Loss rescale D={test_X.D}: {test_loss[0]}")
+        print(f"Test Relative Error rescale D={test_X.D}: {test_loss[1]:.4f}%")
+
+        if test_X.D == train_X.D:
+            trained_model_d = trained_model
+        else:
+            key, subkey = random.split(key)
+            # rescale can be true or false when using zero_sum, the effect is small
+            trained_model_d = trained_model.convertD(
                 conv_filters, False, subkey, upsample_filters=upsample_filters
             )
 
@@ -579,11 +604,12 @@ print(f"done. ({time.time() - t_start:.2f}s)", flush=True)
 input_keys = data[0].get_signature()
 output_keys = data[1].get_signature()
 
-scaling = geom.FilterScaling.INVERSE_COUNT
+scaling = geom.FilterScaling.NORMALIZE
 max_pixel_l1 = 2
+M = 5
 group_actions = geom.make_all_operators(args.train_D)
 conv_filters = geom.get_invariant_filters(
-    Ms=[5],
+    Ms=[M],
     ks=[0],
     parities=[0],
     D=args.train_D,
@@ -605,7 +631,7 @@ test_conv_filters = []
 for D in test_D_range:
     group_actions_d = geom.make_all_operators(D)
     conv_filters_d = geom.get_invariant_filters(
-        Ms=[5],
+        Ms=[M],
         ks=[0],
         parities=[0],
         D=D,
@@ -645,7 +671,7 @@ model_list = [
         train_and_eval,
         {
             "model": TwoLayerModel(
-                input_keys, output_keys, conv_filters, 10, use_bias="auto", key=subkeys[0]
+                input_keys, output_keys, conv_filters, 4, use_bias=False, key=subkeys[0]
             ),
             "lr": 1e-2,
             **train_kwargs,

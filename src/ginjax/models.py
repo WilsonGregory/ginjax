@@ -285,6 +285,72 @@ class AnyDimensionalModel(MultiImageModule):
         return jnp.concatenate([new_unbalanced_weights, new_balanced_weights], axis=2)
 
     @staticmethod
+    def _rescale_weights(
+        old_weights_block: jax.Array,
+        new_weights_block: jax.Array,
+        old_filters: geom.MultiImage,
+        new_filters: geom.MultiImage,
+        filter_k: tuple[bool, ...],
+        filter_key: tuple[tuple[bool, ...], int],
+        verbose: bool = False,
+    ) -> jax.Array:
+        """
+        Rescale the weights so that the sum of the weights times the filters add up to the same
+        value for the old filters and the new filters (which are likely a higher dimension).
+
+        args:
+            old_weights_block: jax array shape (out_channels,in_channels,num_filters)
+            new_weights_block: jax array shape (out_channels,in_channels,num_filters)
+            old_filters: the old filters, lower dimensional
+            new_filters: the new filtes, higher dimensional
+            filter_k: bool tuple of length k, the filter tensor order
+            filter_key: key for the filters that we are rescaling
+            verbose: whether to print the old weights and ratios
+
+        return:
+            jax array of rescaled weights (out_channels,in_channels,num_filters) after rescaling
+        """
+        # (out_c, in_c, n_filters) -> (out_c,in_c,n_filters,(1,)*D,(1,)*k)
+        weights_mul = old_weights_block.reshape(
+            old_weights_block.shape + (1,) * old_filters.D + (1,) * len(filter_k)
+        )
+
+        # TODO: what to do with negative weights?
+
+        # old_filters: (n_filters,spatial,tensor)
+        old_weights_sum = jnp.sum(
+            (old_filters[filter_key][None, None] * weights_mul),
+            axis=tuple(range(2, 3 + old_filters.D)),  # sum over n_filters,spatial
+        )  # (out_c,in_c,tensor)
+
+        # TODO: norm makes the ratio positive?
+
+        old_weights_sum = jnp.linalg.norm(
+            old_weights_sum.reshape(old_weights_sum.shape[:2] + (-1,)), axis=2
+        )  # (out_c,in_c)
+
+        weights_mul = new_weights_block.reshape(
+            new_weights_block.shape + (1,) * new_filters.D + (1,) * len(filter_k)
+        )
+        new_weights_sum = jnp.sum(
+            (new_filters[filter_key][None, None] * weights_mul),
+            axis=tuple(range(2, 3 + new_filters.D)),  # sum over n_filters,spatial
+        )  # (out_c,in_c,tensor)
+
+        new_weights_sum = jnp.linalg.norm(
+            new_weights_sum.reshape(new_weights_sum.shape[:2] + (-1,)), axis=2
+        )  # (out_c,in_c)
+
+        # (out_c,in_c,1) where 1 is for n_filters
+        ratios = (old_weights_sum / (new_weights_sum + geom.TINY))[..., None]
+
+        if verbose:
+            print("old weights", old_weights_block.shape, old_weights_block)
+            print("ratios", ratios.shape, ratios)  # (out_c,in_c,1), 1 for num spatial, eh 3
+
+        return new_weights_block * ratios
+
+    @staticmethod
     def _transfer_conv_weights(
         weights: dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]],
         old_filters: geom.MultiImage,
@@ -320,6 +386,31 @@ class AnyDimensionalModel(MultiImageModule):
                     old_weights_block, filter_key, old_filters, new_filters
                 )
 
+                if rescale:
+                    pos_weights = AnyDimensionalModel._rescale_weights(
+                        jax.nn.relu(old_weights_block),
+                        jax.nn.relu(new_weights_block),
+                        old_filters,
+                        new_filters,
+                        filter_k,
+                        filter_key,
+                        verbose,
+                    )
+                    neg_weights = AnyDimensionalModel._rescale_weights(
+                        -jax.nn.relu(-old_weights_block),
+                        -jax.nn.relu(-new_weights_block),
+                        old_filters,
+                        new_filters,
+                        filter_k,
+                        filter_key,
+                        verbose,
+                    )
+                    scaled_weights_block = pos_weights + neg_weights
+                else:
+                    scaled_weights_block = new_weights_block
+
+                new_weights[(in_k, in_p)][(out_k, out_p)] = scaled_weights_block
+
                 if verbose:
                     weights_shaped = old_weights_block.reshape(
                         old_weights_block.shape + (1,) * old_filters.D
@@ -331,7 +422,7 @@ class AnyDimensionalModel(MultiImageModule):
                         weights_shaped * filters_shaped, axis=2
                     )  # (out,in,spatial)
 
-                    weights_shaped = new_weights_block.reshape(
+                    weights_shaped = new_weights[(in_k, in_p)][(out_k, out_p)].reshape(
                         new_weights_block.shape + (1,) * new_filters.D
                     )
                     filters_shaped = new_filters[filter_key].reshape(
@@ -341,43 +432,14 @@ class AnyDimensionalModel(MultiImageModule):
                         weights_shaped * filters_shaped, axis=2
                     )  # (out,in,spatial)
 
-                    print(
-                        f"square sum ratio {jnp.sum(weights_prod_new**2) / jnp.sum(weights_prod_old**2):.2f}%"
-                    )
-                    print(f"sum ratio {jnp.sum(weights_prod_new) / jnp.sum(weights_prod_old):.2f}%")
+                    old_axes = tuple(range(2, 2 + old_filters.D))
+                    new_axes = tuple(range(2, 2 + new_filters.D))
 
-                if rescale:
-                    # (out_c, in_c, n_filters) -> (out_c,in_c,n_filters,(1,)*D,(1,)*k)
-                    weights_mul = old_weights_block.reshape(
-                        old_weights_block.shape + (1,) * old_filters.D + (1,) * len(filter_k)
-                    )
-                    # old_filters: (n_filters,spatial,tensor)
-                    old_weights_sum = jnp.sum(
-                        (old_filters[filter_key][None, None] * weights_mul),
-                        axis=tuple(range(2, 3 + old_filters.D)),  # sum over n_filters,spatial
-                    )  # (out_c,in_c,tensor)
+                    print("sum old", jnp.sum(weights_prod_old, axis=old_axes))
+                    print("square sum old", jnp.sqrt(jnp.sum(weights_prod_old**2, axis=old_axes)))
 
-                    old_weights_sum = jnp.linalg.norm(
-                        old_weights_sum.reshape(old_weights_sum.shape[:2] + (-1,)), axis=2
-                    )  # (out_c,in_c)
-
-                    weights_mul = new_weights_block.reshape(
-                        new_weights_block.shape + (1,) * new_filters.D + (1,) * len(filter_k)
-                    )
-                    new_weights_sum = jnp.sum(
-                        (new_filters[filter_key][None, None] * weights_mul),
-                        axis=tuple(range(2, 3 + new_filters.D)),  # sum over n_filters,spatial
-                    )  # (out_c,in_c,tensor)
-
-                    new_weights_sum = jnp.linalg.norm(
-                        new_weights_sum.reshape(new_weights_sum.shape[:2] + (-1,)), axis=2
-                    )  # (out_c,in_c)
-
-                    ratios = (old_weights_sum / (new_weights_sum + geom.TINY))[..., None]
-                else:
-                    ratios = jnp.ones_like(new_weights_block)
-
-                new_weights[(in_k, in_p)][(out_k, out_p)] = new_weights_block * ratios
+                    print("sum new", jnp.sum(weights_prod_new, axis=new_axes))
+                    print("square sum new", jnp.sqrt(jnp.sum(weights_prod_new**2, axis=new_axes)))
 
         return new_weights
 

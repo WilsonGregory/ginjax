@@ -144,6 +144,7 @@ def get_data(
         test_D_range: range of test dimensions
         N: sidelength of a cube of data
         is_torus: whether the data is on the torus
+        diffusion_coeff: coefficient in the diffusion equation, equivalently the timestep
         n_train: number of training data points
         n_val: number of validation data points
         n_test: number of test data points for each test dimension
@@ -384,54 +385,77 @@ class ConvSeriesModel(models.AnyDimensionalModel):
         return x, aux_data
 
 
-@eqx.filter_jit
-def map_residual(
-    model: models.MultiImageModule,
-    multi_image_x: geom.MultiImage,
-    aux_data: eqx.nn.State | None = None,
-) -> tuple[geom.MultiImage, eqx.nn.State | None]:
-    residual, aux_data = jax.vmap(model, in_axes=(0, None), out_axes=(0, None), axis_name="batch")(
-        multi_image_x, aux_data
-    )
-
-    # currently NOT doing the residual
-    return residual, aux_data
-
-    # # add the last timestep to the residual
-    # pred_y = residual.empty()
-    # for ((k, parity), img_in), img_resid in zip(multi_image_x.items(), residual.values()):
-    #     pred_y.append(k, parity, img_in[:, -1:] + img_resid)
-
-    # return pred_y, aux_data
-
-
-@eqx.filter_jit
-def map_and_loss_rel_error(
-    model: models.MultiImageModule,
-    multi_image_x: geom.MultiImage,
-    multi_image_y: geom.MultiImage,
-    aux_data: eqx.nn.State | None = None,
-) -> tuple[jax.Array, eqx.nn.State | None]:
+class HeatMapper:
     """
-    Calculates both the smse_loss and the rel_error.
+    Functor for map_and_loss in train, map_loss_in_batches, etc, where arguments can be provided
+    beforehand. In this case, it is useful for smse vs relative error, and whether to learn the
+    residual or not.
     """
-    pred_y, aux_data = map_residual(model, multi_image_x, aux_data)
 
-    loss = ml.smse_loss(pred_y, multi_image_y)
-    rel_error = ml.l2_rel_error(pred_y, multi_image_y)
-    return jnp.stack([loss, rel_error]), aux_data
+    residual: bool
+    smse: bool
+    l2_rel: bool
 
+    def __init__(
+        self: Self, residual: bool = False, smse: bool = True, l2_rel: bool = False
+    ) -> None:
+        """
+        Docstring for __init__
 
-@eqx.filter_jit
-def map_and_loss(
-    model: models.MultiImageModule,
-    multi_image_x: geom.MultiImage,
-    multi_image_y: geom.MultiImage,
-    aux_data: eqx.nn.State | None = None,
-) -> tuple[jax.Array, eqx.nn.State | None]:
-    pred_y, aux_data = map_residual(model, multi_image_x, aux_data)
+        residual: Whether the network should learn the residual, defaults to False
+        smse: Whether __call__ returns the smse loss, defaults to True
+        l2_rel: Whether __call__ returns the l2 relative error, defaults to False
+        """
+        assert smse or l2_rel, "At least one of smse or l2_rel must be true."
+        self.residual = residual
+        self.smse = smse
+        self.l2_rel = l2_rel
 
-    return ml.smse_loss(pred_y, multi_image_y), aux_data
+    @eqx.filter_jit
+    def map(
+        self: Self,
+        model: models.MultiImageModule,
+        multi_image_x: geom.MultiImage,
+        aux_data: eqx.nn.State | None = None,
+    ) -> tuple[geom.MultiImage, eqx.nn.State | None]:
+        """
+        The map function using the model and the input data.
+        """
+        out, aux_data = jax.vmap(model, in_axes=(0, None), out_axes=(0, None), axis_name="batch")(
+            multi_image_x, aux_data
+        )
+
+        if self.residual:
+            # add the last timestep to the residual
+            pred_y = out.empty()
+            for ((k, parity), img_in), img_resid in zip(multi_image_x.items(), out.values()):
+                pred_y.append(k, parity, img_in[:, -1:] + img_resid)
+
+            return pred_y, aux_data
+        else:
+            return out, aux_data
+
+    @eqx.filter_jit
+    def __call__(
+        self: Self,
+        model: models.MultiImageModule,
+        multi_image_x: geom.MultiImage,
+        multi_image_y: geom.MultiImage,
+        aux_data: eqx.nn.State | None = None,
+    ) -> tuple[jax.Array, eqx.nn.State | None]:
+        """
+        Equivalent of the map_and_loss function.
+        """
+        pred_y, aux_data = self.map(model, multi_image_x, aux_data)
+
+        losses = []
+        if self.smse:
+            losses.append(ml.smse_loss(pred_y, multi_image_y))
+
+        if self.l2_rel:
+            losses.append(ml.l2_rel_error(pred_y, multi_image_y))
+
+        return jnp.squeeze(jnp.stack(losses)), aux_data
 
 
 def train_and_eval(
@@ -448,6 +472,7 @@ def train_and_eval(
     model: models.AnyDimensionalModel,
     lr: float,
     conv_filters_dict: dict[int, geom.MultiImage],
+    residual: bool,
     batch_size: int,
     test_batch_size: int,
     epochs: int,
@@ -471,7 +496,7 @@ def train_and_eval(
         trained_model, batch_stats, train_loss, val_loss = ml.train(
             train_X,
             train_Y,
-            map_and_loss,
+            HeatMapper(residual),
             model,
             subkey,
             stop_condition=ml.EpochStop(epochs, verbose=verbose),
@@ -496,7 +521,7 @@ def train_and_eval(
 
         key, subkey1, subkey2 = random.split(key, num=3)
         train_loss = ml.map_loss_in_batches(
-            map_and_loss,
+            HeatMapper(residual),
             trained_model,
             train_X,
             train_Y,
@@ -505,7 +530,7 @@ def train_and_eval(
             aux_data=batch_stats,
         )
         val_loss = ml.map_loss_in_batches(
-            map_and_loss,
+            HeatMapper(residual),
             trained_model,
             val_X,
             val_Y,
@@ -528,7 +553,7 @@ def train_and_eval(
 
         key, subkey = random.split(key)
         test_loss_rescale = ml.map_loss_in_batches(
-            map_and_loss_rel_error,
+            HeatMapper(residual, True, True),
             trained_model_d,
             test_X,
             test_Y,
@@ -551,7 +576,7 @@ def train_and_eval(
 
         key, subkey = random.split(key)
         test_loss = ml.map_loss_in_batches(
-            map_and_loss_rel_error,
+            HeatMapper(residual, True, True),
             trained_model_d,
             test_X,
             test_Y,
@@ -566,7 +591,7 @@ def train_and_eval(
         test_losses.append(test_loss[1])
 
         if images_dir and test_X.D == 2:
-            pred_y, _ = map_residual(trained_model_d, test_X.get_one(), batch_stats)
+            pred_y, _ = HeatMapper(residual).map(trained_model_d, test_X.get_one(), batch_stats)
 
             plot_multi_image(
                 test_X.get_one(),
@@ -600,6 +625,12 @@ def handleArgs() -> argparse.Namespace:
     )
     parser.add_argument("-N", help="spatial size", type=int, default=128)
     parser.add_argument("--diffusion-coef", help="the diffusion coefficient", type=float, default=1)
+    parser.add_argument(
+        "--residual",
+        help="learn the residual of the heat equation",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     # need do to --wandb to activate, also need --wandb-entity your_wandb_name_here
     parser.add_argument(
         "--wandb-project", help="the wandb project", type=str, default="heat-equation"
@@ -694,6 +725,7 @@ for train_D, train_x0, train_xt, val_x0, val_xt in zip(
     data = (train_x0, train_xt, val_x0, val_xt, test_d_x0, test_d_xt)
 
     train_kwargs = {
+        "residual": args.residual,
         "batch_size": args.batch,
         "test_batch_size": args.batch,
         "epochs": args.epochs,
@@ -836,7 +868,7 @@ for train_D, train_x0, train_xt, val_x0, val_xt in zip(
             "lastStepIdentity",
             train_and_eval,
             {
-                "model": models.LastStepIdentity(residual=False),
+                "model": models.LastStepIdentity(residual=args.residual),
                 "lr": 1,
                 "conv_filters_dict": normalize_filters_dict,
                 **train_kwargs,

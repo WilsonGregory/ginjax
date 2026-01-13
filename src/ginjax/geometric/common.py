@@ -274,19 +274,8 @@ def scale_filters(
         meshgrid_dims = tuple(jnp.arange(M1) for M1 in filters[0].image_shape())
         idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, D))
         idxs -= (jnp.array(filters[0].image_shape()) - 1) / 2
-        dist_scaling = jnp.exp(-0.25 * (jnp.linalg.norm(idxs, axis=1) ** 2))
-        # I should maybe account for the fact that in k=2, some pixels have multiple filters
-        nonempty_pixels = jnp.any(
-            jnp.stack(
-                [jnp.any(~jnp.isclose(ff.data.reshape((M**D, D**k)), 0), axis=1) for ff in filters],
-                axis=1,
-            ),
-            axis=1,
-        ).astype(int)
-        gaussian_sum = jnp.sum(dist_scaling * nonempty_pixels)
-        normalized_dist_scaling = GeometricFilter(
-            dist_scaling.reshape((M,) * D) / gaussian_sum, 0, D
-        )
+        dist_scaling = jnp.exp(-1 * jnp.linalg.norm(idxs, axis=1))
+        normalized_dist_scaling = GeometricFilter(dist_scaling.reshape((M,) * D), 0, D)
         filters = [ff * normalized_dist_scaling for ff in filters]
     elif (
         scale is FilterScaling.ZERO_SUM

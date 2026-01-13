@@ -73,8 +73,7 @@ def get_data_d(
     max_temp: float,
     batch: int,
     key: jax.Array,
-    data_dir: pathlib.Path | None,
-    data_name: str,
+    data_dir: pathlib.Path,
 ) -> tuple[geom.MultiImage, geom.MultiImage]:
     """
     Get an input, output data pair of heat diffusion after t timestep, diffusion coefficient k.
@@ -95,12 +94,8 @@ def get_data_d(
     returns:
         input multi image, output multi image
     """
-    if data_dir is None:
-        raise ValueError
-
     data_dir = (
-        data_dir
-        / f"{data_name}_N{N}_istorus{int(is_torus)}_n{batch}_k{k}_t{t}_maxtemp{max_temp}.npy"
+        data_dir / f"D{D}_N{N}_istorus{int(is_torus)}_n{batch}_k{k}_t{t}_maxtemp{max_temp}.npy"
     )
 
     if data_dir.is_file():
@@ -122,20 +117,21 @@ def get_data_d(
 
 
 def get_data(
-    train_D: int,
+    train_D_range: tuple[int, ...],
     test_D_range: tuple[int, ...],
     N: int,
     is_torus: bool,
+    diffusion_coef: float,
     n_train: int,
     n_val: int,
     n_test: int,
     key: jax.Array,
-    data_dir: str | None,
+    data_dir: str,
 ) -> tuple[
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
+    list[geom.MultiImage],
+    list[geom.MultiImage],
+    list[geom.MultiImage],
+    list[geom.MultiImage],
     list[geom.MultiImage],
     list[geom.MultiImage],
 ]:
@@ -144,12 +140,13 @@ def get_data(
     The initial data is uniform on the range 0 to 5.
 
     args:
-        D: the dimension of the space
+        train_D_range: range of train dimensions
+        test_D_range: range of test dimensions
         N: sidelength of a cube of data
         is_torus: whether the data is on the torus
         n_train: number of training data points
         n_val: number of validation data points
-        ntest: number of test data points for each test dimension
+        n_test: number of test data points for each test dimension
         key: key for randomness
         data_dir: location to save or load the data from
 
@@ -157,24 +154,33 @@ def get_data(
         input multi image, output multi image
     """
     max_temp = math.sqrt(3)
-    k = 1
     t = 1
-    data_dir_path = pathlib.Path(data_dir) if data_dir is not None else None
+    data_dir_path = pathlib.Path(data_dir)
 
-    key, subkey1, subkey2 = random.split(key, num=3)
-    train_x0, train_xt = get_data_d(
-        train_D, N, is_torus, k, t, max_temp, n_train, subkey1, data_dir_path, f"train_D{train_D}"
-    )
-    val_x0, val_xt = get_data_d(
-        train_D, N, is_torus, k, t, max_temp, n_val, subkey2, data_dir_path, f"val_D{train_D}"
-    )
+    train_d_x0 = []
+    train_d_xt = []
+    val_d_x0 = []
+    val_d_xt = []
+    for D in train_D_range:
+        key, subkey1, subkey2 = random.split(key, num=3)
+        train_x0, train_xt = get_data_d(
+            D, N, is_torus, diffusion_coef, t, max_temp, n_train, subkey1, data_dir_path / "train"
+        )
+        train_d_x0.append(train_x0)
+        train_d_xt.append(train_xt)
+
+        val_x0, val_xt = get_data_d(
+            D, N, is_torus, diffusion_coef, t, max_temp, n_val, subkey2, data_dir_path / "val"
+        )
+        val_d_x0.append(val_x0)
+        val_d_xt.append(val_xt)
 
     test_d_x0 = []
     test_d_xt = []
     for D in test_D_range:
         key, subkey = random.split(key)
         test_x0, test_xt = get_data_d(
-            D, N, is_torus, k, t, max_temp, n_test, subkey, data_dir_path, f"test_D{D}"
+            D, N, is_torus, diffusion_coef, t, max_temp, n_test, subkey, data_dir_path / "test"
         )
         x0_std = jnp.std(test_x0[((), 0)])
         xt_std = jnp.std(test_xt[((), 0)])
@@ -183,7 +189,7 @@ def get_data(
         test_d_x0.append(test_x0)
         test_d_xt.append(test_xt)
 
-    return (train_x0, train_xt, val_x0, val_xt, test_d_x0, test_d_xt)
+    return (train_d_x0, train_d_xt, val_d_x0, val_d_xt, test_d_x0, test_d_xt)
 
 
 def plot_multi_image(
@@ -294,13 +300,19 @@ def plot_multi_image(
     plt.close(fig)
 
 
-class TwoLayerModel(models.AnyDimensionalModel):
+class ConvSeriesModel(models.AnyDimensionalModel):
+    """
+    Simple convolution model consisting of a series of ConvBlocks, with all but the last with a
+    gelu vector neuron nonlinearity.
+    """
+
     layers: list[models.ConvBlock]
 
     D: int = eqx.field(static=True)
     input_keys: geom.Signature = eqx.field(static=True)
     target_keys: geom.Signature = eqx.field(static=True)
     width: int = eqx.field(static=True)
+    depth: int = eqx.field(static=True)
     use_bias: bool | str = eqx.field(static=True)
 
     def __init__(
@@ -309,6 +321,7 @@ class TwoLayerModel(models.AnyDimensionalModel):
         target_keys: geom.Signature,
         conv_filters: geom.MultiImage,
         width: int,
+        depth: int,
         use_bias: bool | str,
         key: jax.Array,
     ) -> None:
@@ -316,19 +329,25 @@ class TwoLayerModel(models.AnyDimensionalModel):
         self.input_keys = input_keys
         self.target_keys = target_keys
         self.width = width
+        self.depth = depth
         self.use_bias = use_bias
 
         mid_keys = geom.signature_union(input_keys, target_keys, width)
 
-        key, subkey1, subkey2 = random.split(key, num=3)
-        self.layers = [
+        subkey_last, *subkeys = random.split(key, num=depth)
+        self.layers = []
+        for subkey in subkeys:
+            self.layers.append(
+                models.ConvBlock(
+                    D, input_keys, mid_keys, use_bias, "gelu", True, conv_filters, key=subkey
+                )
+            )
+
+        self.layers.append(
             models.ConvBlock(
-                D, input_keys, mid_keys, use_bias, "gelu", True, conv_filters, key=subkey1
-            ),
-            models.ConvBlock(
-                D, mid_keys, target_keys, use_bias, None, True, conv_filters, key=subkey2
-            ),
-        ]
+                D, mid_keys, target_keys, use_bias, None, True, conv_filters, key=subkey_last
+            )
+        )
 
     def convertD(
         self: Self, conv_filters: geom.MultiImage, rescale: bool, key: jax.Array, **kwargs
@@ -349,6 +368,7 @@ class TwoLayerModel(models.AnyDimensionalModel):
             self.target_keys,
             conv_filters,
             self.width,
+            self.depth,
             self.use_bias,
             key,
         )
@@ -358,7 +378,6 @@ class TwoLayerModel(models.AnyDimensionalModel):
     def __call__(
         self: Self, x: geom.MultiImage, aux_data: eqx.nn.State | None = None
     ) -> tuple[geom.MultiImage, eqx.nn.State | None]:
-        in_x = x
         for layer in self.layers:
             x, aux_data = layer(x, aux_data)
 
@@ -375,12 +394,15 @@ def map_residual(
         multi_image_x, aux_data
     )
 
-    # add the last timestep to the residual
-    pred_y = residual.empty()
-    for ((k, parity), img_in), img_resid in zip(multi_image_x.items(), residual.values()):
-        pred_y.append(k, parity, img_in[:, -1:] + img_resid)
+    # currently NOT doing the residual
+    return residual, aux_data
 
-    return pred_y, aux_data
+    # # add the last timestep to the residual
+    # pred_y = residual.empty()
+    # for ((k, parity), img_in), img_resid in zip(multi_image_x.items(), residual.values()):
+    #     pred_y.append(k, parity, img_in[:, -1:] + img_resid)
+
+    # return pred_y, aux_data
 
 
 @eqx.filter_jit
@@ -425,7 +447,7 @@ def train_and_eval(
     model_name: str,
     model: models.AnyDimensionalModel,
     lr: float,
-    test_conv_filters: list[tuple[geom.MultiImage, geom.MultiImage]],
+    conv_filters_dict: dict[int, geom.MultiImage],
     batch_size: int,
     test_batch_size: int,
     epochs: int,
@@ -494,20 +516,18 @@ def train_and_eval(
 
     assert isinstance(trained_model, models.AnyDimensionalModel)
     test_losses = []
-    for test_X, test_Y, (conv_filters, upsample_filters) in zip(
-        test_d_X, test_d_Y, test_conv_filters
-    ):
+    for test_X, test_Y in zip(test_d_X, test_d_Y):
+        conv_filters = conv_filters_dict[test_X.D]
+
         if test_X.D == train_X.D:
             trained_model_d = trained_model
         else:
             key, subkey = random.split(key)
             # rescale can be true or false when using zero_sum, the effect is small
-            trained_model_d = trained_model.convertD(
-                conv_filters, True, subkey, upsample_filters=upsample_filters
-            )
+            trained_model_d = trained_model.convertD(conv_filters, True, subkey)
 
         key, subkey = random.split(key)
-        test_loss = ml.map_loss_in_batches(
+        test_loss_rescale = ml.map_loss_in_batches(
             map_and_loss_rel_error,
             trained_model_d,
             test_X,
@@ -516,17 +536,18 @@ def train_and_eval(
             subkey,
             aux_data=batch_stats,
         )
-        print(f"Test Loss rescale D={test_X.D}: {test_loss[0]}")
-        print(f"Test Relative Error rescale D={test_X.D}: {test_loss[1]:.4f}%")
+        print(f"Test Loss rescale D={test_X.D}: {test_loss_rescale[0]}")
+        print(f"Test Relative Error rescale D={test_X.D}: {test_loss_rescale[1]:.4f}%")
+
+        test_losses.append(test_loss_rescale[0])
+        test_losses.append(test_loss_rescale[1])
 
         if test_X.D == train_X.D:
             trained_model_d = trained_model
         else:
             key, subkey = random.split(key)
             # rescale can be true or false when using zero_sum, the effect is small
-            trained_model_d = trained_model.convertD(
-                conv_filters, False, subkey, upsample_filters=upsample_filters
-            )
+            trained_model_d = trained_model.convertD(conv_filters, False, subkey)
 
         key, subkey = random.split(key)
         test_loss = ml.map_loss_in_batches(
@@ -561,7 +582,14 @@ def train_and_eval(
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
-        "--train-D", help="dimension of data to train on", choices=[1, 2, 3], default=1, type=int
+        "--min-train-D",
+        help="the start of the train D range",
+        choices=[1, 2, 3],
+        default=1,
+        type=int,
+    )
+    parser.add_argument(
+        "--max-train-D", help="the end of the train D range", choices=[1, 2, 3], default=1, type=int
     )
     parser.add_argument(
         "--max-test-D",
@@ -571,6 +599,7 @@ def handleArgs() -> argparse.Namespace:
         type=int,
     )
     parser.add_argument("-N", help="spatial size", type=int, default=128)
+    parser.add_argument("--diffusion-coef", help="the diffusion coefficient", type=float, default=1)
     # need do to --wandb to activate, also need --wandb-entity your_wandb_name_here
     parser.add_argument(
         "--wandb-project", help="the wandb project", type=str, default="heat-equation"
@@ -581,18 +610,20 @@ def handleArgs() -> argparse.Namespace:
 
 # MAIN
 args = handleArgs()
-test_D_range = tuple(range(args.train_D, args.max_test_D + 1))
+train_D_range = tuple(range(args.min_train_D, args.max_train_D + 1))
+test_D_range = tuple(range(args.min_train_D, args.max_test_D + 1))
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
 
 key, subkey = random.split(key)
 print("Generating data...", end="", flush=True)
 t_start = time.time()
-data = get_data(
-    args.train_D,
+train_d_x0, train_d_xt, val_d_x0, val_d_xt, test_d_x0, test_d_xt = get_data(
+    train_D_range,
     test_D_range,
     args.N,
     True,
+    args.diffusion_coef,
     args.n_train,
     args.n_val,
     args.n_test,
@@ -601,154 +632,330 @@ data = get_data(
 )
 print(f"done. ({time.time() - t_start:.2f}s)", flush=True)
 
-input_keys = data[0].get_signature()
-output_keys = data[1].get_signature()
-
-scaling = geom.FilterScaling.NORMALIZE
 max_pixel_l1 = 2
 M = 5
-group_actions = geom.make_all_operators(args.train_D)
-conv_filters = geom.get_invariant_filters(
-    Ms=[M],
-    ks=[0],
-    parities=[0],
-    D=args.train_D,
-    operators=group_actions,
-    scale=scaling,
-    max_pixel_l1=max_pixel_l1,
-    combine_equal_l1=True,
-)
-upsample_filters = geom.get_invariant_filters(
-    Ms=[2],
-    ks=[0],
-    parities=[0],
-    D=args.train_D,
-    operators=group_actions,
-    scale=scaling,
-)
 
-test_conv_filters = []
-for D in test_D_range:
-    group_actions_d = geom.make_all_operators(D)
-    conv_filters_d = geom.get_invariant_filters(
+normalize_filters_dict = {}
+gaussian_filters_dict = {}
+stencil_filters_dict = {}
+inverse_count_filters_dict = {}
+
+full_D_range = range(args.min_train_D, max(args.max_train_D, args.max_test_D) + 1)
+for D in full_D_range:
+    group_actions = geom.make_all_operators(D)
+    normalize_filters_dict[D] = geom.get_invariant_filters(
         Ms=[M],
         ks=[0],
         parities=[0],
         D=D,
-        operators=group_actions_d,
-        scale=scaling,
+        operators=group_actions,
+        scale=geom.FilterScaling.NORMALIZE,
+        max_pixel_l1=max_pixel_l1,
+        combine_equal_l1=True,
+    )
+    gaussian_filters_dict[D] = geom.get_invariant_filters(
+        Ms=[M],
+        ks=[0],
+        parities=[0],
+        D=D,
+        operators=group_actions,
+        scale=geom.FilterScaling.GAUSSIAN,
+        max_pixel_l1=max_pixel_l1,
+        combine_equal_l1=True,
+    )
+    stencil_filters_dict[D] = geom.get_invariant_filters(
+        Ms=[M],
+        ks=[0],
+        parities=[0],
+        D=D,
+        operators=group_actions,
+        scale=geom.FilterScaling.STENCIL,
+        max_pixel_l1=max_pixel_l1,
+        combine_equal_l1=True,
+    )
+    inverse_count_filters_dict[D] = geom.get_invariant_filters(
+        Ms=[M],
+        ks=[0],
+        parities=[0],
+        D=D,
+        operators=group_actions,
+        scale=geom.FilterScaling.INVERSE_COUNT,
         max_pixel_l1=max_pixel_l1,
         combine_equal_l1=True,
     )
 
-    upsample_filters_d = geom.get_invariant_filters(
-        Ms=[2],
-        ks=[0],
-        parities=[0],
-        D=D,
-        operators=group_actions_d,
-        scale=scaling,
+test_results = []
+
+for train_D, train_x0, train_xt, val_x0, val_xt in zip(
+    train_D_range, train_d_x0, train_d_xt, val_d_x0, val_d_xt
+):
+    input_keys = train_x0.get_signature()
+    output_keys = train_xt.get_signature()
+    data = (train_x0, train_xt, val_x0, val_xt, test_d_x0, test_d_xt)
+
+    train_kwargs = {
+        "batch_size": args.batch,
+        "test_batch_size": args.batch,
+        "epochs": args.epochs,
+        "save_model": args.save_model,
+        "load_model": args.load_model,
+        "images_dir": args.images_dir,
+        "verbose": args.verbose,
+        "is_wandb": args.wandb,
+    }
+
+    key, *subkeys = random.split(key, num=10)
+    model_list = [
+        (
+            "one_layer_normalize_scaling",
+            train_and_eval,
+            {
+                "model": ConvSeriesModel(
+                    input_keys,
+                    output_keys,
+                    normalize_filters_dict[train_D],
+                    width=1,
+                    depth=1,
+                    use_bias=False,
+                    key=subkeys[0],
+                ),
+                "lr": 1e-2,
+                "conv_filters_dict": normalize_filters_dict,
+                **train_kwargs,
+            },
+        ),
+        (
+            "one_layer_gaussian_scaling",
+            train_and_eval,
+            {
+                "model": ConvSeriesModel(
+                    input_keys,
+                    output_keys,
+                    gaussian_filters_dict[train_D],
+                    width=1,
+                    depth=1,
+                    use_bias=False,
+                    key=subkeys[0],
+                ),
+                "lr": 1e-2,
+                "conv_filters_dict": gaussian_filters_dict,
+                **train_kwargs,
+            },
+        ),
+        # (
+        #     "one_layer_stencil_scaling",
+        #     train_and_eval,
+        #     {
+        #         "model": ConvSeriesModel(
+        #             input_keys,
+        #             output_keys,
+        #             stencil_filters_dict[train_D],
+        #             width=1,
+        #             depth=1,
+        #             use_bias=False,
+        #             key=subkeys[1],
+        #         ),
+        #         "lr": 1e-2,
+        #         "conv_filters_dict": stencil_filters_dict,
+        #         **train_kwargs,
+        #     },
+        # ),
+        # (
+        #     "one_layer_inverse_count_scaling",
+        #     train_and_eval,
+        #     {
+        #         "model": ConvSeriesModel(
+        #             input_keys,
+        #             output_keys,
+        #             inverse_count_filters_dict[train_D],
+        #             width=1,
+        #             depth=1,
+        #             use_bias=False,
+        #             key=subkeys[2],
+        #         ),
+        #         "lr": 1e-2,
+        #         "conv_filters_dict": inverse_count_filters_dict,
+        #         **train_kwargs,
+        #     },
+        # ),
+        # (
+        #     "two_layer_normalize_scaling",
+        #     train_and_eval,
+        #     {
+        #         "model": ConvSeriesModel(
+        #             input_keys,
+        #             output_keys,
+        #             normalize_filters_dict[train_D],
+        #             width=10,
+        #             depth=2,
+        #             use_bias=False,
+        #             key=subkeys[3],
+        #         ),
+        #         "lr": 1e-2,
+        #         "conv_filters_dict": normalize_filters_dict,
+        #         **train_kwargs,
+        #     },
+        # ),
+        # (
+        #     "two_layer_stencil_scaling",
+        #     train_and_eval,
+        #     {
+        #         "model": ConvSeriesModel(
+        #             input_keys,
+        #             output_keys,
+        #             stencil_filters_dict[train_D],
+        #             width=10,
+        #             depth=2,
+        #             use_bias=False,
+        #             key=subkeys[4],
+        #         ),
+        #         "lr": 1e-2,
+        #         "conv_filters_dict": stencil_filters_dict,
+        #         **train_kwargs,
+        #     },
+        # ),
+        # (
+        #     "two_layer_inverse_count_scaling",
+        #     train_and_eval,
+        #     {
+        #         "model": ConvSeriesModel(
+        #             input_keys,
+        #             output_keys,
+        #             inverse_count_filters_dict[train_D],
+        #             width=10,
+        #             depth=2,
+        #             use_bias=False,
+        #             key=subkeys[5],
+        #         ),
+        #         "lr": 1e-2,
+        #         "conv_filters_dict": inverse_count_filters_dict,
+        #         **train_kwargs,
+        #     },
+        # ),
+        (
+            "lastStepIdentity",
+            train_and_eval,
+            {
+                "model": models.LastStepIdentity(residual=False),
+                "lr": 1,
+                "conv_filters_dict": normalize_filters_dict,
+                **train_kwargs,
+            },
+        ),
+        # comment out for now, upsample and orthoplex filters might not be working properly
+        # (
+        #     "unetBase_equiv48",
+        #     train_and_eval,
+        #     {
+        #         "model": models.UNet(
+        #             train_D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=48,
+        #             num_downsamples=3 if args.N <= 64 else 4,
+        #             activation_f=jax.nn.gelu,
+        #             conv_filters=conv_filters,
+        #             upsample_filters=upsample_filters,
+        #             key=subkeys[1],
+        #         ),
+        #         "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+        #         **train_kwargs,
+        #     },
+        # ),
+        # (
+        #     "resnet_equiv_42_normalize_scaling",
+        #     train_and_eval,
+        #     {
+        #         "model": models.ResNet(
+        #             train_D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=42,
+        #             conv_filters=normalize_filters_dict[train_D],
+        #             use_group_norm=True,  # want this to be true, not implemented yet
+        #             key=subkeys[6],
+        #         ),
+        #         "lr": 7e-4,
+        #         "conv_filters_dict": normalize_filters_dict,
+        #         **train_kwargs,
+        #     },
+        # ),
+        # (
+        #     "resnet_equiv_42_stencil_scaling",
+        #     train_and_eval,
+        #     {
+        #         "model": models.ResNet(
+        #             train_D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=42,
+        #             conv_filters=stencil_filters_dict[train_D],
+        #             use_group_norm=True,  # want this to be true, not implemented yet
+        #             key=subkeys[7],
+        #         ),
+        #         "lr": 7e-4,
+        #         "conv_filters_dict": stencil_filters_dict,
+        #         **train_kwargs,
+        #     },
+        # ),
+        # (
+        #     "resnet_equiv_42_inverse_count_scaling",
+        #     train_and_eval,
+        #     {
+        #         "model": models.ResNet(
+        #             train_D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=42,
+        #             conv_filters=inverse_count_filters_dict[train_D],
+        #             use_group_norm=True,  # want this to be true, not implemented yet
+        #             key=subkeys[8],
+        #         ),
+        #         "lr": 7e-4,
+        #         "conv_filters_dict": inverse_count_filters_dict,
+        #         **train_kwargs,
+        #     },
+        # ),
+        # (
+        #     "dil_resnet_equiv20",
+        #     train_and_eval,
+        #     {
+        #         "model": models.DilResNet(
+        #             train_D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=20,
+        #             conv_filters=conv_filters,
+        #             key=subkeys[3],
+        #         ),
+        #         "lr": 1e-3,
+        #         **train_kwargs,
+        #     },
+        # ),
+    ]
+
+    key, subkey = random.split(key)
+    # Use this for benchmarking the models with known learning rates.
+    # (n_trials, benchmark, models, n_results)
+    results = ml.benchmark(
+        lambda _: data,
+        model_list,
+        subkey,
+        "",
+        [0],
+        benchmark_type=ml.BENCHMARK_NONE,
+        num_trials=args.n_trials,
+        num_results=2 + len(test_D_range) * 4,  # train, val, test
+        is_wandb=args.wandb,
+        wandb_project=args.wandb_project,
+        wandb_entity=args.wandb_entity,
     )
-    test_conv_filters.append((conv_filters_d, upsample_filters_d))
 
+    test_results.append(
+        results[:, 0, :, 2:].reshape((args.n_trials, len(model_list), len(test_D_range), 2, 2))
+    )
 
-train_kwargs = {
-    "test_conv_filters": test_conv_filters,
-    "batch_size": args.batch,
-    "test_batch_size": args.batch,
-    "epochs": args.epochs,
-    "save_model": args.save_model,
-    "load_model": args.load_model,
-    "images_dir": args.images_dir,
-    "verbose": args.verbose,
-    "is_wandb": args.wandb,
-}
+# (train_D, n_trials, n_models, test_D, [rescale,normal], [l2, relative error])
+test_results = jnp.stack(test_results)
 
-key, *subkeys = random.split(key, num=10)
-model_list = [
-    (
-        "two_layer",
-        train_and_eval,
-        {
-            "model": TwoLayerModel(
-                input_keys, output_keys, conv_filters, 4, use_bias=False, key=subkeys[0]
-            ),
-            "lr": 1e-2,
-            **train_kwargs,
-        },
-    ),
-    (
-        "lastStepIdentity",
-        train_and_eval,
-        {"model": models.LastStepIdentity(residual=True), "lr": 1, **train_kwargs},
-    ),
-    # comment out for now, upsample and orthoplex filters might not be working properly
-    # (
-    #     "unetBase_equiv48",
-    #     train_and_eval,
-    #     {
-    #         "model": models.UNet(
-    #             args.train_D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=48,
-    #             num_downsamples=3 if args.N <= 64 else 4,
-    #             activation_f=jax.nn.gelu,
-    #             conv_filters=conv_filters,
-    #             upsample_filters=upsample_filters,
-    #             key=subkeys[1],
-    #         ),
-    #         "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-    #         **train_kwargs,
-    #     },
-    # ),
-    (
-        "resnet_equiv_42",
-        train_and_eval,
-        {
-            "model": models.ResNet(
-                args.train_D,
-                input_keys,
-                output_keys,
-                depth=42,
-                conv_filters=conv_filters,
-                use_group_norm=True,  # want this to be true, not implemented yet
-                key=subkeys[2],
-            ),
-            "lr": 7e-4,
-            **train_kwargs,
-        },
-    ),
-    (
-        "dil_resnet_equiv20",
-        train_and_eval,
-        {
-            "model": models.DilResNet(
-                args.train_D,
-                input_keys,
-                output_keys,
-                depth=20,
-                conv_filters=conv_filters,
-                key=subkeys[3],
-            ),
-            "lr": 1e-3,
-            **train_kwargs,
-        },
-    ),
-]
-
-key, subkey = random.split(key)
-# Use this for benchmarking the models with known learning rates.
-results = ml.benchmark(
-    lambda _: data,
-    model_list,
-    subkey,
-    "",
-    [0],
-    benchmark_type=ml.BENCHMARK_NONE,
-    num_trials=args.n_trials,
-    num_results=5,
-    is_wandb=args.wandb,
-    wandb_project=args.wandb_project,
-    wandb_entity=args.wandb_entity,
-)
+print(test_results.shape)

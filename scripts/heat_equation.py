@@ -593,82 +593,76 @@ def tune_and_eval(
         conv_filters = conv_filters_dict[test_X.D]
 
         model_dprime = None
-        for rescale in [True]:
-            if test_X.D == train_X.D:
-                model_dprime = model
-            else:
-                key, subkey = random.split(key)
-                # rescale can be true or false when using zero_sum, the effect is small
-                model_dprime = model.convertD(conv_filters, rescale, subkey)
-
+        if test_X.D == train_X.D:
+            model_dprime = model
+        else:
             key, subkey = random.split(key)
-            test_loss = ml.map_loss_in_batches(
-                HeatMapper(residual, True, True),
-                model_dprime,
-                test_X,
-                test_Y,
-                batch_size,
-                subkey,
-                aux_data=batch_stats,
-            )
-            print(
-                f"Test Loss rescale={rescale}, D={test_X.D}: {test_loss[0]:.3e} ({test_loss[1]:.3f}%)"
-            )
+            # rescale can be true or false when using zero_sum, the effect is small
+            model_dprime = model.convertD(conv_filters, True, subkey)
 
-            test_losses.append(test_loss[0])
-            test_losses.append(test_loss[1])
+        key, subkey = random.split(key)
+        test_loss = ml.map_loss_in_batches(
+            HeatMapper(residual, True, True),
+            model_dprime,
+            test_X,
+            test_Y,
+            batch_size,
+            subkey,
+            aux_data=batch_stats,
+        )
+        print(f"Test Loss rescale=True, D={test_X.D}: {test_loss[0]:.3e} ({test_loss[1]:.3f}%)")
 
-            # Now treat the trained_model_d as a warmstart and do some additional training
-            key, subkey = random.split(key)
-            steps_per_epoch = int(math.ceil(tune_X.get_L() / batch_size))
-            print(steps_per_epoch)
-            tuned_model_dprime, tune_batch_stats, _, _ = ml.train(
-                tune_X,
-                tune_Y,
-                HeatMapper(residual),
-                model_dprime,
-                subkey,
-                stop_condition=ml.EpochStop(epochs, verbose=verbose),
-                batch_size=min(tune_X.get_L(), batch_size),
-                optimizer=optax.adamw(
-                    optax.warmup_cosine_decay_schedule(
-                        lr * 1e-4, lr, 5 * steps_per_epoch, epochs * steps_per_epoch, lr * 1e-4
-                    ),
-                    weight_decay=1e-5,
+        test_losses.append(test_loss[0])
+        test_losses.append(test_loss[1])
+
+        # Now treat the trained_model_d as a warmstart and do some additional training
+        key, subkey = random.split(key)
+        steps_per_epoch = int(math.ceil(tune_X.get_L() / batch_size))
+        tuned_model_dprime, tune_batch_stats, _, _ = ml.train(
+            tune_X,
+            tune_Y,
+            HeatMapper(residual),
+            model_dprime,
+            subkey,
+            stop_condition=ml.EpochStop(epochs, verbose=verbose),
+            batch_size=min(tune_X.get_L(), batch_size),
+            optimizer=optax.adamw(
+                optax.warmup_cosine_decay_schedule(
+                    lr * 1e-4, lr, 5 * steps_per_epoch, epochs * steps_per_epoch, lr * 1e-4
                 ),
-                aux_data=batch_stats,
-                is_wandb=is_wandb,
-            )
+                weight_decay=1e-5,
+            ),
+            aux_data=batch_stats,
+            is_wandb=is_wandb,
+        )
 
-            key, subkey = random.split(key)
-            tuned_loss = ml.map_loss_in_batches(
-                HeatMapper(residual, True, True),
-                tuned_model_dprime,
-                test_X,
-                test_Y,
-                batch_size,
-                subkey,
-                aux_data=tune_batch_stats,
-            )
-            print(
-                f"Tuned Loss rescale={rescale}, D={test_X.D}: {tuned_loss[0]:.3e} ({tuned_loss[1]:.3f}%)\n"
-            )
-            test_losses.append(tuned_loss[0])
-            test_losses.append(tuned_loss[1])
+        key, subkey = random.split(key)
+        tuned_loss = ml.map_loss_in_batches(
+            HeatMapper(residual, True, True),
+            tuned_model_dprime,
+            test_X,
+            test_Y,
+            batch_size,
+            subkey,
+            aux_data=tune_batch_stats,
+        )
+        print(
+            f"Tuned Loss rescale=True, D={test_X.D}: {tuned_loss[0]:.3e} ({tuned_loss[1]:.3f}%)\n"
+        )
+        test_losses.append(tuned_loss[0])
+        test_losses.append(tuned_loss[1])
 
-        # assert model_dprime is not None
-        # if images_dir and test_X.D == 2:
-        #     pred_y, _ = HeatMapper(residual).map(
-        #         trained_model_dprime, test_X.get_one(), batch_stats
-        #     )
+        assert tuned_model_dprime is not None
+        if images_dir and test_X.D == 2:
+            pred_y, _ = HeatMapper(residual).map(tuned_model_dprime, test_X.get_one(), batch_stats)
 
-        #     plot_multi_image(
-        #         test_X.get_one(),
-        #         test_Y.get_one(),
-        #         pred_y.get_one(),
-        #         f"{images_dir}{model_name_extended}_D{test_X.D}_trainD{train_X.D}.png",
-        #         "heat",
-        #     )
+            plot_multi_image(
+                test_X.get_one(),
+                test_Y.get_one(),
+                pred_y.get_one(),
+                f"{images_dir}{model_name_extended}_D{test_X.D}_trainD{train_X.D}.png",
+                "heat",
+            )
 
     return train_loss, val_loss, *test_losses
 
@@ -947,7 +941,7 @@ for train_D, train_x0, train_xt, val_x0, val_xt in zip(
         is_wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,
-        args=vars(args),  # could also be this?
+        args=vars(args),
     )
 
     test_results.append(

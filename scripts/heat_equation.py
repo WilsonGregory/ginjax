@@ -125,9 +125,12 @@ def get_data(
     n_train: int,
     n_val: int,
     n_test: int,
+    n_tune: int,
     key: jax.Array,
     data_dir: str,
 ) -> tuple[
+    list[geom.MultiImage],
+    list[geom.MultiImage],
     list[geom.MultiImage],
     list[geom.MultiImage],
     list[geom.MultiImage],
@@ -148,11 +151,12 @@ def get_data(
         n_train: number of training data points
         n_val: number of validation data points
         n_test: number of test data points for each test dimension
+        n_tune: number of tuning data points for each test dimension
         key: key for randomness
         data_dir: location to save or load the data from
 
     returns:
-        input multi image, output multi image
+        list of training, validation, test, and tuning images for input and output
     """
     max_temp = math.sqrt(3)
     t = 1
@@ -178,6 +182,8 @@ def get_data(
 
     test_d_x0 = []
     test_d_xt = []
+    tune_d_x0 = []
+    tune_d_xt = []
     for D in test_D_range:
         key, subkey = random.split(key)
         test_x0, test_xt = get_data_d(
@@ -190,7 +196,23 @@ def get_data(
         test_d_x0.append(test_x0)
         test_d_xt.append(test_xt)
 
-    return (train_d_x0, train_d_xt, val_d_x0, val_d_xt, test_d_x0, test_d_xt)
+        key, subkey = random.split(key)
+        tune_x0, tune_xt = get_data_d(
+            D, N, is_torus, diffusion_coef, t, max_temp, n_tune, subkey, data_dir_path / "tune"
+        )
+        tune_d_x0.append(tune_x0)
+        tune_d_xt.append(tune_xt)
+
+    return (
+        train_d_x0,
+        train_d_xt,
+        val_d_x0,
+        val_d_xt,
+        test_d_x0,
+        test_d_xt,
+        tune_d_x0,
+        tune_d_xt,
+    )
 
 
 def plot_multi_image(
@@ -458,12 +480,73 @@ class HeatMapper:
         return jnp.squeeze(jnp.stack(losses)), aux_data
 
 
-def train_and_eval(
+def train_model(
     data: tuple[
         geom.MultiImage,
         geom.MultiImage,
         geom.MultiImage,
         geom.MultiImage,
+    ],
+    key: jax.Array,
+    model_name: str,
+    model: models.AnyDimensionalModel,
+    lr: float,
+    residual: bool,
+    batch_size: int,
+    epochs: int,
+    save_model: str | None,
+    load_model: str | None,
+    has_aux: bool = False,
+    verbose: int = 1,
+    is_wandb: bool = False,
+) -> models.MultiImageModule:
+    train_X, train_Y, val_X, val_Y = data
+    N = train_X.get_spatial_dims()[0]
+    batch_stats = eqx.nn.State(model) if has_aux else None
+    model_name_extended = f"{model_name}_L{train_X.get_L()}_N{N}_e{epochs}"
+
+    print(f"{model_name} params: {models.count_params(model):,}")
+
+    if load_model is not None:
+        return ml.load(f"{load_model}{model_name_extended}_model.eqx", model)
+
+    steps_per_epoch = int(math.ceil(train_X.get_L() / batch_size))
+    key, subkey = random.split(key)
+    trained_model, _, _, _ = ml.train(
+        train_X,
+        train_Y,
+        HeatMapper(residual),
+        model,
+        subkey,
+        stop_condition=ml.EpochStop(epochs, verbose=verbose),
+        batch_size=batch_size,
+        optimizer=optax.adamw(
+            optax.warmup_cosine_decay_schedule(
+                1e-8, lr, 5 * steps_per_epoch, epochs * steps_per_epoch, 1e-7
+            ),
+            weight_decay=1e-5,
+        ),
+        validation_X=val_X,
+        validation_Y=val_Y,
+        aux_data=batch_stats,
+        is_wandb=is_wandb if train_X.D == 2 else False,
+    )
+
+    if save_model is not None:
+        # TODO: need to save batch_stats as well
+        ml.save(f"{save_model}{model_name_extended}_model.eqx", trained_model)
+
+    return trained_model
+
+
+def tune_and_eval(
+    data: tuple[
+        geom.MultiImage,
+        geom.MultiImage,
+        geom.MultiImage,
+        geom.MultiImage,
+        list[geom.MultiImage],
+        list[geom.MultiImage],
         list[geom.MultiImage],
         list[geom.MultiImage],
     ],
@@ -474,124 +557,104 @@ def train_and_eval(
     conv_filters_dict: dict[int, geom.MultiImage],
     residual: bool,
     batch_size: int,
-    test_batch_size: int,
     epochs: int,
-    save_model: str | None,
-    load_model: str | None,
     images_dir: str | None,
     has_aux: bool = False,
     verbose: int = 1,
     is_wandb: bool = False,
 ) -> tuple[jax.Array | None, ...]:
-    train_X, train_Y, val_X, val_Y, test_d_X, test_d_Y = data
+    train_X, train_Y, val_X, val_Y, test_d_X, test_d_Y, tune_d_X, tune_d_Y = data
     N = train_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
     model_name_extended = f"{model_name}_L{train_X.get_L()}_N{N}_e{epochs}"
 
-    print(f"Model params: {models.count_params(model):,}")
+    key, subkey1, subkey2 = random.split(key, num=3)
+    train_loss = ml.map_loss_in_batches(
+        HeatMapper(residual),
+        model,
+        train_X,
+        train_Y,
+        batch_size,
+        subkey1,
+        aux_data=batch_stats,
+    )
+    val_loss = ml.map_loss_in_batches(
+        HeatMapper(residual),
+        model,
+        val_X,
+        val_Y,
+        batch_size,
+        subkey2,
+        aux_data=batch_stats,
+    )
 
-    if load_model is None:
-        steps_per_epoch = int(math.ceil(train_X.get_L() / batch_size))
-        key, subkey = random.split(key)
-        trained_model, batch_stats, train_loss, val_loss = ml.train(
-            train_X,
-            train_Y,
-            HeatMapper(residual),
-            model,
-            subkey,
-            stop_condition=ml.EpochStop(epochs, verbose=verbose),
-            batch_size=batch_size,
-            optimizer=optax.adamw(
-                optax.warmup_cosine_decay_schedule(
-                    1e-8, lr, 5 * steps_per_epoch, epochs * steps_per_epoch, 1e-7
-                ),
-                weight_decay=1e-5,
-            ),
-            validation_X=val_X,
-            validation_Y=val_Y,
-            aux_data=batch_stats,
-            is_wandb=is_wandb,
-        )
-
-        if save_model is not None:
-            # TODO: need to save batch_stats as well
-            ml.save(f"{save_model}{model_name_extended}_model.eqx", trained_model)
-    else:
-        trained_model = ml.load(f"{load_model}{model_name_extended}_model.eqx", model)
-
-        key, subkey1, subkey2 = random.split(key, num=3)
-        train_loss = ml.map_loss_in_batches(
-            HeatMapper(residual),
-            trained_model,
-            train_X,
-            train_Y,
-            batch_size,
-            subkey1,
-            aux_data=batch_stats,
-        )
-        val_loss = ml.map_loss_in_batches(
-            HeatMapper(residual),
-            trained_model,
-            val_X,
-            val_Y,
-            batch_size,
-            subkey2,
-            aux_data=batch_stats,
-        )
-
-    assert isinstance(trained_model, models.AnyDimensionalModel)
     test_losses = []
-    for test_X, test_Y in zip(test_d_X, test_d_Y):
+    for test_X, test_Y, tune_X, tune_Y in zip(test_d_X, test_d_Y, tune_d_X, tune_d_Y):
         conv_filters = conv_filters_dict[test_X.D]
 
+        model_dprime = None
         if test_X.D == train_X.D:
-            trained_model_d = trained_model
+            model_dprime = model
         else:
             key, subkey = random.split(key)
             # rescale can be true or false when using zero_sum, the effect is small
-            trained_model_d = trained_model.convertD(conv_filters, True, subkey)
-
-        key, subkey = random.split(key)
-        test_loss_rescale = ml.map_loss_in_batches(
-            HeatMapper(residual, True, True),
-            trained_model_d,
-            test_X,
-            test_Y,
-            test_batch_size,
-            subkey,
-            aux_data=batch_stats,
-        )
-        print(f"Test Loss rescale D={test_X.D}: {test_loss_rescale[0]}")
-        print(f"Test Relative Error rescale D={test_X.D}: {test_loss_rescale[1]:.4f}%")
-
-        test_losses.append(test_loss_rescale[0])
-        test_losses.append(test_loss_rescale[1])
-
-        if test_X.D == train_X.D:
-            trained_model_d = trained_model
-        else:
-            key, subkey = random.split(key)
-            # rescale can be true or false when using zero_sum, the effect is small
-            trained_model_d = trained_model.convertD(conv_filters, False, subkey)
+            model_dprime = model.convertD(conv_filters, True, subkey)
 
         key, subkey = random.split(key)
         test_loss = ml.map_loss_in_batches(
             HeatMapper(residual, True, True),
-            trained_model_d,
+            model_dprime,
             test_X,
             test_Y,
-            test_batch_size,
+            batch_size,
             subkey,
             aux_data=batch_stats,
         )
-        print(f"Test Loss D={test_X.D}: {test_loss[0]}")
-        print(f"Test Relative Error D={test_X.D}: {test_loss[1]:.4f}%")
+        print(f"Test Loss rescale=True, D={test_X.D}: {test_loss[0]:.3e} ({test_loss[1]:.3f}%)")
 
         test_losses.append(test_loss[0])
         test_losses.append(test_loss[1])
 
+        # Now treat the trained_model_d as a warmstart and do some additional training
+        key, subkey = random.split(key)
+        steps_per_epoch = int(math.ceil(tune_X.get_L() / batch_size))
+        tuned_model_dprime, tune_batch_stats, _, _ = ml.train(
+            tune_X,
+            tune_Y,
+            HeatMapper(residual),
+            model_dprime,
+            subkey,
+            stop_condition=ml.EpochStop(epochs, verbose=verbose),
+            batch_size=min(tune_X.get_L(), batch_size),
+            optimizer=optax.adamw(
+                optax.warmup_cosine_decay_schedule(
+                    lr * 1e-4, lr, 5 * steps_per_epoch, epochs * steps_per_epoch, lr * 1e-4
+                ),
+                weight_decay=1e-5,
+            ),
+            aux_data=batch_stats,
+            is_wandb=is_wandb,
+        )
+
+        key, subkey = random.split(key)
+        tuned_loss = ml.map_loss_in_batches(
+            HeatMapper(residual, True, True),
+            tuned_model_dprime,
+            test_X,
+            test_Y,
+            batch_size,
+            subkey,
+            aux_data=tune_batch_stats,
+        )
+        print(
+            f"Tuned Loss rescale=True, D={test_X.D}: {tuned_loss[0]:.3e} ({tuned_loss[1]:.3f}%)\n"
+        )
+        test_losses.append(tuned_loss[0])
+        test_losses.append(tuned_loss[1])
+
+        assert tuned_model_dprime is not None
         if images_dir and test_X.D == 2:
-            pred_y, _ = HeatMapper(residual).map(trained_model_d, test_X.get_one(), batch_stats)
+            pred_y, _ = HeatMapper(residual).map(tuned_model_dprime, test_X.get_one(), batch_stats)
 
             plot_multi_image(
                 test_X.get_one(),
@@ -607,21 +670,19 @@ def train_and_eval(
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
-        "--min-train-D",
-        help="the start of the train D range",
-        choices=[1, 2, 3],
-        default=1,
-        type=int,
+        "--n-tune", help="the number of data points in the tuning set", default=4, type=int
     )
     parser.add_argument(
-        "--max-train-D", help="the end of the train D range", choices=[1, 2, 3], default=1, type=int
+        "--train-D-range",
+        help="a comma separated list of range of dims to train over, e.g. 1,2",
+        type=lambda s: tuple(int(x) for x in s.split(",")),
+        default="1,2",
     )
     parser.add_argument(
-        "--max-test-D",
-        help="maximum dimension of data to test on",
-        choices=[1, 2, 3],
-        default=3,
-        type=int,
+        "--test-D-range",
+        help="a comma separated list of range of dims to test over, e.g. 1,2",
+        type=lambda s: tuple(int(x) for x in s.split(",")),
+        default="1,2,3",
     )
     parser.add_argument("-N", help="spatial size", type=int, default=128)
     parser.add_argument("--diffusion-coef", help="the diffusion coefficient", type=float, default=1)
@@ -641,23 +702,21 @@ def handleArgs() -> argparse.Namespace:
 
 # MAIN
 args = handleArgs()
-train_D_range = tuple(range(args.min_train_D, args.max_train_D + 1))
-test_D_range = tuple(range(args.min_train_D, args.max_test_D + 1))
-
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
 
 key, subkey = random.split(key)
 print("Generating data...", end="", flush=True)
 t_start = time.time()
-train_d_x0, train_d_xt, val_d_x0, val_d_xt, test_d_x0, test_d_xt = get_data(
-    train_D_range,
-    test_D_range,
+train_d_x0, train_d_xt, val_d_x0, val_d_xt, test_d_x0, test_d_xt, tune_d_x0, tune_d_xt = get_data(
+    args.train_D_range,
+    args.test_D_range,
     args.N,
     True,
     args.diffusion_coef,
     args.n_train,
     args.n_val,
     args.n_test,
+    args.n_tune,
     subkey,
     args.data,
 )
@@ -671,7 +730,7 @@ gaussian_filters_dict = {}
 stencil_filters_dict = {}
 inverse_count_filters_dict = {}
 
-full_D_range = range(args.min_train_D, max(args.max_train_D, args.max_test_D) + 1)
+full_D_range = tuple(set(args.train_D_range).union(set(args.test_D_range)))
 for D in full_D_range:
     group_actions = geom.make_all_operators(D)
     normalize_filters_dict[D] = geom.get_invariant_filters(
@@ -715,98 +774,49 @@ for D in full_D_range:
         combine_equal_l1=True,
     )
 
-test_results = []
+train_kwargs = {
+    "residual": args.residual,
+    "batch_size": args.batch,
+    "epochs": args.epochs,
+    "save_model": args.save_model,
+    "load_model": args.load_model,
+    "verbose": args.verbose,
+    "is_wandb": False,
+}
 
+test_kwargs = {
+    "residual": args.residual,
+    "batch_size": args.batch,
+    "epochs": args.epochs,
+    "images_dir": args.images_dir,
+    "verbose": 0,
+    "is_wandb": args.wandb,
+}
+
+trained_models_by_d = {}
 for train_D, train_x0, train_xt, val_x0, val_xt in zip(
-    train_D_range, train_d_x0, train_d_xt, val_d_x0, val_d_xt
+    args.train_D_range, train_d_x0, train_d_xt, val_d_x0, val_d_xt
 ):
     input_keys = train_x0.get_signature()
     output_keys = train_xt.get_signature()
-    data = (train_x0, train_xt, val_x0, val_xt, test_d_x0, test_d_xt)
-
-    train_kwargs = {
-        "residual": args.residual,
-        "batch_size": args.batch,
-        "test_batch_size": args.batch,
-        "epochs": args.epochs,
-        "save_model": args.save_model,
-        "load_model": args.load_model,
-        "images_dir": args.images_dir,
-        "verbose": args.verbose,
-        "is_wandb": args.wandb,
-    }
 
     key, *subkeys = random.split(key, num=10)
     model_list = [
-        (
-            "one_layer_normalize_scaling",
-            train_and_eval,
-            {
-                "model": ConvSeriesModel(
-                    input_keys,
-                    output_keys,
-                    normalize_filters_dict[train_D],
-                    width=1,
-                    depth=1,
-                    use_bias=False,
-                    key=subkeys[0],
-                ),
-                "lr": 1e-2,
-                "conv_filters_dict": normalize_filters_dict,
-                **train_kwargs,
-            },
-        ),
-        (
-            "one_layer_gaussian_scaling",
-            train_and_eval,
-            {
-                "model": ConvSeriesModel(
-                    input_keys,
-                    output_keys,
-                    gaussian_filters_dict[train_D],
-                    width=1,
-                    depth=1,
-                    use_bias=False,
-                    key=subkeys[0],
-                ),
-                "lr": 1e-2,
-                "conv_filters_dict": gaussian_filters_dict,
-                **train_kwargs,
-            },
-        ),
         # (
-        #     "one_layer_stencil_scaling",
+        #     "one_layer_normalize_scaling",
         #     train_and_eval,
         #     {
         #         "model": ConvSeriesModel(
         #             input_keys,
         #             output_keys,
-        #             stencil_filters_dict[train_D],
+        #             normalize_filters_dict[train_D],
         #             width=1,
         #             depth=1,
         #             use_bias=False,
-        #             key=subkeys[1],
+        #             key=subkeys[0],
         #         ),
         #         "lr": 1e-2,
-        #         "conv_filters_dict": stencil_filters_dict,
-        #         **train_kwargs,
-        #     },
-        # ),
-        # (
-        #     "one_layer_inverse_count_scaling",
-        #     train_and_eval,
-        #     {
-        #         "model": ConvSeriesModel(
-        #             input_keys,
-        #             output_keys,
-        #             inverse_count_filters_dict[train_D],
-        #             width=1,
-        #             depth=1,
-        #             use_bias=False,
-        #             key=subkeys[2],
-        #         ),
-        #         "lr": 1e-2,
-        #         "conv_filters_dict": inverse_count_filters_dict,
+        #         "conv_filters_dict": normalize_filters_dict,
         #         **train_kwargs,
         #     },
         # ),
@@ -829,68 +839,33 @@ for train_D, train_x0, train_xt, val_x0, val_xt in zip(
         #     },
         # ),
         # (
-        #     "two_layer_stencil_scaling",
-        #     train_and_eval,
+        #     "two_layer_gaussian_scaling",
+        #     ConvSeriesModel(
+        #         input_keys,
+        #         output_keys,
+        #         gaussian_filters_dict[train_D],
+        #         width=10,
+        #         depth=2,
+        #         use_bias=False,
+        #         key=subkeys[2],
+        #     ),
         #     {
-        #         "model": ConvSeriesModel(
-        #             input_keys,
-        #             output_keys,
-        #             stencil_filters_dict[train_D],
-        #             width=10,
-        #             depth=2,
-        #             use_bias=False,
-        #             key=subkeys[4],
-        #         ),
         #         "lr": 1e-2,
-        #         "conv_filters_dict": stencil_filters_dict,
         #         **train_kwargs,
+        #     },
+        #     {
+        #         "lr": 1e-2,
+        #         "conv_filters_dict": gaussian_filters_dict,
+        #         **test_kwargs,
         #     },
         # ),
         # (
-        #     "two_layer_inverse_count_scaling",
+        #     "lastStepIdentity",
         #     train_and_eval,
         #     {
-        #         "model": ConvSeriesModel(
-        #             input_keys,
-        #             output_keys,
-        #             inverse_count_filters_dict[train_D],
-        #             width=10,
-        #             depth=2,
-        #             use_bias=False,
-        #             key=subkeys[5],
-        #         ),
-        #         "lr": 1e-2,
-        #         "conv_filters_dict": inverse_count_filters_dict,
-        #         **train_kwargs,
-        #     },
-        # ),
-        (
-            "lastStepIdentity",
-            train_and_eval,
-            {
-                "model": models.LastStepIdentity(residual=args.residual),
-                "lr": 1,
-                "conv_filters_dict": normalize_filters_dict,
-                **train_kwargs,
-            },
-        ),
-        # comment out for now, upsample and orthoplex filters might not be working properly
-        # (
-        #     "unetBase_equiv48",
-        #     train_and_eval,
-        #     {
-        #         "model": models.UNet(
-        #             train_D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=48,
-        #             num_downsamples=3 if args.N <= 64 else 4,
-        #             activation_f=jax.nn.gelu,
-        #             conv_filters=conv_filters,
-        #             upsample_filters=upsample_filters,
-        #             key=subkeys[1],
-        #         ),
-        #         "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+        #         "model": models.LastStepIdentity(residual=args.residual),
+        #         "lr": 1,
+        #         "conv_filters_dict": normalize_filters_dict,
         #         **train_kwargs,
         #     },
         # ),
@@ -904,7 +879,7 @@ for train_D, train_x0, train_xt, val_x0, val_xt in zip(
         #             output_keys,
         #             depth=42,
         #             conv_filters=normalize_filters_dict[train_D],
-        #             use_group_norm=True,  # want this to be true, not implemented yet
+        #             use_group_norm=True,
         #             key=subkeys[6],
         #         ),
         #         "lr": 7e-4,
@@ -912,59 +887,44 @@ for train_D, train_x0, train_xt, val_x0, val_xt in zip(
         #         **train_kwargs,
         #     },
         # ),
-        # (
-        #     "resnet_equiv_42_stencil_scaling",
-        #     train_and_eval,
-        #     {
-        #         "model": models.ResNet(
-        #             train_D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=42,
-        #             conv_filters=stencil_filters_dict[train_D],
-        #             use_group_norm=True,  # want this to be true, not implemented yet
-        #             key=subkeys[7],
-        #         ),
-        #         "lr": 7e-4,
-        #         "conv_filters_dict": stencil_filters_dict,
-        #         **train_kwargs,
-        #     },
-        # ),
-        # (
-        #     "resnet_equiv_42_inverse_count_scaling",
-        #     train_and_eval,
-        #     {
-        #         "model": models.ResNet(
-        #             train_D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=42,
-        #             conv_filters=inverse_count_filters_dict[train_D],
-        #             use_group_norm=True,  # want this to be true, not implemented yet
-        #             key=subkeys[8],
-        #         ),
-        #         "lr": 7e-4,
-        #         "conv_filters_dict": inverse_count_filters_dict,
-        #         **train_kwargs,
-        #     },
-        # ),
-        # (
-        #     "dil_resnet_equiv20",
-        #     train_and_eval,
-        #     {
-        #         "model": models.DilResNet(
-        #             train_D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=20,
-        #             conv_filters=conv_filters,
-        #             key=subkeys[3],
-        #         ),
-        #         "lr": 1e-3,
-        #         **train_kwargs,
-        #     },
-        # ),
+        (
+            f"resnet_equiv_42_gaussian_scaling_D{train_D}",
+            models.ResNet(
+                train_D,
+                input_keys,
+                output_keys,
+                depth=42,
+                conv_filters=gaussian_filters_dict[train_D],
+                use_group_norm=True,
+                key=subkeys[6],
+            ),
+            {  # train kwargs
+                "lr": 7e-4,
+                **train_kwargs,
+            },
+            {  # tune and eval kwargs
+                "lr": 1e-4,  # seems n=4, D=1 -> D=2. For D=1 -> D=2, 1e-5 is good
+                "conv_filters_dict": gaussian_filters_dict,
+                **test_kwargs,
+            },
+        ),
     ]
+
+    trained_models_by_d[train_D] = []
+    for model_name, model, _train_kwargs, _test_kwargs in model_list:
+        key, subkey = random.split(key)
+        trained_model = train_model(
+            (train_x0, train_xt, val_x0, val_xt), subkey, model_name, model, **_train_kwargs
+        )
+        _test_kwargs["model"] = trained_model
+        trained_models_by_d[train_D].append((model_name, tune_and_eval, _test_kwargs))
+
+test_results = []
+for train_D, train_x0, train_xt, val_x0, val_xt in zip(
+    args.train_D_range, train_d_x0, train_d_xt, val_d_x0, val_d_xt
+):
+    model_list = trained_models_by_d[train_D]
+    data = (train_x0, train_xt, val_x0, val_xt, test_d_x0, test_d_xt, tune_d_x0, tune_d_xt)
 
     key, subkey = random.split(key)
     # Use this for benchmarking the models with known learning rates.
@@ -973,18 +933,19 @@ for train_D, train_x0, train_xt, val_x0, val_xt in zip(
         lambda _: data,
         model_list,
         subkey,
-        "",
-        [0],
-        benchmark_type=ml.BENCHMARK_NONE,
+        "lr",
+        [1e-5, 5e-5, 1e-4, 5e-4],
+        benchmark_type=ml.BENCHMARK_MODEL,
         num_trials=args.n_trials,
-        num_results=2 + len(test_D_range) * 4,  # train, val, test
+        num_results=2 + len(args.test_D_range) * 4,  # train, val, test # TODO NO LONGER RIGHT
         is_wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,
+        args=vars(args),
     )
 
     test_results.append(
-        results[:, 0, :, 2:].reshape((args.n_trials, len(model_list), len(test_D_range), 2, 2))
+        results[:, 0, :, 2:].reshape((args.n_trials, len(model_list), len(args.test_D_range), 2, 2))
     )
 
 # (train_D, n_trials, n_models, test_D, [rescale,normal], [l2, relative error])

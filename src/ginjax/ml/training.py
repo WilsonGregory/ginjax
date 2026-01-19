@@ -583,7 +583,8 @@ def benchmark(
                         {
                             key: val if (type(val) in type_list or val is None) else type(val)
                             for key, val in model_kwargs.items()
-                        }
+                        },
+                        allow_val_change=True,
                     )
                     wandb.config.update({"model_name": model_name})
 

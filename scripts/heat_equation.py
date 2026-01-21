@@ -137,6 +137,8 @@ def get_data(
     list[geom.MultiImage],
     list[geom.MultiImage],
     list[geom.MultiImage],
+    list[geom.MultiImage],
+    list[geom.MultiImage],
 ]:
     """
     Get an input, output data pair of heat diffusion after 1 timestep, diffusion constant 10.
@@ -184,6 +186,8 @@ def get_data(
     test_d_xt = []
     tune_d_x0 = []
     tune_d_xt = []
+    tune_val_d_x0 = []
+    tune_val_d_xt = []
     for D in test_D_range:
         key, subkey = random.split(key)
         test_x0, test_xt = get_data_d(
@@ -196,12 +200,20 @@ def get_data(
         test_d_x0.append(test_x0)
         test_d_xt.append(test_xt)
 
+        # for the tune and tune_val datasets, reuse the train and val datasets (size depending)
         key, subkey = random.split(key)
         tune_x0, tune_xt = get_data_d(
-            D, N, is_torus, diffusion_coef, t, max_temp, n_tune, subkey, data_dir_path / "tune"
+            D, N, is_torus, diffusion_coef, t, max_temp, n_tune, subkey, data_dir_path / "train"
         )
         tune_d_x0.append(tune_x0)
         tune_d_xt.append(tune_xt)
+
+        key, subkey = random.split(key)
+        tune_val_x0, tune_val_xt = get_data_d(
+            D, N, is_torus, diffusion_coef, t, max_temp, n_val, subkey, data_dir_path / "val"
+        )
+        tune_val_d_x0.append(tune_val_x0)
+        tune_val_d_xt.append(tune_val_xt)
 
     return (
         train_d_x0,
@@ -212,6 +224,8 @@ def get_data(
         test_d_xt,
         tune_d_x0,
         tune_d_xt,
+        tune_val_d_x0,
+        tune_val_d_xt,
     )
 
 
@@ -519,7 +533,7 @@ def train_model(
         model,
         subkey,
         stop_condition=ml.EpochStop(epochs, verbose=verbose),
-        batch_size=batch_size,
+        batch_size=min(train_X.get_L(), batch_size),
         optimizer=optax.adamw(
             optax.warmup_cosine_decay_schedule(
                 1e-8, lr, 5 * steps_per_epoch, epochs * steps_per_epoch, 1e-7
@@ -529,7 +543,7 @@ def train_model(
         validation_X=val_X,
         validation_Y=val_Y,
         aux_data=batch_stats,
-        is_wandb=is_wandb if train_X.D == 2 else False,
+        is_wandb=is_wandb,
     )
 
     if save_model is not None:
@@ -545,10 +559,8 @@ def tune_and_eval(
         geom.MultiImage,
         geom.MultiImage,
         geom.MultiImage,
-        list[geom.MultiImage],
-        list[geom.MultiImage],
-        list[geom.MultiImage],
-        list[geom.MultiImage],
+        geom.MultiImage,
+        geom.MultiImage,
     ],
     key: jax.Array,
     model_name: str,
@@ -558,63 +570,26 @@ def tune_and_eval(
     residual: bool,
     batch_size: int,
     epochs: int,
+    save_model: str | None,
+    load_model: str | None,
     images_dir: str | None,
     has_aux: bool = False,
     verbose: int = 1,
     is_wandb: bool = False,
-) -> tuple[jax.Array | None, ...]:
-    train_X, train_Y, val_X, val_Y, test_d_X, test_d_Y, tune_d_X, tune_d_Y = data
-    N = train_X.get_spatial_dims()[0]
+) -> tuple[jax.Array, jax.Array]:
+    test_X, test_Y, tune_X, tune_Y, val_X, val_Y = data
+    N = tune_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
-    model_name_extended = f"{model_name}_L{train_X.get_L()}_N{N}_e{epochs}"
+    model_name_extended = f"{model_name}_tuneD{tune_X.D}_L{tune_X.get_L()}_N{N}_e{epochs}"
 
-    key, subkey1, subkey2 = random.split(key, num=3)
-    train_loss = ml.map_loss_in_batches(
-        HeatMapper(residual),
-        model,
-        train_X,
-        train_Y,
-        batch_size,
-        subkey1,
-        aux_data=batch_stats,
-    )
-    val_loss = ml.map_loss_in_batches(
-        HeatMapper(residual),
-        model,
-        val_X,
-        val_Y,
-        batch_size,
-        subkey2,
-        aux_data=batch_stats,
-    )
+    key, subkey = random.split(key)
+    # rescale set to True, small but notable difference
+    model_dprime = model.convertD(conv_filters_dict[tune_X.D], True, subkey)
 
-    test_losses = []
-    for test_X, test_Y, tune_X, tune_Y in zip(test_d_X, test_d_Y, tune_d_X, tune_d_Y):
-        conv_filters = conv_filters_dict[test_X.D]
-
-        model_dprime = None
-        if test_X.D == train_X.D:
-            model_dprime = model
-        else:
-            key, subkey = random.split(key)
-            # rescale can be true or false when using zero_sum, the effect is small
-            model_dprime = model.convertD(conv_filters, True, subkey)
-
-        key, subkey = random.split(key)
-        test_loss = ml.map_loss_in_batches(
-            HeatMapper(residual, True, True),
-            model_dprime,
-            test_X,
-            test_Y,
-            batch_size,
-            subkey,
-            aux_data=batch_stats,
-        )
-        print(f"Test Loss rescale=True, D={test_X.D}: {test_loss[0]:.3e} ({test_loss[1]:.3f}%)")
-
-        test_losses.append(test_loss[0])
-        test_losses.append(test_loss[1])
-
+    if load_model is not None:
+        tuned_model_dprime = ml.load(f"{load_model}{model_name_extended}_model.eqx", model_dprime)
+        tune_batch_stats = batch_stats
+    else:
         # Now treat the trained_model_d as a warmstart and do some additional training
         key, subkey = random.split(key)
         steps_per_epoch = int(math.ceil(tune_X.get_L() / batch_size))
@@ -632,41 +607,48 @@ def tune_and_eval(
                 ),
                 weight_decay=1e-5,
             ),
+            validation_X=val_X,
+            validation_Y=val_Y,
             aux_data=batch_stats,
             is_wandb=is_wandb,
         )
 
-        key, subkey = random.split(key)
-        tuned_loss = ml.map_loss_in_batches(
-            HeatMapper(residual, True, True),
-            tuned_model_dprime,
-            test_X,
-            test_Y,
-            batch_size,
-            subkey,
-            aux_data=tune_batch_stats,
-        )
-        print(
-            f"Tuned Loss rescale=True, D={test_X.D}: {tuned_loss[0]:.3e} ({tuned_loss[1]:.3f}%)\n"
-        )
-        test_losses.append(tuned_loss[0])
-        test_losses.append(tuned_loss[1])
+        if save_model is not None:
+            ml.save(f"{save_model}{model_name_extended}_model.eqx", tuned_model_dprime)
 
-        assert tuned_model_dprime is not None
-        if images_dir and test_X.D == 2:
-            pred_y, _ = HeatMapper(residual).map(tuned_model_dprime, test_X.get_one(), batch_stats)
+    key, subkey = random.split(key)
+    tuned_loss = ml.map_loss_in_batches(
+        HeatMapper(residual, True, True),
+        tuned_model_dprime,
+        test_X,
+        test_Y,
+        batch_size,
+        subkey,
+        aux_data=tune_batch_stats,
+    )
+    l2_loss = tuned_loss[0]
+    rel_error = tuned_loss[1]
+    print(f"Tuned Loss rescale=True, D={test_X.D}: {l2_loss:.3e} ({rel_error:.3f}%)\n")
 
-            plot_multi_image(
-                test_X.get_one(),
-                test_Y.get_one(),
-                pred_y.get_one(),
-                f"{images_dir}{model_name_extended}_D{test_X.D}_trainD{train_X.D}.png",
-                "heat",
-            )
+    # assert tuned_model_dprime is not None
+    # if images_dir and test_X.D == 2:
+    #     pred_y, _ = HeatMapper(residual).map(tuned_model_dprime, test_X.get_one(), batch_stats)
 
-    return train_loss, val_loss, *test_losses
+    #     plot_multi_image(
+    #         test_X.get_one(),
+    #         test_Y.get_one(),
+    #         pred_y.get_one(),
+    #         f"{images_dir}{model_name_extended}_D{test_X.D}_trainD{tune_X.D}.png",
+    #         "heat",
+    #     )
+
+    return l2_loss, rel_error
 
 
+# an example of currently used script
+# CUDA_VISIBLE_DEVICES=5 time python3 scripts/heat_equation.py --data /data/wgregor4/heat_equation/
+# --n-test 128 --n-val 128 --n-train 128 --n-tune 4 -N 64 --train-D-range 1,2,3 --diffusion-coef 1
+# --test-D-range 3 -s /data/wgregor4/runs/heat_equation/
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
@@ -692,9 +674,39 @@ def handleArgs() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=False,
     )
-    # need do to --wandb to activate, also need --wandb-entity your_wandb_name_here
+    parser.add_argument(
+        "--find-train-lr",
+        help="benchmark trained model over the lr",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--find-tune-lr",
+        help="benchmark tuned model over the lr",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--save-tuned-model", help="file name to save the params", type=str, default=None
+    )
+    parser.add_argument(
+        "--load-tuned-model", help="file name to load params from", type=str, default=None
+    )
+    # need do to --train-wandb or --tune-wandb to activate
     parser.add_argument(
         "--wandb-project", help="the wandb project", type=str, default="heat-equation"
+    )
+    parser.add_argument(
+        "--train-wandb",
+        help="whether to use wandb during training",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--tune-wandb",
+        help="whether to use wandb during tuning",
+        action=argparse.BooleanOptionalAction,
+        default=False,
     )
 
     return parser.parse_args()
@@ -702,12 +714,27 @@ def handleArgs() -> argparse.Namespace:
 
 # MAIN
 args = handleArgs()
+if args.wandb:
+    print("Use --train-wandb or --test-wandb to control these individually. Exiting.")
+    exit()
+
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
 
 key, subkey = random.split(key)
 print("Generating data...", end="", flush=True)
 t_start = time.time()
-train_d_x0, train_d_xt, val_d_x0, val_d_xt, test_d_x0, test_d_xt, tune_d_x0, tune_d_xt = get_data(
+(
+    train_d_x0,
+    train_d_xt,
+    val_d_x0,
+    val_d_xt,
+    test_d_x0,
+    test_d_xt,
+    tune_d_x0,
+    tune_d_xt,
+    tune_val_d_x0,
+    tune_val_d_xt,
+) = get_data(
     args.train_D_range,
     args.test_D_range,
     args.N,
@@ -781,16 +808,18 @@ train_kwargs = {
     "save_model": args.save_model,
     "load_model": args.load_model,
     "verbose": args.verbose,
-    "is_wandb": False,
+    "is_wandb": args.train_wandb,
 }
 
 test_kwargs = {
     "residual": args.residual,
     "batch_size": args.batch,
     "epochs": args.epochs,
+    "save_model": args.save_tuned_model,
+    "load_model": args.load_tuned_model,
     "images_dir": args.images_dir,
     "verbose": 0,
-    "is_wandb": args.wandb,
+    "is_wandb": args.tune_wandb,
 }
 
 trained_models_by_d = {}
@@ -889,21 +918,21 @@ for train_D, train_x0, train_xt, val_x0, val_xt in zip(
         # ),
         (
             f"resnet_equiv_42_gaussian_scaling_D{train_D}",
-            models.ResNet(
-                train_D,
-                input_keys,
-                output_keys,
-                depth=42,
-                conv_filters=gaussian_filters_dict[train_D],
-                use_group_norm=True,
-                key=subkeys[6],
-            ),
             {  # train kwargs
-                "lr": 7e-4,
+                "model": models.ResNet(
+                    train_D,
+                    input_keys,
+                    output_keys,
+                    depth=42,
+                    conv_filters=gaussian_filters_dict[train_D],
+                    use_group_norm=True,
+                    key=subkeys[6],
+                ),
+                "lr": {1: 1e-3, 2: 5e-4, 3: 5e-4},  # will be replaced before running
                 **train_kwargs,
             },
             {  # tune and eval kwargs
-                "lr": 1e-4,  # seems n=4, D=1 -> D=2. For D=1 -> D=2, 1e-5 is good
+                "lr": 1e-4,
                 "conv_filters_dict": gaussian_filters_dict,
                 **test_kwargs,
             },
@@ -911,44 +940,89 @@ for train_D, train_x0, train_xt, val_x0, val_xt in zip(
     ]
 
     trained_models_by_d[train_D] = []
-    for model_name, model, _train_kwargs, _test_kwargs in model_list:
-        key, subkey = random.split(key)
-        trained_model = train_model(
-            (train_x0, train_xt, val_x0, val_xt), subkey, model_name, model, **_train_kwargs
-        )
-        _test_kwargs["model"] = trained_model
-        trained_models_by_d[train_D].append((model_name, tune_and_eval, _test_kwargs))
+    for model_name, _train_kwargs, _test_kwargs in model_list:
+        data = (train_x0, train_xt, val_x0, val_xt)
 
-test_results = []
+        if args.find_train_lr:
+            key, subkey = random.split(key)
+
+            def train_f(data, subkey, name, **kwargs):
+                train_model(data, subkey, name, **kwargs)
+                return 1.0  # train model returns the model, but benchmark expects a float
+
+            ml.benchmark_lr(
+                lambda _: data,
+                [(model_name, train_f, _train_kwargs)],
+                subkey,
+                [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3],
+                args.n_trials,
+                1,
+                args.train_wandb,
+                args.wandb_project,
+                args.wandb_entity,
+                {
+                    **vars(args),
+                    "D": train_D,
+                    "n_points": train_x0.get_L(),
+                    "train_or_tune": "train",
+                },
+            )
+        else:
+            key, subkey = random.split(key)
+            _train_kwargs["lr"] = _train_kwargs["lr"][train_D]
+            trained_model = train_model(data, subkey, model_name, **_train_kwargs)
+            _test_kwargs["model"] = trained_model
+            trained_models_by_d[train_D].append((model_name, tune_and_eval, _test_kwargs))
+
+if args.find_train_lr:
+    exit()
+    # if tuning baseline models, don't bother with tuning/evaluation
+
+n_results = 2  # tuned l2, rel_error
+results_d_d = []
 for train_D, train_x0, train_xt, val_x0, val_xt in zip(
     args.train_D_range, train_d_x0, train_d_xt, val_d_x0, val_d_xt
 ):
     model_list = trained_models_by_d[train_D]
-    data = (train_x0, train_xt, val_x0, val_xt, test_d_x0, test_d_xt, tune_d_x0, tune_d_xt)
 
-    key, subkey = random.split(key)
-    # Use this for benchmarking the models with known learning rates.
-    # (n_trials, benchmark, models, n_results)
-    results = ml.benchmark(
-        lambda _: data,
-        model_list,
-        subkey,
-        "lr",
-        [1e-5, 5e-5, 1e-4, 5e-4],
-        benchmark_type=ml.BENCHMARK_MODEL,
-        num_trials=args.n_trials,
-        num_results=2 + len(args.test_D_range) * 4,  # train, val, test # TODO NO LONGER RIGHT
-        is_wandb=args.wandb,
-        wandb_project=args.wandb_project,
-        wandb_entity=args.wandb_entity,
-        args=vars(args),
-    )
+    results_d = []
+    for test_D, test_x0, test_xt, tune_x0, tune_xt, tune_val_x0, tune_val_xt in zip(
+        args.test_D_range, test_d_x0, test_d_xt, tune_d_x0, tune_d_xt, tune_val_d_x0, tune_val_d_xt
+    ):
+        # if not finding the tuning lr, range is set to [] and value in model list is used
+        lr_range = (
+            [1e-7, 5e-7, 1e-6, 5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3] if args.find_tune_lr else []
+        )
 
-    test_results.append(
-        results[:, 0, :, 2:].reshape((args.n_trials, len(model_list), len(args.test_D_range), 2, 2))
-    )
+        if train_D == test_D and args.n_tune != 0:
+            continue
 
-# (train_D, n_trials, n_models, test_D, [rescale,normal], [l2, relative error])
-test_results = jnp.stack(test_results)
+        data = (test_x0, test_xt, tune_x0, tune_xt, tune_val_x0, tune_val_xt)
 
+        key, subkey = random.split(key)
+        # (n_trials, benchmark, models, n_results)
+        results_d.append(
+            ml.benchmark_lr(
+                lambda _: data,
+                model_list,
+                subkey,
+                lr_range,
+                num_trials=args.n_trials,
+                num_results=n_results,
+                is_wandb=args.tune_wandb,
+                wandb_project=args.wandb_project,
+                wandb_entity=args.wandb_entity,
+                args={
+                    **vars(args),
+                    "tune_D1_D2": str(tuple((train_D, test_D))),
+                    "n_points": tune_x0.get_L(),
+                    "train_or_tune": "tune",
+                },
+            )
+        )
+
+    results_d_d.append(jnp.stack(results_d))
+
+# (train_D, test_D, n_trials, benchmark, n_models, [l2, relative error])
+test_results = jnp.stack(results_d_d)
 print(test_results.shape)

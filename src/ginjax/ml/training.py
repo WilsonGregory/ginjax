@@ -601,3 +601,56 @@ def benchmark(
                     results[i, j, k, 0] = res
 
     return results
+
+
+def benchmark_lr(
+    get_data: Callable,
+    models: list[tuple[str, Callable, dict]],
+    rand_key: ArrayLike,
+    lr_range: Sequence[float],
+    num_trials: int = 1,
+    num_results: int = 1,
+    is_wandb: bool = False,
+    wandb_project: str = "",
+    wandb_entity: str = "",
+    args: dict = {},
+) -> np.ndarray:
+    """
+    The most common usecase of the benchmark function is benchmarking over a learning rate range.
+    If the lr_range has no values, instead this defaults to no benchmarking, just over the model
+    list and number of trials.
+
+    args:
+        get_data: function that takes as its first argument the benchmark_value, and a rand_key
+            as its second argument. It returns the data which later gets passed to model.
+        models: the elements of the tuple are (str) model_name, (func) model, and a dict of keyword
+            arguments to pass to model. Model is a function that takes data, a rand_key, the
+            model_name, and remaining keyword arguments and returns either a single float score
+            or an iterable of length num_results of float scores.
+        rand_key: key for randomness
+        num_trials: number of trials to run
+        num_results: the number of results that will come out of the model function. If num_results is
+            greater than 1, it should be indexed by range(num_results)
+        is_wandb: whether wandb experiment tracking is enabled
+        wandb_project: the string name of the wandb project
+        wandb_entity: the wandb user
+        args: args to add the the wandb config
+
+    returns:
+        an np.array of shape (trials, lr_range, models, num_results) with the results all filled in
+    """
+    benchmark_type = BENCHMARK_MODEL if len(lr_range) else BENCHMARK_NONE
+    return benchmark(
+        get_data,
+        models,
+        rand_key,
+        "lr",
+        lr_range,
+        benchmark_type,
+        num_trials,
+        num_results,
+        is_wandb,
+        wandb_project,
+        wandb_entity,
+        args,
+    )

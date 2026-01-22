@@ -1,6 +1,7 @@
 import time
 import math
 import functools
+import pathlib
 from typing import Any, Callable, Optional, Sequence, Union
 import numpy as np
 import wandb
@@ -17,7 +18,7 @@ from ginjax.ml.stopping_conditions import StopCondition, ValLoss
 import ginjax.models as models
 
 
-def save(filename: str, model: models.MultiImageModule) -> None:
+def save(filename: str | pathlib.Path, model: models.MultiImageModule) -> None:
     """
     Save an equinox model.
 
@@ -30,7 +31,7 @@ def save(filename: str, model: models.MultiImageModule) -> None:
         eqx.tree_serialise_leaves(f, model)
 
 
-def load(filename: str, model: models.MultiImageModule) -> models.MultiImageModule:
+def load(filename: str | pathlib.Path, model: models.MultiImageModule) -> models.MultiImageModule:
     """
     Load an equinox model.
 

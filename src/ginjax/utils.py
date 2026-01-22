@@ -495,6 +495,12 @@ def get_common_parser() -> argparse.ArgumentParser:
         "-l", "--load-model", help="file name to load params from", type=str, default=None
     )
     parser.add_argument(
+        "--load-save-model",
+        help="directory to load results from if they're present, otherwise run and save them",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--images-dir", help="directory to save images, or None to not save", type=str, default=None
     )
 

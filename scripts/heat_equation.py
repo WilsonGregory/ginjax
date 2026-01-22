@@ -151,12 +151,11 @@ def get_data(
         n_train: number of training data points
         n_val: number of validation data points
         n_test: number of test data points for each test dimension
-        n_tune: number of tuning data points for each test dimension
         key: key for randomness
         data_dir: location to save or load the data from
 
     returns:
-        list of training, validation, test, and tuning images for input and output
+        training, validation, and test images for input and output
     """
     max_temp = math.sqrt(3)
     t = 1
@@ -292,52 +291,68 @@ def plot_multi_image(
 
 
 def plot_results(
-    results_dict,
+    results_dict: dict[int, dict[str | int, list[jax.Array]]],
+    results_labels: list[str],
     test_D_range: tuple[int, ...],
     train_D_range: tuple[int, ...],
     n_tune_range: tuple[int, ...],
-    model_list_d,
-    error_idx: int,
-    ylabel: str,
+    model_names_d: dict[int, list[str]],
     saveloc: str,
-):
-    # figsize is 6 per col, 6 per row, (cols,rows)
-    fig, axes = plt.subplots(
-        nrows=len(test_D_range), ncols=1, figsize=(8 * 1, 6 * len(test_D_range))
-    )
-    for test_D, ax in zip(test_D_range, axes):
-        assert isinstance(ax, Axes)
-        # (n_tune_range, n_trials, benchmark, models, n_results)
-        baseline_results = jnp.stack(results_dict[test_D]["baseline"])[:, :, 0]
-        for i in range(len(model_list_d[test_D])):
-            ax.plot(
-                jnp.mean(baseline_results, axis=1)[:, i, error_idx],
-                marker="o",
-                label=f"{model_list_d[test_D][i][0]} (baseline)",
-            )  # l2
+) -> None:
+    """
+    Plot the results of the heat_equation experiments. For each test_D, create a plot with the
+    number of tuning points on the x-axis and the error (either l2 or relative) on the y-axis.
 
-        for train_D in train_D_range:
-            if test_D == train_D:
-                continue
+    args:
+        results_dict: The results with test_D, then 'baseline' or train_D, then a list over n_tune.
+        test_D_range: dimensions that we are testing over
+        train_D_range: dimensions that the warmstart models are trained on, then transferred from
+        n_tune_range: number of fine-tuning points, or training points for the baseline model
+        model_names_d: model names for each dimension
+        saveloc: beginning of save location
 
-            results_arr = jnp.stack(results_dict[test_D][train_D])[:, :, 0]
+    returns:
+        none
+    """
+    # figsize is 8 per col, 6 per row, (cols,rows)
+    nrows = len(test_D_range)
+    ncols = len(results_labels)
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8 * ncols, 6 * nrows))
 
-            for i in range(len(model_list_d[train_D])):
+    for test_D, ax_row in zip(test_D_range, axes):
+        for error_idx, ylabel, ax in zip(range(len(results_labels)), results_labels, ax_row):
+            assert isinstance(ax, Axes)
+            # (n_tune_range, n_trials, benchmark, models, n_results)
+            baseline_results = jnp.stack(results_dict[test_D]["baseline"])[:, :, 0]
+            for i in range(len(model_names_d[test_D])):
                 ax.plot(
-                    jnp.mean(results_arr, axis=1)[:, i, error_idx],
+                    jnp.mean(baseline_results, axis=1)[:, i, error_idx],
                     marker="o",
-                    label=model_list_d[train_D][i][0],
-                )  # l2
+                    label=f"{model_names_d[test_D][i]} (baseline)",
+                )
 
-        ax.legend()
-        ax.set_xlabel("Number of tuning points")
-        ax.set_ylabel(ylabel)
-        ax.set_yscale("log")
-        ax.set_xticks(range(len(n_tune_range)), [str(x) for x in n_tune_range])
-        ax.set_title(f"Test D={test_D} {ylabel}")
+            for train_D in train_D_range:
+                if test_D == train_D:
+                    continue
+
+                results_arr = jnp.stack(results_dict[test_D][train_D])[:, :, 0]
+
+                for i in range(len(model_names_d[test_D])):
+                    ax.plot(
+                        jnp.mean(results_arr, axis=1)[:, i, error_idx],
+                        marker="o",
+                        label=model_names_d[train_D][i],
+                    )
+
+            ax.legend()
+            ax.set_xlabel("Number of tuning points")
+            ax.set_ylabel(ylabel)
+            ax.set_yscale("log")
+            ax.set_xticks(range(len(n_tune_range)), [str(x) for x in n_tune_range])
+            ax.set_title(f"Test D={test_D} {ylabel}")
 
     plt.tight_layout()
-    plt.savefig(f"{saveloc}_warmstart_plot.png")
+    plt.savefig(f"{saveloc}warmstart_plot.png")
     plt.close()
 
 
@@ -529,9 +544,8 @@ def train_model(
     if load_save_model is not None:
         model_path = pathlib.Path(load_save_model) / f"{model_name_extended}_model.eqx"
 
-    if model_path is not None:
+    if model_path is not None and model_path.is_file():
         return ml.load(model_path, model)
-        # return ml.load(f"{load_model}{model_name_extended}_model.eqx", model)
 
     steps_per_epoch = int(math.ceil(train_X.get_L() / batch_size))
     key, subkey = random.split(key)
@@ -557,7 +571,6 @@ def train_model(
 
     if model_path is not None:
         # TODO: need to save batch_stats as well
-        # ml.save(f"{save_model}{model_name_extended}_model.eqx", trained_model)
         ml.save(model_path, trained_model)
 
     return trained_model
@@ -1049,14 +1062,13 @@ for test_D in args.test_D_range:
             results_dict[test_D][train_D].append(tune_results)
 
 
-for i, ylabel in enumerate(["l2_error", "relative_error"]):
-    plot_results(
-        results_dict,
-        args.test_D_range,
-        args.train_D_range,
-        args.n_tune_range,
-        model_list_d,
-        i,
-        ylabel,
-        f"{args.images_dir}{ylabel}",
-    )
+model_names_d = {D: [x[0] for x in model_list] for D, model_list in model_list_d.items()}
+plot_results(
+    results_dict,
+    ["l2_error", "relative_error"],
+    args.test_D_range,
+    args.train_D_range,
+    args.n_tune_range,
+    model_names_d,
+    args.images_dir,
+)

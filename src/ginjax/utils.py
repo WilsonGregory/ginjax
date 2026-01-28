@@ -488,17 +488,25 @@ def get_common_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-v", "--verbose", help="verbose argument passed to trainer", type=int, default=1
     )
+    # prefer --model-dir and --overwrite-save-model now
     parser.add_argument(
         "-s", "--save-model", help="file name to save the params", type=str, default=None
     )
     parser.add_argument(
         "-l", "--load-model", help="file name to load params from", type=str, default=None
     )
+    # preferred method to save/load the models.
     parser.add_argument(
-        "--load-save-model",
-        help="directory to load results from if they're present, otherwise run and save them",
+        "--model-dir",
+        help="directory to store saved models, if this is included they will be saved/loaded",
         type=str,
         default=None,
+    )
+    parser.add_argument(
+        "--overwrite-save-model",
+        help="if true, always save the model, otherwise load it if its there. Default False",
+        action=argparse.BooleanOptionalAction,
+        default=False,
     )
     parser.add_argument(
         "--images-dir", help="directory to save images, or None to not save", type=str, default=None

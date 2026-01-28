@@ -291,10 +291,8 @@ def plot_multi_image(
 
 
 def plot_results(
-    results_dict: dict[int, dict[str | int, list[jax.Array]]],
+    results_dict: dict[int, dict[int, list[jax.Array]]],
     results_labels: list[str],
-    test_D_range: tuple[int, ...],
-    train_D_range: tuple[int, ...],
     n_tune_range: tuple[int, ...],
     model_names_d: dict[int, list[str]],
     saveloc: str,
@@ -305,8 +303,7 @@ def plot_results(
 
     args:
         results_dict: The results with test_D, then 'baseline' or train_D, then a list over n_tune.
-        test_D_range: dimensions that we are testing over
-        train_D_range: dimensions that the warmstart models are trained on, then transferred from
+        results_labels: e.g. 'l2', 'relative error'
         n_tune_range: number of fine-tuning points, or training points for the baseline model
         model_names_d: model names for each dimension
         saveloc: beginning of save location
@@ -314,34 +311,45 @@ def plot_results(
     returns:
         none
     """
-    # figsize is 8 per col, 6 per row, (cols,rows)
-    nrows = len(test_D_range)
-    ncols = len(results_labels)
-    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8 * ncols, 6 * nrows))
+    # group the results by model, across all trained dimensions
+    grouped_results = {}
+    for test_D, results_train_d in results_dict.items():
+        grouped_results[test_D] = {}
+        for train_D, results in results_train_d.items():
+            for i, name in enumerate(model_names_d[train_D]):
+                name_trimmed = name[:-3]  # this assumes that all models end in _D1, _D2, or _D3
+                display_name = f"{name} (baseline)" if train_D == test_D else name
 
-    for test_D, ax_row in zip(test_D_range, axes):
+                if name_trimmed in grouped_results[test_D]:
+                    # (n_tune,n_trials,n_results)
+                    grouped_results[test_D][name_trimmed].append(
+                        (display_name, jnp.stack(results)[:, :, 0, i])
+                    )
+                else:
+                    grouped_results[test_D][name_trimmed] = [
+                        (display_name, jnp.stack(results)[:, :, 0, i])
+                    ]
+
+    # figsize is 8 per col, 6 per row, (cols,rows)
+    nrows = len(list(grouped_results.keys()))
+    ncols = len(results_labels)
+    _, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8 * ncols, 6 * nrows))
+    linestyles = ["solid", "dotted", "dashed", "dashdot"]
+    colors = ["b", "g", "r", "c", "m", "y"]
+
+    for (test_D, results_by_model), ax_row in zip(grouped_results.items(), axes):
         for error_idx, ylabel, ax in zip(range(len(results_labels)), results_labels, ax_row):
             assert isinstance(ax, Axes)
-            # (n_tune_range, n_trials, benchmark, models, n_results)
-            baseline_results = jnp.stack(results_dict[test_D]["baseline"])[:, :, 0]
-            for i in range(len(model_names_d[test_D])):
-                ax.plot(
-                    jnp.mean(baseline_results, axis=1)[:, i, error_idx],
-                    marker="o",
-                    label=f"{model_names_d[test_D][i]} (baseline)",
-                )
 
-            for train_D in train_D_range:
-                if test_D == train_D:
-                    continue
-
-                results_arr = jnp.stack(results_dict[test_D][train_D])[:, :, 0]
-
-                for i in range(len(model_names_d[test_D])):
+            # looping over 'two_layer_gaussian', 'resnet_equiv_42', ...
+            for i, model_results in enumerate(results_by_model.values()):
+                for j, (display_name, results_arr) in enumerate(model_results):
                     ax.plot(
-                        jnp.mean(results_arr, axis=1)[:, i, error_idx],
+                        jnp.mean(results_arr, axis=1)[:, error_idx],
                         marker="o",
-                        label=model_names_d[train_D][i],
+                        linestyle=linestyles[j],
+                        label=display_name,
+                        color=colors[i],
                     )
 
             ax.legend()
@@ -527,7 +535,8 @@ def train_model(
     residual: bool,
     batch_size: int,
     epochs: int,
-    load_save_model: str | None,
+    model_dir: pathlib.Path | None,
+    overwrite_save_model: bool,
     images_dir: str | None,
     has_aux: bool = False,
     verbose: int = 1,
@@ -537,14 +546,11 @@ def train_model(
     N = train_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
     model_name_extended = f"{model_name}_L{train_X.get_L()}_N{N}_e{epochs}"
+    model_path = model_dir / f"{model_name_extended}_model.eqx" if model_dir else None
 
-    print(f"{model_name} params: {models.count_params(model):,}")
+    print(f"{model_name_extended} params: {models.count_params(model):,}")
 
-    model_path = None
-    if load_save_model is not None:
-        model_path = pathlib.Path(load_save_model) / f"{model_name_extended}_model.eqx"
-
-    if model_path is not None and model_path.is_file():
+    if model_path and model_path.is_file() and not overwrite_save_model:
         return ml.load(model_path, model)
 
     steps_per_epoch = int(math.ceil(train_X.get_L() / batch_size))
@@ -569,7 +575,8 @@ def train_model(
         is_wandb=is_wandb,
     )
 
-    if model_path is not None:
+    if model_path:
+        assert not model_path.is_file() or overwrite_save_model
         # TODO: need to save batch_stats as well
         ml.save(model_path, trained_model)
 
@@ -642,7 +649,8 @@ def tune_and_eval(
     residual: bool,
     batch_size: int,
     epochs: int,
-    load_save_model: str | None,
+    model_dir: pathlib.Path | None,
+    overwrite_save_model: bool,
     images_dir: str | None,
     has_aux: bool = False,
     verbose: int = 1,
@@ -652,10 +660,7 @@ def tune_and_eval(
     N = tune_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
     model_name_extended = f"{model_name}_tuneD{tune_X.D}_L{tune_X.get_L()}_N{N}_e{epochs}"
-
-    model_path = None
-    if load_save_model is not None:
-        model_path = pathlib.Path(load_save_model) / f"{model_name_extended}_model.eqx"
+    model_path = model_dir / f"{model_name_extended}_model.eqx" if model_dir else None
 
     key, subkey = random.split(key)
     # rescale set to True, small but notable difference
@@ -664,8 +669,7 @@ def tune_and_eval(
     else:
         model_dprime = model
 
-    if model_path is not None and model_path.is_file():
-        # tuned_model_dprime = ml.load(f"{load_model}{model_name_extended}_model.eqx", model_dprime)
+    if model_path and model_path.is_file() and not overwrite_save_model:
         tuned_model_dprime = ml.load(model_path, model_dprime)
         tune_batch_stats = batch_stats
     else:
@@ -683,7 +687,7 @@ def tune_and_eval(
                 batch_size=min(tune_X.get_L(), batch_size),
                 optimizer=optax.adamw(
                     optax.warmup_cosine_decay_schedule(
-                        lr * 1e-4, lr, 5 * steps_per_epoch, epochs * steps_per_epoch, lr * 1e-4
+                        1e-8, lr, 5 * steps_per_epoch, epochs * steps_per_epoch, 1e-7
                     ),
                     weight_decay=1e-5,
                 ),
@@ -696,7 +700,8 @@ def tune_and_eval(
             tuned_model_dprime = model_dprime
             tune_batch_stats = batch_stats
 
-        if model_path is not None:
+        if model_path:
+            assert not model_path.is_file() or overwrite_save_model
             ml.save(model_path, tuned_model_dprime)
 
     key, subkey = random.split(key)
@@ -798,8 +803,12 @@ if args.wandb:
     print("Use --train-wandb or --test-wandb to control these individually. Exiting.")
     exit()
 
+if args.load_model or args.save_model:
+    print("Use --model-dir and possibly --overwrite-save-model instead of --save-model")
+    exit()
+
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
-lr_range = [5e-7, 1e-6, 5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
+lr_range = [1e-6, 5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]
 
 max_pixel_l1 = 2
 M = 5
@@ -808,7 +817,8 @@ train_kwargs = {
     "residual": args.residual,
     "batch_size": args.batch,
     "epochs": args.epochs,
-    "load_save_model": args.load_save_model,
+    "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
+    "overwrite_save_model": args.overwrite_save_model,
     "images_dir": None,
     "verbose": args.verbose,
     "is_wandb": args.train_wandb,
@@ -818,7 +828,8 @@ test_kwargs = {
     "residual": args.residual,
     "batch_size": args.batch,
     "epochs": args.epochs,
-    "load_save_model": args.load_save_model,
+    "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
+    "overwrite_save_model": args.overwrite_save_model,
     "images_dir": args.images_dir,  # currently ignored
     "verbose": 0,
     "is_wandb": args.tune_wandb,
@@ -863,87 +874,38 @@ for D in full_D_range:
 
     key, *subkeys = random.split(key, num=10)
     model_list = [
-        # (
-        #     "one_layer_normalize_scaling",
-        #     train_and_eval,
-        #     {
-        #         "model": ConvSeriesModel(
-        #             input_keys,
-        #             output_keys,
-        #             normalize_filters_dict[train_D],
-        #             width=1,
-        #             depth=1,
-        #             use_bias=False,
-        #             key=subkeys[0],
-        #         ),
-        #         "lr": 1e-2,
-        #         "conv_filters_dict": normalize_filters_dict,
-        #         **train_kwargs,
-        #     },
-        # ),
-        # (
-        #     "two_layer_normalize_scaling",
-        #     train_and_eval,
-        #     {
-        #         "model": ConvSeriesModel(
-        #             input_keys,
-        #             output_keys,
-        #             normalize_filters_dict[train_D],
-        #             width=10,
-        #             depth=2,
-        #             use_bias=False,
-        #             key=subkeys[3],
-        #         ),
-        #         "lr": 1e-2,
-        #         "conv_filters_dict": normalize_filters_dict,
-        #         **train_kwargs,
-        #     },
-        # ),
-        # (
-        #     "two_layer_gaussian_scaling",
-        #     ConvSeriesModel(
-        #         input_keys,
-        #         output_keys,
-        #         gaussian_filters_dict[train_D],
-        #         width=10,
-        #         depth=2,
-        #         use_bias=False,
-        #         key=subkeys[2],
-        #     ),
-        #     {
-        #         "lr": 1e-2,
-        #         **train_kwargs,
-        #     },
-        #     {
-        #         "lr": 1e-2,
-        #         "conv_filters_dict": gaussian_filters_dict,
-        #         **test_kwargs,
-        #     },
-        # ),
+        (
+            f"two_layer_gaussian_scaling_D{D}",
+            {
+                "model": ConvSeriesModel(
+                    input_keys,
+                    output_keys,
+                    gaussian_filters_dict[D],
+                    width=10,
+                    depth=2,
+                    use_bias=False,
+                    key=subkeys[2],
+                ),
+                "lr": 5e-2,  # best for all dimensions, all n_tune
+                **train_kwargs,
+            },
+            {
+                "lr": {(1, 2): 1e-2, (1, 3): 5e-2, (2, 3): 1e-2},
+                # n_tune has only a small effect on the error difference, simplicity use n=1 value
+                # it is typically lower so this strategy is conservative
+                # (1,2): (n=1,1e-2) (n=4,1e-2) (n=32,1e-2) (n=128,1e-2)
+                # (1,3): (n=1,5e-2) (n=4,5e-2) (n=32,5e-2) (n=128,5e-2) (pretty large gap for n=1,4)
+                # (2,3): (n=1,1e-2) (n=4,1e-2) (n=32,5e-2) (n=128,5e-2) can do 1e-2
+                "conv_filters_dict": gaussian_filters_dict,
+                **test_kwargs,
+            },
+        ),
         # (
         #     "lastStepIdentity",
         #     train_and_eval,
         #     {
         #         "model": models.LastStepIdentity(residual=args.residual),
         #         "lr": 1,
-        #         "conv_filters_dict": normalize_filters_dict,
-        #         **train_kwargs,
-        #     },
-        # ),
-        # (
-        #     "resnet_equiv_42_normalize_scaling",
-        #     train_and_eval,
-        #     {
-        #         "model": models.ResNet(
-        #             train_D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=42,
-        #             conv_filters=normalize_filters_dict[train_D],
-        #             use_group_norm=True,
-        #             key=subkeys[6],
-        #         ),
-        #         "lr": 7e-4,
         #         "conv_filters_dict": normalize_filters_dict,
         #         **train_kwargs,
         #     },
@@ -960,11 +922,16 @@ for D in full_D_range:
                     use_group_norm=True,
                     key=subkeys[6],
                 ),
-                "lr": {1: 1e-3, 2: 5e-4, 3: 5e-4}[D],
+                "lr": {1: 5e-3, 2: 5e-4, 3: 1e-3}[D],
+                # (D=1,n=128,5e-3) (D=2,n=1,5e-4) (D=2,n=4,5e-4) (D=2,n=32,5e-4) (D=2,n=128,5e-4)
+                # (D=3,n=1,1e-3) (D=3,n=4,1e-3) (D=3,n=32,5e-4) (D=3,n=128,1e-3)
                 **train_kwargs,
             },
             {  # tune and eval kwargs
-                "lr": 1e-4,
+                "lr": {(1, 2): 1e-4, (1, 3): 5e-5, (2, 3): 5e-5},
+                # (1,2): (n=1,1e-4) (n=4,1e-4) (n=32,1e-3) (n=128,1e-3)
+                # (1,3): (n=1,5e-5) (n=4,5e-5) (n=32,5e-4) (n=128,5e-3)
+                # (2,3): (n=1,5e-5) (n=4,5e-5) (n=32,1e-4) (n=128,1e-4)
                 "conv_filters_dict": gaussian_filters_dict,
                 **test_kwargs,
             },
@@ -991,8 +958,9 @@ for train_D in args.train_D_range:
 print("Tune and evaluate the models!")
 results_dict = {}
 for test_D in args.test_D_range:
-    results_dict[test_D] = {k: [] for k in (("baseline",) + tuple(args.train_D_range))}
+    results_dict[test_D] = {k: [] for k in ((test_D,) + tuple(args.train_D_range))}
     for n_tune in args.n_tune_range:
+        print(f"D={test_D}, n_tune={n_tune}.\n")
         # the data is saved, so this is still reasonably efficient
         key, subkey = random.split(key)
         tune_data = get_data(
@@ -1032,18 +1000,26 @@ for test_D in args.test_D_range:
                 "train_or_tune": "train",
             },
         )
-        results_dict[test_D]["baseline"].append(baseline_results)
+        results_dict[test_D][test_D].append(baseline_results)
+
+        if args.find_train_lr:
+            continue
 
         for train_D in args.train_D_range:
             if train_D == test_D:
                 continue
 
-            # if not finding the tuning lr, range is set to [] and value in model list is used
+            # select the correct learning rate for the tuning based on train and test dimensions
+            trained_model_list = [
+                (name, func, {**_test_kwargs, "lr": _test_kwargs["lr"][(train_D, test_D)]})
+                for name, func, _test_kwargs in trained_model_list_d[train_D]
+            ]
+
             key, subkey = random.split(key)
             # (n_trials, benchmark, models, n_results)
             tune_results = ml.benchmark_lr(
                 lambda _: tune_data,
-                trained_model_list_d[train_D],
+                trained_model_list,
                 subkey,
                 lr_range if args.find_tune_lr else [],
                 num_trials=args.n_trials,
@@ -1062,13 +1038,12 @@ for test_D in args.test_D_range:
             results_dict[test_D][train_D].append(tune_results)
 
 
-model_names_d = {D: [x[0] for x in model_list] for D, model_list in model_list_d.items()}
-plot_results(
-    results_dict,
-    ["l2_error", "relative_error"],
-    args.test_D_range,
-    args.train_D_range,
-    args.n_tune_range,
-    model_names_d,
-    args.images_dir,
-)
+if args.images_dir is not None:
+    model_names_d = {D: [x[0] for x in model_list] for D, model_list in model_list_d.items()}
+    plot_results(
+        results_dict,
+        ["l2_error", "relative_error"],
+        args.n_tune_range,
+        model_names_d,
+        args.images_dir,
+    )

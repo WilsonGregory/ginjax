@@ -652,6 +652,7 @@ def tune_and_eval(
     model_dir: pathlib.Path | None,
     overwrite_save_model: bool,
     images_dir: str | None,
+    upsample_filters_dict: dict[int, geom.MultiImage] | None = None,
     has_aux: bool = False,
     verbose: int = 1,
     is_wandb: bool = False,
@@ -665,7 +666,12 @@ def tune_and_eval(
     key, subkey = random.split(key)
     # rescale set to True, small but notable difference
     if conv_filters_dict is not None:
-        model_dprime = model.convertD(conv_filters_dict[tune_X.D], True, subkey)
+        model_dprime = model.convertD(
+            conv_filters_dict[tune_X.D],
+            True,
+            subkey,
+            upsample_filters=upsample_filters_dict[tune_X.D] if upsample_filters_dict else None,
+        )
     else:
         model_dprime = model
 
@@ -808,7 +814,7 @@ if args.load_model or args.save_model:
     exit()
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
-lr_range = [1e-6, 5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]
+lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3]
 
 max_pixel_l1 = 2
 M = 5
@@ -831,12 +837,13 @@ test_kwargs = {
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
     "images_dir": args.images_dir,  # currently ignored
-    "verbose": 0,
+    "verbose": args.verbose,
     "is_wandb": args.tune_wandb,
 }
 
 normalize_filters_dict = {}
 gaussian_filters_dict = {}
+upsample_filters_dict = {}
 
 full_D_range = tuple(set(args.train_D_range).union(set(args.test_D_range)))
 for D in full_D_range:
@@ -861,6 +868,14 @@ for D in full_D_range:
         max_pixel_l1=max_pixel_l1,
         combine_equal_l1=True,
     )
+    upsample_filters_dict[D] = geom.get_invariant_filters(
+        Ms=[2],
+        ks=[0],
+        parities=[0],
+        D=D,
+        operators=group_actions,
+        scale=geom.FilterScaling.NORMALIZE,  # for N=2, all pixels are equidistant
+    )
 
 print("Define the models!")
 model_list_d = {}
@@ -884,7 +899,7 @@ for D in full_D_range:
                     width=10,
                     depth=2,
                     use_bias=False,
-                    key=subkeys[2],
+                    key=subkeys[0],
                 ),
                 "lr": 5e-2,  # best for all dimensions, all n_tune
                 **train_kwargs,
@@ -920,7 +935,7 @@ for D in full_D_range:
                     depth=42,
                     conv_filters=gaussian_filters_dict[D],
                     use_group_norm=True,
-                    key=subkeys[6],
+                    key=subkeys[1],
                 ),
                 "lr": {1: 5e-3, 2: 5e-4, 3: 1e-3}[D],
                 # (D=1,n=128,5e-3) (D=2,n=1,5e-4) (D=2,n=4,5e-4) (D=2,n=32,5e-4) (D=2,n=128,5e-4)
@@ -933,6 +948,35 @@ for D in full_D_range:
                 # (1,3): (n=1,5e-5) (n=4,5e-5) (n=32,5e-4) (n=128,5e-3)
                 # (2,3): (n=1,5e-5) (n=4,5e-5) (n=32,1e-4) (n=128,1e-4)
                 "conv_filters_dict": gaussian_filters_dict,
+                **test_kwargs,
+            },
+        ),
+        (
+            f"unetBase_equiv48_gaussian_scaling_D{D}",
+            {  # train_kwargs
+                "model": models.UNet(
+                    D,
+                    input_keys,
+                    output_keys,
+                    depth=48,
+                    activation_f=jax.nn.gelu,
+                    conv_filters=gaussian_filters_dict[D],
+                    upsample_filters=upsample_filters_dict[D],
+                    key=subkeys[2],
+                ),
+                "lr": 1e-3,
+                # D=1 (n=128,1e-3)
+                # D=2 (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,5e-4 although 1e-3 is close?)
+                # D=3 (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,1e-3)
+                **train_kwargs,
+            },
+            {  # tune and eval kwargs
+                "lr": {(1, 2): 1e-3, (1, 3): 1e-3, (2, 3): 1e-3},
+                # (1,2) (n=1,1e-3) (n=4,1e-3) (n=32,5e-3) (n=128,5e-4 or 1e-3)
+                # (1,3) (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,5e-3,1e-3,5e-4)
+                # (2,3) (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,1e-3 works)
+                "conv_filters_dict": gaussian_filters_dict,
+                "upsample_filters_dict": upsample_filters_dict,
                 **test_kwargs,
             },
         ),
@@ -953,6 +997,9 @@ for train_D in args.train_D_range:
     trained_model_list_d[train_D] = train_all_models(
         train_data, subkey, model_list_d[train_D], lr_range, args
     )
+
+if args.find_train_lr:
+    exit()
 
 # evaluate the models
 print("Tune and evaluate the models!")
@@ -982,28 +1029,26 @@ for test_D in args.test_D_range:
         ]
 
         key, subkey = random.split(key)
+        # although this uses train_kwargs and lr, it is in the tune section
         # (n_trials, benchmark, models, n_results)
         baseline_results = ml.benchmark_lr(
             lambda _: tune_data,
             baseline_model_list,
             subkey,
-            lr_range if args.find_train_lr else [],
+            lr_range if args.find_tune_lr else [],
             num_trials=args.n_trials,
             num_results=2,  # l2, rel_error
-            is_wandb=args.train_wandb,
+            is_wandb=args.tune_wandb,
             wandb_project=args.wandb_project,
             wandb_entity=args.wandb_entity,
             args={
                 **vars(args),
-                "D": test_D,
+                "tune_D1_D2": f"(-,{test_D})",
                 "n_points": n_tune,
-                "train_or_tune": "train",
+                "train_or_tune": "tune",
             },
         )
         results_dict[test_D][test_D].append(baseline_results)
-
-        if args.find_train_lr:
-            continue
 
         for train_D in args.train_D_range:
             if train_D == test_D:

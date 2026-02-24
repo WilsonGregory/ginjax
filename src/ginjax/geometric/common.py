@@ -511,6 +511,7 @@ def get_unique_invariant_filters(
 
     filters = []
     if k == 2 and k2_irreps_basis:
+        # implicitly assumes that the operators are D4
         basis_irreps = get_k2_irrep_basis(M, k, D)
         for basis in basis_irreps:
             filters += get_unique_irrep_filters(

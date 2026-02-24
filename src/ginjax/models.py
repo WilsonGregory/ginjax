@@ -245,7 +245,7 @@ class AnyDimensionalModel(MultiImageModule):
             n_add_balanced = len(new_filters[filter_key]) - len(old_filters[filter_key])
         elif k == 2:
             # for k==2, the first set of filters follows the scalar filters
-            assert ((), 0) in old_filters
+            assert ((), 0) in old_filters, "_extend_weights needs k=0 filters if it includes k=2"
             n_old_unbalanced = len(old_filters[(), 0])
             center_weight = old_weights_block[:, :, :1]
             offcenter_old_weights = old_weights_block[:, :, 1:n_old_unbalanced]
@@ -314,8 +314,6 @@ class AnyDimensionalModel(MultiImageModule):
         weights_mul = old_weights_block.reshape(
             old_weights_block.shape + (1,) * old_filters.D + (1,) * len(filter_k)
         )
-
-        # TODO: what to do with negative weights?
 
         # old_filters: (n_filters,spatial,tensor)
         old_weights_sum = jnp.sum(

@@ -31,6 +31,22 @@ def get_data_d(
     key: jax.Array,
     data_dir: pathlib.Path,
 ) -> tuple[geom.MultiImage, geom.MultiImage]:
+    """
+    Generate data for a particular dimension using the apebench code.
+
+    args:
+        D: dimension
+        N: side length of images
+        diffusion_coef: parameter for burgers
+        convection_coef: parameter for burgers
+        subsample: additional steps to generate, which are then subsampled for the output
+        n_batch: batch size, or total dataset size in this case
+        key: jax key for randomness
+        data_dir: director to save/load the data
+
+    returns:
+        a tuple of the input and output geometric images
+    """
     is_torus = True
     n_timesteps = 2  # 50?
     n_timesteps_int = n_timesteps * subsample  # integrator time steps
@@ -106,6 +122,24 @@ def get_data(
     geom.MultiImage,
     geom.MultiImage,
 ]:
+    """
+    Generate full dataset with train, validation, and test data sets.
+
+    args:
+        D: dimension
+        N: side length of images
+        diffusion_coef: parameter for burgers
+        convection_coef: parameter for burgers
+        subsample: additional steps to generate, which are then subsampled for the output
+        n_train: train dataset size
+        n_val: validation dataset size
+        n_test: test dataset size
+        key: jax key for randomness
+        data_dir: director to save/load the data
+
+    returns:
+        tuple of geometric images, (train_X, train_Y, val_X, val_Y, test_X, test_Y)
+    """
     data_dir_path = pathlib.Path(data_dir)
 
     key, subkey1, subkey2, subkey3 = random.split(key, num=4)
@@ -132,8 +166,8 @@ def plot_results(
     saveloc: str,
 ) -> None:
     """
-    Plot the results of the heat_equation experiments. For each test_D, create a plot with the
-    number of tuning points on the x-axis and the error (either l2 or relative) on the y-axis.
+    Plot the results of the experiments. For each test metric, create a plot with the
+    number of tuning points on the x-axis and the test metric on the y-axis.
 
     args:
         results_dict: The results with train_D, test_D keys, then a list over n_tune.
@@ -421,11 +455,13 @@ class BurgersMapper:
         """
         Docstring for __init__
 
-        residual: Whether the network should learn the residual, defaults to False
-        smse: Whether __call__ returns the smse loss, defaults to True
-        l2_rel: Whether __call__ returns the l2 relative error, defaults to False
+        args:
+            residual: Whether the network should learn the residual, defaults to False
+            nrmse: Whether __call__ the normalized root mean squared error loss, defaults to True
+            smse: Whether __call__ returns the smse loss, defaults to False
+            l2_rel: Whether __call__ returns the l2 relative error, defaults to False
         """
-        assert nrmse or smse or l2_rel, "At least one of smse or l2_rel must be true."
+        assert nrmse or smse or l2_rel, "At least one of nrmse, smse, or l2_rel must be true."
         self.residual = residual
         self.nrmse = nrmse
         self.smse = smse
@@ -622,7 +658,6 @@ def tune_and_eval(
     epochs: int,
     model_dir: pathlib.Path | None,
     overwrite_save_model: bool,
-    images_dir: str | None,
     upsample_filters_dict: dict[int, geom.MultiImage] | None = None,
     has_aux: bool = False,
     verbose: int = 1,
@@ -694,18 +729,6 @@ def tune_and_eval(
     l2_loss = tuned_loss[0]
     rel_error = tuned_loss[1]
     print(f"Tuned Loss rescale=True, D={test_X.D}: {l2_loss:.3e} ({rel_error:.3f}%)\n")
-
-    # assert tuned_model_dprime is not None
-    # if images_dir and test_X.D == 2:
-    #     pred_y, _ = BurgersMapper(residual).map(tuned_model_dprime, test_X.get_one(), batch_stats)
-
-    #     plot_multi_image(
-    #         test_X.get_one(),
-    #         test_Y.get_one(),
-    #         pred_y.get_one(),
-    #         f"{images_dir}{model_name_extended}_D{test_X.D}_trainD{tune_X.D}.png",
-    #         "heat",
-    #     )
 
     return l2_loss, rel_error
 
@@ -802,7 +825,6 @@ test_kwargs = {
     "epochs": args.epochs,
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
-    "images_dir": None,
     "verbose": args.verbose,
     "is_wandb": args.tune_wandb,
 }

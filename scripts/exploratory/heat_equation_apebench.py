@@ -22,93 +22,6 @@ import ginjax.utils as utils
 import ginjax.data as gc_data
 
 
-def get_data_new(
-    data_dir: str,
-    train_D: int,
-    range_test_D: list[int],
-    N: int,
-    n_train: int,
-    n_val: int,
-    n_test: int,
-    subsample: int,
-    past_steps: int,
-    key: jax.Array,
-) -> tuple[
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    list[geom.MultiImage],
-    list[geom.MultiImage],
-]:
-    if train_D != range_test_D[0]:
-        raise ValueError()
-
-    is_torus = True
-    n_timesteps = 2  # 50?
-    n_timesteps_int = n_timesteps * subsample  # integrator time steps
-    n_warmup_steps = 1  # in 3D, seems like there is an initial problem
-    dt = 1
-
-    diffusion_coef = 2.0  # default for difficulty.Diffusion
-
-    diffusion_stepper = exponax.stepper.Diffusion(
-        train_D, domain_extent=N, num_points=N, dt=dt, diffusivity=diffusion_coef
-    )
-
-    # train_name = f"{train_D}D_{scenario}_N{N}_timesteps{n_timesteps_int}_diffusion{diffusion_coef * scaler(train_D)}"
-    print(f"Generating train data D={train_D}")
-    key, subkey = random.split(key)
-    cpu = jax.devices("cpu")[0]
-
-    train_ic_gen = exponax.ic.GaussianRandomField(train_D, zero_mean=True, std_one=True)
-    # train_x0 = exponax.build_ic_set(train_ic_gen, num_points=N, num_samples=n_train, key=subkey)
-    train_x0 = random.normal(subkey, shape=(n_train, 1) + (N,) * train_D)
-    train_xt = heat_step(train_D, train_x0[:, 0], dt, diffusion_coef, is_torus)[:, None]
-    # train_xt = diffusion_stepper.step(train_x0)  # (batch,channels,spatial)
-
-    train_x0 = jax.device_put(train_x0, cpu)
-    train_xt = jax.device_put(train_xt, cpu)
-
-    train_X = geom.MultiImage({(0, 0): train_x0}, train_D, is_torus)
-    train_Y = geom.MultiImage({(0, 0): train_xt}, train_D, is_torus)
-
-    key, subkey = random.split(key)
-    val_x0 = random.normal(subkey, shape=(n_val, 1) + (N,) * train_D)
-    # val_x0 = exponax.build_ic_set(train_ic_gen, num_points=N, num_samples=n_val, key=subkey)
-    val_xt = heat_step(train_D, val_x0[:, 0], dt, diffusion_coef, is_torus)[:, None]
-    # val_xt = diffusion_stepper.step(val_x0)  # (batch,spatial)
-
-    val_x0 = jax.device_put(val_x0, cpu)
-    val_xt = jax.device_put(val_xt, cpu)
-
-    val_X = geom.MultiImage({(0, 0): val_x0}, train_D, is_torus)
-    val_Y = geom.MultiImage({(0, 0): val_xt}, train_D, is_torus)
-
-    test_Xs = []
-    test_Ys = []
-    for D in range_test_D:
-        # if D=3, N=128, baseline timesteps=50, subsample=8, that takes 10Gb of memory, so split it up
-
-        test_ic_gen = exponax.ic.GaussianRandomField(D, zero_mean=True, std_one=True)
-        key, subkey = random.split(key)
-        # test_x0 = exponax.build_ic_set(test_ic_gen, num_points=N, num_samples=n_test, key=subkey)
-        test_x0 = random.normal(subkey, shape=(n_test, 1) + (N,) * D)
-        test_xt = heat_step(D, test_x0[:, 0], dt, diffusion_coef, is_torus)[:, None]
-        # test_xt = diffusion_stepper.step(test_x0)  # (batch,spatial)
-
-        test_x0 = jax.device_put(test_x0, cpu)
-        test_xt = jax.device_put(test_xt, cpu)
-
-        test_X = geom.MultiImage({(0, 0): test_x0}, D, is_torus)
-        test_Y = geom.MultiImage({(0, 0): test_xt}, D, is_torus)
-
-        test_Xs.append(test_X)
-        test_Ys.append(test_Y)
-
-    return train_X, train_Y, val_X, val_Y, test_Xs, test_Ys
-
-
 def get_data_d(
     D: int,
     N: int,
@@ -124,9 +37,9 @@ def get_data_d(
     n_warmup_steps = 1  # in 3D, seems like there is an initial problem
     scenario = "norm_diff"
 
-    apebench.scenarios.physical.Diffusion()  # diffusion 0.00008
-    apebench.scenarios.normalized.Diffusion()  # diffusion 0.0008
-    apebench.scenarios.difficulty.Diffusion()  # diffusion 4
+    # apebench.scenarios.physical.Diffusion()  # diffusion 0.00008
+    # apebench.scenarios.normalized.Diffusion()  # diffusion 0.0008
+    # apebench.scenarios.difficulty.Diffusion()  # diffusion 4
 
     train_name = f"D{D}_{scenario}_N{N}_n{n_batch}_k{diffusion_coef}_t{n_timesteps_int}"
     train_path = pathlib.Path(f"{data_dir}") / f"{train_name}_train.npy"
@@ -809,7 +722,7 @@ def handleArgs() -> argparse.Namespace:
     )
     # need do to --train-wandb or --tune-wandb to activate
     parser.add_argument(
-        "--wandb-project", help="the wandb project", type=str, default="heat-equation"
+        "--wandb-project", help="the wandb project", type=str, default="heat-equation-apebench"
     )
     parser.add_argument(
         "--train-wandb",

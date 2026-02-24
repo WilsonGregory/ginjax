@@ -22,93 +22,6 @@ import ginjax.utils as utils
 import ginjax.data as gc_data
 
 
-def get_data_new(
-    data_dir: str,
-    train_D: int,
-    range_test_D: list[int],
-    N: int,
-    n_train: int,
-    n_val: int,
-    n_test: int,
-    subsample: int,
-    past_steps: int,
-    key: jax.Array,
-) -> tuple[
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    list[geom.MultiImage],
-    list[geom.MultiImage],
-]:
-    if train_D != range_test_D[0]:
-        raise ValueError()
-
-    is_torus = True
-    n_timesteps = 2  # 50?
-    n_timesteps_int = n_timesteps * subsample  # integrator time steps
-    n_warmup_steps = 1  # in 3D, seems like there is an initial problem
-    dt = 1
-
-    diffusion_coef = 2.0  # default for difficulty.Diffusion
-
-    diffusion_stepper = exponax.stepper.Diffusion(
-        train_D, domain_extent=N, num_points=N, dt=dt, diffusivity=diffusion_coef
-    )
-
-    # train_name = f"{train_D}D_{scenario}_N{N}_timesteps{n_timesteps_int}_diffusion{diffusion_coef * scaler(train_D)}"
-    print(f"Generating train data D={train_D}")
-    key, subkey = random.split(key)
-    cpu = jax.devices("cpu")[0]
-
-    train_ic_gen = exponax.ic.GaussianRandomField(train_D, zero_mean=True, std_one=True)
-    # train_x0 = exponax.build_ic_set(train_ic_gen, num_points=N, num_samples=n_train, key=subkey)
-    train_x0 = random.normal(subkey, shape=(n_train, 1) + (N,) * train_D)
-    train_xt = heat_step(train_D, train_x0[:, 0], dt, diffusion_coef, is_torus)[:, None]
-    # train_xt = diffusion_stepper.step(train_x0)  # (batch,channels,spatial)
-
-    train_x0 = jax.device_put(train_x0, cpu)
-    train_xt = jax.device_put(train_xt, cpu)
-
-    train_X = geom.MultiImage({(0, 0): train_x0}, train_D, is_torus)
-    train_Y = geom.MultiImage({(0, 0): train_xt}, train_D, is_torus)
-
-    key, subkey = random.split(key)
-    val_x0 = random.normal(subkey, shape=(n_val, 1) + (N,) * train_D)
-    # val_x0 = exponax.build_ic_set(train_ic_gen, num_points=N, num_samples=n_val, key=subkey)
-    val_xt = heat_step(train_D, val_x0[:, 0], dt, diffusion_coef, is_torus)[:, None]
-    # val_xt = diffusion_stepper.step(val_x0)  # (batch,spatial)
-
-    val_x0 = jax.device_put(val_x0, cpu)
-    val_xt = jax.device_put(val_xt, cpu)
-
-    val_X = geom.MultiImage({(0, 0): val_x0}, train_D, is_torus)
-    val_Y = geom.MultiImage({(0, 0): val_xt}, train_D, is_torus)
-
-    test_Xs = []
-    test_Ys = []
-    for D in range_test_D:
-        # if D=3, N=128, baseline timesteps=50, subsample=8, that takes 10Gb of memory, so split it up
-
-        test_ic_gen = exponax.ic.GaussianRandomField(D, zero_mean=True, std_one=True)
-        key, subkey = random.split(key)
-        # test_x0 = exponax.build_ic_set(test_ic_gen, num_points=N, num_samples=n_test, key=subkey)
-        test_x0 = random.normal(subkey, shape=(n_test, 1) + (N,) * D)
-        test_xt = heat_step(D, test_x0[:, 0], dt, diffusion_coef, is_torus)[:, None]
-        # test_xt = diffusion_stepper.step(test_x0)  # (batch,spatial)
-
-        test_x0 = jax.device_put(test_x0, cpu)
-        test_xt = jax.device_put(test_xt, cpu)
-
-        test_X = geom.MultiImage({(0, 0): test_x0}, D, is_torus)
-        test_Y = geom.MultiImage({(0, 0): test_xt}, D, is_torus)
-
-        test_Xs.append(test_X)
-        test_Ys.append(test_Y)
-
-    return train_X, train_Y, val_X, val_Y, test_Xs, test_Ys
-
-
 def get_data_d(
     D: int,
     N: int,
@@ -122,21 +35,16 @@ def get_data_d(
     n_timesteps = 2  # 50?
     n_timesteps_int = n_timesteps * subsample  # integrator time steps
     n_warmup_steps = 1  # in 3D, seems like there is an initial problem
-    scenario = "diff_diff"
+    scenario = "norm_diff"
 
-    # apebench.scenarios.physical.Diffusion()
-    # apebench.scenarios.normalized.Diffusion()
-    # apebench.scenarios.difficulty.Diffusion()
-
-    # diffusion_coef = 4  # default for difficulty.Diffusion
-    # diffusion_coef = 0.00008  # default for norm.Diffusion is 0.0008
-    # diffusion_coef = 0.00008  # default for physical.Diffusion is 0.00008
+    # apebench.scenarios.physical.Diffusion()  # diffusion 0.00008
+    # apebench.scenarios.normalized.Diffusion()  # diffusion 0.0008
+    # apebench.scenarios.difficulty.Diffusion()  # diffusion 4
 
     train_name = f"D{D}_{scenario}_N{N}_n{n_batch}_k{diffusion_coef}_t{n_timesteps_int}"
     train_path = pathlib.Path(f"{data_dir}") / f"{train_name}_train.npy"
-    # if not train_path.is_file() or not val_path.is_file():
     if not train_path.is_file():
-        print(f"Generating data D={D}")
+        print(f"Generating data:", train_path)
         key, subkey = random.split(key)
         train_seed, test_seed = random.randint(subkey, shape=(2,), minval=0, maxval=10000)
 
@@ -153,20 +61,15 @@ def get_data_d(
             test_seed=int(test_seed),
             train_temporal_horizon=n_timesteps_int - 1,
             test_temporal_horizon=n_timesteps_int - 1,
-            # diffusion_coef=diffusion_coef,
-            # diffusion_alpha=diffusion_coef,
-            diffusion_gamma=diffusion_coef,
+            # diffusion_coef=diffusion_coef,  # for phy_diff
+            diffusion_alpha=diffusion_coef,  # for norm_diff
+            # diffusion_gamma=diffusion_coef,  # for diff_diff
         )
 
     cpu = jax.devices("cpu")[0]
     # (batch,timesteps,tensor,spatial) -> (batch,timesteps,spatial)
-    print(train_path)
-    print(subsample)
     train_data = jax.device_put(jnp.load(train_path)[:, ::subsample, 0], cpu)
     # subsample here for memory efficiency
-
-    print(train_data.shape)
-    exit()
 
     constant_fields = geom.MultiImage({}, D, is_torus)
     x0, xt = gc_data.batch_time_series(
@@ -196,93 +99,25 @@ def get_data(
 ]:
     data_dir_path = pathlib.Path(data_dir)
 
-    key, subkey = random.split(key)
-    train_x0, train_xt = get_data_d(D, N, diffusion_coef, subsample, n_train, subkey, data_dir_path)
+    key, subkey1, subkey2, subkey3 = random.split(key, num=4)
+    train_x0, train_xt = get_data_d(
+        D, N, diffusion_coef, subsample, n_train, subkey1, data_dir_path / "train"
+    )
 
-    test_Xs = []
-    test_Ys = []
-    key, subkey = random.split(key)
-    test_seeds = random.randint(subkey, shape=(len(range_test_D),), minval=0, maxval=10000)
-    for D, test_seed in zip(range_test_D, test_seeds):
-        # if D=3, N=128, baseline timesteps=50, subsample=8, that takes 10Gb of memory, so split it up
-        batch = 1 if D == 3 else n_test
+    val_x0, val_xt = get_data_d(
+        D, N, diffusion_coef, subsample, n_val, subkey2, data_dir_path / "val"
+    )
 
-        test_data = jax.device_put(jnp.zeros((0, n_timesteps) + (N,) * D), cpu)
-        for i in range(n_test // batch):
-            # diff_burgers scales diffusion_gamma and convection_delta by D, so we unscale them so
-            # that the equation is the same across dimensions.
+    test_x0, test_xt = get_data_d(
+        D, N, diffusion_coef, subsample, n_test, subkey3, data_dir_path / "test"
+    )
+    if n_test > 0:
+        x0_std = jnp.std(test_x0[((), 0)])
+        xt_std = jnp.std(test_xt[((), 0)])
+        xt_resid_std = jnp.std(test_xt[((), 0)] - test_x0[((), 0)])
+        print(f"D={D}, x0:{x0_std:.3e}, xt:{xt_std:.3e}, xt_resid:{xt_resid_std:.3e}")
 
-            # a little awkward because it will say test_test at the end
-            test_name = f"{D}D_{scenario}_N{N}_timesteps{n_timesteps_int}_diffusion{diffusion_coef * scaler(D)}_i{i}_test"
-            test_path = pathlib.Path(f"{data_dir}") / f"{test_name}_test.npy"
-            if not test_path.is_file():
-                print(f"Generating test data, D={D}")
-                key, subkey = random.split(key)
-                train_seed, test_seed = random.randint(subkey, shape=(2,), minval=0, maxval=10000)
-
-                apebench.scraper.scrape_data_and_metadata(
-                    data_dir,
-                    scenario=scenario,
-                    name=test_name,
-                    num_spatial_dims=D,
-                    num_points=N,
-                    num_warmup_steps=n_warmup_steps,
-                    num_train_samples=0,
-                    num_test_samples=batch,
-                    test_seed=int(test_seed),
-                    train_temporal_horizon=n_timesteps_int - 1,
-                    test_temporal_horizon=n_timesteps_int - 1,
-                    # diffusion_coef=diffusion_coef * scaler(D),  # may have to scale relative to D
-                    # diffusion_alpha=diffusion_coef * scaler(D),  # may have to scale relative to D
-                    diffusion_gamma=diffusion_coef * scaler(D),  # may have to scale relative to D
-                )
-
-            # subsample here for memory efficiency
-            test_data_i = jax.device_put(jnp.load(test_path)[:, ::subsample, 0], cpu)
-            test_data = jnp.concatenate([test_data, test_data_i], axis=0)
-
-        test_data /= jnp.std(test_data[:, :1])
-
-        print(f"{D}, ({jnp.mean(test_data[:, 0]):.4e}, {jnp.std(test_data[:,0]):.3f})", end=" ")
-        for i in range(1, n_timesteps):
-            prev = jnp.std(test_data[:, i - 1])
-            cur = jnp.std(test_data[:, i])
-            print(f"({jnp.std(test_data[:,i]):.4e}, {(prev - cur)*100/ prev:.1f}%)", end=" ")
-
-            # print(f"({jnp.mean(test_data[:, i]):.4e}, {jnp.std(test_data[:,i]):.3f})", end=" ")
-
-            # print(
-            #     test_data.shape,
-            #     jnp.mean(jnp.abs(test_data[:, 0] - test_data[:, 1])),
-            #     jnp.mean(jnp.abs(test_data[:, 0] - test_data[:, 1]) / jnp.abs(test_data[:, 1])),
-            #     jnp.mean(jnp.abs(test_data[:, 0])),
-            #     jnp.mean(jnp.abs(test_data[:, 1])),
-            # )
-
-            # print(
-            #     test_data.shape,
-            #     jnp.mean(jnp.abs(test_data[:, 1] - test_data[:, 2])),
-            #     jnp.mean(jnp.abs(test_data[:, 1] - test_data[:, 2]) / jnp.abs(test_data[:, 2])),
-            #     jnp.mean(jnp.abs(test_data[:, 1])),
-            #     jnp.mean(jnp.abs(test_data[:, 2])),
-            # )
-
-        print("")
-
-        constant_fields = geom.MultiImage({}, D, is_torus)
-
-        test_X, test_Y = gc_data.batch_time_series(
-            geom.MultiImage({(0, 0): test_data}, D, is_torus),
-            constant_fields,
-            n_timesteps,
-            past_steps,
-            1,
-        )
-
-        test_Xs.append(test_X)
-        test_Ys.append(test_Y)
-
-    return train_X, train_Y, val_X, val_Y, test_Xs, test_Ys
+    return train_x0, train_xt, val_x0, val_xt, test_x0, test_xt
 
 
 def plot_multi_image(
@@ -366,9 +201,27 @@ def plot_multi_image(
     diff_rel_err = jnp.mean(jnp.abs(diff.data / actual_image.data)) * 100
     diff_title = f"diff (l2: {diff_l2:.3e}, rel. err: {diff_rel_err:.2f}%)"
 
-    actual_image.plot(axes[1], title=f"output {title}", vmin=vmin, vmax=vmax, colorbar=True)
-    test_image.plot(axes[2], title=f"pred {title}", vmin=vmin, vmax=vmax, colorbar=True)
-    diff.plot(axes[3], title=diff_title, vmin=-diff_max, vmax=diff_max, colorbar=True)
+    actual_image.plot(
+        axes[1],
+        title=f"output {title}",
+        vmin=vmin,
+        vmax=vmax,
+        colorbar=True,
+    )
+    test_image.plot(
+        axes[2],
+        title=f"pred {title}",
+        vmin=vmin,
+        vmax=vmax,
+        colorbar=True,
+    )
+    diff.plot(
+        axes[3],
+        title=diff_title,
+        vmin=-diff_max,
+        vmax=diff_max,
+        colorbar=True,
+    )
 
     plt.tight_layout()
     plt.savefig(save_loc)
@@ -376,10 +229,8 @@ def plot_multi_image(
 
 
 def plot_results(
-    results_dict: dict[int, dict[str | int, list[jax.Array]]],
+    results_dict: dict[int, dict[int, list[jax.Array]]],
     results_labels: list[str],
-    test_D_range: tuple[int, ...],
-    train_D_range: tuple[int, ...],
     n_tune_range: tuple[int, ...],
     model_names_d: dict[int, list[str]],
     saveloc: str,
@@ -390,8 +241,7 @@ def plot_results(
 
     args:
         results_dict: The results with test_D, then 'baseline' or train_D, then a list over n_tune.
-        test_D_range: dimensions that we are testing over
-        train_D_range: dimensions that the warmstart models are trained on, then transferred from
+        results_labels: e.g. 'l2', 'relative error'
         n_tune_range: number of fine-tuning points, or training points for the baseline model
         model_names_d: model names for each dimension
         saveloc: beginning of save location
@@ -399,34 +249,45 @@ def plot_results(
     returns:
         none
     """
-    # figsize is 8 per col, 6 per row, (cols,rows)
-    nrows = len(test_D_range)
-    ncols = len(results_labels)
-    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8 * ncols, 6 * nrows))
+    # group the results by model, across all trained dimensions
+    grouped_results = {}
+    for test_D, results_train_d in results_dict.items():
+        grouped_results[test_D] = {}
+        for train_D, results in results_train_d.items():
+            for i, name in enumerate(model_names_d[train_D]):
+                name_trimmed = name[:-3]  # this assumes that all models end in _D1, _D2, or _D3
+                display_name = f"{name} (baseline)" if train_D == test_D else name
 
-    for test_D, ax_row in zip(test_D_range, axes):
+                if name_trimmed in grouped_results[test_D]:
+                    # (n_tune,n_trials,n_results)
+                    grouped_results[test_D][name_trimmed].append(
+                        (display_name, jnp.stack(results)[:, :, 0, i])
+                    )
+                else:
+                    grouped_results[test_D][name_trimmed] = [
+                        (display_name, jnp.stack(results)[:, :, 0, i])
+                    ]
+
+    # figsize is 8 per col, 6 per row, (cols,rows)
+    nrows = len(list(grouped_results.keys()))
+    ncols = len(results_labels)
+    _, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8 * ncols, 6 * nrows))
+    linestyles = ["solid", "dotted", "dashed", "dashdot"]
+    colors = ["b", "g", "r", "c", "m", "y"]
+
+    for (test_D, results_by_model), ax_row in zip(grouped_results.items(), axes):
         for error_idx, ylabel, ax in zip(range(len(results_labels)), results_labels, ax_row):
             assert isinstance(ax, Axes)
-            # (n_tune_range, n_trials, benchmark, models, n_results)
-            baseline_results = jnp.stack(results_dict[test_D]["baseline"])[:, :, 0]
-            for i in range(len(model_names_d[test_D])):
-                ax.plot(
-                    jnp.mean(baseline_results, axis=1)[:, i, error_idx],
-                    marker="o",
-                    label=f"{model_names_d[test_D][i]} (baseline)",
-                )
 
-            for train_D in train_D_range:
-                if test_D == train_D:
-                    continue
-
-                results_arr = jnp.stack(results_dict[test_D][train_D])[:, :, 0]
-
-                for i in range(len(model_names_d[test_D])):
+            # looping over 'two_layer_gaussian', 'resnet_equiv_42', ...
+            for i, model_results in enumerate(results_by_model.values()):
+                for j, (display_name, results_arr) in enumerate(model_results):
                     ax.plot(
-                        jnp.mean(results_arr, axis=1)[:, i, error_idx],
+                        jnp.mean(results_arr, axis=1)[:, error_idx],
                         marker="o",
-                        label=model_names_d[train_D][i],
+                        linestyle=linestyles[j],
+                        label=display_name,
+                        color=colors[i],
                     )
 
             ax.legend()
@@ -612,7 +473,8 @@ def train_model(
     residual: bool,
     batch_size: int,
     epochs: int,
-    load_save_model: str | None,
+    model_dir: pathlib.Path | None,
+    overwrite_save_model: bool,
     images_dir: str | None,
     has_aux: bool = False,
     verbose: int = 1,
@@ -622,14 +484,11 @@ def train_model(
     N = train_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
     model_name_extended = f"{model_name}_L{train_X.get_L()}_N{N}_e{epochs}"
+    model_path = model_dir / f"{model_name_extended}_model.eqx" if model_dir else None
 
-    print(f"{model_name} params: {models.count_params(model):,}")
+    print(f"{model_name_extended} params: {models.count_params(model):,}")
 
-    model_path = None
-    if load_save_model is not None:
-        model_path = pathlib.Path(load_save_model) / f"{model_name_extended}_model.eqx"
-
-    if model_path is not None and model_path.is_file():
+    if model_path and model_path.is_file() and not overwrite_save_model:
         return ml.load(model_path, model)
 
     steps_per_epoch = int(math.ceil(train_X.get_L() / batch_size))
@@ -654,7 +513,8 @@ def train_model(
         is_wandb=is_wandb,
     )
 
-    if model_path is not None:
+    if model_path:
+        assert not model_path.is_file() or overwrite_save_model
         # TODO: need to save batch_stats as well
         ml.save(model_path, trained_model)
 
@@ -727,8 +587,10 @@ def tune_and_eval(
     residual: bool,
     batch_size: int,
     epochs: int,
-    load_save_model: str | None,
+    model_dir: pathlib.Path | None,
+    overwrite_save_model: bool,
     images_dir: str | None,
+    upsample_filters_dict: dict[int, geom.MultiImage] | None = None,
     has_aux: bool = False,
     verbose: int = 1,
     is_wandb: bool = False,
@@ -737,20 +599,21 @@ def tune_and_eval(
     N = tune_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
     model_name_extended = f"{model_name}_tuneD{tune_X.D}_L{tune_X.get_L()}_N{N}_e{epochs}"
-
-    model_path = None
-    if load_save_model is not None:
-        model_path = pathlib.Path(load_save_model) / f"{model_name_extended}_model.eqx"
+    model_path = model_dir / f"{model_name_extended}_model.eqx" if model_dir else None
 
     key, subkey = random.split(key)
     # rescale set to True, small but notable difference
     if conv_filters_dict is not None:
-        model_dprime = model.convertD(conv_filters_dict[tune_X.D], True, subkey)
+        model_dprime = model.convertD(
+            conv_filters_dict[tune_X.D],
+            True,
+            subkey,
+            upsample_filters=upsample_filters_dict[tune_X.D] if upsample_filters_dict else None,
+        )
     else:
         model_dprime = model
 
-    if model_path is not None and model_path.is_file():
-        # tuned_model_dprime = ml.load(f"{load_model}{model_name_extended}_model.eqx", model_dprime)
+    if model_path and model_path.is_file() and not overwrite_save_model:
         tuned_model_dprime = ml.load(model_path, model_dprime)
         tune_batch_stats = batch_stats
     else:
@@ -781,7 +644,8 @@ def tune_and_eval(
             tuned_model_dprime = model_dprime
             tune_batch_stats = batch_stats
 
-        if model_path is not None:
+        if model_path:
+            assert not model_path.is_file() or overwrite_save_model
             ml.save(model_path, tuned_model_dprime)
 
     key, subkey = random.split(key)
@@ -813,14 +677,10 @@ def tune_and_eval(
     return l2_loss, rel_error
 
 
-# an example of currently used script
-# CUDA_VISIBLE_DEVICES=6 time python3 scripts/heat_equation.py --data /data/wgregor4/heat_equation/
-# --n-test 128 --n-val 128 --n-train 128 -N 64 --train-D-range 1,2 --diffusion-coef 1
-# --test-D-range 2,3 -s /data/wgregor4/runs/heat_equation/
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
-        "--n-tune_range",
+        "--n-tune-range",
         help="the number of data points in the tuning set",
         type=lambda s: tuple(int(x) for x in s.split(",")),
         default="0,1,4,32,128",
@@ -886,8 +746,12 @@ if args.wandb:
     print("Use --train-wandb or --test-wandb to control these individually. Exiting.")
     exit()
 
+if args.load_model or args.save_model:
+    print("Use --model-dir and possibly --overwrite-save-model instead of --save-model")
+    exit()
+
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
-lr_range = [1e-6, 5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]
+lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3]
 
 max_pixel_l1 = 2
 M = 5
@@ -896,7 +760,8 @@ train_kwargs = {
     "residual": args.residual,
     "batch_size": args.batch,
     "epochs": args.epochs,
-    "load_save_model": args.load_save_model,
+    "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
+    "overwrite_save_model": args.overwrite_save_model,
     "images_dir": None,
     "verbose": args.verbose,
     "is_wandb": args.train_wandb,
@@ -906,14 +771,16 @@ test_kwargs = {
     "residual": args.residual,
     "batch_size": args.batch,
     "epochs": args.epochs,
-    "load_save_model": args.load_save_model,
+    "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
+    "overwrite_save_model": args.overwrite_save_model,
     "images_dir": args.images_dir,  # currently ignored
-    "verbose": 0,
+    "verbose": args.verbose,
     "is_wandb": args.tune_wandb,
 }
 
 normalize_filters_dict = {}
 gaussian_filters_dict = {}
+upsample_filters_dict = {}
 
 full_D_range = tuple(set(args.train_D_range).union(set(args.test_D_range)))
 for D in full_D_range:
@@ -938,6 +805,14 @@ for D in full_D_range:
         max_pixel_l1=max_pixel_l1,
         combine_equal_l1=True,
     )
+    upsample_filters_dict[D] = geom.get_invariant_filters(
+        Ms=[2],
+        ks=[0],
+        parities=[0],
+        D=D,
+        operators=group_actions,
+        scale=geom.FilterScaling.NORMALIZE,  # for N=2, all pixels are equidistant
+    )
 
 print("Define the models!")
 model_list_d = {}
@@ -961,15 +836,18 @@ for D in full_D_range:
                     width=10,
                     depth=2,
                     use_bias=False,
-                    key=subkeys[2],
+                    key=subkeys[0],
                 ),
                 "lr": 5e-2,  # best for all dimensions, all n_tune
                 **train_kwargs,
             },
             {
-                "lr": 5e-2,  # (1,2): (n=1,1e-2) (n=4,1e-2) (n=32,1e-2) (n=128,1e-2)
-                # (1,3): (n=1,5e-2) (n=4,5e-2) (n=32,5e-2) (n=128,)
-                # (2,3): (n=1,1e-2) (n=4,1e-2) (n=32,5e-2)
+                "lr": {(1, 2): 1e-2, (1, 3): 5e-2, (2, 3): 1e-2},
+                # n_tune has only a small effect on the error difference, simplicity use n=1 value
+                # it is typically lower so this strategy is conservative
+                # (1,2): (n=1,1e-2) (n=4,1e-2) (n=32,1e-2) (n=128,1e-2)
+                # (1,3): (n=1,5e-2) (n=4,5e-2) (n=32,5e-2) (n=128,5e-2) (pretty large gap for n=1,4)
+                # (2,3): (n=1,1e-2) (n=4,1e-2) (n=32,5e-2) (n=128,5e-2) can do 1e-2
                 "conv_filters_dict": gaussian_filters_dict,
                 **test_kwargs,
             },
@@ -994,7 +872,7 @@ for D in full_D_range:
                     depth=42,
                     conv_filters=gaussian_filters_dict[D],
                     use_group_norm=True,
-                    key=subkeys[6],
+                    key=subkeys[1],
                 ),
                 "lr": {1: 5e-3, 2: 5e-4, 3: 1e-3}[D],
                 # (D=1,n=128,5e-3) (D=2,n=1,5e-4) (D=2,n=4,5e-4) (D=2,n=32,5e-4) (D=2,n=128,5e-4)
@@ -1002,10 +880,40 @@ for D in full_D_range:
                 **train_kwargs,
             },
             {  # tune and eval kwargs
-                "lr": 1e-4,  # (1,2): (n=1,1e-4) (n=4,1e-4) (n=32,1e-3) (n=128,1e-3)
-                # (1,3): (n=1,5e-5) (n=4,5e-5) (n=32,5e-4) (n=128,)
-                # (2,3): (n=1,5e-5) (n=4,5e-5) (n=32,1e-4)
+                "lr": {(1, 2): 1e-4, (1, 3): 5e-5, (2, 3): 5e-5},
+                # (1,2): (n=1,1e-4) (n=4,1e-4) (n=32,1e-3) (n=128,1e-3)
+                # (1,3): (n=1,5e-5) (n=4,5e-5) (n=32,5e-4) (n=128,5e-3)
+                # (2,3): (n=1,5e-5) (n=4,5e-5) (n=32,1e-4) (n=128,1e-4)
                 "conv_filters_dict": gaussian_filters_dict,
+                **test_kwargs,
+            },
+        ),
+        (
+            f"unetBase_equiv48_gaussian_scaling_D{D}",
+            {  # train_kwargs
+                "model": models.UNet(
+                    D,
+                    input_keys,
+                    output_keys,
+                    depth=48,
+                    activation_f=jax.nn.gelu,
+                    conv_filters=gaussian_filters_dict[D],
+                    upsample_filters=upsample_filters_dict[D],
+                    key=subkeys[2],
+                ),
+                "lr": 1e-3,
+                # D=1 (n=128,1e-3)
+                # D=2 (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,5e-4 although 1e-3 is close?)
+                # D=3 (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,1e-3)
+                **train_kwargs,
+            },
+            {  # tune and eval kwargs
+                "lr": {(1, 2): 1e-3, (1, 3): 1e-3, (2, 3): 1e-3},
+                # (1,2) (n=1,1e-3) (n=4,1e-3) (n=32,5e-3) (n=128,5e-4 or 1e-3)
+                # (1,3) (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,5e-3,1e-3,5e-4)
+                # (2,3) (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,1e-3 works)
+                "conv_filters_dict": gaussian_filters_dict,
+                "upsample_filters_dict": upsample_filters_dict,
                 **test_kwargs,
             },
         ),
@@ -1018,7 +926,15 @@ trained_model_list_d = {}
 for train_D in args.train_D_range:
     key, subkey = random.split(key)
     train_x0, train_xt, val_x0, val_xt, _, _ = get_data(
-        train_D, args.N, True, args.diffusion_coef, args.n_train, args.n_val, 0, subkey, args.data
+        train_D,
+        args.N,
+        args.diffusion_coef,
+        args.subsample,
+        args.n_train,
+        args.n_val,
+        0,
+        subkey,
+        args.data,
     )
 
     train_data = (train_x0, train_xt, val_x0, val_xt)
@@ -1027,19 +943,23 @@ for train_D in args.train_D_range:
         train_data, subkey, model_list_d[train_D], lr_range, args
     )
 
+if args.find_train_lr:
+    exit()
+
 # evaluate the models
 print("Tune and evaluate the models!")
 results_dict = {}
 for test_D in args.test_D_range:
-    results_dict[test_D] = {k: [] for k in (("baseline",) + tuple(args.train_D_range))}
+    results_dict[test_D] = {k: [] for k in ((test_D,) + tuple(args.train_D_range))}
     for n_tune in args.n_tune_range:
+        print(f"D={test_D}, n_tune={n_tune}.\n")
         # the data is saved, so this is still reasonably efficient
         key, subkey = random.split(key)
         tune_data = get_data(
             test_D,
             args.N,
-            True,
             args.diffusion_coef,
+            args.subsample,
             n_tune,
             args.n_val,
             args.n_test,
@@ -1054,39 +974,42 @@ for test_D in args.test_D_range:
         ]
 
         key, subkey = random.split(key)
+        # although this uses train_kwargs and lr, it is in the tune section
         # (n_trials, benchmark, models, n_results)
         baseline_results = ml.benchmark_lr(
             lambda _: tune_data,
             baseline_model_list,
             subkey,
-            lr_range if args.find_train_lr else [],
+            lr_range if args.find_tune_lr else [],
             num_trials=args.n_trials,
             num_results=2,  # l2, rel_error
-            is_wandb=args.train_wandb,
+            is_wandb=args.tune_wandb,
             wandb_project=args.wandb_project,
             wandb_entity=args.wandb_entity,
             args={
                 **vars(args),
-                "D": test_D,
+                "tune_D1_D2": f"(-,{test_D})",
                 "n_points": n_tune,
-                "train_or_tune": "train",
+                "train_or_tune": "tune",
             },
         )
-        results_dict[test_D]["baseline"].append(baseline_results)
-
-        if args.find_train_lr:
-            continue
+        results_dict[test_D][test_D].append(baseline_results)
 
         for train_D in args.train_D_range:
             if train_D == test_D:
                 continue
 
-            # if not finding the tuning lr, range is set to [] and value in model list is used
+            # select the correct learning rate for the tuning based on train and test dimensions
+            trained_model_list = [
+                (name, func, {**_test_kwargs, "lr": _test_kwargs["lr"][(train_D, test_D)]})
+                for name, func, _test_kwargs in trained_model_list_d[train_D]
+            ]
+
             key, subkey = random.split(key)
             # (n_trials, benchmark, models, n_results)
             tune_results = ml.benchmark_lr(
                 lambda _: tune_data,
-                trained_model_list_d[train_D],
+                trained_model_list,
                 subkey,
                 lr_range if args.find_tune_lr else [],
                 num_trials=args.n_trials,
@@ -1105,13 +1028,12 @@ for test_D in args.test_D_range:
             results_dict[test_D][train_D].append(tune_results)
 
 
-model_names_d = {D: [x[0] for x in model_list] for D, model_list in model_list_d.items()}
-plot_results(
-    results_dict,
-    ["l2_error", "relative_error"],
-    args.test_D_range,
-    args.train_D_range,
-    args.n_tune_range,
-    model_names_d,
-    args.images_dir,
-)
+if args.images_dir is not None:
+    model_names_d = {D: [x[0] for x in model_list] for D, model_list in model_list_d.items()}
+    plot_results(
+        results_dict,
+        ["l2_error", "relative_error"],
+        args.n_tune_range,
+        model_names_d,
+        args.images_dir,
+    )

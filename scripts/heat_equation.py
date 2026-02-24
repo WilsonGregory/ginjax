@@ -746,7 +746,7 @@ def tune_and_eval(
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
-        "--n-tune_range",
+        "--n-tune-range",
         help="the number of data points in the tuning set",
         type=lambda s: tuple(int(x) for x in s.split(",")),
         default="0,1,4,32,128",
@@ -1024,7 +1024,11 @@ for test_D in args.test_D_range:
 
         # need to train the baseline model on tune_x0, etc. aka models without the warmstart
         baseline_model_list = [
-            (name, tune_and_eval, {**_train_kwargs, "conv_filters_dict": None})
+            (
+                name,
+                tune_and_eval,
+                {**_train_kwargs, "conv_filters_dict": None, "is_wandb": args.tune_wandb},
+            )
             for name, _train_kwargs, _ in model_list_d[test_D]
         ]
 

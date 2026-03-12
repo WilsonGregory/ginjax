@@ -199,6 +199,42 @@ class MultiImageModule(eqx.Module):
         return x, aux_data
 
 
+def get_filter_sum(
+    filters: geom.MultiImage, filter_key: tuple[tuple[bool, ...], int], weights: jax.Array | None
+) -> jax.Array:
+    """
+    For a set of filters and possibly a block of weights, calculate the sum of the norm of the
+    filters scaled by the weights.
+
+    Consider writing a filters subclass of MultiImage that has these functions defined on it.
+
+    args:
+        filters: the geometric filters as a MultiImage
+        weights: the block of weights, shape (out_c,in_c,n_filters)
+
+    returns:
+        array of filter sums, shape (out_c,in_c,1), or (1,1,1) is no weights were provided
+    """
+    k = filter_key[0]
+    if weights is None:
+        weights_mul = 1
+    else:
+        # (out_c, in_c, n_filters) -> (out_c,in_c,n_filters,(1,)*D,(1,)*k)
+        weights_mul = weights.reshape(weights.shape + (1,) * filters.D + (1,) * len(k))
+
+    # old_filters: (n_filters,spatial,tensor)
+    weights_sum = jnp.sum(
+        (filters[filter_key][None, None] * weights_mul),
+        axis=tuple(range(2, 3 + filters.D)),  # sum over n_filters,spatial
+    )  # (out_c,in_c,tensor)
+
+    # flatten tensor, then get its Frobenius norm.
+    # (out_c,in_c,tensor) -> (out_c,in_c,1)
+    return jnp.linalg.norm(
+        weights_sum.reshape(weights_sum.shape[:2] + (-1,)), axis=2, keepdims=True
+    )
+
+
 class AnyDimensionalModel(MultiImageModule):
     """
     A MultiImage model that implements a convertD function that can convert to work on different
@@ -310,41 +346,26 @@ class AnyDimensionalModel(MultiImageModule):
         return:
             jax array of rescaled weights (out_channels,in_channels,num_filters) after rescaling
         """
-        # (out_c, in_c, n_filters) -> (out_c,in_c,n_filters,(1,)*D,(1,)*k)
-        weights_mul = old_weights_block.reshape(
-            old_weights_block.shape + (1,) * old_filters.D + (1,) * len(filter_k)
-        )
+        # both are (out_c,in_c,1)
+        old_weights_sum = get_filter_sum(old_filters, filter_key, old_weights_block)
+        new_weights_sum = get_filter_sum(new_filters, filter_key, new_weights_block)
 
-        # old_filters: (n_filters,spatial,tensor)
-        old_weights_sum = jnp.sum(
-            (old_filters[filter_key][None, None] * weights_mul),
-            axis=tuple(range(2, 3 + old_filters.D)),  # sum over n_filters,spatial
-        )  # (out_c,in_c,tensor)
-
-        # TODO: norm makes the ratio positive?
-
-        old_weights_sum = jnp.linalg.norm(
-            old_weights_sum.reshape(old_weights_sum.shape[:2] + (-1,)), axis=2
-        )  # (out_c,in_c)
-
-        weights_mul = new_weights_block.reshape(
-            new_weights_block.shape + (1,) * new_filters.D + (1,) * len(filter_k)
-        )
-        new_weights_sum = jnp.sum(
-            (new_filters[filter_key][None, None] * weights_mul),
-            axis=tuple(range(2, 3 + new_filters.D)),  # sum over n_filters,spatial
-        )  # (out_c,in_c,tensor)
-
-        new_weights_sum = jnp.linalg.norm(
-            new_weights_sum.reshape(new_weights_sum.shape[:2] + (-1,)), axis=2
-        )  # (out_c,in_c)
+        # Dont rescale filters that always sum to 0.
+        # (n_filters,tensor)
+        spatial_sum = jnp.sum(old_filters[filter_key], axis=tuple(range(1, 1 + old_filters.D)))
+        # (n_filters,)
+        spatial_sum_norm = jnp.linalg.norm(spatial_sum.reshape((len(spatial_sum), -1)), axis=1)
+        nonzero_filter_mask = (spatial_sum_norm != 0)[None, None]  # (1,1,n_filters)
+        # nonzero_filter_maks = jnp.ones_like(nonzero_filter_mask)  # TODO: temp, testing old rescale
 
         # (out_c,in_c,1) where 1 is for n_filters
-        ratios = (old_weights_sum / (new_weights_sum + geom.TINY))[..., None]
+        ratios = old_weights_sum / (new_weights_sum + geom.TINY)
+        # Scale nonzero by ratios, scale the others by 1 (out_c,in_c,n_filters)
+        ratios = nonzero_filter_mask * ratios + (~nonzero_filter_mask)
 
         if verbose:
             print("old weights", old_weights_block.shape, old_weights_block)
-            print("ratios", ratios.shape, ratios)  # (out_c,in_c,1), 1 for num spatial, eh 3
+            print("ratios", ratios.shape, ratios)  # (out_c,in_c,n_filters)
 
         return new_weights_block * ratios
 
@@ -409,39 +430,9 @@ class AnyDimensionalModel(MultiImageModule):
 
                 new_weights[(in_k, in_p)][(out_k, out_p)] = scaled_weights_block
 
-                if verbose:
-                    weights_shaped = old_weights_block.reshape(
-                        old_weights_block.shape + (1,) * old_filters.D
-                    )  # (out,in,num_filters,spatial)
-                    filters_shaped = old_filters[filter_key].reshape(
-                        (1, 1) + old_filters[filter_key].shape
-                    )  # (out,in,num_filters,spatial)
-                    weights_prod_old = jnp.sum(
-                        weights_shaped * filters_shaped, axis=2
-                    )  # (out,in,spatial)
-
-                    weights_shaped = new_weights[(in_k, in_p)][(out_k, out_p)].reshape(
-                        new_weights_block.shape + (1,) * new_filters.D
-                    )
-                    filters_shaped = new_filters[filter_key].reshape(
-                        (1, 1) + new_filters[filter_key].shape
-                    )
-                    weights_prod_new = jnp.sum(
-                        weights_shaped * filters_shaped, axis=2
-                    )  # (out,in,spatial)
-
-                    old_axes = tuple(range(2, 2 + old_filters.D))
-                    new_axes = tuple(range(2, 2 + new_filters.D))
-
-                    print("sum old", jnp.sum(weights_prod_old, axis=old_axes))
-                    print("square sum old", jnp.sqrt(jnp.sum(weights_prod_old**2, axis=old_axes)))
-
-                    print("sum new", jnp.sum(weights_prod_new, axis=new_axes))
-                    print("square sum new", jnp.sqrt(jnp.sum(weights_prod_new**2, axis=new_axes)))
-
         return new_weights
 
-    def transfer_weights(self: Self, new_model: Self, rescale: bool) -> Self:
+    def transfer_weights(self: Self, new_model: Self, rescale: bool, verbose: bool = False) -> Self:
         """
         Transfer the weights and biases from an old model to a new model. This allows converting
         between dimensions as well. This works by copying all jax arrays from the old model to the new
@@ -458,6 +449,8 @@ class AnyDimensionalModel(MultiImageModule):
             conv_filters: the convolution filters to use in the new model, can have different D
             rescale: rescale the conv weights if necessary to ensure the same sum. Depending on how
                 the filters are scaled, this may be always true anyways.
+            verbose: print the ratio of the squared sum of filters new/old after transfering the
+                weights, default to False.
 
         returns:
             a new model with the old weights except conv weights which are adjusted, and new filters
@@ -482,7 +475,9 @@ class AnyDimensionalModel(MultiImageModule):
         ]
         conv_weights = get_conv_weights(self)
         new_weights = [
-            AnyDimensionalModel._transfer_conv_weights(weight, old_filter, new_filter, rescale)
+            AnyDimensionalModel._transfer_conv_weights(
+                weight, old_filter, new_filter, rescale, verbose
+            )
             for weight, old_filter, new_filter in zip(conv_weights, get_filters(self), new_filters)
         ]
         new_model = eqx.tree_at(get_conv_weights, new_model, new_weights)

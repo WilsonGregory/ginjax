@@ -48,9 +48,9 @@ def get_data_d(
         a tuple of the input and output geometric images
     """
     is_torus = True
-    n_timesteps = 2  # 50?
+    n_timesteps = 50  # 50?
     n_timesteps_int = n_timesteps * subsample  # integrator time steps
-    n_warmup_steps = 1  # in 3D, seems like there is an initial problem
+    n_warmup_steps = 0  # in 3D, seems like there is an initial problem
     scenario = "diff_burgers"  # diff setting guaranteed to avoid NaNs, so prefer it over norm, phy
 
     # we multiply the coefs by D to remove the dimension normalizing effect from diff_burgers
@@ -422,7 +422,7 @@ class ConvSeriesModel(models.AnyDimensionalModel):
             key,
         )
 
-        return self.transfer_weights(new_model, rescale)
+        return self.transfer_weights(new_model, rescale, verbose=False)
 
     def __call__(
         self: Self, x: geom.MultiImage, aux_data: eqx.nn.State | None = None
@@ -658,6 +658,7 @@ def tune_and_eval(
     epochs: int,
     model_dir: pathlib.Path | None,
     overwrite_save_model: bool,
+    images_dir: str | None,
     upsample_filters_dict: dict[int, geom.MultiImage] | None = None,
     has_aux: bool = False,
     verbose: int = 1,
@@ -726,11 +727,11 @@ def tune_and_eval(
         subkey,
         aux_data=tune_batch_stats,
     )
-    l2_loss = tuned_loss[0]
-    rel_error = tuned_loss[1]
-    print(f"Tuned Loss rescale=True, D={test_X.D}: {l2_loss:.3e} ({rel_error:.3f}%)\n")
+    nrmse_loss = tuned_loss[0]
+    smse_loss = tuned_loss[1]
+    print(f"Tuned Loss rescale=True, D={test_X.D}: nrmse={nrmse_loss:.3e} smse={smse_loss:.3e}\n")
 
-    return l2_loss, rel_error
+    return nrmse_loss, smse_loss
 
 
 def handleArgs() -> argparse.Namespace:
@@ -825,6 +826,7 @@ test_kwargs = {
     "epochs": args.epochs,
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
+    "images_dir": None,
     "verbose": args.verbose,
     "is_wandb": args.tune_wandb,
 }
@@ -1067,7 +1069,7 @@ if args.images_dir is not None:
     model_names_d = {D: [x[0] for x in model_list] for D, model_list in model_list_d.items()}
     plot_results(
         results_dict,
-        ["l2_error", "relative_error"],
+        ["nrmse_loss", "smse_loss"],
         args.n_tune_range,
         model_names_d,
         args.images_dir,

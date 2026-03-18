@@ -1579,3 +1579,44 @@ class TestGeometricImage:
         actual_identity = jnp.stack([jnp.eye(D) for _ in range(N**D)]).reshape((N,) * D + (D, D))
         assert jnp.allclose(id1.data, actual_identity, 1e-3, 1e-3)
         assert jnp.allclose(id2.data, actual_identity, 1e-3, 1e-3)
+
+    def testImageTranslate(self):
+        D = 2
+
+        image = geom.GeometricImage(
+            jnp.array([[0, 1, 2], [3, 4, 5], [6, 7, 8]]), 0, D, is_torus=True
+        )
+        translated_image1 = image.translate(jnp.array([1, -1]))
+        assert jnp.allclose(translated_image1.data, jnp.array([[7, 8, 6], [1, 2, 0], [4, 5, 3]]))
+
+        translated_image2 = image.translate(jnp.array([0, 0]))
+        assert translated_image2 == image
+
+        translated_image3 = image.translate(jnp.array([3, 3]))
+        assert translated_image3 == image
+
+        translated_image4 = image.translate(jnp.array([4, -1]))
+        assert translated_image4 == translated_image1
+
+        # cannot translate a 2D image with a 3D translation
+        with pytest.raises(AssertionError):
+            image.translate(jnp.array([0, 1, 4]))
+
+        nontorus_image = geom.GeometricImage(
+            jnp.array([[0, 1, 2], [3, 4, 5], [6, 7, 8]]), 0, D, is_torus=False
+        )
+        # cannot translate non-torus images
+        with pytest.raises(AssertionError):
+            nontorus_image.translate(jnp.array([0, 1]))
+
+    def testNonsquareImageTranslate(self):
+        # now try to translate a non-square image
+        D = 2
+        nonsquare_image = geom.GeometricImage(
+            jnp.array([[0, 1, 2], [3, 4, 5]]), 0, D, is_torus=True
+        )
+        translated_image1 = nonsquare_image.translate(jnp.array([1, -1]))
+        assert jnp.allclose(translated_image1.data, jnp.array([[4, 5, 3], [1, 2, 0]]))
+
+        translated_image2 = nonsquare_image.translate(jnp.array([2, 3]))
+        assert translated_image2 == nonsquare_image

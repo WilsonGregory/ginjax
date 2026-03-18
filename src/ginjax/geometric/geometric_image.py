@@ -23,6 +23,7 @@ from ginjax.geometric.functional_geometric_image import (
     raise_lower,
     rotate_is_torus,
     times_group_element,
+    translate,
 )
 import ginjax.utils as utils
 
@@ -771,6 +772,32 @@ class GeometricImage:
             a new GeometricImage that has been rotated
         """
         return self.times_group_element(gg, jax.lax.Precision.HIGHEST)
+
+    def translate(self: Self, tau: jax.Array) -> Self:
+        """
+        Translate the image on the torus. Translations on the data matrix are ij ordering. For
+        example, a translation of [1,-1] moves the down one row, then to the left one column.
+
+        args:
+            tau: the translation vector, length D
+
+        returns:
+            a geometric image that has been translated
+        """
+        assert (
+            self.is_torus == (True,) * self.D
+        ), f"GeometricImage::translate: Image must be a torus, but got {self.is_torus}"
+        assert (
+            len(tau) == self.D
+        ), f"GeometricImage::translate: {self.D}D image received {len(tau)}D translation"
+
+        return self.__class__(
+            translate(self.D, self.data, tau, 0),
+            self.parity,
+            self.D,
+            self.is_torus,
+            self.covariant_axes,
+        )
 
     def plot(
         self: Self,

@@ -792,6 +792,36 @@ def tensor_times_gg(
     return newdata
 
 
+def translate(D: int, data: jax.Array, tau: jax.Array, n_lead: int = 0) -> jax.Array:
+    """
+    Translate an image by translation tau, on the torus. Translations on the data matrix are ij
+    ordering. For example, a translation of [1,-1] moves the down one row, then to the left one
+    column.
+
+    args:
+        D: dimension of the image
+        data: image data with n_lead batch axes, followed by spatial then tensor
+        tau: the translation
+        n_lead: number of leading batch axes
+
+    returns:
+        translated image data
+    """
+    spatial_dims, k = parse_shape(data.shape[n_lead:], D)
+    # does key array need to be a numpy array?
+    key_array = jnp.array(
+        np.array([key for key in it.product(*list(range(N) for N in spatial_dims))])
+    )
+    translated_keys = key_array - tau
+
+    # hash, then reshape keys
+    vmap_hash = jax.vmap(lambda x: x[hash(D, spatial_dims, translated_keys)])
+    translated_pixels = vmap_hash(data.reshape((-1,) + spatial_dims + (D,) * k)).reshape(
+        (data.shape[:n_lead] + spatial_dims + (D,) * k)
+    )
+    return translated_pixels
+
+
 def norm(idx_shift: int, data: jax.Array, keepdims: bool = False) -> jax.Array:
     """
     Perform the frobenius norm on each pixel tensor, returning a scalar image

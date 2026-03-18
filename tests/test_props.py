@@ -431,3 +431,26 @@ class TestPropositions:
                 multi_image1 = vn_nonlinear(multi_image).times_group_element(gg, precision=prec)
                 multi_image2 = vn_nonlinear(multi_image.times_group_element(gg, precision=prec))
                 assert multi_image1.__eq__(multi_image2, rtol=1e-3, atol=1e-2)
+
+    def testConvolveEvenFiltersEquivariance(self):
+        # test that convolving with an even filter is rotationally equivariant
+        D = 2
+        N = 5
+        key = random.PRNGKey(0)
+
+        key, subkey = random.split(key)
+        image1 = geom.GeometricImage(random.normal(subkey, shape=(N,) * D), 0, D, is_torus=True)
+        ff1 = geom.GeometricFilter(jnp.ones((2, 2)), 0, D)
+
+        for gg in geom.make_all_operators(D):
+            out1 = image1.convolve_with(ff1, padding=((1, 1),) * D).times_gg_precise(gg)
+            out2 = image1.times_gg_precise(gg).convolve_with(ff1, padding=((1, 1),) * D)
+            assert out1.__eq__(out2), gg
+
+        ff2_data = jnp.array([[1, 1, 1, 1], [1, 2, 2, 1], [1, 2, 2, 1], [1, 1, 1, 1]])
+        ff2 = geom.GeometricFilter(ff2_data, 0, D)
+
+        for gg in geom.make_all_operators(D):
+            out1 = image1.convolve_with(ff2, padding=((1, 1),) * D).times_gg_precise(gg)
+            out2 = image1.times_gg_precise(gg).convolve_with(ff2, padding=((1, 1),) * D)
+            assert out1.__eq__(out2), gg

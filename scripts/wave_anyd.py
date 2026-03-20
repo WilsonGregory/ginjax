@@ -2,7 +2,6 @@ import argparse
 import math
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
-import numpy as np
 import pathlib
 import time
 from typing_extensions import Self
@@ -12,103 +11,157 @@ import jax.numpy as jnp
 from jax import random
 import equinox as eqx
 import optax
-import apebench
 
 import ginjax.geometric as geom
 from ginjax import models
 from ginjax import ml
-import ginjax.data as gc_data
 from ginjax import utils
 
 
-def get_data_d(
-    D: int,
-    N: int,
-    diffusion_coef: float,
-    convection_coef: float,
-    subsample: int,  # new
-    n_batch: int,
-    key: jax.Array,
-    data_dir: pathlib.Path,
-) -> tuple[geom.MultiImage, geom.MultiImage]:
+def unit_step(x: jax.Array) -> jax.Array:
     """
-    Generate data for a particular dimension using the apebench code.
+    The unit step function, returns 1 for pos, 0 for neg, and 0.5 for 0.
 
     args:
-        D: dimension
-        N: side length of images
-        diffusion_coef: parameter for burgers
-        convection_coef: parameter for burgers
-        subsample: additional steps to generate, which are then subsampled for the output
-        n_batch: batch size, or total dataset size in this case
-        key: jax key for randomness
-        data_dir: director to save/load the data
+        x: array of inputs
 
     returns:
-        a tuple of the input and output geometric images
+        array the same shape as x
     """
+    return 0.5 * (x == 0) + 1 * (x > 0)
+
+
+def wave_step(t: float, u0: jax.Array, du_dt0: jax.Array, is_torus: bool) -> jax.Array:
+    """
+    Take one step of the wave equation of timestep t.
+
+    args:
+        t: the timestep
+        u0: the input wave displacement, shape (batch,spatial)
+        du_dt0: the input wave velocity, shape (batch,spatial)
+        is_torus:
+    """
+    assert t >= 0
+    if t == 0:
+        return u0
+
+    D = u0.ndim - 1
+
+    batch = len(u0)
+    spatial_dims = u0.shape[1:]
+    u0_flat = u0.reshape((batch, -1))
+    du_dt0_flat = du_dt0.reshape((batch, -1))
+    meshgrid_dims = (jnp.arange(N) for N in spatial_dims)
+
+    # (spatial_size,D)
+    idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, D))
+    ut = []
+    for i, idx in enumerate(idxs):
+        # if (i % (len(idxs) // 10)) == 0:
+        #     print(f"{D},{batch}: {i}/{len(idxs)}")
+        # (spatial_size,D)
+        if is_torus:
+            idxs_diff = jnp.abs(idxs - idx[None])
+            idxs_diff_wrapped = jnp.stack(spatial_dims).reshape((1, D)) - idxs_diff
+            dist = jnp.where(idxs_diff < idxs_diff_wrapped, idxs_diff, idxs_diff_wrapped)
+        else:
+            dist = idxs - idx[None]
+
+        if D == 1:
+
+            dist_norm = jnp.abs(dist[:, 0])  # (spatial_size,)
+
+            # ut is the output field, * here is convolution
+            # ut = g * du_dt0 + dg_dt * u0
+
+            # (1,spatial_size)
+
+            g_kernel = 0.5 * unit_step(t - dist_norm)[None]
+            # derivative in t of unit step function is dirac delta
+            partial_g_kernel = 0.5 * ((t - dist_norm) == 0)[None]
+            # i might want to convolve with the interpolation?
+            # or somehow generate the data analytically?
+
+            print(t)
+            print(dist_norm)
+            print(g_kernel)
+            print(partial_g_kernel)
+            exit()
+
+            # (batch,spatial_size) -> (batch,)
+            ut.append(
+                jnp.sum(partial_g_kernel * u0_flat, axis=1)
+                + jnp.sum(g_kernel * du_dt0_flat, axis=1)
+            )
+        else:
+            raise NotImplementedError("wave_step for D!=1 has not been implemented yet.")
+
+    return jnp.stack(ut, axis=1).reshape(u0.shape)
+
+
+def get_1d_sine_data(
+    N: int, t: float, n_batch: int, key: jax.Array
+) -> tuple[geom.MultiImage, geom.MultiImage]:
+    # function is u(x,t) = sin(x-t), du_dt(x,t) = -cos(x-t)
+    D = 1
     is_torus = True
-    n_timesteps = 50  # 50?
-    n_timesteps_int = n_timesteps * subsample  # integrator time steps
-    n_warmup_steps = 0  # in 3D, seems like there is an initial problem
-    scenario = "diff_burgers"  # diff setting guaranteed to avoid NaNs, so prefer it over norm, phy
+    n_cycles = 3
 
-    # we multiply the coefs by D to remove the dimension normalizing effect from diff_burgers
-    scaled_diff_coef = diffusion_coef * D
-    scaled_conv_coef = convection_coef * D
+    initial_shift = random.uniform(key, shape=(n_batch, 1)) * (N / 3)  # (0,2pi)
 
-    # default values are given (diffusion_gamma, convection_delta)
-    # apebench.scenarios.physical.Burgers()  # (0.0003,-0.125)
-    # apebench.scenarios.normalized.Burgers()  # (0.00003,-0.0125)
-    # apebench.scenarios.difficulty.Burgers()  # (1.5,-1.5)
+    x_range = jnp.linspace(0, n_cycles * 2 * jnp.pi, num=N, endpoint=False)  # [0,6pi]
+    u0 = jnp.sin(x_range[None] - initial_shift)  # (batch,spatial) currently batch is 1
+    du_dt0 = -jnp.cos(x_range[None] - initial_shift)  # (batch,spatial)
 
-    train_name = f"D{D}_{scenario}_N{N}_n{n_batch}_diffusion{scaled_diff_coef}_convection{scaled_conv_coef}_t{n_timesteps_int}"
-    train_path = pathlib.Path(f"{data_dir}") / f"{train_name}_train.npy"
-    if not train_path.is_file():
-        print(f"Generating data:", train_path)
-        key, subkey = random.split(key)
-        train_seed, test_seed = random.randint(subkey, shape=(2,), minval=0, maxval=10000)
+    ut = jnp.sin((x_range[None] - initial_shift) - t)  # (batch,spatial)
 
-        apebench.scraper.scrape_data_and_metadata(
-            data_dir,  # warning, but it works
-            scenario=scenario,
-            name=train_name,
-            num_spatial_dims=D,
-            num_points=N,
-            num_warmup_steps=n_warmup_steps,
-            num_train_samples=n_batch,
-            num_test_samples=0,
-            train_seed=int(train_seed),
-            test_seed=int(test_seed),
-            train_temporal_horizon=n_timesteps_int - 1,
-            test_temporal_horizon=n_timesteps_int - 1,
-            # diffusion_coef=diffusion_coef,  # for phy_burgers
-            # convection_coef=convection_delta,  # for phy_burgers
-            # diffusion_alpha=diffusion_coef,  # for norm_burgers
-            # convection_beta=convection_coef,  # for norm_burgers
-            diffusion_gamma=scaled_diff_coef,  # for diff_burgers
-            convection_delta=scaled_conv_coef,  # for diff_burgers
-        )
+    x0_img = geom.MultiImage({((), 0): jnp.stack([u0, du_dt0], axis=1)}, D, is_torus)
+    xt_img = geom.MultiImage({((), 0): ut[:, None]}, D, is_torus)
 
-    cpu = jax.devices("cpu")[0]
-    # (batch,timesteps,tensor,spatial) -> (batch,timesteps,spatial,tensor)
-    train_data = jnp.moveaxis(jax.device_put(jnp.load(train_path)[:, ::subsample], cpu), 2, -1)
-    # subsample here for memory efficiency
+    return x0_img, xt_img
 
-    constant_fields = geom.MultiImage({}, D, is_torus)
-    x0, xt = gc_data.batch_time_series(
-        geom.MultiImage({(1, 0): train_data}, D, is_torus), constant_fields, n_timesteps, 1, 1
+
+def get_3d_sine_data(
+    N: int, t: float, n_batch: int, key: jax.Array
+) -> tuple[geom.MultiImage, geom.MultiImage]:
+    D = 3
+    spatial_dims = (N,) * D
+    x0_1d, xt_1d = get_1d_sine_data(N, t, n_batch, key)
+    x0_1d_data = x0_1d[((), 0)]
+    xt_1d_data = xt_1d[((), 0)]
+
+    new_shape = x0_1d_data.shape[:2] + spatial_dims
+    x0 = geom.MultiImage(
+        {((), 0): jnp.full(new_shape, x0_1d_data.reshape(x0_1d_data.shape + (1,) * (D - 1)))},
+        D,
+        True,
+    )
+
+    new_shape = xt_1d_data.shape[:2] + spatial_dims
+    xt = geom.MultiImage(
+        {((), 0): jnp.full(new_shape, xt_1d_data.reshape(xt_1d_data.shape + (1,) * (D - 1)))},
+        D,
+        True,
     )
 
     return x0, xt
 
 
+def get_data_d(
+    D: int, N: int, t: float, n_batch: int, key: jax.Array, data_dir: pathlib.Path
+) -> tuple[geom.MultiImage, geom.MultiImage]:
+    if D == 1:
+        return get_1d_sine_data(N, t, n_batch, key)
+    elif D == 3:
+        return get_3d_sine_data(N, t, n_batch, key)
+    else:
+        raise NotImplementedError(f"get_data_d:: Only D=1,3 are implemented, not D={D}")
+
+
 def get_data(
     D: int,
     N: int,
-    diffusion_coef: float,
-    convection_coef: float,
-    subsample: int,  # new
+    t: float,
     n_train: int,
     n_val: int,
     n_test: int,
@@ -128,9 +181,6 @@ def get_data(
     args:
         D: dimension
         N: side length of images
-        diffusion_coef: parameter for burgers
-        convection_coef: parameter for burgers
-        subsample: additional steps to generate, which are then subsampled for the output
         n_train: train dataset size
         n_val: validation dataset size
         n_test: test dataset size
@@ -143,17 +193,11 @@ def get_data(
     data_dir_path = pathlib.Path(data_dir)
 
     key, subkey1, subkey2, subkey3 = random.split(key, num=4)
-    train_x0, train_xt = get_data_d(
-        D, N, diffusion_coef, convection_coef, subsample, n_train, subkey1, data_dir_path / "train"
-    )
+    train_x0, train_xt = get_data_d(D, N, t, n_train, subkey1, data_dir_path / "train")
 
-    val_x0, val_xt = get_data_d(
-        D, N, diffusion_coef, convection_coef, subsample, n_val, subkey2, data_dir_path / "val"
-    )
+    val_x0, val_xt = get_data_d(D, N, t, n_val, subkey2, data_dir_path / "val")
 
-    test_x0, test_xt = get_data_d(
-        D, N, diffusion_coef, convection_coef, subsample, n_test, subkey3, data_dir_path / "test"
-    )
+    test_x0, test_xt = get_data_d(D, N, t, n_test, subkey3, data_dir_path / "test")
 
     return train_x0, train_xt, val_x0, val_xt, test_x0, test_xt
 
@@ -227,129 +271,7 @@ def plot_results(
     plt.close()
 
 
-def plot_multi_image(
-    input_multi_image: geom.MultiImage,
-    actual_multi_image: geom.MultiImage,
-    test_multi_image: geom.MultiImage,
-    save_loc: str,
-    title: str = "",
-):
-    """
-    Plot vector x and y components of two MultiImages, and the differences between them. Each row
-    is a component, and the columns are actual, test, and diff. If the image is 3D, plot the middle
-    slice.
-
-    args:
-        input_multi_image_full: the input image, with past_steps number of timesteps
-        actual_multi_image: the ground truth MultiImage
-        test_multi_image: the predicted MultiImage
-        save_loc: file location to save the image
-        title: additional str to add to title, will be "test {title} {col}"
-            "actual {title} {col}"
-    """
-    print(
-        f"Printed image relative error: {ml.l2_rel_error(test_multi_image, actual_multi_image):.4f}%"
-    )
-
-    if input_multi_image.get_n_leading() == 2:
-        input_multi_image = input_multi_image.get_one(keepdims=False)
-
-    if actual_multi_image.get_n_leading() == 2:
-        actual_multi_image = actual_multi_image.get_one(keepdims=False)
-
-    if test_multi_image.get_n_leading() == 2:
-        test_multi_image = test_multi_image.get_one(keepdims=False)
-
-    # images now no longer have batch dimension
-
-    N = input_multi_image.get_spatial_dims()[0]
-    if input_multi_image.D == 3:
-        img_arr = jnp.concatenate(
-            [
-                input_multi_image[((False,), 0)][:, :, N // 2],
-                test_multi_image[((False,), 0)][:, :, N // 2],
-                actual_multi_image[((False,), 0)][:, :, N // 2],
-            ]
-        )
-    else:
-        img_arr = jnp.concatenate(
-            [
-                input_multi_image.to_vector(),
-                test_multi_image.to_vector(),
-                actual_multi_image.to_vector(),
-            ]
-        )
-
-    vmax = float(jnp.max(jnp.abs(img_arr)))
-    vmin = -1 * vmax
-
-    timesteps = len(input_multi_image[((False,), 0)])
-
-    nrows = test_multi_image.D
-    ncols = timesteps + 3
-    # figsize is 6 per col, 6 per row, (cols,rows)
-    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(6 * ncols, 6 * nrows))
-    for component in range(test_multi_image.D):
-        comp_name = ["x", "y", "z"][component]
-
-        input_multi_image_comp = input_multi_image.get_component(component, timesteps)
-        for i, input_image in enumerate(input_multi_image_comp.to_images()):
-            if input_image.D == 3:
-                input_image = geom.GeometricImage(input_image.data[N // 2], input_image.parity, 2)
-
-            input_image.plot(
-                axes[component, i],
-                title=f"input {(i+1)-timesteps} {title} {comp_name}",
-                vmin=vmin,
-                vmax=vmax,
-                colorbar=True,
-            )
-
-        actual_multi_image_comp = actual_multi_image.get_component(component)
-        test_multi_image_comp = test_multi_image.get_component(component)
-
-        actual_image = actual_multi_image_comp.to_images()[0]
-        test_image = test_multi_image_comp.to_images()[0]
-
-        if actual_image.D == 3:
-            actual_image = geom.GeometricImage(actual_image.data[N // 2], actual_image.parity, 2)
-        if test_image.D == 3:
-            test_image = geom.GeometricImage(test_image.data[N // 2], test_image.parity, 2)
-
-        diff = actual_image - test_image
-        diff_max = float(jnp.max(jnp.abs(diff.data)))
-        diff_l2 = jnp.mean(diff.data**2)
-        diff_rel_err = jnp.mean(jnp.abs(diff.data / actual_image.data)) * 100
-        diff_title = f"diff (l2: {diff_l2:.3e}, rel. err: {diff_rel_err:.2f}%)"
-
-        actual_image.plot(
-            axes[component, timesteps],
-            title=f"output {title} {comp_name}",
-            vmin=vmin,
-            vmax=vmax,
-            colorbar=True,
-        )
-        test_image.plot(
-            axes[component, timesteps + 1],
-            title=f"pred {title} {comp_name}",
-            vmin=vmin,
-            vmax=vmax,
-            colorbar=True,
-        )
-        diff.plot(
-            axes[component, timesteps + 2],
-            title=diff_title,
-            vmin=-diff_max,
-            vmax=diff_max,
-            colorbar=True,
-        )
-
-    plt.tight_layout()
-    plt.savefig(save_loc)
-    plt.close(fig)
-
-
-class BurgersMapper:
+class Mapper:
     """
     Functor for map_and_loss in train, map_loss_in_batches, etc, where arguments can be provided
     beforehand. In this case, it is useful for smse vs relative error, and whether to learn the
@@ -367,6 +289,7 @@ class BurgersMapper:
         nrmse: bool = True,
         smse: bool = False,
         l2_rel: bool = False,
+        eps: float = 0,
     ) -> None:
         """
         Docstring for __init__
@@ -376,12 +299,14 @@ class BurgersMapper:
             nrmse: Whether __call__ the normalized root mean squared error loss, defaults to True
             smse: Whether __call__ returns the smse loss, defaults to False
             l2_rel: Whether __call__ returns the l2 relative error, defaults to False
+            eps: epsilon value to use for nrmse and lr_rel, avoid dividing by 0
         """
         assert nrmse or smse or l2_rel, "At least one of nrmse, smse, or l2_rel must be true."
         self.residual = residual
         self.nrmse = nrmse
         self.smse = smse
         self.l2_rel = l2_rel
+        self.eps = eps
 
     @eqx.filter_jit
     def map(
@@ -422,13 +347,13 @@ class BurgersMapper:
 
         losses = []
         if self.nrmse:
-            losses.append(ml.nrmse_loss(pred_y, multi_image_y))
+            losses.append(ml.nrmse_loss(pred_y, multi_image_y, eps=self.eps))
 
         if self.smse:
             losses.append(ml.smse_loss(pred_y, multi_image_y))
 
         if self.l2_rel:
-            losses.append(ml.l2_rel_error(pred_y, multi_image_y))
+            losses.append(ml.l2_rel_error(pred_y, multi_image_y, eps=self.eps))
 
         return jnp.squeeze(jnp.stack(losses)), aux_data
 
@@ -470,7 +395,7 @@ def train_model(
         trained_model, _, _, _ = ml.train(
             train_X,
             train_Y,
-            BurgersMapper(residual),
+            Mapper(residual, nrmse=False, smse=True, eps=1e-5),
             model,
             subkey,
             stop_condition=ml.EpochStop(epochs, verbose=verbose),
@@ -483,6 +408,7 @@ def train_model(
             ),
             validation_X=val_X,
             validation_Y=val_Y,
+            val_map_and_loss=Mapper(residual, eps=1e-5),
             aux_data=batch_stats,
             is_wandb=is_wandb,
         )
@@ -493,15 +419,15 @@ def train_model(
             ml.save(model_path, trained_model)
 
     assert trained_model is not None
-    if images_dir and val_X.D == 2:
-        pred_y, _ = BurgersMapper(residual).map(trained_model, val_X.get_one(), batch_stats)
-        plot_multi_image(
-            val_X.get_one(),
-            val_Y.get_one(),
-            pred_y.get_one(),
-            f"{images_dir}{model_name_extended}_D{val_X.D}.png",
-            "burgers",
-        )
+    # if images_dir and val_X.D == 2:
+    #     pred_y, _ = Mapper(residual, eps=1e-5).map(trained_model, val_X.get_one(), batch_stats)
+    #     plot_multi_image(
+    #         val_X.get_one(),
+    #         val_Y.get_one(),
+    #         pred_y.get_one(),
+    #         f"{images_dir}{model_name_extended}_D{val_X.D}.png",
+    #         "burgers",
+    #     )
 
     return trained_model
 
@@ -523,6 +449,7 @@ def train_all_models(
 
     trained_models = []
     for model_name, _train_kwargs, _test_kwargs in model_list:
+        _train_kwargs["lr"] = _train_kwargs["lr"][train_D][n_points]
         key, subkey = random.split(key)
         if args.find_train_lr:
 
@@ -609,7 +536,7 @@ def tune_and_eval(
             tuned_model_dprime, tune_batch_stats, _, _ = ml.train(
                 tune_X,
                 tune_Y,
-                BurgersMapper(residual),
+                Mapper(residual, nrmse=False, smse=True, eps=1e-5),
                 model_dprime,
                 subkey,
                 stop_condition=ml.EpochStop(epochs, verbose=verbose),
@@ -622,6 +549,7 @@ def tune_and_eval(
                 ),
                 validation_X=val_X,
                 validation_Y=val_Y,
+                val_map_and_loss=Mapper(residual, eps=1e-5),
                 aux_data=batch_stats,
                 is_wandb=is_wandb,
             )
@@ -635,7 +563,7 @@ def tune_and_eval(
 
     key, subkey = random.split(key)
     tuned_loss = ml.map_loss_in_batches(
-        BurgersMapper(residual, nrmse=True, smse=True),
+        Mapper(residual, nrmse=True, smse=True, eps=1e-5),
         tuned_model_dprime,
         test_X,
         test_Y,
@@ -650,6 +578,7 @@ def tune_and_eval(
     return nrmse_loss, smse_loss
 
 
+# time python3 scripts/wave_anyd.py --n-train 128 --n-val 128 --n-test 128 --n-tune-range 0,1,4,32,128
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
@@ -658,17 +587,9 @@ def handleArgs() -> argparse.Namespace:
         type=lambda s: tuple(int(x) for x in s.split(",")),
         default="0,1,4,32,128",
     )
-    parser.add_argument(
-        "--subsample", help="how much to subsample the trajectories", type=int, default=8
-    )
     parser.add_argument("-N", help="spatial size", type=int, default=64)
-    # defaults for diff_burgers are 1.5 and -1.5, we scale them by D, so for these defaults we
-    # unscale by 2 so that D=2 uses the defaults
     parser.add_argument(
-        "--diffusion-coef", help="the diffusion coefficient", type=float, default=1.5 / 2
-    )
-    parser.add_argument(
-        "--convection-coef", help="the convection coefficient", type=float, default=-1.5 / 2
+        "--timestep", help="timestep of wave output, t=1 is 1 grid point", type=float, default=4.3
     )
     parser.add_argument(
         "--residual",
@@ -689,7 +610,7 @@ def handleArgs() -> argparse.Namespace:
         default=False,
     )
     # need do to --train-wandb or --tune-wandb to activate
-    parser.add_argument("--wandb-project", help="the wandb project", type=str, default="burgers")
+    parser.add_argument("--wandb-project", help="the wandb project", type=str, default="wave")
     parser.add_argument(
         "--train-wandb",
         help="whether to use wandb during training",
@@ -719,8 +640,8 @@ if args.load_model or args.save_model:
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
 lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]
 
-# D=1 doesn't make sense for a vector field, so we restrict the problem to only this case
-train_D = 2
+# Only do 1D -> 3D
+train_D = 1
 test_D = 3
 max_pixel_l1 = 2
 M = 5
@@ -790,9 +711,7 @@ for D in full_D_range:
     train_x0, train_xt, _, _, _, _ = get_data(
         D,
         args.N,
-        args.diffusion_coef,
-        args.convection_coef,
-        args.subsample,
+        args.timestep,
         args.n_train,
         0,
         0,
@@ -816,44 +735,14 @@ for D in full_D_range:
                     use_bias=False,
                     key=subkeys[0],
                 ),
-                "lr": 5e-2,  # (D=2,5e-2) (D=2,5e-2) could also be 1e-2
+                "lr": {1: {128: 1e-2}, 3: {0: 5e-2, 1: 5e-2, 4: 5e-2, 32: 1e-2, 128: 1e-2}},
+                # D=1 (n=128,5e-2)
+                # D=3 (n=1,5e-2) (n=4,5e-2) (n=32,1e-2) (n=128,1e-2)
                 **train_kwargs,
             },
-            {
-                "lr": 1e-2,
-                "conv_filters_dict": gaussian_filters_dict,
-                **test_kwargs,
-            },
-        ),
-        # (
-        #     f"lastStepIdentity_D{D}",
-        #     {  # train kwargs
-        #         "model": models.LastStepIdentity(residual=args.residual),
-        #         "lr": 1,
-        #         **train_kwargs,
-        #     },
-        #     {  # tune and eval kwargs
-        #         "lr": 1,
-        #         **test_kwargs,
-        #     },
-        # ),
-        (
-            f"resnet_equiv_42_gaussian_scaling_D{D}",
-            {  # train kwargs
-                "model": models.ResNet(
-                    D,
-                    input_keys,
-                    output_keys,
-                    depth=42,
-                    conv_filters=gaussian_filters_dict[D],
-                    use_group_norm=True,
-                    key=subkeys[1],
-                ),
-                "lr": {2: 5e-4, 3: 1e-3}[D],  # (D=2,5e-4) (D=2,1e-3) very close
-                **train_kwargs,
-            },
-            {  # tune and eval kwargs
-                "lr": 5e-5,
+            {  # test_kwargs
+                "lr": {3: {0: 1e-2, 1: 1e-2, 4: 1e-2, 32: 5e-3, 128: 1e-2}},
+                # D=3 (n=1,1e-2) (n=4,1e-2) (n=32,5e-3) (n=128,1e-2)
                 "conv_filters_dict": gaussian_filters_dict,
                 **test_kwargs,
             },
@@ -869,13 +758,13 @@ for D in full_D_range:
                     activation_f=jax.nn.gelu,
                     conv_filters=gaussian_filters_dict[D],
                     upsample_filters=upsample_filters_dict[D],
-                    key=subkeys[2],
+                    key=subkeys[1],
                 ),
-                "lr": {2: 1e-3, 3: 5e-3}[D],  # (D=2,1e-3) (D=3,5e-3)
+                "lr": {1: {128: 5e-4}, 3: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-3}},
                 **train_kwargs,
             },
             {  # tune and eval kwargs
-                "lr": 1e-3,
+                "lr": {3: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 1e-3}},
                 "conv_filters_dict": gaussian_filters_dict,
                 "upsample_filters_dict": upsample_filters_dict,
                 **test_kwargs,
@@ -890,9 +779,7 @@ key, subkey = random.split(key)
 train_x0, train_xt, val_x0, val_xt, _, _ = get_data(
     train_D,
     args.N,
-    args.diffusion_coef,
-    args.convection_coef,
-    args.subsample,
+    args.timestep,
     args.n_train,
     args.n_val,
     0,
@@ -917,9 +804,7 @@ for n_tune in args.n_tune_range:
     tune_data = get_data(
         test_D,
         args.N,
-        args.diffusion_coef,
-        args.convection_coef,
-        args.subsample,
+        args.timestep,
         n_tune,
         args.n_val,
         args.n_test,
@@ -932,7 +817,12 @@ for n_tune in args.n_tune_range:
         (
             name,
             tune_and_eval,
-            {**_train_kwargs, "conv_filters_dict": None, "is_wandb": args.tune_wandb},
+            {
+                **_train_kwargs,
+                "lr": _train_kwargs["lr"][test_D][n_tune],
+                "conv_filters_dict": None,
+                "is_wandb": args.tune_wandb,
+            },
         )
         for name, _train_kwargs, _ in model_list_d[test_D]
     ]
@@ -952,18 +842,23 @@ for n_tune in args.n_tune_range:
         wandb_entity=args.wandb_entity,
         args={
             **vars(args),
-            "tune_D1_D2": f"(-,{test_D})",
+            "tune_D1_D3": f"(-,{test_D})",
             "n_points": n_tune,
             "train_or_tune": "tune",
         },
     )
     results_dict[test_D].append(baseline_results)
 
+    trained_model_list_input = [
+        (name, model_f, {**_test_kwargs, "lr": _test_kwargs["lr"][test_D][n_tune]})
+        for name, model_f, _test_kwargs in trained_model_list
+    ]
+
     key, subkey = random.split(key)
     # (n_trials, benchmark, models, n_results)
     tune_results = ml.benchmark_lr(
         lambda _: tune_data,
-        trained_model_list,
+        trained_model_list_input,
         subkey,
         lr_range if args.find_tune_lr else [],
         num_trials=args.n_trials,
@@ -973,7 +868,7 @@ for n_tune in args.n_tune_range:
         wandb_entity=args.wandb_entity,
         args={
             **vars(args),
-            "tune_D1_D2": str(tuple((train_D, test_D))),
+            "tune_D1_D3": str(tuple((train_D, test_D))),
             "n_points": n_tune,
             "train_or_tune": "tune",
         },

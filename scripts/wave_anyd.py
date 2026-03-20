@@ -665,6 +665,7 @@ def tune_and_eval(
     return nrmse_loss, smse_loss
 
 
+# time python3 scripts/wave_anyd.py --n-train 128 --n-val 128 --n-test 128 --n-tune-range 0,1,4,32,128
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
@@ -724,8 +725,7 @@ if args.load_model or args.save_model:
     exit()
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
-lr_range = [1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]
-# lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]
+lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]
 
 # Only do 1D -> 3D
 train_D = 1
@@ -831,6 +831,29 @@ for D in full_D_range:
                 "lr": {3: {0: 1e-2, 1: 1e-2, 4: 1e-2, 32: 5e-3, 128: 1e-2}},
                 # D=3 (n=1,1e-2) (n=4,1e-2) (n=32,5e-3) (n=128,1e-2)
                 "conv_filters_dict": gaussian_filters_dict,
+                **test_kwargs,
+            },
+        ),
+        (
+            f"unetBase_equiv48_gaussian_scaling_D{D}",
+            {  # train_kwargs
+                "model": models.UNet(
+                    D,
+                    input_keys,
+                    output_keys,
+                    depth=48,
+                    activation_f=jax.nn.gelu,
+                    conv_filters=gaussian_filters_dict[D],
+                    upsample_filters=upsample_filters_dict[D],
+                    key=subkeys[1],
+                ),
+                "lr": {1: {128: 5e-4}, 3: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-3}},
+                **train_kwargs,
+            },
+            {  # tune and eval kwargs
+                "lr": {3: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 1e-3}},
+                "conv_filters_dict": gaussian_filters_dict,
+                "upsample_filters_dict": upsample_filters_dict,
                 **test_kwargs,
             },
         ),

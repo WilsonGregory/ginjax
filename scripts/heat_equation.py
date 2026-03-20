@@ -364,90 +364,6 @@ def plot_results(
     plt.close()
 
 
-class ConvSeriesModel(models.AnyDimensionalModel):
-    """
-    Simple convolution model consisting of a series of ConvBlocks, with all but the last with a
-    gelu vector neuron nonlinearity.
-    """
-
-    layers: list[models.ConvBlock]
-
-    D: int = eqx.field(static=True)
-    input_keys: geom.Signature = eqx.field(static=True)
-    target_keys: geom.Signature = eqx.field(static=True)
-    width: int = eqx.field(static=True)
-    depth: int = eqx.field(static=True)
-    use_bias: bool | str = eqx.field(static=True)
-
-    def __init__(
-        self: Self,
-        input_keys: geom.Signature,
-        target_keys: geom.Signature,
-        conv_filters: geom.MultiImage,
-        width: int,
-        depth: int,
-        use_bias: bool | str,
-        key: jax.Array,
-    ) -> None:
-        self.D = conv_filters.D
-        self.input_keys = input_keys
-        self.target_keys = target_keys
-        self.width = width
-        self.depth = depth
-        self.use_bias = use_bias
-
-        mid_keys = geom.signature_union(input_keys, target_keys, width)
-
-        subkey_last, *subkeys = random.split(key, num=depth)
-        self.layers = []
-        for subkey in subkeys:
-            self.layers.append(
-                models.ConvBlock(
-                    D, input_keys, mid_keys, use_bias, "gelu", True, conv_filters, key=subkey
-                )
-            )
-
-        self.layers.append(
-            models.ConvBlock(
-                D, mid_keys, target_keys, use_bias, None, True, conv_filters, key=subkey_last
-            )
-        )
-
-    def convertD(
-        self: Self, conv_filters: geom.MultiImage, rescale: bool, key: jax.Array, **kwargs
-    ) -> Self:
-        """
-        Construct a new model with filters in a higher dimension.
-
-        args:
-            conv_filters: the new conv filters we are swapping to, probably in a higher dimension
-            rescale: whether to force the sum of the filters in the new dimension to be equal
-            key: key to initialize the weights, since they are overruled it won't matter
-
-        returns:
-            a new model with new filters but the old weights
-        """
-        new_model = self.__class__(
-            self.input_keys,
-            self.target_keys,
-            conv_filters,
-            self.width,
-            self.depth,
-            self.use_bias,
-            key,
-        )
-
-        return self.transfer_weights(new_model, rescale)
-
-    def __call__(
-        self: Self, x: geom.MultiImage, aux_data: eqx.nn.State | None = None
-    ) -> tuple[geom.MultiImage, eqx.nn.State | None]:
-        for layer in self.layers:
-            x, aux_data = layer(x, aux_data)
-
-        return x, aux_data
-
-
 class HeatMapper:
     """
     Functor for map_and_loss in train, map_loss_in_batches, etc, where arguments can be provided
@@ -892,7 +808,7 @@ for D in full_D_range:
         (
             f"two_layer_gaussian_scaling_D{D}",
             {
-                "model": ConvSeriesModel(
+                "model": models.SimpleConvSeries(
                     input_keys,
                     output_keys,
                     gaussian_filters_dict[D],

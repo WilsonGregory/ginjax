@@ -409,6 +409,13 @@ def train(
     optimizer: optax.GradientTransformation,
     validation_X: Optional[geom.MultiImage] = None,
     validation_Y: Optional[geom.MultiImage] = None,
+    val_map_and_loss: (
+        Callable[
+            [models.MultiImageModule, geom.MultiImage, geom.MultiImage, eqx.nn.State | None],
+            tuple[jax.Array, eqx.nn.State | None],
+        ]
+        | None
+    ) = None,
     save_model: Optional[str] = None,
     devices: Optional[list[jax.Device]] = None,
     aux_data: Optional[eqx.nn.State] = None,
@@ -448,6 +455,9 @@ def train(
     if isinstance(stop_condition, ValLoss) and not (validation_X and validation_Y):
         raise ValueError("Stop condition is ValLoss, but no validation data provided.")
 
+    if val_map_and_loss is None:
+        val_map_and_loss = map_and_loss
+
     devices = devices if devices else jax.devices()
 
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
@@ -483,7 +493,7 @@ def train(
         # We evaluate the validation loss in batches for memory reasons.
         if validation_X and validation_Y:
             epoch_val_loss = map_loss_in_batches(
-                map_and_loss,
+                val_map_and_loss,
                 model,
                 validation_X,
                 validation_Y,

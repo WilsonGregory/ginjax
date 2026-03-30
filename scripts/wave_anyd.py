@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 import pathlib
 import time
-from typing_extensions import Self
 
 import jax
 import jax.numpy as jnp
@@ -271,93 +270,6 @@ def plot_results(
     plt.close()
 
 
-class Mapper:
-    """
-    Functor for map_and_loss in train, map_loss_in_batches, etc, where arguments can be provided
-    beforehand. In this case, it is useful for smse vs relative error, and whether to learn the
-    residual or not.
-    """
-
-    residual: bool
-    nrmse: bool
-    smse: bool
-    l2_rel: bool
-
-    def __init__(
-        self: Self,
-        residual: bool = False,
-        nrmse: bool = True,
-        smse: bool = False,
-        l2_rel: bool = False,
-        eps: float = 0,
-    ) -> None:
-        """
-        Docstring for __init__
-
-        args:
-            residual: Whether the network should learn the residual, defaults to False
-            nrmse: Whether __call__ the normalized root mean squared error loss, defaults to True
-            smse: Whether __call__ returns the smse loss, defaults to False
-            l2_rel: Whether __call__ returns the l2 relative error, defaults to False
-            eps: epsilon value to use for nrmse and lr_rel, avoid dividing by 0
-        """
-        assert nrmse or smse or l2_rel, "At least one of nrmse, smse, or l2_rel must be true."
-        self.residual = residual
-        self.nrmse = nrmse
-        self.smse = smse
-        self.l2_rel = l2_rel
-        self.eps = eps
-
-    @eqx.filter_jit
-    def map(
-        self: Self,
-        model: models.MultiImageModule,
-        multi_image_x: geom.MultiImage,
-        aux_data: eqx.nn.State | None = None,
-    ) -> tuple[geom.MultiImage, eqx.nn.State | None]:
-        """
-        The map function using the model and the input data.
-        """
-        out, aux_data = jax.vmap(model, in_axes=(0, None), out_axes=(0, None), axis_name="batch")(
-            multi_image_x, aux_data
-        )
-
-        if self.residual:
-            # add the last timestep to the residual
-            pred_y = out.empty()
-            for ((k, parity), img_in), img_resid in zip(multi_image_x.items(), out.values()):
-                pred_y.append(k, parity, img_in[:, -1:] + img_resid)
-
-            return pred_y, aux_data
-        else:
-            return out, aux_data
-
-    @eqx.filter_jit
-    def __call__(
-        self: Self,
-        model: models.MultiImageModule,
-        multi_image_x: geom.MultiImage,
-        multi_image_y: geom.MultiImage,
-        aux_data: eqx.nn.State | None = None,
-    ) -> tuple[jax.Array, eqx.nn.State | None]:
-        """
-        Equivalent of the map_and_loss function.
-        """
-        pred_y, aux_data = self.map(model, multi_image_x, aux_data)
-
-        losses = []
-        if self.nrmse:
-            losses.append(ml.nrmse_loss(pred_y, multi_image_y, eps=self.eps))
-
-        if self.smse:
-            losses.append(ml.smse_loss(pred_y, multi_image_y))
-
-        if self.l2_rel:
-            losses.append(ml.l2_rel_error(pred_y, multi_image_y, eps=self.eps))
-
-        return jnp.squeeze(jnp.stack(losses)), aux_data
-
-
 def train_model(
     data: tuple[
         geom.MultiImage,
@@ -395,7 +307,7 @@ def train_model(
         trained_model, _, _, _ = ml.train(
             train_X,
             train_Y,
-            Mapper(residual, nrmse=False, smse=True, eps=1e-5),
+            ml.Mapper([geom.Losses.SMSE], residual, eps=1e-5),
             model,
             subkey,
             stop_condition=ml.EpochStop(epochs, verbose=verbose),
@@ -408,7 +320,7 @@ def train_model(
             ),
             validation_X=val_X,
             validation_Y=val_Y,
-            val_map_and_loss=Mapper(residual, eps=1e-5),
+            val_map_and_loss=ml.Mapper([geom.Losses.NRMSE], residual, eps=1e-5),
             aux_data=batch_stats,
             is_wandb=is_wandb,
         )
@@ -420,7 +332,7 @@ def train_model(
 
     assert trained_model is not None
     # if images_dir and val_X.D == 2:
-    #     pred_y, _ = Mapper(residual, eps=1e-5).map(trained_model, val_X.get_one(), batch_stats)
+    #     pred_y, _ = ml.Mapper([geom.Losses.NRMSE], residual, eps=1e-5).map(trained_model, val_X.get_one(), batch_stats)
     #     plot_multi_image(
     #         val_X.get_one(),
     #         val_Y.get_one(),
@@ -540,7 +452,7 @@ def tune_and_eval(
             tuned_model_dprime, tune_batch_stats, _, _ = ml.train(
                 tune_X,
                 tune_Y,
-                Mapper(residual, nrmse=False, smse=True, eps=1e-5),
+                ml.Mapper([geom.Losses.SMSE], residual, eps=1e-5),
                 model_dprime,
                 subkey,
                 stop_condition=ml.EpochStop(epochs, verbose=verbose),
@@ -553,7 +465,7 @@ def tune_and_eval(
                 ),
                 validation_X=val_X,
                 validation_Y=val_Y,
-                val_map_and_loss=Mapper(residual, eps=1e-5),
+                val_map_and_loss=ml.Mapper([geom.Losses.NRMSE], residual, eps=1e-5),
                 aux_data=batch_stats,
                 is_wandb=is_wandb,
             )
@@ -567,7 +479,7 @@ def tune_and_eval(
 
     key, subkey = random.split(key)
     tuned_loss = ml.map_loss_in_batches(
-        Mapper(residual, nrmse=True, smse=True, eps=1e-5),
+        ml.Mapper([geom.Losses.NRMSE, geom.Losses.SMSE], residual, eps=1e-5),
         tuned_model_dprime,
         test_X,
         test_Y,
@@ -793,30 +705,30 @@ for D in full_D_range:
                 **test_kwargs,
             },
         ),
-        (
-            f"unetBase_equiv48_gaussian_scaling_D{D}",
-            {  # train_kwargs
-                "model": models.UNet(
-                    D,
-                    input_keys,
-                    output_keys,
-                    depth=48,
-                    activation_f=jax.nn.gelu,
-                    conv_filters=gaussian_filters_dict[D],
-                    upsample_filters=upsample_filters_dict[D],
-                    key=subkeys[1],
-                ),
-                "lr": {1: {128: 5e-4}, 3: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-3}},
-                **train_kwargs,
-            },
-            {  # tune and eval kwargs
-                "lr": {3: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 1e-3}},
-                "rescale": geom.Rescaling.VOLUME,
-                "conv_filters_dict": gaussian_filters_dict,
-                "upsample_filters_dict": upsample_filters_dict,
-                **test_kwargs,
-            },
-        ),
+        # (
+        #     f"unetBase_equiv48_gaussian_scaling_D{D}",
+        #     {  # train_kwargs
+        #         "model": models.UNet(
+        #             D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=48,
+        #             activation_f=jax.nn.gelu,
+        #             conv_filters=gaussian_filters_dict[D],
+        #             upsample_filters=upsample_filters_dict[D],
+        #             key=subkeys[1],
+        #         ),
+        #         "lr": {1: {128: 5e-4}, 3: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-3}},
+        #         **train_kwargs,
+        #     },
+        #     {  # tune and eval kwargs
+        #         "lr": {3: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 1e-3}},
+        #         "rescale": geom.Rescaling.VOLUME,
+        #         "conv_filters_dict": gaussian_filters_dict,
+        #         "upsample_filters_dict": upsample_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
     ]
     model_list_d[D] = model_list
 

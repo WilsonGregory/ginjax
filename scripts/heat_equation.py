@@ -364,79 +364,6 @@ def plot_results(
     plt.close()
 
 
-class HeatMapper:
-    """
-    Functor for map_and_loss in train, map_loss_in_batches, etc, where arguments can be provided
-    beforehand. In this case, it is useful for smse vs relative error, and whether to learn the
-    residual or not.
-    """
-
-    residual: bool
-    smse: bool
-    l2_rel: bool
-
-    def __init__(
-        self: Self, residual: bool = False, smse: bool = True, l2_rel: bool = False
-    ) -> None:
-        """
-        Docstring for __init__
-
-        residual: Whether the network should learn the residual, defaults to False
-        smse: Whether __call__ returns the smse loss, defaults to True
-        l2_rel: Whether __call__ returns the l2 relative error, defaults to False
-        """
-        assert smse or l2_rel, "At least one of smse or l2_rel must be true."
-        self.residual = residual
-        self.smse = smse
-        self.l2_rel = l2_rel
-
-    @eqx.filter_jit
-    def map(
-        self: Self,
-        model: models.MultiImageModule,
-        multi_image_x: geom.MultiImage,
-        aux_data: eqx.nn.State | None = None,
-    ) -> tuple[geom.MultiImage, eqx.nn.State | None]:
-        """
-        The map function using the model and the input data.
-        """
-        out, aux_data = jax.vmap(model, in_axes=(0, None), out_axes=(0, None), axis_name="batch")(
-            multi_image_x, aux_data
-        )
-
-        if self.residual:
-            # add the last timestep to the residual
-            pred_y = out.empty()
-            for ((k, parity), img_in), img_resid in zip(multi_image_x.items(), out.values()):
-                pred_y.append(k, parity, img_in[:, -1:] + img_resid)
-
-            return pred_y, aux_data
-        else:
-            return out, aux_data
-
-    @eqx.filter_jit
-    def __call__(
-        self: Self,
-        model: models.MultiImageModule,
-        multi_image_x: geom.MultiImage,
-        multi_image_y: geom.MultiImage,
-        aux_data: eqx.nn.State | None = None,
-    ) -> tuple[jax.Array, eqx.nn.State | None]:
-        """
-        Equivalent of the map_and_loss function.
-        """
-        pred_y, aux_data = self.map(model, multi_image_x, aux_data)
-
-        losses = []
-        if self.smse:
-            losses.append(ml.smse_loss(pred_y, multi_image_y))
-
-        if self.l2_rel:
-            losses.append(ml.l2_rel_error(pred_y, multi_image_y))
-
-        return jnp.squeeze(jnp.stack(losses)), aux_data
-
-
 def train_model(
     data: tuple[
         geom.MultiImage,
@@ -474,7 +401,7 @@ def train_model(
     trained_model, _, _, _ = ml.train(
         train_X,
         train_Y,
-        HeatMapper(residual),
+        ml.Mapper([geom.Losses.SMSE], residual),
         model,
         subkey,
         stop_condition=ml.EpochStop(epochs, verbose=verbose),
@@ -602,7 +529,7 @@ def tune_and_eval(
             tuned_model_dprime, tune_batch_stats, _, _ = ml.train(
                 tune_X,
                 tune_Y,
-                HeatMapper(residual),
+                ml.Mapper([geom.Losses.SMSE], residual),
                 model_dprime,
                 subkey,
                 stop_condition=ml.EpochStop(epochs, verbose=verbose),
@@ -628,7 +555,7 @@ def tune_and_eval(
 
     key, subkey = random.split(key)
     tuned_loss = ml.map_loss_in_batches(
-        HeatMapper(residual, True, True),
+        ml.Mapper([geom.Losses.SMSE, geom.Losses.L2_REL], residual),
         tuned_model_dprime,
         test_X,
         test_Y,
@@ -642,7 +569,7 @@ def tune_and_eval(
 
     # assert tuned_model_dprime is not None
     # if images_dir and test_X.D == 2:
-    #     pred_y, _ = HeatMapper(residual).map(tuned_model_dprime, test_X.get_one(), batch_stats)
+    #     pred_y, _ = ml.Mapper([geom.Losses.SMSE], residual).map(tuned_model_dprime, test_X.get_one(), batch_stats)
 
     #     plot_multi_image(
     #         test_X.get_one(),

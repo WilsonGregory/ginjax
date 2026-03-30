@@ -4,6 +4,7 @@ import math
 import functools
 import pathlib
 from typing import Any, Callable, Optional, Sequence, Union
+from typing_extensions import Self
 import numpy as np
 import wandb
 
@@ -16,6 +17,7 @@ import optax
 
 import ginjax.geometric as geom
 from ginjax.ml.stopping_conditions import StopCondition, ValLoss
+from ginjax.ml.losses import smse_loss, nrmse_loss, l2_rel_error
 import ginjax.models as models
 
 
@@ -672,3 +674,81 @@ def benchmark_lr(
         wandb_entity,
         args,
     )
+
+
+class Mapper:
+    """
+    Functor for map_and_loss in train, map_loss_in_batches, etc, where arguments can be provided
+    beforehand. In this case, it is useful for smse vs relative error, and whether to learn the
+    residual or not.
+    """
+
+    losses: list[geom.Losses]
+    residual: bool
+
+    def __init__(
+        self: Self,
+        losses: list[geom.Losses],
+        residual: bool = False,
+        eps: float = 0,
+    ) -> None:
+        """
+        Docstring for __init__
+
+        args:
+            residual: Whether the network should learn the residual, defaults to False
+            losses: a list of losses, must be at least 1
+            eps: epsilon value to use for nrmse and lr_rel, avoid dividing by 0
+        """
+        assert len(losses) > 0, "Mapper::init: At least one loss required."
+        self.losses = losses
+        self.residual = residual
+        self.eps = eps
+
+    @eqx.filter_jit
+    def map(
+        self: Self,
+        model: models.MultiImageModule,
+        multi_image_x: geom.MultiImage,
+        aux_data: eqx.nn.State | None = None,
+    ) -> tuple[geom.MultiImage, eqx.nn.State | None]:
+        """
+        The map function using the model and the input data.
+        """
+        out, aux_data = jax.vmap(model, in_axes=(0, None), out_axes=(0, None), axis_name="batch")(
+            multi_image_x, aux_data
+        )
+
+        if self.residual:
+            # add the last timestep to the residual
+            pred_y = out.empty()
+            for ((k, parity), img_in), img_resid in zip(multi_image_x.items(), out.values()):
+                pred_y.append(k, parity, img_in[:, -1:] + img_resid)
+
+            return pred_y, aux_data
+        else:
+            return out, aux_data
+
+    @eqx.filter_jit
+    def __call__(
+        self: Self,
+        model: models.MultiImageModule,
+        multi_image_x: geom.MultiImage,
+        multi_image_y: geom.MultiImage,
+        aux_data: eqx.nn.State | None = None,
+    ) -> tuple[jax.Array, eqx.nn.State | None]:
+        """
+        Equivalent of the map_and_loss function.
+        """
+        pred_y, aux_data = self.map(model, multi_image_x, aux_data)
+
+        loss_outputs = []
+        for loss in self.losses:  # the order is important
+            if loss is geom.Losses.SMSE:
+                loss_outputs.append(smse_loss(pred_y, multi_image_y))
+            elif loss is geom.Losses.NRMSE:
+                loss_outputs.append(nrmse_loss(pred_y, multi_image_y, eps=self.eps))
+            elif loss is geom.Losses.L2_REL:
+                loss_outputs.append(l2_rel_error(pred_y, multi_image_y, eps=self.eps))
+
+        return jnp.squeeze(jnp.stack(loss_outputs)), aux_data

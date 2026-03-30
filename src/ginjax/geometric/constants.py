@@ -29,6 +29,13 @@ class Rescaling(enum.Enum):
     NO_SCALING = enum.auto()
 
 
+@enum.unique
+class Losses(enum.Enum):
+    SMSE = enum.auto()
+    NRMSE = enum.auto()
+    L2_REL = enum.auto()
+
+
 class KroneckerDeltaSymbol:
     """
     TODO: the KroneckerDelta should only be a 2-tensor, not a k-tensor.

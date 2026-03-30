@@ -740,13 +740,10 @@ for D in full_D_range:
                     key=subkeys[0],
                 ),
                 "lr": {1: {128: 1e-2}, 3: {0: 5e-2, 1: 5e-2, 4: 5e-2, 32: 1e-2, 128: 1e-2}},
-                # D=1 (n=128,5e-2)
-                # D=3 (n=1,5e-2) (n=4,5e-2) (n=32,1e-2) (n=128,1e-2)
                 **train_kwargs,
             },
             {  # test_kwargs
                 "lr": {3: {0: 1e-2, 1: 1e-2, 4: 1e-2, 32: 5e-3, 128: 1e-2}},
-                # D=3 (n=1,1e-2) (n=4,1e-2) (n=32,5e-3) (n=128,1e-2)
                 "rescale": geom.Rescaling.NO_SCALING,
                 "conv_filters_dict": gaussian_filters_dict,
                 **test_kwargs,
@@ -765,13 +762,10 @@ for D in full_D_range:
                     key=subkeys[0],
                 ),
                 "lr": {1: {128: 1e-2}, 3: {0: 5e-2, 1: 5e-2, 4: 5e-2, 32: 1e-2, 128: 1e-2}},
-                # D=1 (n=128,5e-2)
-                # D=3 (n=1,5e-2) (n=4,5e-2) (n=32,1e-2) (n=128,1e-2)
                 **train_kwargs,
             },
             {  # test_kwargs
                 "lr": {3: {0: 1e-2, 1: 1e-2, 4: 1e-2, 32: 5e-3, 128: 1e-2}},
-                # D=3 (n=1,1e-2) (n=4,1e-2) (n=32,5e-3) (n=128,1e-2)
                 "rescale": geom.Rescaling.VOLUME,
                 "conv_filters_dict": gaussian_filters_dict,
                 **test_kwargs,
@@ -790,8 +784,6 @@ for D in full_D_range:
                     key=subkeys[0],
                 ),
                 "lr": {1: {128: 1e-2}, 3: {0: 5e-2, 1: 5e-2, 4: 5e-2, 32: 1e-2, 128: 1e-2}},
-                # D=1 (n=128,5e-2)
-                # D=3 (n=1,5e-2) (n=4,5e-2) (n=32,1e-2) (n=128,1e-2)
                 **train_kwargs,
             },
             {  # test_kwargs

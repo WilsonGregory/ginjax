@@ -347,11 +347,10 @@ class AnyDimensionalModel(MultiImageModule):
         value for the old filters and the new filters (which are likely a higher dimension).
 
         args:
-            old_weights_block: jax array shape (out_channels,in_channels,num_filters)
-            new_weights_block: jax array shape (out_channels,in_channels,num_filters)
-            old_filters: the old filters, lower dimensional
-            new_filters: the new filtes, higher dimensional
-            filter_key: key for the filters that we are rescaling
+            old_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
+                the old filters, and the old dimension
+            new_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
+                the new filters, and the new dimension
             verbose: whether to print the old weights and ratios
 
         return:
@@ -389,7 +388,18 @@ class AnyDimensionalModel(MultiImageModule):
         verbose: bool = False,
     ) -> jax.Array:
         """
+        Rescale the weight coefficients so that they are compatible with the particular embedding.
         This algorithm has an implicit assumption that we are using orthoplex filters
+
+        args:
+            old_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
+                the old filters, and the old dimension
+            new_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
+                the new filters, and the new dimension
+            verbose: whether to print the old weights and ratios
+
+        return:
+            jax array of rescaled weights (out_channels,in_channels,num_filters) after rescaling
         """
         old_filters, old_weights, old_D = old_filter_triple
         new_filters, new_weights, new_D = new_filter_triple

@@ -22,6 +22,13 @@ class FilterScaling(enum.Enum):
     INVERSE_COUNT = enum.auto()
 
 
+@enum.unique
+class Rescaling(enum.Enum):
+    VOLUME = enum.auto()
+    COMPATIBILITY = enum.auto()
+    NO_SCALING = enum.auto()
+
+
 class KroneckerDeltaSymbol:
     """
     TODO: the KroneckerDelta should only be a 2-tensor, not a k-tensor.

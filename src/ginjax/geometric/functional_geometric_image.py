@@ -6,6 +6,7 @@
 
 import itertools as it
 import functools
+import math
 import numpy as np
 from typing_extensions import Optional, Union
 
@@ -48,6 +49,43 @@ def hash(D: int, spatial_dims: tuple[int, ...], indices: ArrayLike) -> tuple[jax
     """
     spatial_dims_array = jnp.array(spatial_dims).reshape((1, D))
     return tuple(jnp.remainder(indices, spatial_dims_array).transpose().astype(int))
+
+
+def nonempty_pixels(D: int, data: jax.Array, n_lead: int = 0) -> jax.Array:
+    """
+    Get the nonempty pixels as a true/false array.
+
+    args:
+        D: the dimension
+        data: array of shape (n_lead,spatial,tensor)
+        n_lead: the number of leading batch axes
+
+    returns:
+        a true/false array of flattened shape (n_lead,image_size)
+    """
+    spatial_dims, k = parse_shape(data.shape[n_lead:], D)
+    spatial_size = math.prod(spatial_dims)
+    return jnp.any(
+        ~jnp.isclose(
+            data.reshape(data.shape[:n_lead] + (spatial_size, D**k)), 0.0, rtol=TINY, atol=TINY
+        ),
+        axis=-1,
+    )
+
+
+def pixel_idxs(spatial_dims: tuple[int, ...]) -> jax.Array:
+    """
+    Get the idxs of pixels for spatial_dims, ordered in the flattened image order.
+
+    args:
+        spatial_dims: tuple of the spatial dimensions
+
+    returns:
+        pixels idxs, shape (num_pixels,D)
+    """
+    D = len(spatial_dims)
+    meshgrid_dims = tuple(jnp.arange(M) for M in spatial_dims)
+    return jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, D))
 
 
 def get_torus_expanded(

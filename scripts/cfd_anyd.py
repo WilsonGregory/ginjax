@@ -285,7 +285,7 @@ def train_and_eval(
         else:
             key, subkey = random.split(key)
             trained_model_d = trained_model.convertD(
-                conv_filters, True, subkey, upsample_filters=upsample_filters
+                conv_filters, geom.Rescaling.VOLUME, subkey, upsample_filters=upsample_filters
             )
 
         key, subkey = random.split(key)

@@ -1,3 +1,4 @@
+import math
 import numpy as np
 from typing import Any, Callable, Optional, Sequence, Union
 from typing_extensions import Self
@@ -199,40 +200,55 @@ class MultiImageModule(eqx.Module):
         return x, aux_data
 
 
-def get_filter_sum(
-    filters: geom.MultiImage, filter_key: tuple[tuple[bool, ...], int], weights: jax.Array | None
-) -> jax.Array:
+def get_scaled_filters(D: int, filter_block: jax.Array, weights: jax.Array) -> jax.Array:
     """
-    For a set of filters and possibly a block of weights, calculate the sum of the norm of the
-    filters scaled by the weights.
+    For a set of filters and a block of weights, scale the filters by the weights.
 
     Consider writing a filters subclass of MultiImage that has these functions defined on it.
 
     args:
+        D: the dimension
+        filters: the geometric filters data block, (n_filters,spatial,tensor)
+        weights: the block of weights, shape (out_c,in_c,n_filters)
+
+    returns:
+        array of filter sums, shape (out_c,in_c,n_filters,spatial,tensor)
+    """
+    _, len_k = geom.parse_shape(filter_block.shape[1:], D)
+    # (out_c, in_c, n_filters) -> (out_c,in_c,n_filters,(1,)*D,(1,)*k)
+    weights_mul = weights.reshape(weights.shape + (1,) * D + (1,) * len_k)
+
+    # (out_c,in_c,n_filters,spatial,tensor)
+    return filter_block[None, None] * weights_mul
+
+
+def get_filter_sum(D: int, filter_block: jax.Array, weights: jax.Array) -> jax.Array:
+    """
+    For a set of filters and possibly a block of weights, calculate the sum of the filters scaled
+    by the weights, then take the tensor norm.
+
+    Consider writing a filters subclass of MultiImage that has these functions defined on it.
+
+    args:
+        D: dimension of the space
         filters: the geometric filters as a MultiImage
         weights: the block of weights, shape (out_c,in_c,n_filters)
 
     returns:
-        array of filter sums, shape (out_c,in_c,1), or (1,1,1) is no weights were provided
+        array of filter sums, shape (out_c,in_c)
     """
-    k = filter_key[0]
-    if weights is None:
-        weights_mul = 1
-    else:
-        # (out_c, in_c, n_filters) -> (out_c,in_c,n_filters,(1,)*D,(1,)*k)
-        weights_mul = weights.reshape(weights.shape + (1,) * filters.D + (1,) * len(k))
+    # (out_c,in_c,n_filters,spatial,tensor)
+    scaled_filters = get_scaled_filters(D, filter_block, weights)
 
-    # old_filters: (n_filters,spatial,tensor)
-    weights_sum = jnp.sum(
-        (filters[filter_key][None, None] * weights_mul),
-        axis=tuple(range(2, 3 + filters.D)),  # sum over n_filters,spatial
-    )  # (out_c,in_c,tensor)
+    # (out_c,in_c,tensor)
+    weights_sum = jnp.sum(scaled_filters, axis=tuple(range(2, 3 + D)))
 
     # flatten tensor, then get its Frobenius norm.
-    # (out_c,in_c,tensor) -> (out_c,in_c,1)
-    return jnp.linalg.norm(
-        weights_sum.reshape(weights_sum.shape[:2] + (-1,)), axis=2, keepdims=True
-    )
+    # (out_c,in_c,tensor_size)
+    weights_sum_flat_tensor = weights_sum.reshape(weights_sum.shape[:2] + (-1,))
+
+    # (out_c,in_c,tensor) -> (out_c,in_c)
+    return jnp.linalg.norm(weights_sum_flat_tensor, axis=-1)
 
 
 class AnyDimensionalModel(MultiImageModule):
@@ -321,13 +337,9 @@ class AnyDimensionalModel(MultiImageModule):
         return jnp.concatenate([new_unbalanced_weights, new_balanced_weights], axis=2)
 
     @staticmethod
-    def _rescale_weights(
-        old_weights_block: jax.Array,
-        new_weights_block: jax.Array,
-        old_filters: geom.MultiImage,
-        new_filters: geom.MultiImage,
-        filter_k: tuple[bool, ...],
-        filter_key: tuple[tuple[bool, ...], int],
+    def volume_rescale_weights(
+        old_filter_triple: tuple[jax.Array, jax.Array, int],
+        new_filter_triple: tuple[jax.Array, jax.Array, int],
         verbose: bool = False,
     ) -> jax.Array:
         """
@@ -335,46 +347,169 @@ class AnyDimensionalModel(MultiImageModule):
         value for the old filters and the new filters (which are likely a higher dimension).
 
         args:
-            old_weights_block: jax array shape (out_channels,in_channels,num_filters)
-            new_weights_block: jax array shape (out_channels,in_channels,num_filters)
-            old_filters: the old filters, lower dimensional
-            new_filters: the new filtes, higher dimensional
-            filter_k: bool tuple of length k, the filter tensor order
-            filter_key: key for the filters that we are rescaling
+            old_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
+                the old filters, and the old dimension
+            new_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
+                the new filters, and the new dimension
             verbose: whether to print the old weights and ratios
 
         return:
             jax array of rescaled weights (out_channels,in_channels,num_filters) after rescaling
         """
-        # both are (out_c,in_c,1)
-        old_weights_sum = get_filter_sum(old_filters, filter_key, old_weights_block)
-        new_weights_sum = get_filter_sum(new_filters, filter_key, new_weights_block)
+        old_filters, old_weights, old_D = old_filter_triple
+        new_filters, new_weights, new_D = new_filter_triple
+
+        # both are (out_c,in_c)
+        old_weights_sum = get_filter_sum(old_D, old_filters, old_weights)
+        new_weights_sum = get_filter_sum(new_D, new_filters, new_weights)
 
         # Dont rescale filters that always sum to 0.
         # (n_filters,tensor)
-        spatial_sum = jnp.sum(old_filters[filter_key], axis=tuple(range(1, 1 + old_filters.D)))
+        spatial_sum = jnp.sum(old_filters, axis=tuple(range(1, 1 + old_D)))
         # (n_filters,)
         spatial_sum_norm = jnp.linalg.norm(spatial_sum.reshape((len(spatial_sum), -1)), axis=1)
         nonzero_filter_mask = (spatial_sum_norm != 0)[None, None]  # (1,1,n_filters)
-        # nonzero_filter_maks = jnp.ones_like(nonzero_filter_mask)  # TODO: temp, testing old rescale
 
-        # (out_c,in_c,1) where 1 is for n_filters
+        # (out_c,in_c)
         ratios = old_weights_sum / (new_weights_sum + geom.TINY)
         # Scale nonzero by ratios, scale the others by 1 (out_c,in_c,n_filters)
-        ratios = nonzero_filter_mask * ratios + (~nonzero_filter_mask)
+        ratios = nonzero_filter_mask * ratios[..., None] + (~nonzero_filter_mask)
 
         if verbose:
-            print("old weights", old_weights_block.shape, old_weights_block)
+            print("old weights", old_weights.shape, old_weights)
             print("ratios", ratios.shape, ratios)  # (out_c,in_c,n_filters)
 
-        return new_weights_block * ratios
+        return new_weights * ratios
+
+    @staticmethod
+    def compatibility_rescale_weights(
+        old_filter_triple: tuple[jax.Array, jax.Array, int],
+        new_filter_triple: tuple[jax.Array, jax.Array, int],
+        verbose: bool = False,
+    ) -> jax.Array:
+        """
+        Rescale the weight coefficients so that they are compatible with the particular embedding.
+        This algorithm has an implicit assumption that we are using orthoplex filters
+
+        args:
+            old_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
+                the old filters, and the old dimension
+            new_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
+                the new filters, and the new dimension
+            verbose: whether to print the old weights and ratios
+
+        return:
+            jax array of rescaled weights (out_channels,in_channels,num_filters) after rescaling
+        """
+        old_filters, old_weights, old_D = old_filter_triple
+        new_filters, new_weights, new_D = new_filter_triple
+
+        # Convert filters to the norm of the filters. This assumes 2 things:
+        # 1. tensors in each pixel differ only by norm. True for nonzero filters of a single irrep
+        # 2. the sign of the filters are positive
+        old_filters = jnp.linalg.norm(
+            old_filters.reshape(old_filters.shape[: 1 + old_D] + (-1,)), axis=-1
+        )
+        new_filters = jnp.linalg.norm(
+            new_filters.reshape(new_filters.shape[: 1 + new_D] + (-1,)), axis=-1
+        )
+
+        # assert the filters are already in ascending order by number of pixels.
+        # So for orthoplex, this means innermost to outermost
+        filter_raw_sum = jnp.sum(1 * geom.nonempty_pixels(new_D, new_filters, 1), axis=-1)
+        assert sorted(list(filter_raw_sum)) == list(filter_raw_sum)
+
+        D_increase = new_D - old_D
+        assert D_increase > 0
+
+        # first, reduce the filters to the nonempty pixel filters.
+        nonempty_pixel_filter = 1 * geom.nonempty_pixels(new_D, new_filters, 1).reshape(
+            new_filters.shape[: 1 + new_D]
+        )
+        # (n_filters,old_spatial)
+        collapsed_nonempty_ff = jnp.sum(nonempty_pixel_filter, axis=tuple(range(1, 1 + D_increase)))
+
+        # (n_filters,old_spatial)
+        collapsed_ff = jnp.sum(new_filters, axis=tuple(range(1, 1 + D_increase)))
+        # (n_filters,old_spatial)
+
+        # (out_c,in_c,spatial)
+        old_scaled_ff = jnp.sum(get_scaled_filters(old_D, old_filters, old_weights), axis=2)
+
+        # use np so we can easily edit it (out_c,in_c,n_nonzero_filters)
+        updated_weights = np.zeros(new_weights.shape[:2] + (len(new_filters),))
+        for i in reversed(range(len(filter_raw_sum))):  # starting with the outermost filter...
+
+            # get the outermost pixel of collapsed filter i
+            # (old_spatial_size,) true/falses whether the pixel is nonempty
+            nonempty_pixels = geom.nonempty_pixels(old_D, collapsed_nonempty_ff[i]).ravel()
+            farthest_pixel_idx = jnp.max(jnp.arange(len(nonempty_pixels))[nonempty_pixels])
+
+            # with current weight for filter i and collapsed sum of updated_weights,
+            # calculate new weight to equal old weight
+            updated_weights[:, :, i] = new_weights[:, :, i]  # temp set weight to current weight
+            # (out_c,in_c,n_filters,old_spatial)
+            scaled_collapsed_ff = get_scaled_filters(
+                old_D, collapsed_ff, jnp.array(updated_weights)
+            )
+            # (out_c,in_c,old_spatial)
+            collapsed_sum = jnp.sum(scaled_collapsed_ff, axis=2)
+            # (out_c,in_c)
+            collapsed_val = collapsed_sum.reshape(collapsed_sum.shape[:2] + (-1,))[
+                :, :, farthest_pixel_idx
+            ]
+            # assume that old_weights_val = new_weights_val. The old weight and new weight are
+            # the same at this point, otherwise filter value could be different, but it wont be
+            # for normalize and gaussian at least.
+            old_weights_val = old_scaled_ff.reshape(collapsed_sum.shape[:2] + (-1,))[
+                :, :, farthest_pixel_idx
+            ]
+            # this should really be new_ff_val, assume they are equal, see above
+            old_norm_ff_val = old_filters[i].ravel()[farthest_pixel_idx]
+
+            # set updated weights
+            updated_weights[:, :, i] = (
+                -(collapsed_val - old_weights_val) + old_weights_val
+            ) / old_norm_ff_val
+
+        updated_weights = jnp.array(updated_weights)
+
+        # now we check that we did it right
+        # (out_c,in_c,n_filters,old_spatial)
+        scaled_collapsed_ff = get_scaled_filters(old_D, collapsed_ff, updated_weights)
+        # (out_c,in_c,old_spatial)
+        scaled_collapsed_ff = jnp.sum(scaled_collapsed_ff, axis=2)
+
+        # (n_filters,old_spatial)
+        old_norm_ff = jnp.linalg.norm(
+            old_filters.reshape(old_filters.shape[: 1 + old_D] + (-1,)),
+            axis=-1,
+        )
+
+        # (out_c,in_c,n_filters,old_spatial)
+        old_scaled_filters = get_scaled_filters(old_D, old_norm_ff, old_weights)
+        # (out_c,in_c,old_spatial)
+        old_scaled_filters = jnp.sum(old_scaled_filters, axis=2)
+
+        diff = jnp.max(jnp.abs(scaled_collapsed_ff - old_scaled_filters))
+        diff_message = f"AnyDimensionalModel::compatibility_rescale_weights: Diff is {diff}"
+
+        assert jnp.allclose(
+            scaled_collapsed_ff, old_scaled_filters, rtol=1e-3, atol=1e-3
+        ), diff_message
+
+        if verbose:
+            print("new weights:", new_weights)
+            print("updated weights:", updated_weights)
+
+        return updated_weights
 
     @staticmethod
     def _transfer_conv_weights(
         weights: dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]],
         old_filters: geom.MultiImage,
         new_filters: geom.MultiImage,
-        rescale: bool,
+        rescale: geom.Rescaling,
         verbose: bool = False,
     ) -> dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]]:
         """
@@ -386,7 +521,7 @@ class AnyDimensionalModel(MultiImageModule):
             weights: a weights dictionary from a layers.ConvContract layer
             old_filters: the old filters that the weights came from
             new_filters: the new filters that we will be using the weights for
-            rescale: if True, ensure the linear combination of the filters by weights is equal
+            rescale: type of rescaling to perform on the weights
             verbose: print the ratio of the squared sum of filters new/old after transfering the
                 weights, default to False.
 
@@ -405,26 +540,49 @@ class AnyDimensionalModel(MultiImageModule):
                     old_weights_block, filter_key, old_filters, new_filters
                 )
 
-                if rescale:
-                    pos_weights = AnyDimensionalModel._rescale_weights(
-                        jax.nn.relu(old_weights_block),
-                        jax.nn.relu(new_weights_block),
-                        old_filters,
-                        new_filters,
-                        filter_k,
-                        filter_key,
+                old_filter_block = old_filters[filter_key]
+                new_filter_block = new_filters[filter_key]
+
+                if rescale is geom.Rescaling.VOLUME:
+                    pos_weights = AnyDimensionalModel.volume_rescale_weights(
+                        (old_filter_block, jax.nn.relu(old_weights_block), old_filters.D),
+                        (new_filter_block, jax.nn.relu(new_weights_block), new_filters.D),
                         verbose,
                     )
-                    neg_weights = AnyDimensionalModel._rescale_weights(
-                        -jax.nn.relu(-old_weights_block),
-                        -jax.nn.relu(-new_weights_block),
-                        old_filters,
-                        new_filters,
-                        filter_k,
-                        filter_key,
+                    neg_weights = AnyDimensionalModel.volume_rescale_weights(
+                        (old_filter_block, -jax.nn.relu(-old_weights_block), old_filters.D),
+                        (new_filter_block, -jax.nn.relu(-new_weights_block), new_filters.D),
                         verbose,
                     )
                     scaled_weights_block = pos_weights + neg_weights
+                elif rescale is geom.Rescaling.COMPATIBILITY:
+                    # Dont rescale filters that always sum to 0.
+                    # (n_filters,tensor)
+                    spatial_sum = jnp.sum(new_filter_block, axis=tuple(range(1, 1 + new_filters.D)))
+                    # (n_filters,)
+                    spatial_sum_norm = jnp.linalg.norm(
+                        spatial_sum.reshape((len(spatial_sum), -1)), axis=1
+                    )
+                    nonzero_mask = spatial_sum_norm != 0  # (n_filters,)
+
+                    updated_weights_block = AnyDimensionalModel.compatibility_rescale_weights(
+                        (
+                            old_filter_block[nonzero_mask],
+                            old_weights_block[:, :, nonzero_mask],
+                            old_filters.D,
+                        ),
+                        (
+                            new_filter_block[nonzero_mask],
+                            new_weights_block[:, :, nonzero_mask],
+                            new_filters.D,
+                        ),
+                        verbose,
+                    )
+
+                    scaled_weights_block = new_weights_block
+                    scaled_weights_block = scaled_weights_block.at[:, :, nonzero_mask].set(
+                        updated_weights_block
+                    )
                 else:
                     scaled_weights_block = new_weights_block
 
@@ -432,7 +590,9 @@ class AnyDimensionalModel(MultiImageModule):
 
         return new_weights
 
-    def transfer_weights(self: Self, new_model: Self, rescale: bool, verbose: bool = False) -> Self:
+    def transfer_weights(
+        self: Self, new_model: Self, rescale: geom.Rescaling, verbose: bool = False
+    ) -> Self:
         """
         Transfer the weights and biases from an old model to a new model. This allows converting
         between dimensions as well. This works by copying all jax arrays from the old model to the new
@@ -447,8 +607,7 @@ class AnyDimensionalModel(MultiImageModule):
             new_model: the new model
             old_conv_filters: the convolution filters used in the old model
             conv_filters: the convolution filters to use in the new model, can have different D
-            rescale: rescale the conv weights if necessary to ensure the same sum. Depending on how
-                the filters are scaled, this may be always true anyways.
+            rescale: type of rescaling to perform on the weights
             verbose: print the ratio of the squared sum of filters new/old after transfering the
                 weights, default to False.
 
@@ -485,7 +644,7 @@ class AnyDimensionalModel(MultiImageModule):
         return new_model
 
     def convertD(
-        self: Self, conv_filters: geom.MultiImage, rescale: bool, key: jax.Array, **kwargs
+        self: Self, conv_filters: geom.MultiImage, rescale: geom.Rescaling, key: jax.Array, **kwargs
     ) -> Self:
         """
         Placeholder function, must be overwritten by the inheriting class.
@@ -495,7 +654,7 @@ class AnyDimensionalModel(MultiImageModule):
 
         args:
             conv_filters: the new conv filters we are swapping to, probably in a higher dimension
-            rescale: whether to force the sum of the filters in the new dimension to be equal
+            rescale: type of rescaling to perform on the weights
             key: key to initialize the weights, since they are overruled it won't matter
 
         returns:
@@ -870,7 +1029,7 @@ class UNet(AnyDimensionalModel):
     def convertD(
         self: Self,
         conv_filters: geom.MultiImage,
-        rescale: bool,
+        rescale: geom.Rescaling,
         key: jax.Array,
         **kwargs,
     ) -> Self:
@@ -1157,7 +1316,7 @@ class DilResNet(AnyDimensionalModel):
     def convertD(
         self: Self,
         conv_filters: geom.MultiImage,
-        rescale: bool,
+        rescale: geom.Rescaling,
         key: jax.Array,
         **kwargs,
     ) -> Self:
@@ -1407,7 +1566,7 @@ class ResNet(AnyDimensionalModel):
     def convertD(
         self: Self,
         conv_filters: geom.MultiImage,
-        rescale: bool,
+        rescale: geom.Rescaling,
         key: jax.Array,
         **kwargs,
     ) -> Self:
@@ -1716,7 +1875,7 @@ class LastStepIdentity(AnyDimensionalModel):
         self.residual = residual
 
     def convertD(
-        self: Self, conv_filters: geom.MultiImage, rescale: bool, key: jax.Array, **kwargs
+        self: Self, conv_filters: geom.MultiImage, rescale: geom.Rescaling, key: jax.Array, **kwargs
     ) -> Self:
         """
         Convert model to a different dimension.
@@ -1779,6 +1938,7 @@ class SimpleConvSeries(AnyDimensionalModel):
         use_bias: bool | str,
         key: jax.Array,
     ) -> None:
+        assert depth >= 1
         self.D = conv_filters.D
         self.input_keys = input_keys
         self.target_keys = target_keys
@@ -1786,7 +1946,7 @@ class SimpleConvSeries(AnyDimensionalModel):
         self.depth = depth
         self.use_bias = use_bias
 
-        mid_keys = geom.signature_union(input_keys, target_keys, width)
+        mid_keys = geom.signature_union(input_keys, target_keys, width) if depth > 1 else input_keys
 
         subkey_last, *subkeys = random.split(key, num=depth)
         self.layers = []
@@ -1804,14 +1964,14 @@ class SimpleConvSeries(AnyDimensionalModel):
         )
 
     def convertD(
-        self: Self, conv_filters: geom.MultiImage, rescale: bool, key: jax.Array, **kwargs
+        self: Self, conv_filters: geom.MultiImage, rescale: geom.Rescaling, key: jax.Array, **kwargs
     ) -> Self:
         """
         Construct a new model with filters in a higher dimension.
 
         args:
             conv_filters: the new conv filters we are swapping to, probably in a higher dimension
-            rescale: whether to force the sum of the filters in the new dimension to be equal
+            rescale: how to rescale the filter weights
             key: key to initialize the weights, since they are overruled it won't matter
 
         returns:

@@ -496,6 +496,7 @@ def tune_and_eval(
     model: models.AnyDimensionalModel,
     lr: float,
     conv_filters_dict: dict[int, geom.MultiImage] | None,
+    rescale: geom.Rescaling | None,
     residual: bool,
     batch_size: int,
     epochs: int,
@@ -511,19 +512,22 @@ def tune_and_eval(
     N = tune_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
     model_name_extended = f"{model_name}_tuneD{tune_X.D}_L{tune_X.get_L()}_N{N}_e{epochs}"
-    model_path = model_dir / f"{model_name_extended}_model.eqx" if model_dir else None
 
     key, subkey = random.split(key)
-    # rescale set to True, small but notable difference
-    if conv_filters_dict is not None:
+    if conv_filters_dict is not None and rescale is not None:
         model_dprime = model.convertD(
             conv_filters_dict[tune_X.D],
-            True,
+            rescale,
             subkey,
             upsample_filters=upsample_filters_dict[tune_X.D] if upsample_filters_dict else None,
         )
+        model_name_extended += f"_rescale{rescale.name}"
     else:
         model_dprime = model
+
+    model_path = model_dir / f"{model_name_extended}_model.eqx" if model_dir else None
+
+    print(f"tuning: {model_name_extended}")
 
     if model_path and model_path.is_file() and not overwrite_save_model:
         tuned_model_dprime = ml.load(model_path, model_dprime)
@@ -743,6 +747,56 @@ for D in full_D_range:
             {  # test_kwargs
                 "lr": {3: {0: 1e-2, 1: 1e-2, 4: 1e-2, 32: 5e-3, 128: 1e-2}},
                 # D=3 (n=1,1e-2) (n=4,1e-2) (n=32,5e-3) (n=128,1e-2)
+                "rescale": geom.Rescaling.NO_SCALING,
+                "conv_filters_dict": gaussian_filters_dict,
+                **test_kwargs,
+            },
+        ),
+        (
+            f"two_layer_gaussian_scaling_D{D}",
+            {
+                "model": models.SimpleConvSeries(
+                    input_keys,
+                    output_keys,
+                    gaussian_filters_dict[D],
+                    width=10,
+                    depth=2,
+                    use_bias=False,
+                    key=subkeys[0],
+                ),
+                "lr": {1: {128: 1e-2}, 3: {0: 5e-2, 1: 5e-2, 4: 5e-2, 32: 1e-2, 128: 1e-2}},
+                # D=1 (n=128,5e-2)
+                # D=3 (n=1,5e-2) (n=4,5e-2) (n=32,1e-2) (n=128,1e-2)
+                **train_kwargs,
+            },
+            {  # test_kwargs
+                "lr": {3: {0: 1e-2, 1: 1e-2, 4: 1e-2, 32: 5e-3, 128: 1e-2}},
+                # D=3 (n=1,1e-2) (n=4,1e-2) (n=32,5e-3) (n=128,1e-2)
+                "rescale": geom.Rescaling.VOLUME,
+                "conv_filters_dict": gaussian_filters_dict,
+                **test_kwargs,
+            },
+        ),
+        (
+            f"two_layer_gaussian_scaling_D{D}",  # rescale is added to name in tune
+            {
+                "model": models.SimpleConvSeries(
+                    input_keys,
+                    output_keys,
+                    gaussian_filters_dict[D],
+                    width=10,
+                    depth=2,
+                    use_bias=False,
+                    key=subkeys[0],
+                ),
+                "lr": {1: {128: 1e-2}, 3: {0: 5e-2, 1: 5e-2, 4: 5e-2, 32: 1e-2, 128: 1e-2}},
+                # D=1 (n=128,5e-2)
+                # D=3 (n=1,5e-2) (n=4,5e-2) (n=32,1e-2) (n=128,1e-2)
+                **train_kwargs,
+            },
+            {  # test_kwargs
+                "lr": {3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 5e-2, 128: 5e-2}},
+                "rescale": geom.Rescaling.COMPATIBILITY,
                 "conv_filters_dict": gaussian_filters_dict,
                 **test_kwargs,
             },
@@ -765,6 +819,7 @@ for D in full_D_range:
             },
             {  # tune and eval kwargs
                 "lr": {3: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 1e-3}},
+                "rescale": geom.Rescaling.VOLUME,
                 "conv_filters_dict": gaussian_filters_dict,
                 "upsample_filters_dict": upsample_filters_dict,
                 **test_kwargs,
@@ -821,6 +876,7 @@ for n_tune in args.n_tune_range:
                 **_train_kwargs,
                 "lr": _train_kwargs["lr"][test_D][n_tune],
                 "conv_filters_dict": None,
+                "rescale": None,
                 "is_wandb": args.tune_wandb,
             },
         )
@@ -877,7 +933,10 @@ for n_tune in args.n_tune_range:
     results_dict[train_D].append(tune_results)
 
 if args.images_dir is not None:
-    model_names_d = {D: [x[0] for x in model_list] for D, model_list in model_list_d.items()}
+    model_names_d = {
+        D: [f'{x[2]["rescale"].name}_{x[0]}' for x in model_list]
+        for D, model_list in model_list_d.items()
+    }
     plot_results(
         results_dict,
         ["nrmse_loss", "smse_loss"],

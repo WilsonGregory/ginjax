@@ -1,4 +1,5 @@
 import time
+import enum
 import math
 import functools
 import pathlib
@@ -590,11 +591,17 @@ def benchmark(
                     )
                     wandb.config.update(args)
                     type_list = [str, int, float, bool]
+
+                    def display_val(val):
+                        if isinstance(val, enum.Enum):
+                            return val.name
+                        elif type(val) in type_list or val is None:
+                            return val
+                        else:
+                            return type(val)
+
                     wandb.config.update(
-                        {
-                            key: val if (type(val) in type_list or val is None) else type(val)
-                            for key, val in model_kwargs.items()
-                        },
+                        {key: display_val(val) for key, val in model_kwargs.items()},
                         allow_val_change=True,
                     )
                     wandb.config.update({"model_name": model_name})

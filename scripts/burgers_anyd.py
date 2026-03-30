@@ -591,7 +591,7 @@ def tune_and_eval(
     if conv_filters_dict is not None:
         model_dprime = model.convertD(
             conv_filters_dict[tune_X.D],
-            True,
+            geom.Rescaling.VOLUME,
             subkey,
             upsample_filters=upsample_filters_dict[tune_X.D] if upsample_filters_dict else None,
         )

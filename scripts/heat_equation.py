@@ -584,7 +584,7 @@ def tune_and_eval(
     if conv_filters_dict is not None:
         model_dprime = model.convertD(
             conv_filters_dict[tune_X.D],
-            True,
+            geom.Rescaling.VOLUME,
             subkey,
             upsample_filters=upsample_filters_dict[tune_X.D] if upsample_filters_dict else None,
         )
@@ -680,7 +680,9 @@ def handleArgs() -> argparse.Namespace:
         default="2,3",
     )
     parser.add_argument("-N", help="spatial size", type=int, default=64)
-    parser.add_argument("--diffusion-coef", help="the diffusion coefficient", type=float, default=1)
+    parser.add_argument(
+        "--diffusion-coef", help="the diffusion coefficient", type=float, default=1.0
+    )
     parser.add_argument(
         "--residual",
         help="learn the residual of the heat equation",

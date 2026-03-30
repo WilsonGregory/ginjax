@@ -18,8 +18,10 @@ from ginjax.geometric.functional_geometric_image import (
     max_pool,
     mul,
     multicontract,
+    nonempty_pixels,
     norm,
     parse_shape,
+    pixel_idxs,
     raise_lower,
     rotate_is_torus,
     times_group_element,
@@ -1012,12 +1014,7 @@ class GeometricFilter(GeometricImage):
         returns:
             a true/false array of flattened shape (image_size,)
         """
-        return jnp.any(
-            ~jnp.isclose(
-                self.data.reshape((self.image_size(), self.pixel_size())), 0.0, rtol=TINY, atol=TINY
-            ),
-            axis=1,
-        )
+        return nonempty_pixels(self.D, self.data)
 
     def nonempty_pixel_idxs(self: Self) -> jax.Array:
         """
@@ -1026,8 +1023,7 @@ class GeometricFilter(GeometricImage):
         returns:
             Nonempty pixels idxs, shape (num_pixels,D)
         """
-        meshgrid_dims = tuple(jnp.arange(M) for M in self.image_shape())
-        idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, self.D))
+        idxs = pixel_idxs(self.image_shape())
         idxs_centered = idxs - ((jnp.array(self.image_shape()).reshape((-1, self.D)) - 1) / 2)
 
         return idxs_centered[self.nonempty_pixels()]

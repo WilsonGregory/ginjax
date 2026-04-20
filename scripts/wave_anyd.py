@@ -120,6 +120,48 @@ def get_1d_sine_data(
     return x0_img, xt_img
 
 
+def get_general_1d_sine_data(
+    N: int, t: float, n_batch: int, key: jax.Array
+) -> tuple[geom.MultiImage, geom.MultiImage]:
+    """
+    Construct initial 1d data from a sum of sine waves: u(x,t) = SUM_i a_i sin(k_i x - t + theta_i)
+    where a_i is amplitude, k_i is scaling, and theta_i is shift.
+
+    args:
+        N: grid size
+        t: timestep to take
+        n_batch: batch size
+        key: randomness key
+
+    returns:
+        input image with field u(x,0), field du_dt(x,0) and output image of field u(x,t)
+    """
+    D = 1
+    is_torus = True  # this could be on the torus, but 3d image won't be so we dont
+    n_cos = 3
+
+    subkey1, subkey2, subkey3 = random.split(key, num=3)
+
+    shift = random.uniform(subkey1, shape=(n_batch, n_cos, 1)) * N
+    scale = random.normal(subkey2, shape=(n_batch, n_cos, 1))
+    scale_norm = jnp.abs(scale)
+    amp = random.normal(subkey3, shape=(n_batch, n_cos, 1))
+
+    x_range = jnp.linspace(0, 2 * jnp.pi, num=N, endpoint=False)  # [0,6pi]
+    scale_shift_x = x_range[None, None] * scale - shift  # (batch,n_sines,spatial)
+
+    # (batch,spatial)
+    u0 = jnp.sum(amp * jnp.cos(scale_shift_x), axis=1)
+    du_dt0 = jnp.sum(amp * scale_norm * jnp.sin(scale_shift_x), axis=1)
+
+    ut = jnp.sum(amp * jnp.cos(scale_shift_x - scale_norm * t), axis=1)  # (batch,spatial)
+
+    x0_img = geom.MultiImage({((), 0): jnp.stack([u0, du_dt0], axis=1)}, D, is_torus)
+    xt_img = geom.MultiImage({((), 0): ut[:, None]}, D, is_torus)
+
+    return x0_img, xt_img
+
+
 def get_3d_sine_data(
     N: int, t: float, n_batch: int, key: jax.Array
 ) -> tuple[geom.MultiImage, geom.MultiImage]:
@@ -504,6 +546,7 @@ def handleArgs() -> argparse.Namespace:
         default="0,1,4,32,128",
     )
     parser.add_argument("-N", help="spatial size", type=int, default=64)
+    # now doing --timestep 4.2 to differentiate complicated sine data on wandb
     parser.add_argument(
         "--timestep", help="timestep of wave output, t=1 is 1 grid point", type=float, default=4.3
     )
@@ -639,50 +682,50 @@ for D in full_D_range:
 
     key, *subkeys = random.split(key, num=10)
     model_list = [
-        (
-            f"two_layer_gaussian_scaling_D{D}",
-            {
-                "model": models.SimpleConvSeries(
-                    input_keys,
-                    output_keys,
-                    gaussian_filters_dict[D],
-                    width=10,
-                    depth=2,
-                    use_bias=False,
-                    key=subkeys[0],
-                ),
-                "lr": {1: {128: 1e-2}, 3: {0: 5e-2, 1: 5e-2, 4: 5e-2, 32: 1e-2, 128: 1e-2}},
-                **train_kwargs,
-            },
-            {  # test_kwargs
-                "lr": {3: {0: 1e-2, 1: 1e-2, 4: 1e-2, 32: 5e-3, 128: 1e-2}},
-                "rescale": geom.Rescaling.NO_SCALING,
-                "conv_filters_dict": gaussian_filters_dict,
-                **test_kwargs,
-            },
-        ),
-        (
-            f"two_layer_gaussian_scaling_D{D}",
-            {
-                "model": models.SimpleConvSeries(
-                    input_keys,
-                    output_keys,
-                    gaussian_filters_dict[D],
-                    width=10,
-                    depth=2,
-                    use_bias=False,
-                    key=subkeys[0],
-                ),
-                "lr": {1: {128: 1e-2}, 3: {0: 5e-2, 1: 5e-2, 4: 5e-2, 32: 1e-2, 128: 1e-2}},
-                **train_kwargs,
-            },
-            {  # test_kwargs
-                "lr": {3: {0: 1e-2, 1: 1e-2, 4: 1e-2, 32: 5e-3, 128: 1e-2}},
-                "rescale": geom.Rescaling.VOLUME,
-                "conv_filters_dict": gaussian_filters_dict,
-                **test_kwargs,
-            },
-        ),
+        # (
+        #     f"two_layer_gaussian_scaling_D{D}",
+        #     {
+        #         "model": models.SimpleConvSeries(
+        #             input_keys,
+        #             output_keys,
+        #             gaussian_filters_dict[D],
+        #             width=10,
+        #             depth=2,
+        #             use_bias=False,
+        #             key=subkeys[0],
+        #         ),
+        #         "lr": {1: {128: 1e-2}, 3: {0: 5e-2, 1: 5e-2, 4: 5e-2, 32: 1e-2, 128: 1e-2}},
+        #         **train_kwargs,
+        #     },
+        #     {  # test_kwargs
+        #         "lr": {3: {0: 1e-2, 1: 1e-2, 4: 1e-2, 32: 5e-3, 128: 1e-2}},
+        #         "rescale": geom.Rescaling.NO_SCALING,
+        #         "conv_filters_dict": gaussian_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
+        # (
+        #     f"two_layer_gaussian_scaling_D{D}",
+        #     {
+        #         "model": models.SimpleConvSeries(
+        #             input_keys,
+        #             output_keys,
+        #             gaussian_filters_dict[D],
+        #             width=10,
+        #             depth=2,
+        #             use_bias=False,
+        #             key=subkeys[0],
+        #         ),
+        #         "lr": {1: {128: 1e-2}, 3: {0: 5e-2, 1: 5e-2, 4: 5e-2, 32: 1e-2, 128: 1e-2}},
+        #         **train_kwargs,
+        #     },
+        #     {  # test_kwargs
+        #         "lr": {3: {0: 1e-2, 1: 1e-2, 4: 1e-2, 32: 5e-3, 128: 1e-2}},
+        #         "rescale": geom.Rescaling.VOLUME,
+        #         "conv_filters_dict": gaussian_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
         (
             f"two_layer_gaussian_scaling_D{D}",  # rescale is added to name in tune
             {
@@ -705,30 +748,30 @@ for D in full_D_range:
                 **test_kwargs,
             },
         ),
-        # (
-        #     f"unetBase_equiv48_gaussian_scaling_D{D}",
-        #     {  # train_kwargs
-        #         "model": models.UNet(
-        #             D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=48,
-        #             activation_f=jax.nn.gelu,
-        #             conv_filters=gaussian_filters_dict[D],
-        #             upsample_filters=upsample_filters_dict[D],
-        #             key=subkeys[1],
-        #         ),
-        #         "lr": {1: {128: 5e-4}, 3: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-3}},
-        #         **train_kwargs,
-        #     },
-        #     {  # tune and eval kwargs
-        #         "lr": {3: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 1e-3}},
-        #         "rescale": geom.Rescaling.VOLUME,
-        #         "conv_filters_dict": gaussian_filters_dict,
-        #         "upsample_filters_dict": upsample_filters_dict,
-        #         **test_kwargs,
-        #     },
-        # ),
+        (
+            f"unetBase_equiv48_gaussian_scaling_D{D}",
+            {  # train_kwargs
+                "model": models.UNet(
+                    D,
+                    input_keys,
+                    output_keys,
+                    depth=48,
+                    activation_f=jax.nn.gelu,
+                    conv_filters=gaussian_filters_dict[D],
+                    upsample_filters=upsample_filters_dict[D],
+                    key=subkeys[1],
+                ),
+                "lr": {1: {128: 5e-4}, 3: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-3}},
+                **train_kwargs,
+            },
+            {  # tune and eval kwargs
+                "lr": {3: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 1e-3}},
+                "rescale": geom.Rescaling.VOLUME,
+                "conv_filters_dict": gaussian_filters_dict,
+                "upsample_filters_dict": upsample_filters_dict,
+                **test_kwargs,
+            },
+        ),
     ]
     model_list_d[D] = model_list
 

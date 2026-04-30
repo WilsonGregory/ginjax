@@ -414,6 +414,7 @@ def train_model(
         ),
         validation_X=val_X,
         validation_Y=val_Y,
+        val_map_and_loss=ml.Mapper([geom.Losses.NRMSE], residual, eps=1e-5),
         aux_data=batch_stats,
         is_wandb=is_wandb,
     )
@@ -489,6 +490,7 @@ def tune_and_eval(
     model: models.AnyDimensionalModel,
     lr: float,
     conv_filters_dict: dict[int, geom.MultiImage] | None,
+    rescale: geom.Rescaling | None,
     residual: bool,
     batch_size: int,
     epochs: int,
@@ -504,19 +506,22 @@ def tune_and_eval(
     N = tune_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
     model_name_extended = f"{model_name}_tuneD{tune_X.D}_L{tune_X.get_L()}_N{N}_e{epochs}"
-    model_path = model_dir / f"{model_name_extended}_model.eqx" if model_dir else None
 
     key, subkey = random.split(key)
     # rescale set to True, small but notable difference
-    if conv_filters_dict is not None:
+    if conv_filters_dict is not None and rescale is not None:
         model_dprime = model.convertD(
             conv_filters_dict[tune_X.D],
-            geom.Rescaling.VOLUME,
+            rescale,
             subkey,
             upsample_filters=upsample_filters_dict[tune_X.D] if upsample_filters_dict else None,
         )
+        model_name_extended += f"_rescale{rescale.name}"
     else:
         model_dprime = model
+
+    model_path = model_dir / f"{model_name_extended}_model.eqx" if model_dir else None
+    print(f"tuning: {model_name_extended}")
 
     if model_path and model_path.is_file() and not overwrite_save_model:
         tuned_model_dprime = ml.load(model_path, model_dprime)
@@ -542,6 +547,7 @@ def tune_and_eval(
                 ),
                 validation_X=val_X,
                 validation_Y=val_Y,
+                val_map_and_loss=ml.Mapper([geom.Losses.NRMSE], residual, eps=1e-5),
                 aux_data=batch_stats,
                 is_wandb=is_wandb,
             )
@@ -585,7 +591,7 @@ def tune_and_eval(
 # an example of currently used script
 # CUDA_VISIBLE_DEVICES=6 time python3 scripts/heat_equation.py --data /data/wgregor4/heat_equation/
 # --n-test 128 --n-val 128 --n-train 128 -N 64 --train-D-range 1,2 --diffusion-coef 1
-# --test-D-range 2,3 -s /data/wgregor4/runs/heat_equation/
+# --test-D-range 2,3 --model-dir /data/wgregor4/runs/heat_equation/
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
@@ -659,7 +665,7 @@ if args.load_model or args.save_model:
     exit()
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
-lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3]
+lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]
 
 max_pixel_l1 = 2
 M = 5
@@ -686,6 +692,7 @@ test_kwargs = {
     "is_wandb": args.tune_wandb,
 }
 
+one_filters_dict = {}
 normalize_filters_dict = {}
 gaussian_filters_dict = {}
 upsample_filters_dict = {}
@@ -693,6 +700,16 @@ upsample_filters_dict = {}
 full_D_range = tuple(set(args.train_D_range).union(set(args.test_D_range)))
 for D in full_D_range:
     group_actions = geom.make_all_operators(D)
+    one_filters_dict[D] = geom.get_invariant_filters(
+        Ms=[M],
+        ks=[0],
+        parities=[0],
+        D=D,
+        operators=group_actions,
+        scale=geom.FilterScaling.ONE,
+        max_pixel_l1=max_pixel_l1,
+        combine_equal_l1=True,
+    )
     normalize_filters_dict[D] = geom.get_invariant_filters(
         Ms=[M],
         ks=[0],
@@ -719,7 +736,7 @@ for D in full_D_range:
         parities=[0],
         D=D,
         operators=group_actions,
-        scale=geom.FilterScaling.NORMALIZE,  # for N=2, all pixels are equidistant
+        scale=geom.FilterScaling.ONE,  # for N=2, all pixels are equidistant
     )
 
 print("Define the models!")
@@ -734,13 +751,40 @@ for D in full_D_range:
 
     key, *subkeys = random.split(key, num=10)
     model_list = [
+        # (
+        #     f"two_layer_gaussian_scaling_D{D}",
+        #     {
+        #         "model": models.SimpleConvSeries(
+        #             input_keys,
+        #             output_keys,
+        #             gaussian_filters_dict[D],
+        #             width=10,
+        #             depth=2,
+        #             use_bias=False,
+        #             key=subkeys[0],
+        #         ),
+        #         "lr": 5e-2,  # best for all dimensions, all n_tune
+        #         **train_kwargs,
+        #     },
+        #     {
+        #         "lr": {(1, 2): 1e-2, (1, 3): 5e-2, (2, 3): 1e-2},
+        #         # n_tune has only a small effect on the error difference, simplicity use n=1 value
+        #         # it is typically lower so this strategy is conservative
+        #         # (1,2): (n=1,1e-2) (n=4,1e-2) (n=32,1e-2) (n=128,1e-2)
+        #         # (1,3): (n=1,5e-2) (n=4,5e-2) (n=32,5e-2) (n=128,5e-2) (pretty large gap for n=1,4)
+        #         # (2,3): (n=1,1e-2) (n=4,1e-2) (n=32,5e-2) (n=128,5e-2) can do 1e-2
+        #         "rescale": geom.Rescaling.VOLUME,
+        #         "conv_filters_dict": gaussian_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
         (
-            f"two_layer_gaussian_scaling_D{D}",
+            f"two_layer_one_scaling_D{D}",
             {
                 "model": models.SimpleConvSeries(
                     input_keys,
                     output_keys,
-                    gaussian_filters_dict[D],
+                    one_filters_dict[D],
                     width=10,
                     depth=2,
                     use_bias=False,
@@ -750,13 +794,14 @@ for D in full_D_range:
                 **train_kwargs,
             },
             {
-                "lr": {(1, 2): 1e-2, (1, 3): 5e-2, (2, 3): 1e-2},
+                "lr": {(1, 2): 5e-2, (1, 3): 5e-2, (2, 3): 1e-2},
                 # n_tune has only a small effect on the error difference, simplicity use n=1 value
                 # it is typically lower so this strategy is conservative
                 # (1,2): (n=1,1e-2) (n=4,1e-2) (n=32,1e-2) (n=128,1e-2)
                 # (1,3): (n=1,5e-2) (n=4,5e-2) (n=32,5e-2) (n=128,5e-2) (pretty large gap for n=1,4)
                 # (2,3): (n=1,1e-2) (n=4,1e-2) (n=32,5e-2) (n=128,5e-2) can do 1e-2
-                "conv_filters_dict": gaussian_filters_dict,
+                "rescale": geom.Rescaling.COMPATIBILITY,
+                "conv_filters_dict": one_filters_dict,
                 **test_kwargs,
             },
         ),
@@ -770,61 +815,90 @@ for D in full_D_range:
         #         **train_kwargs,
         #     },
         # ),
-        (
-            f"resnet_equiv_42_gaussian_scaling_D{D}",
-            {  # train kwargs
-                "model": models.ResNet(
-                    D,
-                    input_keys,
-                    output_keys,
-                    depth=42,
-                    conv_filters=gaussian_filters_dict[D],
-                    use_group_norm=True,
-                    key=subkeys[1],
-                ),
-                "lr": {1: 5e-3, 2: 5e-4, 3: 1e-3}[D],
-                # (D=1,n=128,5e-3) (D=2,n=1,5e-4) (D=2,n=4,5e-4) (D=2,n=32,5e-4) (D=2,n=128,5e-4)
-                # (D=3,n=1,1e-3) (D=3,n=4,1e-3) (D=3,n=32,5e-4) (D=3,n=128,1e-3)
-                **train_kwargs,
-            },
-            {  # tune and eval kwargs
-                "lr": {(1, 2): 1e-4, (1, 3): 5e-5, (2, 3): 5e-5},
-                # (1,2): (n=1,1e-4) (n=4,1e-4) (n=32,1e-3) (n=128,1e-3)
-                # (1,3): (n=1,5e-5) (n=4,5e-5) (n=32,5e-4) (n=128,5e-3)
-                # (2,3): (n=1,5e-5) (n=4,5e-5) (n=32,1e-4) (n=128,1e-4)
-                "conv_filters_dict": gaussian_filters_dict,
-                **test_kwargs,
-            },
-        ),
-        (
-            f"unetBase_equiv48_gaussian_scaling_D{D}",
-            {  # train_kwargs
-                "model": models.UNet(
-                    D,
-                    input_keys,
-                    output_keys,
-                    depth=48,
-                    activation_f=jax.nn.gelu,
-                    conv_filters=gaussian_filters_dict[D],
-                    upsample_filters=upsample_filters_dict[D],
-                    key=subkeys[2],
-                ),
-                "lr": 1e-3,
-                # D=1 (n=128,1e-3)
-                # D=2 (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,5e-4 although 1e-3 is close?)
-                # D=3 (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,1e-3)
-                **train_kwargs,
-            },
-            {  # tune and eval kwargs
-                "lr": {(1, 2): 1e-3, (1, 3): 1e-3, (2, 3): 1e-3},
-                # (1,2) (n=1,1e-3) (n=4,1e-3) (n=32,5e-3) (n=128,5e-4 or 1e-3)
-                # (1,3) (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,5e-3,1e-3,5e-4)
-                # (2,3) (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,1e-3 works)
-                "conv_filters_dict": gaussian_filters_dict,
-                "upsample_filters_dict": upsample_filters_dict,
-                **test_kwargs,
-            },
-        ),
+        # (
+        #     f"resnet_equiv_42_gaussian_scaling_D{D}",
+        #     {  # train kwargs
+        #         "model": models.ResNet(
+        #             D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=42,
+        #             conv_filters=gaussian_filters_dict[D],
+        #             use_group_norm=True,
+        #             key=subkeys[1],
+        #         ),
+        #         "lr": {1: 5e-3, 2: 5e-4, 3: 1e-3}[D],
+        #         # (D=1,n=128,5e-3) (D=2,n=1,5e-4) (D=2,n=4,5e-4) (D=2,n=32,5e-4) (D=2,n=128,5e-4)
+        #         # (D=3,n=1,1e-3) (D=3,n=4,1e-3) (D=3,n=32,5e-4) (D=3,n=128,1e-3)
+        #         **train_kwargs,
+        #     },
+        #     {  # tune and eval kwargs
+        #         "lr": {(1, 2): 1e-4, (1, 3): 5e-5, (2, 3): 5e-5},
+        #         # (1,2): (n=1,1e-4) (n=4,1e-4) (n=32,1e-3) (n=128,1e-3)
+        #         # (1,3): (n=1,5e-5) (n=4,5e-5) (n=32,5e-4) (n=128,5e-3)
+        #         # (2,3): (n=1,5e-5) (n=4,5e-5) (n=32,1e-4) (n=128,1e-4)
+        #         "conv_filters_dict": gaussian_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
+        # (
+        #     f"unetBase_equiv48_gaussian_scaling_D{D}",
+        #     {  # train_kwargs
+        #         "model": models.UNet(
+        #             D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=48,
+        #             activation_f=jax.nn.gelu,
+        #             conv_filters=gaussian_filters_dict[D],
+        #             upsample_filters=upsample_filters_dict[D],
+        #             key=subkeys[2],
+        #         ),
+        #         "lr": 1e-3,
+        #         # D=1 (n=128,1e-3)
+        #         # D=2 (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,5e-4 although 1e-3 is close?)
+        #         # D=3 (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,1e-3)
+        #         **train_kwargs,
+        #     },
+        #     {  # tune and eval kwargs
+        #         "lr": {(1, 2): 1e-3, (1, 3): 1e-3, (2, 3): 1e-3},
+        #         # (1,2) (n=1,1e-3) (n=4,1e-3) (n=32,5e-3) (n=128,5e-4 or 1e-3)
+        #         # (1,3) (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,5e-3,1e-3,5e-4)
+        #         # (2,3) (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,1e-3 works)
+        #         "conv_filters_dict": gaussian_filters_dict,
+        #         "upsample_filters_dict": upsample_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
+        # (
+        #     f"unetBase_equiv48_one_scaling_D{D}",
+        #     {  # train_kwargs
+        #         "model": models.UNet(
+        #             D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=48,
+        #             activation_f=jax.nn.gelu,
+        #             conv_filters=one_filters_dict[D],
+        #             upsample_filters=upsample_filters_dict[D],
+        #             key=subkeys[2],
+        #         ),
+        #         "lr": {1: 1e-3, 2: 1e-4, 3: 1e-4}[D],
+        #         # D=1 (n=128,1e-3)
+        #         # D=2 (n=128,1e-4)
+        #         **train_kwargs,
+        #     },
+        #     {  # tune and eval kwargs
+        #         "lr": {(1, 2): 1e-3, (1, 3): 1e-3, (2, 3): 1e-3},
+        #         # (1,2)
+        #         # (1,3)
+        #         # (2,3)
+        #         "rescale": geom.Rescaling.COMPATIBILITY,
+        #         "conv_filters_dict": one_filters_dict,
+        #         "upsample_filters_dict": upsample_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
     ]
     model_list_d[D] = model_list
 
@@ -872,7 +946,12 @@ for test_D in args.test_D_range:
             (
                 name,
                 tune_and_eval,
-                {**_train_kwargs, "conv_filters_dict": None, "is_wandb": args.tune_wandb},
+                {
+                    **_train_kwargs,
+                    "conv_filters_dict": None,
+                    "rescale": None,
+                    "is_wandb": args.tune_wandb,
+                },
             )
             for name, _train_kwargs, _ in model_list_d[test_D]
         ]

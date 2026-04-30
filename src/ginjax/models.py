@@ -382,14 +382,16 @@ class AnyDimensionalModel(MultiImageModule):
         return new_weights * ratios
 
     @staticmethod
-    def compatibility_rescale_weights(
+    def compatibility_norm_rescale_weights(
         old_filter_triple: tuple[jax.Array, jax.Array, int],
         new_filter_triple: tuple[jax.Array, jax.Array, int],
         verbose: bool = False,
     ) -> jax.Array:
         """
         Rescale the weight coefficients so that they are compatible with the particular embedding.
-        This algorithm has an implicit assumption that we are using orthoplex filters
+        This algorithm has an implicit assumption that we are using orthoplex filters.
+
+        WARNING: This is the old version which works on the norms of the tensors.
 
         args:
             old_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
@@ -503,6 +505,121 @@ class AnyDimensionalModel(MultiImageModule):
             print("updated weights:", updated_weights)
 
         return updated_weights
+
+    @staticmethod
+    def compatibility_rescale_weights(
+        old_filter_triple: tuple[jax.Array, jax.Array, int],
+        new_filter_triple: tuple[jax.Array, jax.Array, int],
+        verbose: bool = False,
+    ) -> jax.Array:
+        """
+        Rescale the weight coefficients so that they are compatible with the particular embedding.
+        This algorithm has an implicit assumption that we are using orthoplex filters. This
+        implements Algorithm 1: Orthoplex filter weight scaling.
+
+        args:
+            old_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
+                the old filters, and the old dimension
+            new_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
+                the new filters, and the new dimension
+            verbose: whether to print the old weights and ratios
+
+        return:
+            jax array of rescaled weights (out_channels,in_channels,num_filters) after rescaling
+        """
+        old_filters, old_weights, old_D = old_filter_triple  # old weights are alpha
+        new_filters, new_weights, new_D = new_filter_triple
+        k = old_filters.ndim - (1 + old_D)
+        assert k == new_filters.ndim - (
+            1 + new_D
+        ), f"compatibility_rescale_weights: old_filters k={k}, new_filters k={new_filters.ndim - (1 + new_D)}"
+
+        D_increase = new_D - old_D
+        assert D_increase > 0, f"compatibility_rescale_weights: D_increase={D_increase}"
+
+        # old/new_filters shape (n_filters,spatial,tensor)
+
+        # we have filters ell=0,1,...,L
+        # same number of filters
+        assert len(old_filters) == len(
+            new_filters
+        ), f"compatibility_rescale_weights: len old_filters={len(old_filters)}, len new_filters={len(new_filters)}"
+        L = len(old_filters) - 1
+        L_plus = len(old_filters)  # more useful for iterating
+
+        new_filters_proj_tensors = (
+            new_filters[..., (slice(0, old_D),) * k] if k > 0 else new_filters
+        )
+
+        # currently special case N=2 because its so different
+        if old_filters.shape[1] == 2 or new_filters.shape[1] == 2:
+            assert (2,) * old_D == old_filters.shape[1 : 1 + old_D]
+            assert (2,) * new_D == new_filters.shape[1 : 1 + new_D]
+
+            alpha_prime = old_weights / (2**D_increase)
+
+        else:  # filters are odd, and in particular 2L + 1 square
+            # largest filter goes up to the border
+            assert ((2 * L) + 1,) * old_D == old_filters.shape[1 : 1 + old_D]
+            assert ((2 * L) + 1,) * new_D == new_filters.shape[1 : 1 + new_D]
+
+            # (n_filters,new_spatial)
+            new_filters_proj_norm = jnp.linalg.norm(
+                new_filters_proj_tensors.reshape(new_filters.shape[: 1 + new_D] + (-1,)), axis=-1
+            )
+
+            # (n_filters,old_spatial)
+            old_filters_norm = jnp.linalg.norm(
+                old_filters.reshape(old_filters.shape[: 1 + old_D] + (-1,)), axis=-1
+            )
+
+            # use np so we can easily edit it (out_c,in_c,n_nonzero_filters)
+            alpha_prime = np.zeros(new_weights.shape[:2] + (L_plus,))
+            for z in reversed(range(L_plus)):  # iterates from L,L-1,...,0
+                j_d_centered = (z,) + (0,) * (old_D - 1)
+                j_dplus_centered = (z,) + (0,) * (new_D - 1)
+
+                j_d = tuple(x + L for x in j_d_centered)
+                j_dplus = tuple(x + L for x in j_dplus_centered)
+
+                # (out_c,in_c,n_filters,new_spatial)
+                scaled_new_filters = (
+                    alpha_prime[..., *((None,) * new_D)] * new_filters_proj_norm[None, None]
+                )
+                # sum over filters, spatial dims (out_c,in_c,old_spatial)
+                # since alpha_prime are only nonzero for z+1, this is the proper sum over ell=z+1 to L
+                collapsed_ff = jnp.sum(scaled_new_filters, axis=tuple(range(2, 2 + 1 + D_increase)))
+
+                # alpha_prime = (alpha * C_z - sum) / (C'_z)
+                alpha_prime[:, :, z] = (
+                    old_weights[:, :, z] * old_filters_norm[z, *j_d] - collapsed_ff[:, :, *j_d]
+                ) / new_filters_proj_norm[z, *j_dplus]
+
+            alpha_prime = jnp.array(alpha_prime)
+
+        # now we check that we did it right
+        # (out_c,in_c,n_filters,new_spatial,proj_tensor)
+        scaled_new_filters = (
+            alpha_prime[..., *((None,) * (new_D + k))] * new_filters_proj_tensors[None, None]
+        )
+        # (out_c,in_c,old_spatial,proj_tensor)
+        collapsed_ff = jnp.sum(scaled_new_filters, axis=tuple(range(2, 2 + 1 + D_increase)))
+
+        # (out_c,in_c,n_filters,old_spatial,tensor)
+        scaled_old_filters = old_weights[..., *((None,) * (old_D + k))] * old_filters[None, None]
+        # (out_c,in_c,old_spatial,tensor)
+        scaled_old_filters = jnp.sum(scaled_old_filters, axis=2)
+
+        diff = jnp.max(jnp.abs(collapsed_ff - scaled_old_filters))
+        diff_message = f"AnyDimensionalModel::compatibility_rescale_weights: Diff is {diff}"
+
+        assert jnp.allclose(collapsed_ff, scaled_old_filters, rtol=1e-3, atol=1e-3), diff_message
+
+        if verbose:
+            print("new weights:", new_weights)
+            print("updated weights:", alpha_prime)
+
+        return alpha_prime
 
     @staticmethod
     def _transfer_conv_weights(

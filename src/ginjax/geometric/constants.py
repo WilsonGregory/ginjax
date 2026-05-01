@@ -26,6 +26,7 @@ class FilterScaling(enum.Enum):
 class Rescaling(enum.Enum):
     VOLUME = enum.auto()
     COMPATIBILITY = enum.auto()
+    COMPAT_FLEX = enum.auto()
     NO_SCALING = enum.auto()
 
 

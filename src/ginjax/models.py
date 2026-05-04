@@ -408,27 +408,61 @@ class AnyDimensionalModel(MultiImageModule):
             1 + new_D
         ), f"compat_flex_rescale_weights: old_filters k={k}, new_filters k={new_filters.ndim - (1 + new_D)}"
 
-        assert old_D == 1
-        assert new_D == 2
-
         D_increase = new_D - old_D
+        assert D_increase == 1
 
-        if old_filters.shape[1] == 3 and new_filters.shape[1:3] == (3, 3):
-            assert old_weights.shape[2] == 2  # should be 2 filters
-            ratio = 1 / 3
+        if (
+            old_filters.shape[1 : 1 + old_D] == (3,) * old_D
+            and new_filters.shape[1 : 1 + new_D] == (3,) * new_D
+        ):
+            if old_D == 1 and new_D == 2:
+                assert old_weights.shape[2] == 2  # should be 2 filters
+                ratio = 1 / 3
 
-            alpha_prime = jnp.stack(
-                [
-                    old_weights[..., 0] + (-2 + 4 * ratio) * old_weights[..., 1],
-                    (1 - 2 * ratio) * old_weights[..., 1],
-                    ratio * old_weights[..., 1],
-                ],
-                axis=-1,
-            )
-        elif old_filters.shape[1] == 2 and new_filters.shape[1:3] == (2, 2):
+                alpha_prime = jnp.stack(
+                    [
+                        old_weights[..., 0] + (-2 + 4 * ratio) * old_weights[..., 1],
+                        (1 - 2 * ratio) * old_weights[..., 1],
+                        ratio * old_weights[..., 1],
+                    ],
+                    axis=-1,
+                )
+            elif old_D == 2 and new_D == 3:
+                # need to get first 4 new_weights from first 3 old_weights
+
+                z = (old_weights[..., 2] * 4 - old_weights[..., 1]) / 9
+
+                alpha_prime = jnp.stack(
+                    [
+                        old_weights[..., 0]
+                        - 2 * old_weights[..., 1]
+                        + 4 * old_weights[..., 2]
+                        - 8 * z,
+                        old_weights[..., 1] - 2 * old_weights[..., 2] + 4 * z,
+                        old_weights[..., 2] - 2 * z,
+                        z,
+                    ],
+                    axis=-1,
+                )
+
+                # filters are in flipped order for some reason
+                symmetric_traceless = jnp.ones_like(old_weights[..., :2]) * old_weights[..., 4:5]
+                along_trace = jnp.ones_like(old_weights[..., :2]) * old_weights[..., 3:4]
+
+                alpha_prime = jnp.concatenate(
+                    [alpha_prime, symmetric_traceless, along_trace], axis=-1
+                )
+            else:
+                raise ValueError()
+        elif (
+            old_filters.shape[1 : 1 + old_D] == (2,) * old_D
+            and new_filters.shape[1 : 1 + new_D] == (2,) * new_D
+        ):
             alpha_prime = old_weights / (2**D_increase)
         else:
             raise ValueError()
+
+        # TODO: I could check that the condition holds?
 
         return alpha_prime
 

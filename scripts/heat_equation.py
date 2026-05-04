@@ -953,11 +953,20 @@ for D in full_D_range:
                     upsample_filters=upsample_filters_dict[D],
                     key=subkeys[2],
                 ),
-                "lr": {1: {128: 1e-3}, 2: {0: 1e-5, 1: 1e-5, 4: 1e-5, 32: 5e-4, 128: 5e-4}},
+                "lr": {
+                    False: {1: {128: 1e-3}, 2: {0: 1e-5, 1: 1e-5, 4: 1e-5, 32: 5e-4, 128: 5e-4}},
+                    True: {
+                        1: {128: 5e-4},
+                        2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-4},
+                    },
+                }[args.residual],
                 **train_kwargs,
             },
             {  # tune and eval kwargs
-                "lr": {(1, 2): {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 1e-3, 128: 1e-3}},
+                "lr": {
+                    False: {(1, 2): {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 1e-3, 128: 1e-3}},
+                    True: {(1, 2): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 5e-4}},
+                }[args.residual],
                 "rescale": geom.Rescaling.COMPAT_FLEX,
                 "conv_filters_dict": free_filters_dict,
                 "upsample_filters_dict": upsample_filters_dict,

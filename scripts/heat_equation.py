@@ -590,7 +590,7 @@ def tune_and_eval(
     rel_mean = jnp.mean(tuned_loss[:, 1])
     rel_std = jnp.std(tuned_loss[:, 1])
     print(
-        f"Tuned Loss rescale=True, D={test_X.D}: {smse_mean:.3e}+-{smse_std:.3e} ({rel_mean:.3f}% +-{rel_std:.3f}%)\n"
+        f"Tuned Loss rescale=True, D={test_X.D}: {smse_mean:.3e} +-{smse_std:.3e} ({rel_mean:.3f}% +-{rel_std:.3f}%)\n"
     )
 
     # assert tuned_model_dprime is not None

@@ -304,10 +304,7 @@ def map_loss_in_batches(
     ]
     # because return_map=False, losses is a list of jax arrays
 
-    if reduce == "mean":
-        return loss_reducer(losses)
-    else:
-        return jnp.concat(losses, axis=0)
+    return loss_reducer(losses) if reduce == "mean" else jnp.concat(losses, axis=0)
 
 
 def map_plus_loss_in_batches(

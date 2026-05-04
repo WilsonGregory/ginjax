@@ -86,14 +86,14 @@ def smse_loss(
         loss = jnp.sum((image_a - image_b) ** 2, axis=tuple(range(1, image_a.ndim))) / spatial_size
         loss_per_batch = loss_per_batch + loss
 
-    if reduce == "mean":
-        return jnp.mean(loss_per_batch)
-    else:
-        return loss_per_batch
+    return jnp.mean(loss_per_batch) if reduce == "mean" else loss_per_batch
 
 
 def normalized_smse_loss(
-    multi_image_x: geom.MultiImage, multi_image_y: geom.MultiImage, eps: float = 1e-5
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
+    reduce: str | None = "mean",
+    eps: float = 1e-5,
 ) -> jax.Array:
     """
     Pointwise normalized loss. We find the norm of each channel at each spatial point of the true value
@@ -103,6 +103,7 @@ def normalized_smse_loss(
     args:
         multi_image_x: predicted data, image_blocks are shape (batch,channels,spatial,tensor)
         multi_image_y: target data, image_blocks are shape (batch,channels,spatial,tensor)
+        reduce: how to reduce over batch. Either "mean" or None.
         eps: ensure that we aren't dividing by 0 norm
 
     returns:
@@ -120,7 +121,7 @@ def normalized_smse_loss(
             jnp.sum(normalized_l2, axis=range(1, img_block.ndim)) / spatial_size
         )
 
-    return jnp.mean(order_loss)
+    return jnp.mean(order_loss) if reduce == "mean" else order_loss
 
 
 def nrmse_loss(

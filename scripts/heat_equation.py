@@ -337,6 +337,8 @@ def plot_results(
     linestyles = ["solid", "dotted", "dashed", "dashdot"]
     colors = ["b", "g", "r", "c", "m", "y"]
 
+    axes = [axes] if nrows == 1 else axes
+
     for (test_D, results_by_model), ax_row in zip(grouped_results.items(), axes):
         for error_idx, ylabel, ax in zip(range(len(results_labels)), results_labels, ax_row):
             assert isinstance(ax, Axes)
@@ -444,6 +446,7 @@ def train_all_models(
 
     trained_models = []
     for model_name, _train_kwargs, _test_kwargs in model_list:
+        _train_kwargs["lr"] = _train_kwargs["lr"][train_D][n_points]
         key, subkey = random.split(key)
         if args.find_train_lr:
 
@@ -696,6 +699,7 @@ one_filters_dict = {}
 normalize_filters_dict = {}
 gaussian_filters_dict = {}
 upsample_filters_dict = {}
+free_filters_dict = {}
 
 full_D_range = tuple(set(args.train_D_range).union(set(args.test_D_range)))
 for D in full_D_range:
@@ -738,6 +742,14 @@ for D in full_D_range:
         operators=group_actions,
         scale=geom.FilterScaling.ONE,  # for N=2, all pixels are equidistant
     )
+    free_filters_dict[D] = geom.get_invariant_filters(
+        Ms=[3],
+        ks=[0],
+        parities=[0],
+        D=D,
+        operators=group_actions,
+        scale=geom.FilterScaling.ONE,
+    )
 
 print("Define the models!")
 model_list_d = {}
@@ -778,33 +790,62 @@ for D in full_D_range:
         #         **test_kwargs,
         #     },
         # ),
-        (
-            f"two_layer_one_scaling_D{D}",
-            {
-                "model": models.SimpleConvSeries(
-                    input_keys,
-                    output_keys,
-                    one_filters_dict[D],
-                    width=10,
-                    depth=2,
-                    use_bias=False,
-                    key=subkeys[0],
-                ),
-                "lr": 5e-2,  # best for all dimensions, all n_tune
-                **train_kwargs,
-            },
-            {
-                "lr": {(1, 2): 5e-2, (1, 3): 5e-2, (2, 3): 1e-2},
-                # n_tune has only a small effect on the error difference, simplicity use n=1 value
-                # it is typically lower so this strategy is conservative
-                # (1,2): (n=1,1e-2) (n=4,1e-2) (n=32,1e-2) (n=128,1e-2)
-                # (1,3): (n=1,5e-2) (n=4,5e-2) (n=32,5e-2) (n=128,5e-2) (pretty large gap for n=1,4)
-                # (2,3): (n=1,1e-2) (n=4,1e-2) (n=32,5e-2) (n=128,5e-2) can do 1e-2
-                "rescale": geom.Rescaling.COMPATIBILITY,
-                "conv_filters_dict": one_filters_dict,
-                **test_kwargs,
-            },
-        ),
+        # (
+        #     f"two_layer_one_scaling_D{D}",
+        #     {
+        #         "model": models.SimpleConvSeries(
+        #             input_keys,
+        #             output_keys,
+        #             one_filters_dict[D],
+        #             width=10,
+        #             depth=2,
+        #             use_bias=False,
+        #             activation_f="gelu",
+        #             key=subkeys[0],
+        #         ),
+        #         "lr": 5e-2,  # best for all dimensions, all n_tune
+        #         **train_kwargs,
+        #     },
+        #     {
+        #         "lr": {(1, 2): 5e-2, (1, 3): 5e-2, (2, 3): 1e-2},
+        #         # n_tune has only a small effect on the error difference, simplicity use n=1 value
+        #         # it is typically lower so this strategy is conservative
+        #         # (1,2): (n=1,1e-2) (n=4,1e-2) (n=32,1e-2) (n=128,1e-2)
+        #         # (1,3): (n=1,5e-2) (n=4,5e-2) (n=32,5e-2) (n=128,5e-2) (pretty large gap for n=1,4)
+        #         # (2,3): (n=1,1e-2) (n=4,1e-2) (n=32,5e-2) (n=128,5e-2) can do 1e-2
+        #         "rescale": geom.Rescaling.COMPATIBILITY,
+        #         "conv_filters_dict": one_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
+        # (
+        #     f"two_layer_free_filters_D{D}",
+        #     {
+        #         "model": models.SimpleConvSeries(
+        #             input_keys,
+        #             output_keys,
+        #             free_filters_dict[D],
+        #             width=10,
+        #             depth=2,
+        #             use_bias=False,
+        #             activation_f="gelu",
+        #             key=subkeys[0],
+        #         ),
+        #         "lr": 5e-2,  # best for all dimensions, all n_tune
+        #         **train_kwargs,
+        #     },
+        #     {
+        #         "lr": {(1, 2): 5e-2, (1, 3): 5e-2, (2, 3): 1e-2},
+        #         # n_tune has only a small effect on the error difference, simplicity use n=1 value
+        #         # it is typically lower so this strategy is conservative
+        #         # (1,2): (n=1,1e-2) (n=4,1e-2) (n=32,1e-2) (n=128,1e-2)
+        #         # (1,3): (n=1,5e-2) (n=4,5e-2) (n=32,5e-2) (n=128,5e-2) (pretty large gap for n=1,4)
+        #         # (2,3): (n=1,1e-2) (n=4,1e-2) (n=32,5e-2) (n=128,5e-2) can do 1e-2
+        #         "rescale": geom.Rescaling.COMPAT_FLEX,
+        #         "conv_filters_dict": free_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
         # (
         #     "lastStepIdentity",
         #     train_and_eval,
@@ -899,6 +940,39 @@ for D in full_D_range:
         #         **test_kwargs,
         #     },
         # ),
+        (
+            f"unetBase_equiv48_free_filters_D{D}",
+            {  # train_kwargs
+                "model": models.UNet(
+                    D,
+                    input_keys,
+                    output_keys,
+                    depth=48,
+                    activation_f=jax.nn.gelu,
+                    conv_filters=free_filters_dict[D],
+                    upsample_filters=upsample_filters_dict[D],
+                    key=subkeys[2],
+                ),
+                "lr": {
+                    False: {1: {128: 1e-3}, 2: {0: 1e-5, 1: 1e-5, 4: 1e-5, 32: 5e-4, 128: 5e-4}},
+                    True: {
+                        1: {128: 5e-4},
+                        2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-4},
+                    },
+                }[args.residual],
+                **train_kwargs,
+            },
+            {  # tune and eval kwargs
+                "lr": {
+                    False: {(1, 2): {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 1e-3, 128: 1e-3}},
+                    True: {(1, 2): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 5e-4}},
+                }[args.residual],
+                "rescale": geom.Rescaling.COMPAT_FLEX,
+                "conv_filters_dict": free_filters_dict,
+                "upsample_filters_dict": upsample_filters_dict,
+                **test_kwargs,
+            },
+        ),
     ]
     model_list_d[D] = model_list
 
@@ -948,6 +1022,7 @@ for test_D in args.test_D_range:
                 tune_and_eval,
                 {
                     **_train_kwargs,
+                    "lr": _train_kwargs["lr"][test_D][n_tune],
                     "conv_filters_dict": None,
                     "rescale": None,
                     "is_wandb": args.tune_wandb,
@@ -984,7 +1059,7 @@ for test_D in args.test_D_range:
 
             # select the correct learning rate for the tuning based on train and test dimensions
             trained_model_list = [
-                (name, func, {**_test_kwargs, "lr": _test_kwargs["lr"][(train_D, test_D)]})
+                (name, func, {**_test_kwargs, "lr": _test_kwargs["lr"][(train_D, test_D)][n_tune]})
                 for name, func, _test_kwargs in trained_model_list_d[train_D]
             ]
 

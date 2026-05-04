@@ -57,6 +57,8 @@ def get_data_d(
     scaled_diff_coef = diffusion_coef * D
     scaled_conv_coef = convection_coef * D
 
+    # information about relationship:
+    # https://github.com/Ceyron/exponax/blob/main/exponax/stepper/generic/_convection.py
     # default values are given (diffusion_gamma, convection_delta)
     # apebench.scenarios.physical.Burgers()  # (0.0003,-0.125)
     # apebench.scenarios.normalized.Burgers()  # (0.00003,-0.0125)
@@ -94,6 +96,40 @@ def get_data_d(
     # (batch,timesteps,tensor,spatial) -> (batch,timesteps,spatial,tensor)
     train_data = jnp.moveaxis(jax.device_put(jnp.load(train_path)[:, ::subsample], cpu), 2, -1)
     # subsample here for memory efficiency
+
+    # Plot the training data
+    # print(train_data.shape)
+    # vmax = float(jnp.max(jnp.abs(train_data)))
+    # vmin = -1 * vmax
+
+    # print(vmax)
+
+    # timesteps = 10
+
+    # nrows = D
+    # ncols = timesteps
+    # # figsize is 6 per col, 6 per row, (cols,rows)
+    # fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(6 * ncols, 6 * nrows))
+    # for component in range(D):
+    #     comp_name = ["x", "y", "z"][component]
+
+    #     print(int(n_timesteps / timesteps))
+    #     timestep_images = train_data[0, :: int(n_timesteps / timesteps), ..., component]
+    #     print(timestep_images.shape)
+    #     for i, timestep_image in enumerate(timestep_images):
+    #         geom.GeometricImage(timestep_image, 0, D).plot(
+    #             axes[component, i],
+    #             title=f"time {i} {comp_name}",
+    #             vmin=vmin,
+    #             vmax=vmax,
+    #             colorbar=True,
+    #         )
+
+    # plt.tight_layout()
+    # plt.savefig("/data/wgregor4/images/apebench/burgers/spaced_10_steps.png")
+    # plt.close(fig)
+
+    # exit()
 
     constant_fields = geom.MultiImage({}, D, is_torus)
     x0, xt = gc_data.batch_time_series(
@@ -487,6 +523,7 @@ def tune_and_eval(
     model: models.AnyDimensionalModel,
     lr: float,
     conv_filters_dict: dict[int, geom.MultiImage] | None,
+    rescale: geom.Rescaling | None,
     residual: bool,
     batch_size: int,
     epochs: int,
@@ -506,10 +543,10 @@ def tune_and_eval(
 
     key, subkey = random.split(key)
     # rescale set to True, small but notable difference
-    if conv_filters_dict is not None:
+    if conv_filters_dict is not None and rescale is not None:
         model_dprime = model.convertD(
             conv_filters_dict[tune_X.D],
-            geom.Rescaling.VOLUME,
+            rescale,
             subkey,
             upsample_filters=upsample_filters_dict[tune_X.D] if upsample_filters_dict else None,
         )
@@ -553,7 +590,7 @@ def tune_and_eval(
 
     key, subkey = random.split(key)
     tuned_loss = ml.map_loss_in_batches(
-        ml.Mapper([geom.Losses.NRMSE, geom.Losses.SMSE], residual),
+        ml.Mapper([geom.Losses.L2_REL, geom.Losses.SMSE], residual),
         tuned_model_dprime,
         test_X,
         test_Y,
@@ -561,11 +598,11 @@ def tune_and_eval(
         subkey,
         aux_data=tune_batch_stats,
     )
-    nrmse_loss = tuned_loss[0]
+    l2_rel = tuned_loss[0]
     smse_loss = tuned_loss[1]
-    print(f"Tuned Loss rescale=True, D={test_X.D}: nrmse={nrmse_loss:.3e} smse={smse_loss:.3e}\n")
+    print(f"Tuned Loss rescale=True, D={test_X.D}: lr_rel={l2_rel:.3f}% smse={smse_loss:.3e}\n")
 
-    return nrmse_loss, smse_loss
+    return l2_rel, smse_loss
 
 
 def handleArgs() -> argparse.Namespace:
@@ -577,7 +614,7 @@ def handleArgs() -> argparse.Namespace:
         default="0,1,4,32,128",
     )
     parser.add_argument(
-        "--subsample", help="how much to subsample the trajectories", type=int, default=8
+        "--subsample", help="how much to subsample the trajectories", type=int, default=1
     )
     parser.add_argument("-N", help="spatial size", type=int, default=64)
     # defaults for diff_burgers are 1.5 and -1.5, we scale them by D, so for these defaults we
@@ -635,7 +672,8 @@ if args.load_model or args.save_model:
     exit()
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
-lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]
+# lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3]
+lr_range = [1e-5, 5e-5, 1e-4, 5e-4]
 
 # D=1 doesn't make sense for a vector field, so we restrict the problem to only this case
 train_D = 2
@@ -668,6 +706,7 @@ test_kwargs = {
 normalize_filters_dict = {}
 gaussian_filters_dict = {}
 upsample_filters_dict = {}
+free_filters_dict = {}
 
 full_D_range = [train_D, test_D]
 for D in [train_D, test_D]:
@@ -698,7 +737,15 @@ for D in [train_D, test_D]:
         parities=[0],
         D=D,
         operators=group_actions,
-        scale=geom.FilterScaling.NORMALIZE,  # for N=2, all pixels are equidistant
+        scale=geom.FilterScaling.ONE,  # for N=2, all pixels are equidistant
+    )
+    free_filters_dict[D] = geom.get_invariant_filters(
+        Ms=[3],
+        ks=[0, 2],
+        parities=[0],
+        D=D,
+        operators=group_actions,
+        scale=geom.FilterScaling.ONE,
     )
 
 print("Define the models!")
@@ -722,27 +769,27 @@ for D in full_D_range:
 
     key, *subkeys = random.split(key, num=10)
     model_list = [
-        (
-            f"two_layer_gaussian_scaling_D{D}",
-            {
-                "model": models.SimpleConvSeries(
-                    input_keys,
-                    output_keys,
-                    gaussian_filters_dict[D],
-                    width=10,
-                    depth=2,
-                    use_bias=False,
-                    key=subkeys[0],
-                ),
-                "lr": 5e-2,  # (D=2,5e-2) (D=2,5e-2) could also be 1e-2
-                **train_kwargs,
-            },
-            {
-                "lr": 1e-2,
-                "conv_filters_dict": gaussian_filters_dict,
-                **test_kwargs,
-            },
-        ),
+        # (
+        #     f"two_layer_gaussian_scaling_D{D}",
+        #     {
+        #         "model": models.SimpleConvSeries(
+        #             input_keys,
+        #             output_keys,
+        #             gaussian_filters_dict[D],
+        #             width=10,
+        #             depth=2,
+        #             use_bias=False,
+        #             key=subkeys[0],
+        #         ),
+        #         "lr": 5e-2,  # (D=2,5e-2) (D=2,5e-2) could also be 1e-2
+        #         **train_kwargs,
+        #     },
+        #     {
+        #         "lr": 1e-2,
+        #         "conv_filters_dict": gaussian_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
         # (
         #     f"lastStepIdentity_D{D}",
         #     {  # train kwargs
@@ -755,29 +802,53 @@ for D in full_D_range:
         #         **test_kwargs,
         #     },
         # ),
+        # (
+        #     f"resnet_equiv_42_gaussian_scaling_D{D}",
+        #     {  # train kwargs
+        #         "model": models.ResNet(
+        #             D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=42,
+        #             conv_filters=gaussian_filters_dict[D],
+        #             use_group_norm=True,
+        #             key=subkeys[1],
+        #         ),
+        #         "lr": {2: 5e-4, 3: 1e-3}[D],  # (D=2,5e-4) (D=2,1e-3) very close
+        #         **train_kwargs,
+        #     },
+        #     {  # tune and eval kwargs
+        #         "lr": 5e-5,
+        #         "conv_filters_dict": gaussian_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
+        # (
+        #     f"unetBase_equiv48_gaussian_scaling_D{D}",
+        #     {  # train_kwargs
+        #         "model": models.UNet(
+        #             D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=48,
+        #             activation_f=jax.nn.gelu,
+        #             conv_filters=gaussian_filters_dict[D],
+        #             upsample_filters=upsample_filters_dict[D],
+        #             key=subkeys[2],
+        #         ),
+        #         "lr": {2: 1e-3, 3: 5e-3}[D],  # (D=2,1e-3) (D=3,5e-3)
+        #         **train_kwargs,
+        #     },
+        #     {  # tune and eval kwargs
+        #         "lr": 1e-3,
+        #         "rescale": geom.Rescaling.VOLUME,
+        #         "conv_filters_dict": gaussian_filters_dict,
+        #         "upsample_filters_dict": upsample_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
         (
-            f"resnet_equiv_42_gaussian_scaling_D{D}",
-            {  # train kwargs
-                "model": models.ResNet(
-                    D,
-                    input_keys,
-                    output_keys,
-                    depth=42,
-                    conv_filters=gaussian_filters_dict[D],
-                    use_group_norm=True,
-                    key=subkeys[1],
-                ),
-                "lr": {2: 5e-4, 3: 1e-3}[D],  # (D=2,5e-4) (D=2,1e-3) very close
-                **train_kwargs,
-            },
-            {  # tune and eval kwargs
-                "lr": 5e-5,
-                "conv_filters_dict": gaussian_filters_dict,
-                **test_kwargs,
-            },
-        ),
-        (
-            f"unetBase_equiv48_gaussian_scaling_D{D}",
+            f"unetBase_equiv48_free_filters_D{D}",
             {  # train_kwargs
                 "model": models.UNet(
                     D,
@@ -785,16 +856,20 @@ for D in full_D_range:
                     output_keys,
                     depth=48,
                     activation_f=jax.nn.gelu,
-                    conv_filters=gaussian_filters_dict[D],
+                    conv_filters=free_filters_dict[D],
                     upsample_filters=upsample_filters_dict[D],
                     key=subkeys[2],
                 ),
-                "lr": {2: 1e-3, 3: 5e-3}[D],  # (D=2,1e-3) (D=3,5e-3)
+                "lr": {2: 1e-4, 3: 5e-3}[D],  # (D=2,1e-3) (D=3,5e-3)
+                # D=3, (n=1, 1e-4 or 5e-4) (n=4,1e-4)
                 **train_kwargs,
             },
             {  # tune and eval kwargs
-                "lr": 1e-3,
-                "conv_filters_dict": gaussian_filters_dict,
+                # 4: could also be 5e-5 also
+                # 1: 1e-4, 4: 1e-4 (or 5e-5), 8:
+                "lr": 1e-4,
+                "rescale": geom.Rescaling.COMPAT_FLEX,
+                "conv_filters_dict": free_filters_dict,
                 "upsample_filters_dict": upsample_filters_dict,
                 **test_kwargs,
             },
@@ -850,7 +925,12 @@ for n_tune in args.n_tune_range:
         (
             name,
             tune_and_eval,
-            {**_train_kwargs, "conv_filters_dict": None, "is_wandb": args.tune_wandb},
+            {
+                **_train_kwargs,
+                "conv_filters_dict": None,
+                "rescale": None,
+                "is_wandb": args.tune_wandb,
+            },
         )
         for name, _train_kwargs, _ in model_list_d[test_D]
     ]

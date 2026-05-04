@@ -382,6 +382,91 @@ class AnyDimensionalModel(MultiImageModule):
         return new_weights * ratios
 
     @staticmethod
+    def compat_flex_rescale_weights(
+        old_filter_triple: tuple[jax.Array, jax.Array, int],
+        new_filter_triple: tuple[jax.Array, jax.Array, int],
+        verbose: bool = False,
+    ) -> jax.Array:
+        """
+        Do compatibility rescaling, now with one extra free parameter. For now this is only defined
+        for sidelength 3 filters for D=1 to D=2.
+
+        args:
+            old_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
+                the old filters, and the old dimension
+            new_filter_triple: tuple of weights (shape (out_channels,in_channels,num_filters)),
+                the new filters, and the new dimension
+            verbose: whether to print the old weights and ratios
+
+        return:
+            jax array of rescaled weights (out_channels,in_channels,num_filters) after rescaling
+        """
+        old_filters, old_weights, old_D = old_filter_triple  # old weights are alpha
+        new_filters, new_weights, new_D = new_filter_triple
+        k = old_filters.ndim - (1 + old_D)
+        assert k == new_filters.ndim - (
+            1 + new_D
+        ), f"compat_flex_rescale_weights: old_filters k={k}, new_filters k={new_filters.ndim - (1 + new_D)}"
+
+        D_increase = new_D - old_D
+        assert D_increase == 1
+
+        if (
+            old_filters.shape[1 : 1 + old_D] == (3,) * old_D
+            and new_filters.shape[1 : 1 + new_D] == (3,) * new_D
+        ):
+            if old_D == 1 and new_D == 2:
+                assert old_weights.shape[2] == 2  # should be 2 filters
+                ratio = 1 / 3
+
+                alpha_prime = jnp.stack(
+                    [
+                        old_weights[..., 0] + (-2 + 4 * ratio) * old_weights[..., 1],
+                        (1 - 2 * ratio) * old_weights[..., 1],
+                        ratio * old_weights[..., 1],
+                    ],
+                    axis=-1,
+                )
+            elif old_D == 2 and new_D == 3:
+                # need to get first 4 new_weights from first 3 old_weights
+
+                z = (old_weights[..., 2] * 4 - old_weights[..., 1]) / 9
+
+                alpha_prime = jnp.stack(
+                    [
+                        old_weights[..., 0]
+                        - 2 * old_weights[..., 1]
+                        + 4 * old_weights[..., 2]
+                        - 8 * z,
+                        old_weights[..., 1] - 2 * old_weights[..., 2] + 4 * z,
+                        old_weights[..., 2] - 2 * z,
+                        z,
+                    ],
+                    axis=-1,
+                )
+
+                # filters are in flipped order for some reason
+                symmetric_traceless = jnp.ones_like(old_weights[..., :2]) * old_weights[..., 4:5]
+                along_trace = jnp.ones_like(old_weights[..., :2]) * old_weights[..., 3:4]
+
+                alpha_prime = jnp.concatenate(
+                    [alpha_prime, symmetric_traceless, along_trace], axis=-1
+                )
+            else:
+                raise ValueError()
+        elif (
+            old_filters.shape[1 : 1 + old_D] == (2,) * old_D
+            and new_filters.shape[1 : 1 + new_D] == (2,) * new_D
+        ):
+            alpha_prime = old_weights / (2**D_increase)
+        else:
+            raise ValueError()
+
+        # TODO: I could check that the condition holds?
+
+        return alpha_prime
+
+    @staticmethod
     def compatibility_norm_rescale_weights(
         old_filter_triple: tuple[jax.Array, jax.Array, int],
         new_filter_triple: tuple[jax.Array, jax.Array, int],
@@ -616,7 +701,7 @@ class AnyDimensionalModel(MultiImageModule):
         assert jnp.allclose(collapsed_ff, scaled_old_filters, rtol=1e-3, atol=1e-3), diff_message
 
         if verbose:
-            print("new weights:", new_weights)
+            print("old weights:", old_weights)
             print("updated weights:", alpha_prime)
 
         return alpha_prime
@@ -699,6 +784,12 @@ class AnyDimensionalModel(MultiImageModule):
                     scaled_weights_block = new_weights_block
                     scaled_weights_block = scaled_weights_block.at[:, :, nonzero_mask].set(
                         updated_weights_block
+                    )
+                elif rescale is geom.Rescaling.COMPAT_FLEX:
+                    scaled_weights_block = AnyDimensionalModel.compat_flex_rescale_weights(
+                        (old_filter_block, old_weights_block, old_filters.D),
+                        (new_filter_block, new_weights_block, new_filters.D),
+                        verbose,
                     )
                 else:
                     scaled_weights_block = new_weights_block
@@ -2044,6 +2135,7 @@ class SimpleConvSeries(AnyDimensionalModel):
     width: int = eqx.field(static=True)
     depth: int = eqx.field(static=True)
     use_bias: bool | str = eqx.field(static=True)
+    activation_f: Callable | str | None = eqx.field(static=True)
 
     def __init__(
         self: Self,
@@ -2053,6 +2145,7 @@ class SimpleConvSeries(AnyDimensionalModel):
         width: int,
         depth: int,
         use_bias: bool | str,
+        activation_f: Callable | str | None,
         key: jax.Array,
     ) -> None:
         assert depth >= 1
@@ -2062,6 +2155,7 @@ class SimpleConvSeries(AnyDimensionalModel):
         self.width = width
         self.depth = depth
         self.use_bias = use_bias
+        self.activation_f = activation_f
 
         mid_keys = geom.signature_union(input_keys, target_keys, width) if depth > 1 else input_keys
 
@@ -2070,7 +2164,14 @@ class SimpleConvSeries(AnyDimensionalModel):
         for subkey in subkeys:
             self.layers.append(
                 ConvBlock(
-                    self.D, input_keys, mid_keys, use_bias, "gelu", True, conv_filters, key=subkey
+                    self.D,
+                    input_keys,
+                    mid_keys,
+                    use_bias,
+                    activation_f,
+                    True,
+                    conv_filters,
+                    key=subkey,
                 )
             )
 
@@ -2101,6 +2202,7 @@ class SimpleConvSeries(AnyDimensionalModel):
             self.width,
             self.depth,
             self.use_bias,
+            self.activation_f,
             key,
         )
 

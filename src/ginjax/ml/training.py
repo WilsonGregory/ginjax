@@ -274,6 +274,7 @@ def map_loss_in_batches(
     rand_key: Optional[ArrayLike],
     devices: Optional[list[jax.Device]] = None,
     aux_data: Optional[eqx.nn.State] = None,
+    reduce: str | None = "mean",
 ) -> jax.Array:
     """
     Runs map_and_loss for the entire x, y, splitting into batches if the MultiImage is larger than
@@ -291,6 +292,7 @@ def map_loss_in_batches(
         rand_key: rand key passed to get_batches, on None order won't be randomized
         devices: the gpus that the code will run on
         aux_data: auxilliary data, such as batch stats. Passed to the function is has_aux is True.
+        reduce: how to reduce between batches, defaults to mean
 
     Returns:
         Average loss over the entire BatchMultiImage
@@ -300,7 +302,9 @@ def map_loss_in_batches(
         evaluate(model, map_and_loss, X_batch, Y_batch, aux_data, False)
         for X_batch, Y_batch in zip(X_batches, Y_batches)
     ]
-    return loss_reducer(losses)
+    # because return_map=False, losses is a list of jax arrays
+
+    return loss_reducer(losses) if reduce == "mean" else jnp.concat(losses, axis=0)
 
 
 def map_plus_loss_in_batches(
@@ -685,24 +689,28 @@ class Mapper:
 
     losses: list[geom.Losses]
     residual: bool
+    reduce: str | None
 
     def __init__(
         self: Self,
         losses: list[geom.Losses],
         residual: bool = False,
+        reduce: str | None = "mean",
         eps: float = 0,
     ) -> None:
         """
         Docstring for __init__
 
         args:
-            residual: Whether the network should learn the residual, defaults to False
             losses: a list of losses, must be at least 1
+            residual: Whether the network should learn the residual, defaults to False
+            reduce: How to reduce the batch dimension, defaults to 'mean' but can also be None
             eps: epsilon value to use for nrmse and lr_rel, avoid dividing by 0
         """
         assert len(losses) > 0, "Mapper::init: At least one loss required."
         self.losses = losses
         self.residual = residual
+        self.reduce = reduce
         self.eps = eps
 
     @eqx.filter_jit
@@ -745,10 +753,10 @@ class Mapper:
         loss_outputs = []
         for loss in self.losses:  # the order is important
             if loss is geom.Losses.SMSE:
-                loss_outputs.append(smse_loss(pred_y, multi_image_y))
+                loss_outputs.append(smse_loss(pred_y, multi_image_y, self.reduce))
             elif loss is geom.Losses.NRMSE:
-                loss_outputs.append(nrmse_loss(pred_y, multi_image_y, eps=self.eps))
+                loss_outputs.append(nrmse_loss(pred_y, multi_image_y, self.reduce, eps=self.eps))
             elif loss is geom.Losses.L2_REL:
-                loss_outputs.append(l2_rel_error(pred_y, multi_image_y, eps=self.eps))
+                loss_outputs.append(l2_rel_error(pred_y, multi_image_y, self.reduce, eps=self.eps))
 
-        return jnp.squeeze(jnp.stack(loss_outputs)), aux_data
+        return jnp.squeeze(jnp.stack(loss_outputs, axis=-1)), aux_data

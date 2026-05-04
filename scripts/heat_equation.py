@@ -302,7 +302,8 @@ def plot_results(
     number of tuning points on the x-axis and the error (either l2 or relative) on the y-axis.
 
     args:
-        results_dict: The results with test_D, then 'baseline' or train_D, then a list over n_tune.
+        results_dict: The results dict of test_D, train_D, then a list over n_tune, array n_results
+            in this case n_results is smse_mean, smse_std, rel_mean, rel_std
         results_labels: e.g. 'l2', 'relative error'
         n_tune_range: number of fine-tuning points, or training points for the baseline model
         model_names_d: model names for each dimension
@@ -346,12 +347,22 @@ def plot_results(
             # looping over 'two_layer_gaussian', 'resnet_equiv_42', ...
             for i, model_results in enumerate(results_by_model.values()):
                 for j, (display_name, results_arr) in enumerate(model_results):
+
+                    mean_result = jnp.mean(results_arr, axis=1)[:, error_idx * 2]
+                    stdev = jnp.mean(results_arr, axis=1)[:, error_idx * 2 + 1]
                     ax.plot(
-                        jnp.mean(results_arr, axis=1)[:, error_idx],
+                        mean_result,
                         marker="o",
                         linestyle=linestyles[j],
                         label=display_name,
-                        color=colors[i],
+                        color=colors[j],  # was i, currently only model
+                    )
+                    ax.fill_between(
+                        range(len(n_tune_range)),
+                        mean_result - stdev,
+                        mean_result + stdev,
+                        color=colors[j],
+                        alpha=0.2,
                     )
 
             ax.legend()
@@ -504,7 +515,7 @@ def tune_and_eval(
     has_aux: bool = False,
     verbose: int = 1,
     is_wandb: bool = False,
-) -> tuple[jax.Array, jax.Array]:
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     tune_X, tune_Y, val_X, val_Y, test_X, test_Y = data
     N = tune_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
@@ -563,18 +574,24 @@ def tune_and_eval(
             ml.save(model_path, tuned_model_dprime)
 
     key, subkey = random.split(key)
+    # (batch,losses)
     tuned_loss = ml.map_loss_in_batches(
-        ml.Mapper([geom.Losses.SMSE, geom.Losses.L2_REL], residual),
+        ml.Mapper([geom.Losses.SMSE, geom.Losses.L2_REL], residual, reduce=None),
         tuned_model_dprime,
         test_X,
         test_Y,
         batch_size,
         subkey,
         aux_data=tune_batch_stats,
+        reduce=None,
     )
-    l2_loss = tuned_loss[0]
-    rel_error = tuned_loss[1]
-    print(f"Tuned Loss rescale=True, D={test_X.D}: {l2_loss:.3e} ({rel_error:.3f}%)\n")
+    smse_mean = jnp.mean(tuned_loss[:, 0])
+    smse_std = jnp.std(tuned_loss[:, 0])
+    rel_mean = jnp.mean(tuned_loss[:, 1])
+    rel_std = jnp.std(tuned_loss[:, 1])
+    print(
+        f"Tuned Loss rescale=True, D={test_X.D}: {smse_mean:.3e} +-{smse_std:.3e} ({rel_mean:.3f}% +-{rel_std:.3f}%)\n"
+    )
 
     # assert tuned_model_dprime is not None
     # if images_dir and test_X.D == 2:
@@ -588,7 +605,7 @@ def tune_and_eval(
     #         "heat",
     #     )
 
-    return l2_loss, rel_error
+    return smse_mean, smse_std, rel_mean, rel_std
 
 
 # an example of currently used script
@@ -1040,7 +1057,7 @@ for test_D in args.test_D_range:
             subkey,
             lr_range if args.find_tune_lr else [],
             num_trials=args.n_trials,
-            num_results=2,  # l2, rel_error
+            num_results=4,  # smse_mean, smse_std, rel_mean, rel_std
             is_wandb=args.tune_wandb,
             wandb_project=args.wandb_project,
             wandb_entity=args.wandb_entity,
@@ -1071,7 +1088,7 @@ for test_D in args.test_D_range:
                 subkey,
                 lr_range if args.find_tune_lr else [],
                 num_trials=args.n_trials,
-                num_results=2,  # l2, rel_error
+                num_results=4,  # smse_mean, smse_std, rel_mean, rel_std
                 is_wandb=args.tune_wandb,
                 wandb_project=args.wandb_project,
                 wandb_entity=args.wandb_entity,
@@ -1090,7 +1107,7 @@ if args.images_dir is not None:
     model_names_d = {D: [x[0] for x in model_list] for D, model_list in model_list_d.items()}
     plot_results(
         results_dict,
-        ["l2_error", "relative_error"],
+        ["L2 Error", "Relative Error"],
         args.n_tune_range,
         model_names_d,
         args.images_dir,

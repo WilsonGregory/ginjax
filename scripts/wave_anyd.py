@@ -346,7 +346,7 @@ def train_model(
     else:
         steps_per_epoch = int(math.ceil(train_X.get_L() / batch_size))
         key, subkey = random.split(key)
-        trained_model, _, _, _ = ml.train(
+        trained_model, _, _, _, _ = ml.train(
             train_X,
             train_Y,
             ml.Mapper([geom.Losses.SMSE], residual, eps=1e-5),
@@ -491,7 +491,7 @@ def tune_and_eval(
             # Now treat the trained_model_d as a warmstart and do some additional training
             key, subkey = random.split(key)
             steps_per_epoch = int(math.ceil(tune_X.get_L() / batch_size))
-            tuned_model_dprime, tune_batch_stats, _, _ = ml.train(
+            tuned_model_dprime, tune_batch_stats, _, _, _ = ml.train(
                 tune_X,
                 tune_Y,
                 ml.Mapper([geom.Losses.SMSE], residual, eps=1e-5),

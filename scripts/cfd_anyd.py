@@ -227,7 +227,7 @@ def train_and_eval(
     if load_model is None:
         steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
         key, subkey = random.split(key)
-        trained_model, batch_stats, train_loss, val_loss = ml.train(
+        trained_model, batch_stats, train_loss, val_loss, _ = ml.train(
             train_X,
             train_Y,
             map_and_loss,

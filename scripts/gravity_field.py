@@ -236,7 +236,7 @@ else:
         )
     )
     key, subkey = random.split(key)
-    model, _, train_loss, val_loss = ml.train(
+    model, _, train_loss, val_loss, _ = ml.train(
         train_X,
         train_Y,
         map_and_loss,

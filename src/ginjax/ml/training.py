@@ -1,5 +1,6 @@
 import time
 import enum
+import json
 import math
 import functools
 import pathlib
@@ -34,6 +35,24 @@ def save(filename: str | pathlib.Path, model: models.MultiImageModule) -> None:
         eqx.tree_serialise_leaves(f, model)
 
 
+def save_plus(
+    filename: str | pathlib.Path, model: models.MultiImageModule, further_args: dict = {}
+) -> None:
+    """
+    New version of save, allows you to save any serializable args.
+
+    args:
+        filename: the file to save the model to
+        model: the model to save
+        further_args: more values to save, as a dictionary
+    """
+    # TODO: save batch stats
+    with open(filename, "wb") as f:
+        further_args_str = json.dumps(further_args)
+        f.write((further_args_str + "\n").encode())
+        eqx.tree_serialise_leaves(f, model)
+
+
 def load(filename: str | pathlib.Path, model: models.MultiImageModule) -> models.MultiImageModule:
     """
     Load an equinox model.
@@ -47,6 +66,24 @@ def load(filename: str | pathlib.Path, model: models.MultiImageModule) -> models
     """
     with open(filename, "rb") as f:
         return eqx.tree_deserialise_leaves(f, model)
+
+
+def load_plus(
+    filename: str | pathlib.Path, model: models.MultiImageModule
+) -> tuple[models.MultiImageModule, dict]:
+    """
+    Load an equinox model.
+
+    args:
+        filename: the file to load the model from
+        model: the type of model we are loading, the parameter values will be set to the loaded ones
+
+    returns:
+        the loaded model
+    """
+    with open(filename, "rb") as f:
+        further_args = json.loads(f.readline().decode())
+        return eqx.tree_deserialise_leaves(f, model), further_args
 
 
 ## Data and Batching operations
@@ -427,9 +464,7 @@ def train(
     devices: Optional[list[jax.Device]] = None,
     aux_data: Optional[eqx.nn.State] = None,
     is_wandb: bool = False,
-) -> tuple[
-    models.MultiImageModule, Optional[eqx.nn.State], Optional[ArrayLike], Optional[ArrayLike]
-]:
+) -> tuple[models.MultiImageModule, eqx.nn.State | None, ArrayLike | None, ArrayLike | None, float]:
     """
     Method to train the model. It uses stochastic gradient descent (SGD) with the optimizer to learn the
     parameters the minimize the map_and_loss function. The model is returned. This function automatically
@@ -457,7 +492,7 @@ def train(
         is_wandb: whether wandb experiment tracking has been initiated and should be logged to
 
     returns:
-        A tuple of best model in inference mode, aux_data, epoch loss, and val loss
+        A tuple of best model in inference mode, aux_data, epoch loss, val loss, and train_time
     """
     if isinstance(stop_condition, ValLoss) and not (validation_X and validation_Y):
         raise ValueError("Stop condition is ValLoss, but no validation data provided.")
@@ -467,6 +502,7 @@ def train(
 
     devices = devices if devices else jax.devices()
 
+    total_train_time = 0
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     epoch = 0
     epoch_val_loss = None
@@ -475,10 +511,10 @@ def train(
     epoch_time = 0
     stop_condition.best_model = model
     while not stop_condition.stop(model, epoch, epoch_loss, epoch_val_loss, epoch_time):
+        start_time = time.time()
         rand_key, subkey = random.split(rand_key)
         X_batches, Y_batches = get_batches((X, Y), batch_size, subkey, devices)
         epoch_loss = None
-        start_time = time.time()
         for X_batch, Y_batch in zip(X_batches, Y_batches):
             model, opt_state, loss_value, aux_data = train_step(
                 map_and_loss,
@@ -490,6 +526,8 @@ def train(
                 aux_data,
             )
             epoch_loss = loss_value if epoch_loss is None else epoch_loss + loss_value
+
+        total_train_time += time.time() - start_time
 
         if epoch_loss is not None:
             epoch_loss = epoch_loss / len(X_batches)
@@ -520,7 +558,7 @@ def train(
 
         epoch_time = time.time() - start_time
 
-    return stop_condition.best_model, aux_data, epoch_loss, val_loss
+    return stop_condition.best_model, aux_data, epoch_loss, val_loss, total_train_time
 
 
 BENCHMARK_DATA = "benchmark_data"

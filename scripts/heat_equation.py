@@ -377,7 +377,7 @@ def plot_results(
             ax.set_ylabel(ylabel)
             ax.set_yscale("log")
             ax.set_xticks(range(len(n_tune_range)), [str(x) for x in n_tune_range])
-            ax.set_title(f"Test D={test_D} {ylabel}")
+            ax.set_title(f"Heat Equation Test {test_D}D {ylabel}")
 
     plt.tight_layout()
     plt.savefig(f"{saveloc}heat_warmstart_plot.png")
@@ -396,7 +396,7 @@ def plot_time_results(
 
     args:
         results_dict: The results dict of test_D, train_D, then a list over n_tune, array n_results
-            in this case n_results is smse_mean, smse_std, rel_mean, rel_std
+            in this case n_results is smse_mean, smse_std, rel_mean, rel_std, time
         results_labels: e.g. 'l2', 'relative error'
         model_names_d: model names for each dimension
         saveloc: beginning of save location
@@ -464,7 +464,7 @@ def plot_time_results(
             ax.set_xlabel("Total time (minutes)")
             ax.set_ylabel(ylabel)
             ax.set_yscale("log")
-            ax.set_title(f"Test D={test_D} {ylabel}")
+            ax.set_title(f"Heat Equation Time Comparison Test {test_D}D {ylabel}")
 
     plt.tight_layout()
     plt.savefig(f"{saveloc}heat_warmstart_time_plot.png")

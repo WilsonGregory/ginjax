@@ -4,6 +4,7 @@ import functools as ft
 import math
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
+import numpy as np
 import pathlib
 import time
 from typing import Callable
@@ -47,9 +48,9 @@ def heat_step(D: int, x0: jax.Array, t: float, k: float, is_torus: bool) -> jax.
     # (spatial_size,D)
     idxs = jnp.stack(jnp.meshgrid(*meshgrid_dims, indexing="ij"), axis=-1).reshape((-1, D))
     x1 = []
+    # Effectively batching this entire dataset runs out of memory
+    # It is possible there are more efficient ways of doing this.
     for i, idx in enumerate(idxs):
-        if (i % (len(idxs) // 10)) == 0:
-            print(f"{D},{batch}: {i}/{len(idxs)}")
         # (spatial_size,D)
         if is_torus:
             idxs_diff = jnp.abs(idxs - idx[None])
@@ -76,7 +77,7 @@ def get_data_d(
     batch: int,
     key: jax.Array,
     data_dir: pathlib.Path,
-) -> tuple[geom.MultiImage, geom.MultiImage]:
+) -> tuple[geom.MultiImage, geom.MultiImage, float]:
     """
     Get an input, output data pair of heat diffusion after t timestep, diffusion coefficient k.
     The initial data is uniform on the range 0 to max_temp.
@@ -103,22 +104,27 @@ def get_data_d(
     if batch == 0:
         x0 = jnp.zeros((batch,) + (N,) * D)
         xt = jnp.zeros((batch,) + (N,) * D)
+        generation_time = 0
     elif data_dir.is_file():
         dataset = jnp.load(data_dir, allow_pickle=True).item()
         x0 = dataset["x0"]
         xt = dataset["xt"]
+        generation_time = dataset["generation_time"] if "generation_time" in dataset else -1
     else:
+        print(f"Creating data {data_dir}...")
+        start_time = time.time()
         key, subkey = random.split(key)
         x0 = random.uniform(subkey, shape=(batch,) + (N,) * D, minval=-max_temp, maxval=max_temp)
         xt = heat_step(D, x0, t, k, is_torus)
+        generation_time = time.time() - start_time
 
-        print(f"saving at {data_dir}...")
-        jnp.save(data_dir, {"x0": x0, "xt": xt})
+        print(f"Finished in {generation_time} seconds.")
+        jnp.save(data_dir, {"x0": x0, "xt": xt, "generation_time": generation_time})
 
     x0_img = geom.MultiImage({(0, 0): x0[:, None]}, D, is_torus)
     xt_img = geom.MultiImage({(0, 0): xt[:, None]}, D, is_torus)
 
-    return x0_img, xt_img
+    return x0_img, xt_img, generation_time
 
 
 def get_data(
@@ -138,6 +144,7 @@ def get_data(
     geom.MultiImage,
     geom.MultiImage,
     geom.MultiImage,
+    float,
 ]:
     """
     Get an input, output data pair of heat diffusion after 1 timestep, specified diffusion constant.
@@ -162,15 +169,15 @@ def get_data(
     data_dir_path = pathlib.Path(data_dir)
 
     key, subkey1, subkey2, subkey3 = random.split(key, num=4)
-    train_x0, train_xt = get_data_d(
+    train_x0, train_xt, train_generation_time = get_data_d(
         D, N, is_torus, diffusion_coef, t, max_temp, n_train, subkey1, data_dir_path / "train"
     )
 
-    val_x0, val_xt = get_data_d(
+    val_x0, val_xt, _ = get_data_d(
         D, N, is_torus, diffusion_coef, t, max_temp, n_val, subkey2, data_dir_path / "val"
     )
 
-    test_x0, test_xt = get_data_d(
+    test_x0, test_xt, _ = get_data_d(
         D, N, is_torus, diffusion_coef, t, max_temp, n_test, subkey3, data_dir_path / "test"
     )
     if n_test > 0:
@@ -179,7 +186,7 @@ def get_data(
         xt_resid_std = jnp.std(test_xt[((), 0)] - test_x0[((), 0)])
         print(f"D={D}, x0:{x0_std:.3e}, xt:{xt_std:.3e}, xt_resid:{xt_resid_std:.3e}")
 
-    return train_x0, train_xt, val_x0, val_xt, test_x0, test_xt
+    return train_x0, train_xt, val_x0, val_xt, test_x0, test_xt, train_generation_time
 
 
 def plot_multi_image(
@@ -373,7 +380,94 @@ def plot_results(
             ax.set_title(f"Test D={test_D} {ylabel}")
 
     plt.tight_layout()
-    plt.savefig(f"{saveloc}warmstart_plot.png")
+    plt.savefig(f"{saveloc}heat_warmstart_plot.png")
+    plt.close()
+
+
+def plot_time_results(
+    results_dict: dict[int, dict[int, list[jax.Array]]],
+    results_labels: list[str],
+    model_names_d: dict[int, list[str]],
+    saveloc: str,
+) -> None:
+    """
+    Plot the results of each model versus the time it took to get those results, including the time
+    to generate the training data.
+
+    args:
+        results_dict: The results dict of test_D, train_D, then a list over n_tune, array n_results
+            in this case n_results is smse_mean, smse_std, rel_mean, rel_std
+        results_labels: e.g. 'l2', 'relative error'
+        model_names_d: model names for each dimension
+        saveloc: beginning of save location
+
+    returns:
+        none
+    """
+    # group the results by model, across all trained dimensions
+    grouped_results = {}
+    for test_D, results_train_d in results_dict.items():
+        grouped_results[test_D] = {}
+        for train_D, results in results_train_d.items():
+            for i, name in enumerate(model_names_d[train_D]):
+                name_trimmed = name[:-3]  # this assumes that all models end in _D1, _D2, or _D3
+                display_name = f"{name} (baseline)" if train_D == test_D else name
+
+                if name_trimmed in grouped_results[test_D]:
+                    # (n_tune,n_trials,n_results)
+                    grouped_results[test_D][name_trimmed].append(
+                        (display_name, jnp.stack(results)[:, :, 0, i])
+                    )
+                else:
+                    grouped_results[test_D][name_trimmed] = [
+                        (display_name, jnp.stack(results)[:, :, 0, i])
+                    ]
+
+    # figsize is 8 per col, 6 per row, (cols,rows)
+    nrows = len(list(grouped_results.keys()))
+    ncols = len(results_labels)
+    _, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8 * ncols, 6 * nrows))
+    linestyles = ["solid", "dotted", "dashed", "dashdot"]
+    colors = ["b", "g", "r", "c", "m", "y"]
+
+    axes = [axes] if nrows == 1 else axes
+
+    for (test_D, results_by_model), ax_row in zip(grouped_results.items(), axes):
+        for error_idx, ylabel, ax in zip(range(len(results_labels)), results_labels, ax_row):
+            assert isinstance(ax, Axes)
+
+            # looping over 'two_layer_gaussian', 'resnet_equiv_42', ...
+            for i, model_results in enumerate(results_by_model.values()):
+                for j, (display_name, results_arr) in enumerate(model_results):
+
+                    # mean is over trials
+                    times = jnp.mean(results_arr, axis=1)[:, -1] / 60
+                    mean_result = jnp.mean(results_arr, axis=1)[:, error_idx * 2]
+                    stdev = jnp.mean(results_arr, axis=1)[:, error_idx * 2 + 1]
+                    ax.plot(
+                        times,
+                        mean_result,
+                        marker="o",
+                        linestyle=linestyles[j],
+                        label=display_name,
+                        color=colors[j],  # was i, currently only model
+                    )
+                    ax.fill_between(
+                        times,
+                        mean_result - stdev,
+                        mean_result + stdev,
+                        color=colors[j],
+                        alpha=0.2,
+                    )
+
+            ax.legend()
+            ax.set_xlabel("Total time (minutes)")
+            ax.set_ylabel(ylabel)
+            ax.set_yscale("log")
+            ax.set_title(f"Test D={test_D} {ylabel}")
+
+    plt.tight_layout()
+    plt.savefig(f"{saveloc}heat_warmstart_time_plot.png")
     plt.close()
 
 
@@ -397,7 +491,7 @@ def train_model(
     has_aux: bool = False,
     verbose: int = 1,
     is_wandb: bool = False,
-) -> models.MultiImageModule:
+) -> tuple[models.MultiImageModule, float]:
     train_X, train_Y, val_X, val_Y = data
     N = train_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
@@ -407,11 +501,12 @@ def train_model(
     print(f"{model_name_extended} params: {models.count_params(model):,}")
 
     if model_path and model_path.is_file() and not overwrite_save_model:
-        return ml.load(model_path, model)
+        trained_model, further_args = ml.load_plus(model_path, model)
+        return trained_model, further_args["train_time"]
 
     steps_per_epoch = int(math.ceil(train_X.get_L() / batch_size))
     key, subkey = random.split(key)
-    trained_model, _, _, _ = ml.train(
+    trained_model, _, _, _, train_time = ml.train(
         train_X,
         train_Y,
         ml.Mapper([geom.Losses.SMSE], residual),
@@ -435,9 +530,9 @@ def train_model(
     if model_path:
         assert not model_path.is_file() or overwrite_save_model
         # TODO: need to save batch_stats as well
-        ml.save(model_path, trained_model)
+        ml.save_plus(model_path, trained_model, {"train_time": train_time})
 
-    return trained_model
+    return trained_model, train_time
 
 
 def train_all_models(
@@ -483,9 +578,9 @@ def train_all_models(
                 },
             )
         else:
-            trained_model = train_model(data, subkey, model_name, **_train_kwargs)
+            trained_model, train_time = train_model(data, subkey, model_name, **_train_kwargs)
             _test_kwargs = {**_test_kwargs, "model": trained_model}
-            trained_models.append((model_name, tune_and_eval, _test_kwargs))
+            trained_models.append((model_name, tune_and_eval, _test_kwargs, train_time))
 
     return trained_models
 
@@ -515,7 +610,7 @@ def tune_and_eval(
     has_aux: bool = False,
     verbose: int = 1,
     is_wandb: bool = False,
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, float]:
     tune_X, tune_Y, val_X, val_Y, test_X, test_Y = data
     N = tune_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
@@ -524,28 +619,32 @@ def tune_and_eval(
     key, subkey = random.split(key)
     # rescale set to True, small but notable difference
     if conv_filters_dict is not None and rescale is not None:
+        start_time = time.time()
         model_dprime = model.convertD(
             conv_filters_dict[tune_X.D],
             rescale,
             subkey,
             upsample_filters=upsample_filters_dict[tune_X.D] if upsample_filters_dict else None,
         )
+        convert_time = time.time() - start_time  # this should be tiny
         model_name_extended += f"_rescale{rescale.name}"
     else:
+        convert_time = 0.0
         model_dprime = model
 
     model_path = model_dir / f"{model_name_extended}_model.eqx" if model_dir else None
     print(f"tuning: {model_name_extended}")
 
     if model_path and model_path.is_file() and not overwrite_save_model:
-        tuned_model_dprime = ml.load(model_path, model_dprime)
+        tuned_model_dprime, further_args = ml.load_plus(model_path, model_dprime)
         tune_batch_stats = batch_stats
+        tune_time = further_args["train_time"]
     else:
         if tune_X.get_L() > 0:
             # Now treat the trained_model_d as a warmstart and do some additional training
             key, subkey = random.split(key)
             steps_per_epoch = int(math.ceil(tune_X.get_L() / batch_size))
-            tuned_model_dprime, tune_batch_stats, _, _ = ml.train(
+            tuned_model_dprime, tune_batch_stats, _, _, tune_time = ml.train(
                 tune_X,
                 tune_Y,
                 ml.Mapper([geom.Losses.SMSE], residual),
@@ -567,11 +666,12 @@ def tune_and_eval(
             )
         else:
             tuned_model_dprime = model_dprime
+            tune_time = 0
             tune_batch_stats = batch_stats
 
         if model_path:
             assert not model_path.is_file() or overwrite_save_model
-            ml.save(model_path, tuned_model_dprime)
+            ml.save_plus(model_path, tuned_model_dprime, {"train_time": tune_time})
 
     key, subkey = random.split(key)
     # (batch,losses)
@@ -605,7 +705,7 @@ def tune_and_eval(
     #         "heat",
     #     )
 
-    return smse_mean, smse_std, rel_mean, rel_std
+    return smse_mean, smse_std, rel_mean, rel_std, convert_time + tune_time
 
 
 # an example of currently used script
@@ -689,6 +789,7 @@ lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]
 
 max_pixel_l1 = 2
 M = 5
+n_results = 5
 
 train_kwargs = {
     "residual": args.residual,
@@ -772,7 +873,7 @@ print("Define the models!")
 model_list_d = {}
 for D in full_D_range:
     key, subkey = random.split(key)
-    train_x0, train_xt, _, _, _, _ = get_data(
+    train_x0, train_xt, _, _, _, _, _ = get_data(
         D, args.N, True, args.diffusion_coef, args.n_train, 0, 0, subkey, args.data
     )
     input_keys = train_x0.get_signature()
@@ -996,9 +1097,10 @@ for D in full_D_range:
 # train the models, i.e. the warmstart lower dimensional models
 print("Train the models (warmstart)!")
 trained_model_list_d = {}
+pretrain_data_time_d = {}
 for train_D in args.train_D_range:
     key, subkey = random.split(key)
-    train_x0, train_xt, val_x0, val_xt, _, _ = get_data(
+    train_x0, train_xt, val_x0, val_xt, _, _, pretrain_data_time = get_data(
         train_D, args.N, True, args.diffusion_coef, args.n_train, args.n_val, 0, subkey, args.data
     )
 
@@ -1007,6 +1109,7 @@ for train_D in args.train_D_range:
     trained_model_list_d[train_D] = train_all_models(
         train_data, subkey, model_list_d[train_D], lr_range, args
     )
+    pretrain_data_time_d[train_D] = pretrain_data_time
 
 if args.find_train_lr:
     exit()
@@ -1020,7 +1123,7 @@ for test_D in args.test_D_range:
         print(f"D={test_D}, n_tune={n_tune}.\n")
         # the data is saved, so this is still reasonably efficient
         key, subkey = random.split(key)
-        tune_data = get_data(
+        *tune_data, tune_data_time = get_data(
             test_D,
             args.N,
             True,
@@ -1057,7 +1160,7 @@ for test_D in args.test_D_range:
             subkey,
             lr_range if args.find_tune_lr else [],
             num_trials=args.n_trials,
-            num_results=4,  # smse_mean, smse_std, rel_mean, rel_std
+            num_results=n_results,  # smse_mean, smse_std, rel_mean, rel_std, tune_time
             is_wandb=args.tune_wandb,
             wandb_project=args.wandb_project,
             wandb_entity=args.wandb_entity,
@@ -1068,6 +1171,7 @@ for test_D in args.test_D_range:
                 "train_or_tune": "tune",
             },
         )
+        baseline_results[..., -1] += tune_data_time
         results_dict[test_D][test_D].append(baseline_results)
 
         for train_D in args.train_D_range:
@@ -1077,8 +1181,15 @@ for test_D in args.test_D_range:
             # select the correct learning rate for the tuning based on train and test dimensions
             trained_model_list = [
                 (name, func, {**_test_kwargs, "lr": _test_kwargs["lr"][(train_D, test_D)][n_tune]})
-                for name, func, _test_kwargs in trained_model_list_d[train_D]
+                for name, func, _test_kwargs, _ in trained_model_list_d[train_D]
             ]
+            train_model_times = np.stack(
+                [train_time for _, _, _, train_time in trained_model_list_d[train_D]]
+            )
+            train_model_times = np.concat(
+                [np.zeros((len(train_model_times), n_results - 1)), train_model_times[:, None]],
+                axis=1,
+            )
 
             key, subkey = random.split(key)
             # (n_trials, benchmark, models, n_results)
@@ -1088,7 +1199,7 @@ for test_D in args.test_D_range:
                 subkey,
                 lr_range if args.find_tune_lr else [],
                 num_trials=args.n_trials,
-                num_results=4,  # smse_mean, smse_std, rel_mean, rel_std
+                num_results=n_results,  # smse_mean, smse_std, rel_mean, rel_std, tune_time
                 is_wandb=args.tune_wandb,
                 wandb_project=args.wandb_project,
                 wandb_entity=args.wandb_entity,
@@ -1099,6 +1210,9 @@ for test_D in args.test_D_range:
                     "train_or_tune": "tune",
                 },
             )
+
+            tune_results += train_model_times[None, None]
+            tune_results[..., -1] += pretrain_data_time_d[train_D] + tune_data_time
 
             results_dict[test_D][train_D].append(tune_results)
 
@@ -1112,3 +1226,5 @@ if args.images_dir is not None:
         model_names_d,
         args.images_dir,
     )
+
+    plot_time_results(results_dict, ["L2 Error", "Relative Error"], model_names_d, args.images_dir)

@@ -27,6 +27,7 @@ def get_data_d(
     N: int,
     diffusion_coef: float,
     convection_coef: float,
+    n_timesteps: int,
     subsample: int,  # new
     n_batch: int,
     key: jax.Array,
@@ -49,7 +50,6 @@ def get_data_d(
         a tuple of the input and output geometric images
     """
     is_torus = True
-    n_timesteps = 50  # 50?
     n_timesteps_int = n_timesteps * subsample  # integrator time steps
     n_warmup_steps = 0  # in 3D, seems like there is an initial problem
     scenario = "diff_burgers"  # diff setting guaranteed to avoid NaNs, so prefer it over norm, phy
@@ -68,6 +68,7 @@ def get_data_d(
     train_name = f"D{D}_{scenario}_N{N}_n{n_batch}_diffusion{scaled_diff_coef}_convection{scaled_conv_coef}_t{n_timesteps_int}"
     train_path = pathlib.Path(f"{data_dir}") / f"{train_name}_train.npy"
     if not train_path.is_file():
+        start_time = time.time()
         print(f"Generating data:", train_path)
         key, subkey = random.split(key)
         train_seed, test_seed = random.randint(subkey, shape=(2,), minval=0, maxval=10000)
@@ -92,6 +93,39 @@ def get_data_d(
             diffusion_gamma=scaled_diff_coef,  # for diff_burgers
             convection_delta=scaled_conv_coef,  # for diff_burgers
         )
+
+        data_generation_time = time.time() - start_time
+        print(f"Finished: {data_generation_time} seconds.")
+    else:
+        # dictionary by D, then n_batch
+        # Since these values aren't saved with the data, hardcode them from some previous run.
+        data_generation_times = {
+            64: {
+                2: {
+                    0: jnp.array([1.0652430057525635, 0.40758848190307617]),
+                    8: jnp.array([7.801406621932983, 3.1244280338287354]),
+                },
+                3: {
+                    0: jnp.array([0.6283245086669922, 2.0740256309509277, 0.9826910495758057]),
+                    1: jnp.array([5.805211067199707]),
+                    4: jnp.array([7.013747453689575]),
+                    8: jnp.array([8.912535429000854, 5.779284477233887, 7.701824903488159]),
+                },
+            },
+            96: {  # 96 was also done with n_timesteps=25, rather than 50
+                2: {
+                    0: jnp.array([0.6557881832122803, 0.3366715908050537]),
+                    8: jnp.array([4.890353679656982, 2.4403231143951416]),
+                },
+                3: {
+                    0: jnp.array([0.3930032253265381, 0.38234496116638184]),
+                    1: jnp.array([0]),
+                    4: jnp.array([0]),
+                    8: jnp.array([15.993224382400513]),
+                },
+            },
+        }
+        data_generation_time = float(jnp.mean(data_generation_times[N][D][n_batch]))
 
     cpu = jax.devices("cpu")[0]
     # (batch,timesteps,tensor,spatial) -> (batch,timesteps,spatial,tensor)
@@ -137,22 +171,7 @@ def get_data_d(
         geom.MultiImage({(1, 0): train_data}, D, is_torus), constant_fields, n_timesteps, 1, 1
     )
 
-    # dictionary by D, then n_batch
-    # Since these values aren't saved with the data, hardcode them from some previous run.
-    data_generation_times = {
-        2: {
-            0: jnp.array([1.0652430057525635, 0.40758848190307617]),
-            8: jnp.array([7.801406621932983, 3.1244280338287354]),
-        },
-        3: {
-            0: jnp.array([0.6283245086669922, 2.0740256309509277, 0.9826910495758057]),
-            1: jnp.array([5.805211067199707]),
-            4: jnp.array([7.013747453689575]),
-            8: jnp.array([8.912535429000854, 5.779284477233887, 7.701824903488159]),
-        },
-    }
-
-    return x0, xt, float(jnp.mean(data_generation_times[D][n_batch]))
+    return x0, xt, data_generation_time
 
 
 def get_data(
@@ -160,6 +179,7 @@ def get_data(
     N: int,
     diffusion_coef: float,
     convection_coef: float,
+    n_timesteps: int,
     subsample: int,  # new
     n_train: int,
     n_val: int,
@@ -197,15 +217,39 @@ def get_data(
 
     key, subkey1, subkey2, subkey3 = random.split(key, num=4)
     train_x0, train_xt, train_data_time = get_data_d(
-        D, N, diffusion_coef, convection_coef, subsample, n_train, subkey1, data_dir_path / "train"
+        D,
+        N,
+        diffusion_coef,
+        convection_coef,
+        n_timesteps,
+        subsample,
+        n_train,
+        subkey1,
+        data_dir_path / "train",
     )
 
     val_x0, val_xt, _ = get_data_d(
-        D, N, diffusion_coef, convection_coef, subsample, n_val, subkey2, data_dir_path / "val"
+        D,
+        N,
+        diffusion_coef,
+        convection_coef,
+        n_timesteps,
+        subsample,
+        n_val,
+        subkey2,
+        data_dir_path / "val",
     )
 
     test_x0, test_xt, _ = get_data_d(
-        D, N, diffusion_coef, convection_coef, subsample, n_test, subkey3, data_dir_path / "test"
+        D,
+        N,
+        diffusion_coef,
+        convection_coef,
+        n_timesteps,
+        subsample,
+        n_test,
+        subkey3,
+        data_dir_path / "test",
     )
 
     return train_x0, train_xt, val_x0, val_xt, test_x0, test_xt, train_data_time
@@ -238,7 +282,7 @@ def plot_results(
     for train_D, results in results_dict.items():
         for i, name in enumerate(model_names_d[train_D]):
             name_trimmed = name[:-3]  # this assumes that all models end in _D2, or _D3
-            display_name = f"{name} (baseline)" if train_D == 3 else name
+            display_name = "UNet Baseline" if train_D == test_D else "UNet Pretrained"
 
             if name_trimmed in results_by_model:
                 # (n_tune,n_trials,n_results)
@@ -251,11 +295,12 @@ def plot_results(
     # figsize is 8 per col, 6 per row, (cols,rows)
     nrows = 1  # D=3 is the only test dimension
     ncols = len(results_labels)
-    _, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8 * ncols, 6 * nrows))
     linestyles = ["solid", "dotted", "dashed", "dashdot"]
     colors = ["b", "g", "r", "c", "m", "y"]
 
-    for error_idx, ylabel, ax in zip(range(len(results_labels)), results_labels, axes):
+    for error_idx, ylabel in zip(range(len(results_labels)), results_labels):
+        _, ax = plt.subplots(nrows=1, ncols=1, figsize=(8 * 1, 6 * 1))
+
         assert isinstance(ax, Axes)
 
         # looping over 'two_layer_gaussian', 'resnet_equiv_42', ...
@@ -279,16 +324,20 @@ def plot_results(
                     alpha=0.2,
                 )
 
-        ax.legend()
-        ax.set_xlabel("Number of tuning points")
-        ax.set_ylabel(ylabel)
+        ax.legend(fontsize=24)
+        ax.set_xlabel("Number of tuning points", fontsize=28)
+        ax.set_ylabel(ylabel, fontsize=28)
         ax.set_yscale("log")
         ax.set_xticks(range(len(n_tune_range)), [str(x) for x in n_tune_range])
-        ax.set_title(f"Burgers' Equation 2D -> 3D {ylabel}")
+        ax.set_title(f"Burgers' 2D->3D, by tuning points", fontsize=28)
 
-    plt.tight_layout()
-    plt.savefig(f"{saveloc}burgers_warmstart_plot.png")
-    plt.close()
+        plt.tight_layout()
+        plt.xticks(fontsize=12)
+        plt.yticks(fontsize=12)
+        plt.savefig(
+            f"{saveloc}burgers_warmstart_plot_{test_D}D_{''.join(ylabel.split()).lower()}.png"
+        )
+        plt.close()
 
 
 def plot_time_results(
@@ -316,7 +365,7 @@ def plot_time_results(
     for train_D, results in results_dict.items():
         for i, name in enumerate(model_names_d[train_D]):
             name_trimmed = name[:-3]  # this assumes that all models end in _D2, or _D3
-            display_name = f"{name} (baseline)" if train_D == 3 else name
+            display_name = "UNet Baseline" if train_D == test_D else "UNet Pretrained"
 
             if name_trimmed in results_by_model:
                 # (n_tune,n_trials,n_results)
@@ -329,11 +378,11 @@ def plot_time_results(
     # figsize is 8 per col, 6 per row, (cols,rows)
     nrows = 1  # D=3 is the only test dimension
     ncols = len(results_labels)
-    _, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8 * ncols, 6 * nrows))
     linestyles = ["solid", "dotted", "dashed", "dashdot"]
     colors = ["b", "g", "r", "c", "m", "y"]
 
-    for error_idx, ylabel, ax in zip(range(len(results_labels)), results_labels, axes):
+    for error_idx, ylabel in zip(range(len(results_labels)), results_labels):
+        _, ax = plt.subplots(nrows=1, ncols=1, figsize=(8 * 1, 6 * 1))
         assert isinstance(ax, Axes)
 
         # looping over 'two_layer_gaussian', 'resnet_equiv_42', ...
@@ -360,15 +409,19 @@ def plot_time_results(
                     alpha=0.2,
                 )
 
-        ax.legend()
-        ax.set_xlabel("Total time (minutes)")
-        ax.set_ylabel(ylabel)
+        ax.legend(fontsize=24)
+        ax.set_xlabel("Total time (minutes)", fontsize=28)
+        ax.set_ylabel(ylabel, fontsize=28)
         ax.set_yscale("log")
-        ax.set_title(f"Burgers' Equation Time Comparison 2D -> 3D {ylabel}")
+        ax.set_title(f"Burgers' 2D->3D, by time", fontsize=28)
 
-    plt.tight_layout()
-    plt.savefig(f"{saveloc}burgers_warmstart_time_plot.png")
-    plt.close()
+        plt.tight_layout()
+        plt.xticks(fontsize=12)
+        plt.yticks(fontsize=12)
+        plt.savefig(
+            f"{saveloc}burgers_warmstart_time_plot_{test_D}D_{''.join(ylabel.split()).lower()}.png"
+        )
+        plt.close()
 
 
 def plot_multi_image(
@@ -748,6 +801,9 @@ def handleArgs() -> argparse.Namespace:
         "--convection-coef", help="the convection coefficient", type=float, default=-1.5 / 2
     )
     parser.add_argument(
+        "--n-timesteps", help="the number of timesteps in each trajectory", type=int, default=50
+    )
+    parser.add_argument(
         "--residual",
         help="learn the residual of the heat equation",
         action=argparse.BooleanOptionalAction,
@@ -880,6 +936,7 @@ for D in full_D_range:
         args.N,
         args.diffusion_coef,
         args.convection_coef,
+        args.n_timesteps,
         args.subsample,
         args.n_train,
         0,
@@ -1006,6 +1063,7 @@ train_x0, train_xt, val_x0, val_xt, _, _, pretrain_data_time = get_data(
     args.N,
     args.diffusion_coef,
     args.convection_coef,
+    args.n_timesteps,
     args.subsample,
     args.n_train,
     args.n_val,
@@ -1040,6 +1098,7 @@ for n_tune in args.n_tune_range:
         args.N,
         args.diffusion_coef,
         args.convection_coef,
+        args.n_timesteps,
         args.subsample,
         n_tune,
         args.n_val,
@@ -1114,10 +1173,10 @@ if args.images_dir is not None:
     model_names_d = {D: [x[0] for x in model_list] for D, model_list in model_list_d.items()}
     plot_results(
         results_dict,
-        ["L2 Error", "Relative Error"],
+        ["L2 error", "Relative error"],
         args.n_tune_range,
         model_names_d,
         args.images_dir,
     )
 
-    plot_time_results(results_dict, ["L2 Error", "Relative Error"], model_names_d, args.images_dir)
+    plot_time_results(results_dict, ["L2 error", "Relative error"], model_names_d, args.images_dir)

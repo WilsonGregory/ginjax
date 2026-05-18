@@ -326,7 +326,7 @@ def plot_results(
         for train_D, results in results_train_d.items():
             for i, name in enumerate(model_names_d[train_D]):
                 name_trimmed = name[:-3]  # this assumes that all models end in _D1, _D2, or _D3
-                display_name = f"{name} (baseline)" if train_D == test_D else name
+                display_name = "UNet Baseline" if train_D == test_D else "UNet Pretrained"
 
                 if name_trimmed in grouped_results[test_D]:
                     # (n_tune,n_trials,n_results)
@@ -341,14 +341,14 @@ def plot_results(
     # figsize is 8 per col, 6 per row, (cols,rows)
     nrows = len(list(grouped_results.keys()))
     ncols = len(results_labels)
-    _, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8 * ncols, 6 * nrows))
     linestyles = ["solid", "dotted", "dashed", "dashdot"]
     colors = ["b", "g", "r", "c", "m", "y"]
 
-    axes = [axes] if nrows == 1 else axes
+    for test_D, results_by_model in grouped_results.items():
+        for error_idx, ylabel in zip(range(len(results_labels)), results_labels):
 
-    for (test_D, results_by_model), ax_row in zip(grouped_results.items(), axes):
-        for error_idx, ylabel, ax in zip(range(len(results_labels)), results_labels, ax_row):
+            # do them individually
+            _, ax = plt.subplots(nrows=1, ncols=1, figsize=(8 * 1, 6 * 1))
             assert isinstance(ax, Axes)
 
             # looping over 'two_layer_gaussian', 'resnet_equiv_42', ...
@@ -372,16 +372,20 @@ def plot_results(
                         alpha=0.2,
                     )
 
-            ax.legend()
-            ax.set_xlabel("Number of tuning points")
-            ax.set_ylabel(ylabel)
+            ax.legend(fontsize=24)
+            ax.set_xlabel("Number of tuning points", fontsize=28)
+            ax.set_ylabel(ylabel, fontsize=28)
             ax.set_yscale("log")
             ax.set_xticks(range(len(n_tune_range)), [str(x) for x in n_tune_range])
-            ax.set_title(f"Heat Equation Test {test_D}D {ylabel}")
+            ax.set_title(f"Heat 1D->2D, by tuning points", fontsize=28)
 
-    plt.tight_layout()
-    plt.savefig(f"{saveloc}heat_warmstart_plot.png")
-    plt.close()
+            plt.tight_layout()
+            plt.xticks(fontsize=12)
+            plt.yticks(fontsize=12)
+            plt.savefig(
+                f"{saveloc}heat_warmstart_plot_{test_D}D_{''.join(ylabel.split()).lower()}.png"
+            )
+            plt.close()
 
 
 def plot_time_results(
@@ -411,7 +415,7 @@ def plot_time_results(
         for train_D, results in results_train_d.items():
             for i, name in enumerate(model_names_d[train_D]):
                 name_trimmed = name[:-3]  # this assumes that all models end in _D1, _D2, or _D3
-                display_name = f"{name} (baseline)" if train_D == test_D else name
+                display_name = "UNet Baseline" if train_D == test_D else "UNet Pretrained"
 
                 if name_trimmed in grouped_results[test_D]:
                     # (n_tune,n_trials,n_results)
@@ -426,14 +430,14 @@ def plot_time_results(
     # figsize is 8 per col, 6 per row, (cols,rows)
     nrows = len(list(grouped_results.keys()))
     ncols = len(results_labels)
-    _, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8 * ncols, 6 * nrows))
-    linestyles = ["solid", "dotted", "dashed", "dashdot"]
-    colors = ["b", "g", "r", "c", "m", "y"]
 
-    axes = [axes] if nrows == 1 else axes
+    for test_D, results_by_model in grouped_results.items():
+        for error_idx, ylabel in zip(range(len(results_labels)), results_labels):
 
-    for (test_D, results_by_model), ax_row in zip(grouped_results.items(), axes):
-        for error_idx, ylabel, ax in zip(range(len(results_labels)), results_labels, ax_row):
+            _, ax = plt.subplots(nrows=1, ncols=1, figsize=(8 * 1, 6 * 1))
+            linestyles = ["solid", "dotted", "dashed", "dashdot"]
+            colors = ["b", "g", "r", "c", "m", "y"]
+
             assert isinstance(ax, Axes)
 
             # looping over 'two_layer_gaussian', 'resnet_equiv_42', ...
@@ -460,15 +464,19 @@ def plot_time_results(
                         alpha=0.2,
                     )
 
-            ax.legend()
-            ax.set_xlabel("Total time (minutes)")
-            ax.set_ylabel(ylabel)
+            ax.legend(fontsize=24)
+            ax.set_xlabel("Total time (minutes)", fontsize=28)
+            ax.set_ylabel(ylabel, fontsize=28)
             ax.set_yscale("log")
-            ax.set_title(f"Heat Equation Time Comparison Test {test_D}D {ylabel}")
+            ax.set_title(f"Heat 1D->2D, by time", fontsize=28)
 
-    plt.tight_layout()
-    plt.savefig(f"{saveloc}heat_warmstart_time_plot.png")
-    plt.close()
+            plt.tight_layout()
+            plt.xticks(fontsize=12)
+            plt.yticks(fontsize=12)
+            plt.savefig(
+                f"{saveloc}heat_warmstart_time_plot_{test_D}D_{''.join(ylabel.split()).lower()}.png"
+            )
+            plt.close()
 
 
 def train_model(
@@ -1221,10 +1229,10 @@ if args.images_dir is not None:
     model_names_d = {D: [x[0] for x in model_list] for D, model_list in model_list_d.items()}
     plot_results(
         results_dict,
-        ["L2 Error", "Relative Error"],
+        ["L2 error", "Relative error"],
         args.n_tune_range,
         model_names_d,
         args.images_dir,
     )
 
-    plot_time_results(results_dict, ["L2 Error", "Relative Error"], model_names_d, args.images_dir)
+    plot_time_results(results_dict, ["L2 error", "Relative error"], model_names_d, args.images_dir)

@@ -797,4 +797,11 @@ class Mapper:
             elif loss is geom.Losses.L2_REL:
                 loss_outputs.append(l2_rel_error(pred_y, multi_image_y, self.reduce, eps=self.eps))
 
-        return jnp.squeeze(jnp.stack(loss_outputs, axis=-1)), aux_data
+        # if we aren't reducing the batch dimension, we don't want to squeeze it out
+        loss_outputs = jnp.stack(loss_outputs, axis=-1)
+        if len(self.losses) == 1:
+            squeeze_outputs = jnp.squeeze(loss_outputs, axis=1 if self.reduce is None else 0)
+        else:
+            squeeze_outputs = loss_outputs
+
+        return squeeze_outputs, aux_data

@@ -1,6 +1,8 @@
 import argparse
 import math
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
+import numpy as np
 import pathlib
 import time
 from typing import Callable
@@ -138,6 +140,190 @@ def plot_multi_image(
     plt.close(fig)
 
 
+def plot_results(
+    results_dict: dict[int, dict[int, list[jax.Array]]],
+    results_labels: list[str],
+    n_tune_range: tuple[int, ...],
+    model_names_d: dict[int, list[str]],
+    saveloc: str,
+    title: str,
+) -> None:
+    """
+    Plot the results of the heat_equation experiments. For each test_D, create a plot with the
+    number of tuning points on the x-axis and the error (either l2 or relative) on the y-axis.
+
+    args:
+        results_dict: The results dict of test_D, train_D, then a list over n_tune, array n_results
+            in this case n_results is smse_mean, smse_std, rel_mean, rel_std
+        results_labels: e.g. 'l2', 'relative error'
+        n_tune_range: number of fine-tuning points, or training points for the baseline model
+        model_names_d: model names for each dimension
+        saveloc: beginning of save location
+        title: the title of the plot
+
+    returns:
+        none
+    """
+    # group the results by model, across all trained dimensions
+    grouped_results = {}
+    for test_D, results_train_d in results_dict.items():
+        grouped_results[test_D] = {}
+        for train_D, results in results_train_d.items():
+            for i, name in enumerate(model_names_d[train_D]):
+                name_trimmed = name[:-3]  # this assumes that all models end in _D1, _D2, or _D3
+                display_name = "UNet Baseline" if train_D == test_D else "UNet Pretrained"
+
+                if name_trimmed in grouped_results[test_D]:
+                    # (n_tune,n_trials,n_results)
+                    grouped_results[test_D][name_trimmed].append(
+                        (display_name, jnp.stack(results)[:, :, 0, i])
+                    )
+                else:
+                    grouped_results[test_D][name_trimmed] = [
+                        (display_name, jnp.stack(results)[:, :, 0, i])
+                    ]
+
+    # figsize is 8 per col, 6 per row, (cols,rows)
+    nrows = len(list(grouped_results.keys()))
+    ncols = len(results_labels)
+    linestyles = ["solid", "dotted", "dashed", "dashdot"]
+    colors = ["b", "g", "r", "c", "m", "y"]
+
+    for test_D, results_by_model in grouped_results.items():
+        for error_idx, ylabel in zip(range(len(results_labels)), results_labels):
+
+            # do them individually
+            _, ax = plt.subplots(nrows=1, ncols=1, figsize=(8 * 1, 6 * 1))
+            assert isinstance(ax, Axes)
+
+            # looping over 'two_layer_gaussian', 'resnet_equiv_42', ...
+            for i, model_results in enumerate(results_by_model.values()):
+                for j, (display_name, results_arr) in enumerate(model_results):
+
+                    mean_result = jnp.mean(results_arr, axis=1)[:, error_idx * 2]
+                    stdev = jnp.mean(results_arr, axis=1)[:, error_idx * 2 + 1]
+                    ax.plot(
+                        mean_result,
+                        marker="o",
+                        linestyle=linestyles[j],
+                        label=display_name,
+                        color=colors[j],  # was i, currently only model
+                    )
+                    ax.fill_between(
+                        range(len(n_tune_range)),
+                        mean_result - stdev,
+                        mean_result + stdev,
+                        color=colors[j],
+                        alpha=0.2,
+                    )
+
+            ax.legend(fontsize=24)
+            ax.set_xlabel("Number of tuning points", fontsize=28)
+            ax.set_ylabel(ylabel, fontsize=28)
+            ax.set_yscale("log")
+            ax.set_xticks(range(len(n_tune_range)), [str(x) for x in n_tune_range])
+            ax.set_title(title, fontsize=28)
+
+            plt.tight_layout()
+            plt.xticks(fontsize=12)
+            plt.yticks(fontsize=12)
+            plt.savefig(f"{saveloc}warmstart_plot_{test_D}D_{''.join(ylabel.split()).lower()}.png")
+            plt.close()
+
+
+def plot_time_results(
+    results_dict: dict[int, dict[int, list[jax.Array]]],
+    results_labels: list[str],
+    model_names_d: dict[int, list[str]],
+    saveloc: str,
+    title: str,
+) -> None:
+    """
+    Plot the results of each model versus the time it took to get those results, including the time
+    to generate the training data.
+
+    args:
+        results_dict: The results dict of test_D, train_D, then a list over n_tune, array n_results
+            in this case n_results is smse_mean, smse_std, rel_mean, rel_std, time
+        results_labels: e.g. 'l2', 'relative error'
+        model_names_d: model names for each dimension
+        saveloc: beginning of save location
+        title: the title of the plot
+
+    returns:
+        none
+    """
+    # group the results by model, across all trained dimensions
+    grouped_results = {}
+    for test_D, results_train_d in results_dict.items():
+        grouped_results[test_D] = {}
+        for train_D, results in results_train_d.items():
+            for i, name in enumerate(model_names_d[train_D]):
+                name_trimmed = name[:-3]  # this assumes that all models end in _D1, _D2, or _D3
+                display_name = "UNet Baseline" if train_D == test_D else "UNet Pretrained"
+
+                if name_trimmed in grouped_results[test_D]:
+                    # (n_tune,n_trials,n_results)
+                    grouped_results[test_D][name_trimmed].append(
+                        (display_name, jnp.stack(results)[:, :, 0, i])
+                    )
+                else:
+                    grouped_results[test_D][name_trimmed] = [
+                        (display_name, jnp.stack(results)[:, :, 0, i])
+                    ]
+
+    # figsize is 8 per col, 6 per row, (cols,rows)
+    nrows = len(list(grouped_results.keys()))
+    ncols = len(results_labels)
+
+    for test_D, results_by_model in grouped_results.items():
+        for error_idx, ylabel in zip(range(len(results_labels)), results_labels):
+
+            _, ax = plt.subplots(nrows=1, ncols=1, figsize=(8 * 1, 6 * 1))
+            linestyles = ["solid", "dotted", "dashed", "dashdot"]
+            colors = ["b", "g", "r", "c", "m", "y"]
+
+            assert isinstance(ax, Axes)
+
+            # looping over 'two_layer_gaussian', 'resnet_equiv_42', ...
+            for i, model_results in enumerate(results_by_model.values()):
+                for j, (display_name, results_arr) in enumerate(model_results):
+
+                    # mean is over trials
+                    times = jnp.mean(results_arr, axis=1)[:, -1] / 60
+                    mean_result = jnp.mean(results_arr, axis=1)[:, error_idx * 2]
+                    stdev = jnp.mean(results_arr, axis=1)[:, error_idx * 2 + 1]
+                    ax.plot(
+                        times,
+                        mean_result,
+                        marker="o",
+                        linestyle=linestyles[j],
+                        label=display_name,
+                        color=colors[j],  # was i, currently only model
+                    )
+                    ax.fill_between(
+                        times,
+                        mean_result - stdev,
+                        mean_result + stdev,
+                        color=colors[j],
+                        alpha=0.2,
+                    )
+
+            ax.legend(fontsize=24)
+            ax.set_xlabel("Total time (minutes)", fontsize=28)
+            ax.set_ylabel(ylabel, fontsize=28)
+            ax.set_yscale("log")
+            ax.set_title(title, fontsize=28)
+
+            plt.tight_layout()
+            plt.xticks(fontsize=12)
+            plt.yticks(fontsize=12)
+            plt.savefig(
+                f"{saveloc}warmstart_time_plot_{test_D}D_{''.join(ylabel.split()).lower()}.png"
+            )
+            plt.close()
+
+
 def train_model(
     data: tuple[
         geom.MultiImage,
@@ -149,6 +335,7 @@ def train_model(
     model_name: str,
     model: models.AnyDimensionalModel,
     lr: float,
+    train_loss_f: geom.Losses,
     residual: bool,
     batch_size: int,
     epochs: int,
@@ -176,7 +363,7 @@ def train_model(
         trained_model, _, _, _, train_time = ml.train(
             train_X,
             train_Y,
-            ml.Mapper([geom.Losses.NRMSE], residual),
+            ml.Mapper([train_loss_f], residual),
             model,
             subkey,
             stop_condition=ml.EpochStop(epochs, verbose=verbose),
@@ -189,6 +376,7 @@ def train_model(
             ),
             validation_X=val_X,
             validation_Y=val_Y,
+            val_map_and_loss=ml.Mapper([geom.Losses.NRMSE], residual, eps=1e-5),
             aux_data=batch_stats,
             is_wandb=is_wandb,
         )
@@ -225,13 +413,12 @@ def train_all_models(
     model_list: list[tuple[str, dict, dict]],
     lr_range,
     args: argparse.Namespace,
-) -> tuple[list[tuple[str, Callable, dict]], list[float]]:
+) -> list[tuple[str, Callable, dict, float]]:
     train_D = data[0].D
-    n_points = data[0].get_L()
 
     trained_models = []
-    train_times = []
     for model_name, _train_kwargs, _test_kwargs in model_list:
+        _train_kwargs["lr"] = _train_kwargs["lr"][train_D][args.n_train]
         key, subkey = random.split(key)
         if args.find_train_lr:
 
@@ -252,17 +439,16 @@ def train_all_models(
                 {
                     **vars(args),
                     "D": train_D,
-                    "n_points": n_points,
+                    "n_points": args.n_train,
                     "train_or_tune": "train",
                 },
             )
         else:
             trained_model, train_time = train_model(data, subkey, model_name, **_train_kwargs)
             _test_kwargs = {**_test_kwargs, "model": trained_model}
-            trained_models.append((model_name, tune_and_eval, _test_kwargs))
-            train_times.append(train_time)
+            trained_models.append((model_name, tune_and_eval, _test_kwargs, train_time))
 
-    return trained_models, train_times
+    return trained_models
 
 
 def tune_and_eval(
@@ -280,6 +466,7 @@ def tune_and_eval(
     lr: float,
     conv_filters_dict: dict[int, geom.MultiImage] | None,
     rescale: geom.Rescaling | None,
+    train_loss_f: geom.Losses,
     residual: bool,
     batch_size: int,
     epochs: int,
@@ -295,7 +482,6 @@ def tune_and_eval(
     N = tune_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
     model_name_extended = f"{model_name}_tuneD{tune_X.D}_L{tune_X.get_L()}_N{N}_e{epochs}"
-    model_path = model_dir / f"{model_name_extended}_model.eqx" if model_dir else None
 
     key, subkey = random.split(key)
     # rescale set to True, small but notable difference
@@ -307,10 +493,14 @@ def tune_and_eval(
             subkey,
             upsample_filters=upsample_filters_dict[tune_X.D] if upsample_filters_dict else None,
         )
-        convert_time = time.time() - start_time
+        convert_time = time.time() - start_time  # this should be tiny
+        model_name_extended += f"_rescale{rescale.name}"
     else:
         model_dprime = model
-        convert_time = 0
+        convert_time = 0.0
+
+    model_path = model_dir / f"{model_name_extended}_model.eqx" if model_dir else None
+    print(f"tuning: {model_name_extended}")
 
     if model_path and model_path.is_file() and not overwrite_save_model:
         tuned_model_dprime, further_args = ml.load_plus(model_path, model_dprime)
@@ -324,7 +514,7 @@ def tune_and_eval(
             tuned_model_dprime, tune_batch_stats, _, _, tune_time = ml.train(
                 tune_X,
                 tune_Y,
-                ml.Mapper([geom.Losses.NRMSE], residual),
+                ml.Mapper([train_loss_f], residual),
                 model_dprime,
                 subkey,
                 stop_condition=ml.EpochStop(epochs, verbose=verbose),
@@ -337,6 +527,7 @@ def tune_and_eval(
                 ),
                 validation_X=val_X,
                 validation_Y=val_Y,
+                val_map_and_loss=ml.Mapper([geom.Losses.NRMSE], residual, eps=1e-5),
                 aux_data=batch_stats,
                 is_wandb=is_wandb,
             )
@@ -370,3 +561,161 @@ def tune_and_eval(
     )
 
     return smse_mean, smse_std, rel_mean, rel_std, convert_time + tune_time
+
+
+def run_anyd(
+    train_D_range: tuple[int],
+    test_D_range: tuple[int],
+    n_tune_range: tuple[int],
+    args: argparse.Namespace,
+    key: jax.Array,
+    get_data: Callable[
+        [int, int, int, int, jax.Array],
+        tuple[
+            geom.MultiImage,
+            geom.MultiImage,
+            geom.MultiImage,
+            geom.MultiImage,
+            geom.MultiImage,
+            geom.MultiImage,
+            float,
+        ],
+    ],
+    model_list_d: dict[int, list[tuple[str, dict, dict]]],
+    lr_range: list[float],
+):
+    n_results = 5
+    # train the models, i.e. the warmstart lower dimensional models
+    print("Train the models (warmstart)!")
+    trained_model_list_d = {}
+    pretrain_data_time_d = {}
+    for train_D in train_D_range:
+        key, subkey = random.split(key)
+        train_x0, train_xt, val_x0, val_xt, _, _, pretrain_data_time = get_data(
+            train_D, args.n_train, args.n_val, 0, subkey
+        )
+
+        train_data = (train_x0, train_xt, val_x0, val_xt)
+        key, subkey = random.split(key)
+        trained_model_list_d[train_D] = train_all_models(
+            train_data, subkey, model_list_d[train_D], lr_range, args
+        )
+        pretrain_data_time_d[train_D] = pretrain_data_time
+
+    if args.find_train_lr:
+        exit()
+
+    # evaluate the models
+    print("Tune and evaluate the models!")
+    results_dict = {}
+    for test_D in test_D_range:
+        results_dict[test_D] = {k: [] for k in ((test_D,) + train_D_range)}
+        for n_tune in n_tune_range:
+            print(f"D={test_D}, n_tune={n_tune}.\n")
+            # the data is saved, so this is still reasonably efficient
+            key, subkey = random.split(key)
+            *tune_data, tune_data_time = get_data(test_D, n_tune, args.n_val, args.n_test, subkey)
+
+            # need to train the baseline model on tune_x0, etc. aka models without the warmstart
+            baseline_model_list = [
+                (
+                    name,
+                    tune_and_eval,
+                    {
+                        **_train_kwargs,
+                        "lr": _train_kwargs["lr"][test_D][n_tune],
+                        "conv_filters_dict": None,
+                        "rescale": None,
+                        "is_wandb": args.tune_wandb,
+                    },
+                )
+                for name, _train_kwargs, _ in model_list_d[test_D]
+            ]
+
+            key, subkey = random.split(key)
+            # although this uses train_kwargs and lr, it is in the tune section
+            # (n_trials, benchmark, models, n_results)
+            baseline_results = ml.benchmark_lr(
+                lambda _: tune_data,
+                baseline_model_list,
+                subkey,
+                lr_range if args.find_tune_lr else [],
+                num_trials=args.n_trials,
+                num_results=n_results,  # smse_mean, smse_std, rel_mean, rel_std, tune_time
+                is_wandb=args.tune_wandb,
+                wandb_project=args.wandb_project,
+                wandb_entity=args.wandb_entity,
+                args={
+                    **vars(args),
+                    "tune_D1_D2": f"(-,{test_D})",
+                    "n_points": n_tune,
+                    "train_or_tune": "tune",
+                },
+            )
+            baseline_results[..., -1] += tune_data_time
+            results_dict[test_D][test_D].append(baseline_results)
+
+            for train_D in train_D_range:
+                if train_D == test_D:
+                    continue
+
+                # select the correct learning rate for the tuning based on train and test dimensions
+                trained_model_list = [
+                    (
+                        name,
+                        func,
+                        {**_test_kwargs, "lr": _test_kwargs["lr"][(train_D, test_D)][n_tune]},
+                    )
+                    for name, func, _test_kwargs, _ in trained_model_list_d[train_D]
+                ]
+                train_model_times = np.stack(
+                    [train_time for _, _, _, train_time in trained_model_list_d[train_D]]
+                )
+                train_model_times = np.concat(
+                    [np.zeros((len(train_model_times), n_results - 1)), train_model_times[:, None]],
+                    axis=1,
+                )
+
+                key, subkey = random.split(key)
+                # (n_trials, benchmark, models, n_results)
+                tune_results = ml.benchmark_lr(
+                    lambda _: tune_data,
+                    trained_model_list,
+                    subkey,
+                    lr_range if args.find_tune_lr else [],
+                    num_trials=args.n_trials,
+                    num_results=n_results,  # smse_mean, smse_std, rel_mean, rel_std, tune_time
+                    is_wandb=args.tune_wandb,
+                    wandb_project=args.wandb_project,
+                    wandb_entity=args.wandb_entity,
+                    args={
+                        **vars(args),
+                        "tune_D1_D2": str(tuple((train_D, test_D))),
+                        "n_points": n_tune,
+                        "train_or_tune": "tune",
+                    },
+                )
+
+                tune_results += train_model_times[None, None]
+                tune_results[..., -1] += pretrain_data_time_d[train_D] + tune_data_time
+
+                results_dict[test_D][train_D].append(tune_results)
+
+    if args.images_dir is not None:
+        model_names_d = {D: [x[0] for x in model_list] for D, model_list in model_list_d.items()}
+        plot_results(
+            results_dict,
+            ["L2 error", "Relative error"],
+            n_tune_range,
+            model_names_d,
+            args.images_dir,
+            f"By tuning points",  # TODO: want to say what the dimensions are
+        )
+
+        plot_time_results(
+            results_dict,
+            ["L2 error", "Relative error"],
+            model_names_d,
+            args.images_dir,
+            f"By time", # TODO: want to say what the dimensions are
+        )

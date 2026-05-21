@@ -346,6 +346,27 @@ def train_model(
     verbose: int = 1,
     is_wandb: bool = False,
 ) -> tuple[models.MultiImageModule, float]:
+    """
+    Train the model.
+
+    args:
+        data: input and output multi image pairs of train and val data
+        key: key for randomness
+        model_name: name of the model we are training
+        model: the any dimensional model to train
+        lr: learning rate
+        train_loss_f: the loss function to use for tuning
+        residual: whether the model is or should learn the residual between input/output
+        batch_size: the batch size
+        epochs: numbers of epochs (full passes through the tune data) to tune for
+        model_dir: path to save or load the model from
+        overwrite_save_model: whether to retrain and save a new tuned model even if there is
+            already one saved
+        images_dir: if provided and D==2, save one data point image
+        has_aux: whether the model has auxilliary data like batch stats
+        verbose: verbosity level for training
+        is_wandb: whether to turn on wandb tracking
+    """
     train_X, train_Y, val_X, val_Y = data
     N = train_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
@@ -411,9 +432,21 @@ def train_all_models(
     ],
     key: jax.Array,
     model_list: list[tuple[str, dict, dict]],
-    lr_range,
+    lr_range: list[float],
     args: argparse.Namespace,
 ) -> list[tuple[str, Callable, dict, float]]:
+    """
+    Train all the models in the model list.
+
+    args:
+        data: input and output multi image pairs for train and val
+        key: key for randomness
+        model_list: list of tuples of (model_name, train_kwargs, test_kwargs)
+        lr_range: list of lr values to test if args.find_train_lr is true
+
+    returns:
+        list of tuples of (model_name, tune_and_eval, test_kwargs, train_time)
+    """
     train_D = data[0].D
 
     trained_models = []
@@ -478,6 +511,34 @@ def tune_and_eval(
     verbose: int = 1,
     is_wandb: bool = False,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, float]:
+    """
+    For a given model, convert lower dimensional model to a higher one, tune (train) the model on
+    the tuning data, then evaluate it on the test data.
+
+    args:
+        data: input and output multi images for tune, val, and test data sets
+        key: key for randomness
+        model_name: name of the model we are training
+        model: the any dimensional model
+        lr: learning rate
+        conv_filters_dict: dictionary of conv_filters by dimension
+        rescale: how to rescale the convolution filter coefficients
+        train_loss_f: the loss function to use for tuning
+        residual: whether the model is or should learn the residual between input/output
+        batch_size: the batch size
+        epochs: numbers of epochs (full passes through the tune data) to tune for
+        model_dir: path to save or load the model from
+        overwrite_save_model: whether to retrain and save a new tuned model even if there is
+            already one saved
+        images_dir: currently unused
+        upsample_filters_dict: dictionary by dimension of the upsample filters
+        has_aux: whether the model has auxilliary data like batch stats
+        verbose: verbosity level for training
+        is_wandb: whether to turn on wandb tracking
+
+    returns:
+        tuple of smse_mean, smse_std, relative error mean, relative error std, tuning time
+    """
     tune_X, tune_Y, val_X, val_Y, test_X, test_Y = data
     N = tune_X.get_spatial_dims()[0]
     batch_stats = eqx.nn.State(model) if has_aux else None
@@ -584,6 +645,18 @@ def run_anyd(
     model_list_d: dict[int, list[tuple[str, dict, dict]]],
     lr_range: list[float],
 ):
+    """
+    Run the full battery of the any-dimensional test. Train the models, convert them to higher
+    dimensions and then tune/train a baseline model in that higher dimension.
+    args:
+        train_D_range: initial dimensions to train on
+        test_D_range: test dimensions to tune and evaluate on
+        n_tune_range: range of tuning dataset sizes
+        args: all the command line args
+        key: jax key for randomness
+        get_data: a function that takes dimension, n_train, n_val, n_test, and random key, returns
+            input and output multi images for train, val, and test, as well data generation time for train
+    """
     n_results = 5
     # train the models, i.e. the warmstart lower dimensional models
     print("Train the models (warmstart)!")
@@ -717,5 +790,5 @@ def run_anyd(
             ["L2 error", "Relative error"],
             model_names_d,
             args.images_dir,
-            f"By time", # TODO: want to say what the dimensions are
+            f"By time",  # TODO: want to say what the dimensions are
         )

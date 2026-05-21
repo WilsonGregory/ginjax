@@ -1,24 +1,17 @@
 import time
 import argparse
-import numpy as np
-from functools import partial
-import matplotlib.pyplot as plt
 import pathlib
 import h5py
-from typing import Optional, Union
 
 import jax.numpy as jnp
 import jax
 import jax.random as random
-from jaxtyping import ArrayLike
-import optax
-import equinox as eqx
 
 import ginjax.geometric as geom
-import ginjax.ml as ml
 import ginjax.utils as utils
 import ginjax.data as gc_data
 import ginjax.models as models
+from . import anyd_helpers
 
 
 def read_one_h5(D: int, filename: pathlib.Path, num_trajectories: int) -> tuple:
@@ -38,6 +31,7 @@ def read_one_h5(D: int, filename: pathlib.Path, num_trajectories: int) -> tuple:
     # all of these are shape (num_trajectories, timesteps, spatial, tensor)
     # 1D: (10K,101,1024,tensor)
     # 2D: (1K,21,512,512,tensor) or (10K,21,128,128,tensor)
+    # 2D: my janky homebrew is (9990,21,128,128,tensor)
     # 3D: (100,21,128,128,128,tensor)
     density = jax.device_put(
         jnp.array(data_dict["density"][:num_trajectories][()]), jax.devices("cpu")[0]
@@ -60,379 +54,267 @@ def read_one_h5(D: int, filename: pathlib.Path, num_trajectories: int) -> tuple:
 
 
 def get_data(
-    train_D: int,
-    range_test_D: list[int],
-    data_dir: str,
+    D: int,
     n_train: int,
     n_val: int,
     n_test: int,
     past_steps: int,
-    normalize: bool = True,
+    data_dir: str,
 ) -> tuple[
     geom.MultiImage,
     geom.MultiImage,
     geom.MultiImage,
     geom.MultiImage,
-    list[geom.MultiImage],
-    list[geom.MultiImage],
+    geom.MultiImage,
+    geom.MultiImage,
+    float,
 ]:
-    if train_D != range_test_D[0]:
-        raise ValueError()
+    """
+    Get data of a particular dimension from a preset list of files in the specified folder.
 
+    args:
+        D: the dimension of the data to get
+        n_train: number of training trajectories
+        n_val: number of validation trajectories
+        n_test: number of test trajectories
+        past_steps: number of historical steps to use to predict the next 1 step
+        data_dir: the direcory where the data is stored
+
+    returns:
+        input and output pairs of multi images for train, val, and test, plus data generation time
+            for train
+    """
     data_dir_path = pathlib.Path(data_dir)
     is_torus = True
-    density_mean, density_std = 0, 1
-    pressure_mean, pressure_std = 0, 1
-    velocity_norm_std = 1
 
-    fnames = [
-        "1D_CFD_Rand_Eta0.01_Zeta0.01_periodic_Train.hdf5",
-        "2D_CFD_Rand_M0.1_Eta0.01_Zeta0.01_periodic_128_Train.hdf5",
-        "3D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_Train.hdf5",
-    ]
+    fnames = {
+        1: "1D_CFD_Rand_Eta0.01_Zeta0.01_periodic_Train.hdf5",
+        2: "2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_128_Train.hdf5",
+        3: "3D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_Train.hdf5",
+    }
 
-    densities = []
-    pressures = []
-    velocities = []
-    for D, fname in zip(range_test_D, fnames[range_test_D[0] - 1 : range_test_D[-1]]):
-        fpath = data_dir_path / f"cfd_{D}d" / fname
-        n_traj = n_train + n_val + n_test if D == train_D else n_test
+    fpath = data_dir_path / f"cfd_{D}d" / fnames[D]
+    n_traj = n_train + n_val + n_test
 
-        density, pressure, velocity = read_one_h5(D, fpath, n_traj)
+    density, pressure, velocity = read_one_h5(D, fpath, n_traj)
 
-        if normalize and train_D == D:
-            density_mean = jnp.mean(density[: (n_train + n_val)])
-            density_std = jnp.std(density[: (n_train + n_val)])
+    constant_fields = geom.MultiImage({}, D, is_torus)
 
-            pressure_mean = jnp.mean(pressure[: (n_train + n_val)])
-            pressure_std = jnp.std(pressure[: (n_train + n_val)])
-
-            velocity_norm_std = jnp.std(jnp.linalg.norm(velocity[: n_train + n_val], axis=-1))
-
-        densities.append(density)
-        pressures.append(pressure)
-        velocities.append(velocity)
-
-    test_Xs = []
-    test_Ys = []
-    train_X, train_Y, val_X, val_Y = None, None, None, None
-    for D, density, pressure, velocity in zip(range_test_D, densities, pressures, velocities):
-        constant_fields = geom.MultiImage({}, D, is_torus)
-
-        if normalize:
-            density = (density - density_mean) / density_std
-            pressure = (pressure - pressure_mean) / pressure_std
-            velocity = velocity / velocity_norm_std
-
-        # (batch,2,timesteps,spatial)
+    # (batch,2,timesteps,spatial)
+    if n_traj == 0:
+        density_pressure = jnp.zeros((n_traj, 2 * density.shape[1]) + density.shape[2:])
+    else:
         density_pressure = jnp.concatenate([density[:, None], pressure[:, None]], axis=1)
         # (batch,2*timesteps,spatial)
         density_pressure = density_pressure.reshape(
             (len(density_pressure), -1) + density_pressure.shape[3:]
         )
 
-        if train_D == D:
-            start = 0
-            stop = n_train
-            train_X, train_Y = gc_data.batch_time_series(
-                geom.MultiImage(
-                    {(0, 0): density_pressure[start:stop], (1, 0): velocity[start:stop]},
-                    D,
-                    is_torus,
-                ),
-                constant_fields,
-                velocity.shape[1],
-                past_steps,
-                1,
-            )
-
-            start = start + n_train
-            stop = start + n_val
-            val_X, val_Y = gc_data.batch_time_series(
-                geom.MultiImage(
-                    {(0, 0): density_pressure[start:stop], (1, 0): velocity[start:stop]},
-                    D,
-                    is_torus,
-                ),
-                constant_fields,
-                velocity.shape[1],
-                past_steps,
-                1,
-            )
-
-            start = start + n_val
-            stop = start + n_test
-        else:
-            start = 0
-            stop = n_test
-
-        test_X, test_Y = gc_data.batch_time_series(
-            geom.MultiImage(
-                {(0, 0): density_pressure[start:stop], (1, 0): velocity[start:stop]}, D, is_torus
-            ),
-            constant_fields,
-            velocity.shape[1],
-            past_steps,
-            1,
-        )
-        test_Xs.append(test_X)
-        test_Ys.append(test_Y)
-
-    assert (train_X is not None) and (train_Y is not None)
-    assert (val_X is not None) and (val_Y is not None)
-
-    return train_X, train_Y, val_X, val_Y, test_Xs, test_Ys
-
-
-@eqx.filter_jit
-def map_and_loss(
-    model: models.MultiImageModule,
-    multi_image_x: geom.MultiImage,
-    multi_image_y: geom.MultiImage,
-    aux_data: Optional[eqx.nn.State] = None,
-) -> tuple[jax.Array, Optional[eqx.nn.State]]:
-    pred_y, aux_data = jax.vmap(model, in_axes=(0, None), out_axes=(0, None), axis_name="batch")(
-        multi_image_x, aux_data
+    start = 0
+    stop = n_train
+    train_X, train_Y = gc_data.batch_time_series(
+        geom.MultiImage(
+            {(0, 0): density_pressure[start:stop], (1, 0): velocity[start:stop]},
+            D,
+            is_torus,
+        ),
+        constant_fields,
+        velocity.shape[1],
+        past_steps,
+        1,
     )
-    return ml.smse_loss(pred_y, multi_image_y), aux_data
 
+    start = start + n_train
+    stop = start + n_val
+    val_X, val_Y = gc_data.batch_time_series(
+        geom.MultiImage(
+            {(0, 0): density_pressure[start:stop], (1, 0): velocity[start:stop]},
+            D,
+            is_torus,
+        ),
+        constant_fields,
+        velocity.shape[1],
+        past_steps,
+        1,
+    )
 
-def train_and_eval(
-    data: tuple[
-        geom.MultiImage,
-        geom.MultiImage,
-        geom.MultiImage,
-        geom.MultiImage,
-        list[geom.MultiImage],
-        list[geom.MultiImage],
-    ],
-    key: ArrayLike,
-    model_name: str,
-    model: models.AnyDimensionalModel,
-    lr: float,
-    test_conv_filters: list[tuple[geom.MultiImage, geom.MultiImage]],
-    batch_size: int,
-    epochs: int,
-    save_model: Optional[str],
-    load_model: Optional[str],
-    has_aux: bool = False,
-    verbose: int = 1,
-    is_wandb: bool = False,
-) -> tuple[Optional[ArrayLike], ...]:
-    train_X, train_Y, val_X, val_Y, test_d_X, test_d_Y = data
-    batch_stats = eqx.nn.State(model) if has_aux else None
+    start = start + n_val
+    stop = start + n_test
 
-    print(f"Model params: {models.count_params(model):,}")
+    test_X, test_Y = gc_data.batch_time_series(
+        geom.MultiImage(
+            {(0, 0): density_pressure[start:stop], (1, 0): velocity[start:stop]}, D, is_torus
+        ),
+        constant_fields,
+        velocity.shape[1],
+        past_steps,
+        1,
+    )
 
-    if load_model is None:
-        steps_per_epoch = int(np.ceil(train_X.get_L() / batch_size))
-        key, subkey = random.split(key)
-        trained_model, batch_stats, train_loss, val_loss, _ = ml.train(
-            train_X,
-            train_Y,
-            map_and_loss,
-            model,
-            subkey,
-            stop_condition=ml.EpochStop(epochs, verbose=verbose),
-            batch_size=batch_size,
-            optimizer=optax.adamw(
-                optax.warmup_cosine_decay_schedule(
-                    1e-8, lr, 5 * steps_per_epoch, epochs * steps_per_epoch, 1e-7
-                ),
-                weight_decay=1e-5,
-            ),
-            validation_X=val_X,
-            validation_Y=val_Y,
-            aux_data=batch_stats,
-            is_wandb=is_wandb,
-        )
+    data_generation_time = 0.0  # TODO: fix this
 
-        if save_model is not None:
-            # TODO: need to save batch_stats as well
-            ml.save(f"{save_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model)
-    else:
-        trained_model = ml.load(
-            f"{load_model}{model_name}_L{train_X.get_L()}_e{epochs}_model.eqx", model
-        )
-
-        key, subkey1, subkey2 = random.split(key, num=3)
-        train_loss = ml.map_loss_in_batches(
-            map_and_loss,
-            trained_model,
-            train_X,
-            train_Y,
-            batch_size,
-            subkey1,
-            aux_data=batch_stats,
-        )
-        val_loss = ml.map_loss_in_batches(
-            map_and_loss,
-            trained_model,
-            val_X,
-            val_Y,
-            batch_size,
-            subkey2,
-            aux_data=batch_stats,
-        )
-
-    assert isinstance(trained_model, models.AnyDimensionalModel)
-    test_losses = []
-    for test_X, test_Y, (conv_filters, upsample_filters) in zip(
-        test_d_X, test_d_Y, test_conv_filters
-    ):
-        if test_X.D == train_X.D:
-            trained_model_d = trained_model
-        else:
-            key, subkey = random.split(key)
-            trained_model_d = trained_model.convertD(
-                conv_filters, geom.Rescaling.VOLUME, subkey, upsample_filters=upsample_filters
-            )
-
-        key, subkey = random.split(key)
-        test_loss = ml.map_loss_in_batches(
-            map_and_loss,
-            trained_model_d,
-            test_X,
-            test_Y,
-            batch_size,
-            subkey,
-            aux_data=batch_stats,
-        )
-        print(f"Test Loss D={test_X.D}: {test_loss}")
-        test_losses.append(test_loss)
-
-    return train_loss, val_loss, *test_losses
+    return train_X, train_Y, val_X, val_Y, test_X, test_Y, data_generation_time
 
 
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
-        "--train-D", help="dimension of data to train on", choices=[1, 2, 3], default=1, type=int
-    )
-    parser.add_argument(
-        "--max-test-D",
-        help="maximum dimension of data to test on",
-        choices=[1, 2, 3],
-        default=2,
-        type=int,
-    )
-    parser.add_argument(
-        "--rollout-steps",
-        help="number of steps to rollout in test",
-        type=int,
-        default=5,
+        "--n-tune-range",
+        help="the number of data points in the tuning set",
+        type=lambda s: tuple(int(x) for x in s.split(",")),
+        default="0,1,4,32,128",
     )
     parser.add_argument(
         "--past-steps", help="number of past steps to use as input", type=int, default=4
     )
-    # need do to --wandb to activate, also need --wandb-entity your_wandb_name_here
+    parser.add_argument(
+        "--find-train-lr",
+        help="benchmark trained model over the lr",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--find-tune-lr",
+        help="benchmark tuned model over the lr",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    # need do to --train-wandb or --tune-wandb to activate
     parser.add_argument("--wandb-project", help="the wandb project", type=str, default="cfd-anyd")
+    parser.add_argument(
+        "--train-wandb",
+        help="whether to use wandb during training",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--tune-wandb",
+        help="whether to use wandb during tuning",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
 
     return parser.parse_args()
 
 
-# Main
+# MAIN
 args = handleArgs()
-assert args.train_D <= args.max_test_D
+if args.wandb:
+    print("Use --train-wandb or --test-wandb to control these individually. Exiting.")
+    exit()
 
-range_test_D = list(range(args.train_D, args.max_test_D + 1))
+if args.load_model or args.save_model:
+    print("Use --model-dir and possibly --overwrite-save-model instead of --save-model")
+    exit()
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
+lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3]
 
-# an attempt to reduce recompilation, but I don't think it actually is working
-n_test = args.batch if args.n_test is None else args.n_test
-n_val = args.batch if args.n_val is None else args.n_val
-
-data = get_data(
-    args.train_D,
-    range_test_D,
-    args.data,
-    args.n_train,
-    n_val,
-    n_test,
-    args.past_steps,
-    args.normalize,
-)
-input_keys = data[0].get_signature()
-output_keys = data[1].get_signature()  # (((0, 0), 2), ((1, 0), 1))
-
-group_actions = geom.make_all_operators(args.train_D)
-conv_filters = geom.get_invariant_filters(
-    Ms=[3], ks=[0, 1], parities=[0], D=args.train_D, operators=group_actions
-)
-upsample_filters = geom.get_invariant_filters(
-    Ms=[2], ks=[0, 1], parities=[0], D=args.train_D, operators=group_actions
-)
-
-test_conv_filters = []
-for D in range_test_D:
-    group_actions_d = geom.make_all_operators(D)
-    conv_filters_d = geom.get_invariant_filters(
-        Ms=[3], ks=[0, 1], parities=[0], D=D, operators=group_actions_d
-    )
-    upsample_filters_d = geom.get_invariant_filters(
-        Ms=[2], ks=[0, 1], parities=[0], D=D, operators=group_actions_d
-    )
-    test_conv_filters.append((conv_filters_d, upsample_filters_d))
-
+# D=1 doesn't make sense for a vector field, so we restrict the problem to only this case
+train_D = 2
+test_D = 3
+n_results = 5
 
 train_kwargs = {
-    "test_conv_filters": test_conv_filters,
+    "train_loss_f": geom.Losses.SMSE,
+    "residual": False,
     "batch_size": args.batch,
     "epochs": args.epochs,
-    "save_model": args.save_model,
-    "load_model": args.load_model,
+    "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
+    "overwrite_save_model": args.overwrite_save_model,
+    "images_dir": None,
     "verbose": args.verbose,
-    "is_wandb": args.wandb,
+    "is_wandb": args.train_wandb,
 }
 
-padding_mode = "CIRCULAR" if data[0].is_torus == (True,) * args.train_D else "ZEROS"
-key, *subkeys = random.split(key, num=13)
-model_list = [
-    (
-        "unetBase_equiv48",
-        train_and_eval,
-        {
-            "model": models.UNet(
-                args.train_D,
-                input_keys,
-                output_keys,
-                depth=48,
-                activation_f=jax.nn.gelu,
-                conv_filters=conv_filters,
-                upsample_filters=upsample_filters,
-                key=subkeys[8],
-            ),
-            "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-            **train_kwargs,
-        },
-    ),
-]
+test_kwargs = {
+    "train_loss_f": geom.Losses.SMSE,
+    "residual": False,
+    "batch_size": args.batch,
+    "epochs": args.epochs,
+    "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
+    "overwrite_save_model": args.overwrite_save_model,
+    "images_dir": None,
+    "verbose": args.verbose,
+    "is_wandb": args.tune_wandb,
+}
+
+upsample_filters_dict = {}
+free_filters_dict = {}
+
+full_D_range = [train_D, test_D]
+for D in [train_D, test_D]:
+    group_actions = geom.make_all_operators(D)
+    upsample_filters_dict[D] = geom.get_invariant_filters(
+        Ms=[2],
+        ks=[0, 1, 2],
+        parities=[0],
+        D=D,
+        operators=group_actions,
+        scale=geom.FilterScaling.ONE,  # for N=2, all pixels are equidistant
+    )
+    free_filters_dict[D] = geom.get_invariant_filters(
+        Ms=[3],
+        ks=[0, 1, 2],
+        parities=[0],
+        D=D,
+        operators=group_actions,
+        scale=geom.FilterScaling.ONE,
+    )
+
+print("Define the models!")
+model_list_d = {}
+for D in full_D_range:
+    key, subkey = random.split(key)
+    train_x0, train_xt, _, _, _, _, _ = get_data(D, args.n_train, 0, 0, args.past_steps, args.data)
+    input_keys = train_x0.get_signature()
+    output_keys = train_xt.get_signature()
+
+    key, *subkeys = random.split(key, num=10)
+    model_list = [
+        (
+            f"unetBase_equiv48_D{D}",
+            {  # train_kwargs
+                "model": models.UNet(
+                    D,
+                    input_keys,
+                    output_keys,
+                    depth=48,
+                    activation_f=jax.nn.gelu,
+                    conv_filters=free_filters_dict[D],
+                    upsample_filters=upsample_filters_dict[D],
+                    key=subkeys[2],
+                ),
+                "lr": {2: {128: 1e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
+                # D=3, for all of them (and tuning) its just 1e-4
+                **train_kwargs,
+            },
+            {  # tune and eval kwargs
+                "lr": {(2, 3): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
+                "rescale": geom.Rescaling.COMPAT_FLEX,
+                "conv_filters_dict": free_filters_dict,
+                "upsample_filters_dict": upsample_filters_dict,
+                **test_kwargs,
+            },
+        ),
+    ]
+    model_list_d[D] = model_list
+
+
+# extended lambda function
+def get_data_lambda(D: int, n_train: int, n_val: int, n_test: int, key: jax.Array) -> tuple[
+    geom.MultiImage,
+    geom.MultiImage,
+    geom.MultiImage,
+    geom.MultiImage,
+    geom.MultiImage,
+    geom.MultiImage,
+    float,
+]:
+    return get_data(D, n_train, n_val, n_test, args.past_steps, args.data)
+
 
 key, subkey = random.split(key)
-
-# Use this for benchmarking the models with known learning rates.
-results = ml.benchmark(
-    lambda _: data,
-    model_list,
-    subkey,
-    "",
-    [0],
-    benchmark_type=ml.BENCHMARK_NONE,
-    num_trials=args.n_trials,
-    num_results=2 + len(range_test_D),
-    is_wandb=args.wandb,
-    wandb_project=args.wandb_project,
-    wandb_entity=args.wandb_entity,
+anyd_helpers.run_anyd(
+    (train_D,), (test_D,), args.n_tune_range, args, subkey, get_data_lambda, model_list_d, lr_range
 )
-
-rollout_res = results[..., 3:]
-non_rollout_res = jnp.concatenate(
-    [results[..., :3], jnp.sum(rollout_res, axis=-1, keepdims=True)], axis=-1
-)
-print(non_rollout_res)
-mean_results = jnp.mean(
-    non_rollout_res, axis=0
-)  # includes the sum of rollout. (benchmark_vals,models,outputs)
-std_results = jnp.std(non_rollout_res, axis=0)
-print("Mean", mean_results, sep="\n")

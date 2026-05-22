@@ -18,7 +18,13 @@ import optax
 
 import ginjax.geometric as geom
 from ginjax.ml.stopping_conditions import StopCondition, ValLoss
-from ginjax.ml.losses import smse_loss, nrmse_loss, l2_rel_error
+from ginjax.ml.losses import (
+    smse_loss,
+    nrmse_loss,
+    nrmse_per_pixel_loss,
+    l2_rel_error,
+    l2_per_pixel_rel_error,
+)
 import ginjax.models as models
 
 
@@ -728,6 +734,7 @@ class Mapper:
     losses: list[geom.Losses]
     residual: bool
     reduce: str | None
+    eps: float
 
     def __init__(
         self: Self,
@@ -794,8 +801,16 @@ class Mapper:
                 loss_outputs.append(smse_loss(pred_y, multi_image_y, self.reduce))
             elif loss is geom.Losses.NRMSE:
                 loss_outputs.append(nrmse_loss(pred_y, multi_image_y, self.reduce, eps=self.eps))
+            elif loss is geom.Losses.NRMSE_PER_PIXEL:
+                loss_outputs.append(
+                    nrmse_per_pixel_loss(pred_y, multi_image_y, self.reduce, eps=self.eps)
+                )
             elif loss is geom.Losses.L2_REL:
                 loss_outputs.append(l2_rel_error(pred_y, multi_image_y, self.reduce, eps=self.eps))
+            elif loss is geom.Losses.L2_REL_PER_PIXEL:
+                loss_outputs.append(
+                    l2_per_pixel_rel_error(pred_y, multi_image_y, self.reduce, eps=self.eps)
+                )
 
         # if we aren't reducing the batch dimension, we don't want to squeeze it out
         loss_outputs = jnp.stack(loss_outputs, axis=-1)

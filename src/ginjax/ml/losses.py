@@ -124,14 +124,14 @@ def normalized_smse_loss(
     return jnp.mean(order_loss) if reduce == "mean" else order_loss
 
 
-def nrmse_loss(
+def nrmse_per_pixel_loss(
     multi_image_x: geom.MultiImage,
     multi_image_y: geom.MultiImage,
     reduce: str | None = "mean",
     eps: float = 0,
 ) -> jax.Array:
     """
-    The normalized root mean squared error. The error is relative to the second input.
+    The normalized root mean squared error. The error is relative to the second input per pixel.
 
     The average is taken over each pixel, and channel. If reduce is 'mean' it is also
     taken over the batch.
@@ -159,11 +159,58 @@ def nrmse_loss(
     for image_a, image_b in zip(multi_image_x.values(), multi_image_y.values()):
         diff_norm = geom.norm(D + 2, image_a - image_b)  # (batch,channels,spatial)
         image_b_norm = geom.norm(D + 2, image_b)  # (batch,channels,spatial)
-        rel_error = jnp.where(image_b_norm == 0.0, 0.0, diff_norm / (image_b_norm + eps))
+        rel_error = diff_norm / (image_b_norm + eps)
         # (batch,channels*spatial)
         error_per_batch = jnp.concatenate([error_per_batch, rel_error.reshape((batch, -1))], axis=1)
 
     error_per_batch = jnp.mean(error_per_batch, axis=1)  # mean over channels, spatial -> (batch,)
+
+    return jnp.mean(error_per_batch) if reduce == "mean" else error_per_batch
+
+
+def nrmse_loss(
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
+    reduce: str | None = "mean",
+    eps: float = 0,
+) -> jax.Array:
+    """
+    The normalized root mean squared error. This definition follows the standard one used in
+    literature where the norm is taken over the entire difference image and reference image
+    before doing the division diff / reference. We then take the mean over the image types,
+    and then reduce over the batch.
+
+    args:
+        multi_image_x: predicted data, image_blocks are shape (batch,channels,spatial,tensor)
+        multi_image_y: target data, image_blocks are shape (batch,channels,spatial,tensor)
+        reduce: how to reduce over batch. Either "mean" or None.
+        eps: epsilon to add to the denominator to avoid divide by zero errors
+
+    returns:
+        average root mean squared error with respect to the second input.
+    """
+    reduce_options = {"mean", None}
+    assert (
+        reduce in reduce_options
+    ), f"l1_rel_error: reduce={reduce} must be one of {reduce_options}"
+    assert (
+        multi_image_x.get_n_leading() == multi_image_y.get_n_leading() == 2
+    ), "l1_rel_error: MultiImages must have batch and channel axes"
+
+    batch = multi_image_x.get_L()
+    D = multi_image_x.D
+
+    error_per_batch = jnp.zeros((batch, 0))
+    for image_a, image_b in zip(multi_image_x.values(), multi_image_y.values()):
+        diff_norms = jnp.linalg.norm(
+            image_a.reshape((batch, -1)) - image_b.reshape((batch, -1)), axis=1, keepdims=True
+        )
+        target_norms = jnp.linalg.norm(image_b.reshape((batch, -1)), axis=1, keepdims=True)
+        error_per_batch = jnp.concatenate(
+            [error_per_batch, diff_norms / (target_norms + eps)], axis=1
+        )
+
+    error_per_batch = jnp.mean(error_per_batch, axis=1)  # mean over tensor types -> (batch,)
 
     return jnp.mean(error_per_batch) if reduce == "mean" else error_per_batch
 
@@ -175,7 +222,30 @@ def l2_rel_error(
     eps: float = 0,
 ) -> jax.Array:
     """
-    Average per tensor relative error as a percentage. The error is relative to the second input.
+    The relative error, taken as a norm over the entire difference image divided by the norm over
+    the entire reference image. We then take the mean over the image types, and then reduce over
+    the batch.
+
+    args:
+        multi_image_x: predicted data, image_blocks are shape (batch,channels,spatial,tensor)
+        multi_image_y: target data, image_blocks are shape (batch,channels,spatial,tensor)
+        reduce: how to reduce over batch. Either "mean" or None.
+        eps: epsilon to add to the denominator to avoid divide by zero errors
+
+    returns:
+        average percent relative error with respect to the second input.
+    """
+    return nrmse_loss(multi_image_x, multi_image_y, reduce, eps) * 100  # convert to percent
+
+
+def l2_per_pixel_rel_error(
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
+    reduce: str | None = "mean",
+    eps: float = 0,
+) -> jax.Array:
+    """
+    Average per tensor relative error as a percentage. The error is relative to the second input per pixel.
 
     The average is taken over each pixel, and channel. If reduce is 'mean' it is also
     taken over the batch.
@@ -189,4 +259,6 @@ def l2_rel_error(
     returns:
         average percent relative error with respect to the second input.
     """
-    return nrmse_loss(multi_image_x, multi_image_y, reduce, eps) * 100  # convert to percent
+    return (
+        nrmse_per_pixel_loss(multi_image_x, multi_image_y, reduce, eps) * 100
+    )  # convert to percent

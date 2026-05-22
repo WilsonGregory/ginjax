@@ -575,7 +575,7 @@ def tune_and_eval(
             tuned_model_dprime, tune_batch_stats, _, _, tune_time = ml.train(
                 tune_X,
                 tune_Y,
-                ml.Mapper([train_loss_f], residual),
+                ml.Mapper([train_loss_f], residual, eps=1e-9),
                 model_dprime,
                 subkey,
                 stop_condition=ml.EpochStop(epochs, verbose=verbose),
@@ -588,7 +588,7 @@ def tune_and_eval(
                 ),
                 validation_X=val_X,
                 validation_Y=val_Y,
-                val_map_and_loss=ml.Mapper([geom.Losses.NRMSE], residual, eps=1e-5),
+                val_map_and_loss=ml.Mapper([geom.Losses.NRMSE], residual, eps=1e-9),
                 aux_data=batch_stats,
                 is_wandb=is_wandb,
             )
@@ -604,7 +604,7 @@ def tune_and_eval(
     key, subkey = random.split(key)
     # (batch,losses)
     tuned_loss = ml.map_loss_in_batches(
-        ml.Mapper([geom.Losses.L2_REL, geom.Losses.SMSE], residual, reduce=None),
+        ml.Mapper([geom.Losses.L2_REL, geom.Losses.SMSE], residual, reduce=None, eps=1e-9),
         tuned_model_dprime,
         test_X,
         test_Y,

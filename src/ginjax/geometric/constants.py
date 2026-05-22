@@ -34,7 +34,9 @@ class Rescaling(enum.Enum):
 class Losses(enum.Enum):
     SMSE = enum.auto()
     NRMSE = enum.auto()
+    NRMSE_PER_PIXEL = enum.auto()
     L2_REL = enum.auto()
+    L2_REL_PER_PIXEL = enum.auto()
 
 
 class KroneckerDeltaSymbol:

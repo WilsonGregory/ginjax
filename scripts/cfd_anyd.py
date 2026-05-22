@@ -70,6 +70,7 @@ def get_data(
     float,
 ]:
     """
+    TODO: maybe I can load data as needed? one batch at a time? probably needed for 3d data
     Get data of a particular dimension from a preset list of files in the specified folder.
 
     args:
@@ -216,7 +217,7 @@ test_D = 3
 n_results = 5
 
 train_kwargs = {
-    "train_loss_f": geom.Losses.SMSE,
+    "train_loss_f": geom.Losses.NRMSE,
     "residual": False,
     "batch_size": args.batch,
     "epochs": args.epochs,
@@ -228,7 +229,7 @@ train_kwargs = {
 }
 
 test_kwargs = {
-    "train_loss_f": geom.Losses.SMSE,
+    "train_loss_f": geom.Losses.NRMSE,
     "residual": False,
     "batch_size": args.batch,
     "epochs": args.epochs,
@@ -266,7 +267,7 @@ print("Define the models!")
 model_list_d = {}
 for D in full_D_range:
     key, subkey = random.split(key)
-    train_x0, train_xt, _, _, _, _, _ = get_data(D, args.n_train, 0, 0, args.past_steps, args.data)
+    train_x0, train_xt, _, _, _, _, _ = get_data(D, 1, 0, 0, args.past_steps, args.data)
     input_keys = train_x0.get_signature()
     output_keys = train_xt.get_signature()
 

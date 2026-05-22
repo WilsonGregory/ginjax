@@ -177,7 +177,7 @@ def nrmse_loss(
     """
     The normalized root mean squared error. This definition follows the standard one used in
     literature where the norm is taken over the entire difference image and reference image
-    before doing the division diff / reference. We then take the mean over the image types,
+    before doing the division diff / reference. We then take the mean over the channels,
     and then reduce over the batch.
 
     args:
@@ -198,19 +198,19 @@ def nrmse_loss(
     ), "l1_rel_error: MultiImages must have batch and channel axes"
 
     batch = multi_image_x.get_L()
-    D = multi_image_x.D
 
     error_per_batch = jnp.zeros((batch, 0))
     for image_a, image_b in zip(multi_image_x.values(), multi_image_y.values()):
-        diff_norms = jnp.linalg.norm(
-            image_a.reshape((batch, -1)) - image_b.reshape((batch, -1)), axis=1, keepdims=True
-        )
-        target_norms = jnp.linalg.norm(image_b.reshape((batch, -1)), axis=1, keepdims=True)
+        # reshape to (batch,channels,spatial*tensor)
+        image_a = image_a.reshape(image_a.shape[:2] + (-1,))
+        image_b = image_b.reshape(image_b.shape[:2] + (-1,))
+        diff_norms = jnp.linalg.norm(image_a - image_b, axis=2)
+        target_norms = jnp.linalg.norm(image_b, axis=2)
         error_per_batch = jnp.concatenate(
             [error_per_batch, diff_norms / (target_norms + eps)], axis=1
         )
 
-    error_per_batch = jnp.mean(error_per_batch, axis=1)  # mean over tensor types -> (batch,)
+    error_per_batch = jnp.mean(error_per_batch, axis=1)  # (batch,channels) -> (batch,)
 
     return jnp.mean(error_per_batch) if reduce == "mean" else error_per_batch
 

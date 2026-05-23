@@ -15,6 +15,7 @@ import jax.random as random
 from jax.typing import ArrayLike
 import equinox as eqx
 import optax
+from torch.utils.data import Dataset, DataLoader
 
 import ginjax.geometric as geom
 from ginjax.ml.stopping_conditions import StopCondition, ValLoss
@@ -93,6 +94,34 @@ def load_plus(
 
 
 ## Data and Batching operations
+
+
+class MultiImageDataset(Dataset):
+    """
+    A basic dataset for multi images which assumes that we already have the X and Y in memory.
+    """
+
+    X: geom.MultiImage
+    Y: geom.MultiImage
+
+    def __init__(self: Self, X: geom.MultiImage, Y: geom.MultiImage) -> None:
+        self.X = X
+        self.Y = Y
+
+    def __len__(self: Self) -> int:
+        return self.X.get_L()
+
+    def __getitem__(self: Self, idx: int) -> tuple[geom.MultiImage, geom.MultiImage]:
+        return self.X.get_one(idx), self.Y.get_one(idx)
+
+
+def collate_multi_images(
+    multi_images: list[tuple[geom.MultiImage, geom.MultiImage]],
+) -> tuple[geom.MultiImage, geom.MultiImage]:
+    assert len(multi_images) > 0, "collate_multi_image: The list is empty."
+
+    X, Y = list(zip(*multi_images))  # unzip list into all the inputs and all the outputs
+    return geom.concat(X), geom.concat(Y)
 
 
 def get_batches(
@@ -305,6 +334,44 @@ def multi_image_reducer(ls: list[geom.MultiImage]) -> geom.MultiImage:
     return functools.reduce(lambda carry, val: carry.concat(val), ls, ls[0].empty())
 
 
+def map_loss_in_batches_dl(
+    map_and_loss: Callable[
+        [models.MultiImageModule, geom.MultiImage, geom.MultiImage, eqx.nn.State | None],
+        tuple[jax.Array, eqx.nn.State | None],
+    ],
+    model: models.MultiImageModule,
+    dataloader: DataLoader,
+    devices: list[jax.Device] | None = None,
+    aux_data: eqx.nn.State | None = None,
+    reduce: str | None = "mean",
+) -> jax.Array:
+    """
+    Runs map_and_loss for the entire x, y, splitting into batches if the MultiImage is larger than
+    the batch_size. This is helpful to run a whole validation/test set through map and loss when you need
+    to split those over batches for memory reasons. Automatically pmaps over multiple gpus, so the number
+    of gpus must evenly divide batch_size as well as as any remainder of the MultiImage.
+
+    args:
+        map_and_loss: function that takes in model, X_batch, Y_batch, and
+            aux_data and returns the loss and aux_data
+        model: the model to run through map_and_loss
+        dataloader: the dataloader for input and output multi image data
+        devices: the gpus that the code will run on
+        aux_data: auxilliary data, such as batch stats. Passed to the function is has_aux is True.
+        reduce: how to reduce between batches, defaults to mean
+
+    Returns:
+        Average loss over the entire BatchMultiImage
+    """
+    losses = []
+    for X_batch, Y_batch in dataloader:
+        X_batch = X_batch.reshape_pmap(devices)
+        Y_batch = Y_batch.reshape_pmap(devices)
+        losses.append(evaluate(model, map_and_loss, X_batch, Y_batch, aux_data, False))
+
+    return loss_reducer(losses) if reduce == "mean" else jnp.concat(losses, axis=0)
+
+
 def map_loss_in_batches(
     map_and_loss: Callable[
         [models.MultiImageModule, geom.MultiImage, geom.MultiImage, Optional[eqx.nn.State]],
@@ -340,14 +407,9 @@ def map_loss_in_batches(
     Returns:
         Average loss over the entire BatchMultiImage
     """
-    X_batches, Y_batches = get_batches((x, y), batch_size, rand_key, devices)
-    losses = [
-        evaluate(model, map_and_loss, X_batch, Y_batch, aux_data, False)
-        for X_batch, Y_batch in zip(X_batches, Y_batches)
-    ]
-    # because return_map=False, losses is a list of jax arrays
-
-    return loss_reducer(losses) if reduce == "mean" else jnp.concat(losses, axis=0)
+    dataset = MultiImageDataset(x, y)
+    dataloader = DataLoader(dataset, batch_size, shuffle=False, collate_fn=collate_multi_images)
+    return map_loss_in_batches_dl(map_and_loss, model, dataloader, devices, aux_data, reduce)
 
 
 def map_plus_loss_in_batches(
@@ -445,20 +507,16 @@ def train_step(
     return model, opt_state, loss, aux_data
 
 
-def train(
-    X: geom.MultiImage,
-    Y: geom.MultiImage,
+def train_dl(
+    train_dataloader: DataLoader,
     map_and_loss: Callable[
-        [models.MultiImageModule, geom.MultiImage, geom.MultiImage, Optional[eqx.nn.State]],
-        tuple[jax.Array, Optional[eqx.nn.State]],
+        [models.MultiImageModule, geom.MultiImage, geom.MultiImage, eqx.nn.State | None],
+        tuple[jax.Array, eqx.nn.State | None],
     ],
     model: models.MultiImageModule,
-    rand_key: ArrayLike,
     stop_condition: StopCondition,
-    batch_size: int,
     optimizer: optax.GradientTransformation,
-    validation_X: Optional[geom.MultiImage] = None,
-    validation_Y: Optional[geom.MultiImage] = None,
+    val_dataloader: DataLoader | None = None,
     val_map_and_loss: (
         Callable[
             [models.MultiImageModule, geom.MultiImage, geom.MultiImage, eqx.nn.State | None],
@@ -466,9 +524,9 @@ def train(
         ]
         | None
     ) = None,
-    save_model: Optional[str] = None,
-    devices: Optional[list[jax.Device]] = None,
-    aux_data: Optional[eqx.nn.State] = None,
+    save_model: str | None = None,
+    devices: list[jax.Device] | None = None,
+    aux_data: eqx.nn.State | None = None,
     is_wandb: bool = False,
 ) -> tuple[models.MultiImageModule, eqx.nn.State | None, ArrayLike | None, ArrayLike | None, float]:
     """
@@ -476,6 +534,128 @@ def train(
     parameters the minimize the map_and_loss function. The model is returned. This function automatically
     pmaps over the available gpus, so batch_size should be divisible by the number of gpus. If you only want
     to train on a single GPU, the script should be run with CUDA_VISIBLE_DEVICES=# for whatever gpu number.
+    This version uses pytorch datasets and dataloaders.
+
+    args:
+        dataset: the input and target data as a MultImageDataset. Each is a MultiImage by k of
+            (images, channels, (N,)*D, (D,)*k)
+        map_and_loss: function that takes in model, X_batch, Y_batch, and aux_data and
+            returns the loss and aux_data.
+        model: Model pytree
+        rand_key: key for randomness
+        stop_condition: when to stop the training process, currently only 1 condition
+            at a time
+        batch_size: the size of each mini-batch in SGD
+        optimizer: optimizer
+        val_dataset: the input and target data as a MultImageDataset. Each is a MultiImage by k of
+            (images, channels, (N,)*D, (D,)*k)
+        save_model: if string, save model every 10 epochs, defaults to None
+        aux_data: initial aux data passed in to map_and_loss when has_aux is true.
+        devices: gpu/cpu devices to use, if None (default) then it will use jax.devices()
+        is_wandb: whether wandb experiment tracking has been initiated and should be logged to
+
+    returns:
+        A tuple of best model in inference mode, aux_data, epoch loss, val loss, and train_time
+    """
+    if isinstance(stop_condition, ValLoss) and val_dataloader is None:
+        raise ValueError("Stop condition is ValLoss, but no validation data provided.")
+
+    if val_map_and_loss is None:
+        val_map_and_loss = map_and_loss
+
+    devices = devices if devices else jax.devices()
+
+    total_train_time = 0
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    epoch = 0
+    epoch_val_loss = None
+    epoch_loss = None
+    val_loss = None
+    epoch_time = 0
+    stop_condition.best_model = model
+    while not stop_condition.stop(model, epoch, epoch_loss, epoch_val_loss, epoch_time):
+        start_time = time.time()
+        epoch_loss = None
+        n_batches = 0
+        for X_batch, Y_batch in train_dataloader:  # TODO: check, this should go through 1 epoch?
+            n_batches += 1
+            X_batch = X_batch.reshape_pmap(devices)
+            Y_batch = Y_batch.reshape_pmap(devices)
+            model, opt_state, loss_value, aux_data = train_step(
+                map_and_loss,
+                model,
+                optimizer,
+                opt_state,
+                X_batch,
+                Y_batch,
+                aux_data,
+            )
+            epoch_loss = loss_value if epoch_loss is None else epoch_loss + loss_value
+
+        total_train_time += time.time() - start_time
+        print("n_batches", n_batches)
+
+        if epoch_loss is not None:
+            epoch_loss = epoch_loss / n_batches
+
+        epoch += 1
+        log = {"train/loss": epoch_loss}
+
+        # We evaluate the validation loss in batches for memory reasons.
+        if val_dataloader is not None:
+            epoch_val_loss = map_loss_in_batches_dl(
+                val_map_and_loss,
+                model,
+                val_dataloader,
+                devices=devices,
+                aux_data=aux_data,
+            )
+            val_loss = epoch_val_loss
+            log["val/loss"] = val_loss
+
+        if is_wandb:
+            wandb.log(log)
+
+        if save_model and ((epoch % 10) == 0):
+            save(save_model, model)
+
+        epoch_time = time.time() - start_time
+
+    return stop_condition.best_model, aux_data, epoch_loss, val_loss, total_train_time
+
+
+def train(
+    X: geom.MultiImage,
+    Y: geom.MultiImage,
+    map_and_loss: Callable[
+        [models.MultiImageModule, geom.MultiImage, geom.MultiImage, eqx.nn.State | None],
+        tuple[jax.Array, eqx.nn.State | None],
+    ],
+    model: models.MultiImageModule,
+    rand_key: jax.Array,
+    stop_condition: StopCondition,
+    batch_size: int,
+    optimizer: optax.GradientTransformation,
+    validation_X: geom.MultiImage | None = None,
+    validation_Y: geom.MultiImage | None = None,
+    val_map_and_loss: (
+        Callable[
+            [models.MultiImageModule, geom.MultiImage, geom.MultiImage, eqx.nn.State | None],
+            tuple[jax.Array, eqx.nn.State | None],
+        ]
+        | None
+    ) = None,
+    save_model: str | None = None,
+    devices: list[jax.Device] | None = None,
+    aux_data: eqx.nn.State | None = None,
+    is_wandb: bool = False,
+) -> tuple[models.MultiImageModule, eqx.nn.State | None, ArrayLike | None, ArrayLike | None, float]:
+    """
+    Method to train the model. It uses stochastic gradient descent (SGD) with the optimizer to learn the
+    parameters the minimize the map_and_loss function. The model is returned. This function automatically
+    pmaps over the available gpus, so batch_size should be divisible by the number of gpus. If you only want
+    to train on a single GPU, the script should be run with CUDA_VISIBLE_DEVICES=# for whatever gpu number.
+    Use train_dl if you would like to pass pytorch dataloaders.
 
     args:
         X: The X input data as a MultiImage by k of (images, channels, (N,)*D, (D,)*k)
@@ -500,71 +680,32 @@ def train(
     returns:
         A tuple of best model in inference mode, aux_data, epoch loss, val loss, and train_time
     """
-    if isinstance(stop_condition, ValLoss) and not (validation_X and validation_Y):
-        raise ValueError("Stop condition is ValLoss, but no validation data provided.")
+    train_dataset = MultiImageDataset(X, Y)
+    train_dataloader = DataLoader(
+        train_dataset, batch_size, shuffle=True, collate_fn=collate_multi_images
+    )
 
-    if val_map_and_loss is None:
-        val_map_and_loss = map_and_loss
+    if validation_X is not None and validation_Y is not None:
+        val_dataset = MultiImageDataset(validation_X, validation_Y)
+        val_dataloader = DataLoader(
+            val_dataset, batch_size, shuffle=False, collate_fn=collate_multi_images
+        )
+    else:
+        val_dataloader = None
 
-    devices = devices if devices else jax.devices()
-
-    total_train_time = 0
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
-    epoch = 0
-    epoch_val_loss = None
-    epoch_loss = None
-    val_loss = None
-    epoch_time = 0
-    stop_condition.best_model = model
-    while not stop_condition.stop(model, epoch, epoch_loss, epoch_val_loss, epoch_time):
-        start_time = time.time()
-        rand_key, subkey = random.split(rand_key)
-        X_batches, Y_batches = get_batches((X, Y), batch_size, subkey, devices)
-        epoch_loss = None
-        for X_batch, Y_batch in zip(X_batches, Y_batches):
-            model, opt_state, loss_value, aux_data = train_step(
-                map_and_loss,
-                model,
-                optimizer,
-                opt_state,
-                X_batch,
-                Y_batch,
-                aux_data,
-            )
-            epoch_loss = loss_value if epoch_loss is None else epoch_loss + loss_value
-
-        total_train_time += time.time() - start_time
-
-        if epoch_loss is not None:
-            epoch_loss = epoch_loss / len(X_batches)
-
-        epoch += 1
-        log = {"train/loss": epoch_loss}
-
-        # We evaluate the validation loss in batches for memory reasons.
-        if validation_X and validation_Y:
-            epoch_val_loss = map_loss_in_batches(
-                val_map_and_loss,
-                model,
-                validation_X,
-                validation_Y,
-                batch_size,
-                subkey,
-                devices=devices,
-                aux_data=aux_data,
-            )
-            val_loss = epoch_val_loss
-            log["val/loss"] = val_loss
-
-        if is_wandb:
-            wandb.log(log)
-
-        if save_model and ((epoch % 10) == 0):
-            save(save_model, model)
-
-        epoch_time = time.time() - start_time
-
-    return stop_condition.best_model, aux_data, epoch_loss, val_loss, total_train_time
+    return train_dl(
+        train_dataloader,
+        map_and_loss,
+        model,
+        stop_condition,
+        optimizer,
+        val_dataloader,
+        val_map_and_loss,
+        save_model,
+        devices,
+        aux_data,
+        is_wandb,
+    )
 
 
 BENCHMARK_DATA = "benchmark_data"

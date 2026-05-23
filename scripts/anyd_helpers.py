@@ -700,6 +700,7 @@ def run_anyd(
                         "conv_filters_dict": None,
                         "rescale": None,
                         "is_wandb": args.tune_wandb,
+                        "batch_size": args.batch_size,
                     },
                 )
                 for name, _train_kwargs, _ in model_list_d[test_D]

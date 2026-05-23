@@ -219,7 +219,8 @@ n_results = 5
 train_kwargs = {
     "train_loss_f": geom.Losses.NRMSE,
     "residual": False,
-    "batch_size": args.batch,
+    # "batch_size": args.batch,
+    "batch_size": 32,
     "epochs": args.epochs,
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,

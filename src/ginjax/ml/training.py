@@ -15,7 +15,7 @@ import jax.random as random
 from jax.typing import ArrayLike
 import equinox as eqx
 import optax
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler, SequentialSampler
 
 import ginjax.geometric as geom
 from ginjax.ml.stopping_conditions import StopCondition, ValLoss
@@ -99,29 +99,44 @@ def load_plus(
 class MultiImageDataset(Dataset):
     """
     A basic dataset for multi images which assumes that we already have the X and Y in memory.
+    The __getitem__ for this class expects a list of integer indices for the entire batch at
+    once, which means the sampler of the data loader should be a batch sampler.
     """
 
+    D: int
     X: geom.MultiImage
     Y: geom.MultiImage
+    devices: list[jax.Device]
+    use_devices: bool
 
-    def __init__(self: Self, X: geom.MultiImage, Y: geom.MultiImage) -> None:
+    def __init__(
+        self: Self,
+        X: geom.MultiImage,
+        Y: geom.MultiImage,
+        devices: list[jax.Device] | None = None,
+        use_devices: bool = True,
+    ) -> None:
+        self.D = X.D
         self.X = X
         self.Y = Y
+        self.devices = devices if devices else jax.devices()
+        self.use_devices = use_devices
 
     def __len__(self: Self) -> int:
         return self.X.get_L()
 
-    def __getitem__(self: Self, idx: int) -> tuple[geom.MultiImage, geom.MultiImage]:
-        return self.X.get_one(idx), self.Y.get_one(idx)
+    def __getitem__(self: Self, idx: list[int]) -> tuple[geom.MultiImage, geom.MultiImage]:
+        idxs = jnp.array(idx)
+        X_batch, Y_batch = self.X.get_subset(idxs), self.Y.get_subset(idxs)
 
+        if self.use_devices:
+            X_batch = X_batch.reshape_pmap(self.devices)
+            Y_batch = Y_batch.reshape_pmap(self.devices)
 
-def collate_multi_images(
-    multi_images: list[tuple[geom.MultiImage, geom.MultiImage]],
-) -> tuple[geom.MultiImage, geom.MultiImage]:
-    assert len(multi_images) > 0, "collate_multi_image: The list is empty."
+        return X_batch, Y_batch
 
-    X, Y = list(zip(*multi_images))  # unzip list into all the inputs and all the outputs
-    return geom.concat(X), geom.concat(Y)
+    def get_N(self: Self) -> int:
+        return self.X.get_spatial_dims()[0]
 
 
 def get_batches(
@@ -341,7 +356,6 @@ def map_loss_in_batches_dl(
     ],
     model: models.MultiImageModule,
     dataloader: DataLoader,
-    devices: list[jax.Device] | None = None,
     aux_data: eqx.nn.State | None = None,
     reduce: str | None = "mean",
 ) -> jax.Array:
@@ -356,7 +370,6 @@ def map_loss_in_batches_dl(
             aux_data and returns the loss and aux_data
         model: the model to run through map_and_loss
         dataloader: the dataloader for input and output multi image data
-        devices: the gpus that the code will run on
         aux_data: auxilliary data, such as batch stats. Passed to the function is has_aux is True.
         reduce: how to reduce between batches, defaults to mean
 
@@ -365,8 +378,6 @@ def map_loss_in_batches_dl(
     """
     losses = []
     for X_batch, Y_batch in dataloader:
-        X_batch = X_batch.reshape_pmap(devices)
-        Y_batch = Y_batch.reshape_pmap(devices)
         losses.append(evaluate(model, map_and_loss, X_batch, Y_batch, aux_data, False))
 
     return loss_reducer(losses) if reduce == "mean" else jnp.concat(losses, axis=0)
@@ -407,9 +418,13 @@ def map_loss_in_batches(
     Returns:
         Average loss over the entire BatchMultiImage
     """
-    dataset = MultiImageDataset(x, y)
-    dataloader = DataLoader(dataset, batch_size, shuffle=False, collate_fn=collate_multi_images)
-    return map_loss_in_batches_dl(map_and_loss, model, dataloader, devices, aux_data, reduce)
+    dataset = MultiImageDataset(x, y, devices)
+    dataloader = DataLoader(
+        dataset,
+        sampler=BatchSampler(SequentialSampler(dataset), batch_size, drop_last=True),
+        collate_fn=lambda x: x[0],
+    )
+    return map_loss_in_batches_dl(map_and_loss, model, dataloader, aux_data, reduce)
 
 
 def map_plus_loss_in_batches(
@@ -525,7 +540,6 @@ def train_dl(
         | None
     ) = None,
     save_model: str | None = None,
-    devices: list[jax.Device] | None = None,
     aux_data: eqx.nn.State | None = None,
     is_wandb: bool = False,
 ) -> tuple[models.MultiImageModule, eqx.nn.State | None, ArrayLike | None, ArrayLike | None, float]:
@@ -537,21 +551,19 @@ def train_dl(
     This version uses pytorch datasets and dataloaders.
 
     args:
-        dataset: the input and target data as a MultImageDataset. Each is a MultiImage by k of
+        train_dataloader: dataloader for train input and target data. Each is a MultiImage by k of
             (images, channels, (N,)*D, (D,)*k)
         map_and_loss: function that takes in model, X_batch, Y_batch, and aux_data and
             returns the loss and aux_data.
         model: Model pytree
-        rand_key: key for randomness
         stop_condition: when to stop the training process, currently only 1 condition
             at a time
         batch_size: the size of each mini-batch in SGD
         optimizer: optimizer
-        val_dataset: the input and target data as a MultImageDataset. Each is a MultiImage by k of
+        val_dataloader: dataloader for val input and target data. Each is a MultiImage by k of
             (images, channels, (N,)*D, (D,)*k)
         save_model: if string, save model every 10 epochs, defaults to None
         aux_data: initial aux data passed in to map_and_loss when has_aux is true.
-        devices: gpu/cpu devices to use, if None (default) then it will use jax.devices()
         is_wandb: whether wandb experiment tracking has been initiated and should be logged to
 
     returns:
@@ -562,8 +574,6 @@ def train_dl(
 
     if val_map_and_loss is None:
         val_map_and_loss = map_and_loss
-
-    devices = devices if devices else jax.devices()
 
     total_train_time = 0
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
@@ -579,8 +589,6 @@ def train_dl(
         n_batches = 0
         for X_batch, Y_batch in train_dataloader:  # TODO: check, this should go through 1 epoch?
             n_batches += 1
-            X_batch = X_batch.reshape_pmap(devices)
-            Y_batch = Y_batch.reshape_pmap(devices)
             model, opt_state, loss_value, aux_data = train_step(
                 map_and_loss,
                 model,
@@ -593,7 +601,6 @@ def train_dl(
             epoch_loss = loss_value if epoch_loss is None else epoch_loss + loss_value
 
         total_train_time += time.time() - start_time
-        print("n_batches", n_batches)
 
         if epoch_loss is not None:
             epoch_loss = epoch_loss / n_batches
@@ -607,7 +614,6 @@ def train_dl(
                 val_map_and_loss,
                 model,
                 val_dataloader,
-                devices=devices,
                 aux_data=aux_data,
             )
             val_loss = epoch_val_loss
@@ -680,15 +686,19 @@ def train(
     returns:
         A tuple of best model in inference mode, aux_data, epoch loss, val loss, and train_time
     """
-    train_dataset = MultiImageDataset(X, Y)
+    train_dataset = MultiImageDataset(X, Y, devices)
     train_dataloader = DataLoader(
-        train_dataset, batch_size, shuffle=True, collate_fn=collate_multi_images
+        train_dataset,
+        sampler=BatchSampler(RandomSampler(train_dataset), batch_size, drop_last=True),
+        collate_fn=lambda x: x[0],
     )
 
     if validation_X is not None and validation_Y is not None:
-        val_dataset = MultiImageDataset(validation_X, validation_Y)
+        val_dataset = MultiImageDataset(validation_X, validation_Y, devices)
         val_dataloader = DataLoader(
-            val_dataset, batch_size, shuffle=False, collate_fn=collate_multi_images
+            val_dataset,
+            sampler=BatchSampler(SequentialSampler(val_dataset), batch_size, drop_last=True),
+            collate_fn=lambda x: x[0],
         )
     else:
         val_dataloader = None
@@ -702,7 +712,6 @@ def train(
         val_dataloader,
         val_map_and_loss,
         save_model,
-        devices,
         aux_data,
         is_wandb,
     )

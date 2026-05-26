@@ -1,15 +1,13 @@
 from __future__ import annotations
 import argparse
 import math
-import matplotlib.pyplot as plt
-from matplotlib.axes import Axes
-import numpy as np
 import pathlib
 import time
 
 import jax
 import jax.numpy as jnp
 import jax.random as random
+from torch.utils.data import BatchSampler, DataLoader, RandomSampler, SequentialSampler
 
 import ginjax.geometric as geom
 import ginjax.ml as ml
@@ -131,15 +129,13 @@ def get_data(
     n_train: int,
     n_val: int,
     n_test: int,
+    batch_size: int,
     key: jax.Array,
     data_dir: str,
 ) -> tuple[
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
+    DataLoader[ml.MultiImageDataset],
+    DataLoader[ml.MultiImageDataset],
+    DataLoader[ml.MultiImageDataset],
     float,
 ]:
     """
@@ -154,6 +150,7 @@ def get_data(
         n_train: number of training data points
         n_val: number of validation data points
         n_test: number of test data points for each test dimension
+        batch_size: the training batch size
         key: key for randomness
         data_dir: location to save or load the data from
 
@@ -168,26 +165,47 @@ def get_data(
     train_x0, train_xt, train_generation_time = get_data_d(
         D, N, is_torus, diffusion_coef, t, max_temp, n_train, subkey1, data_dir_path / "train"
     )
+    train_dataset = ml.MultiImageDataset(train_x0, train_xt)
+    # RandomSampler breaks if the dataset is empty
+    sampler = RandomSampler(train_dataset) if n_train > 0 else SequentialSampler(train_dataset)
+    train_dataloader = DataLoader(
+        train_dataset,
+        sampler=BatchSampler(sampler, batch_size, drop_last=True),
+        collate_fn=lambda x: x[0],
+    )
 
     val_x0, val_xt, _ = get_data_d(
         D, N, is_torus, diffusion_coef, t, max_temp, n_val, subkey2, data_dir_path / "val"
+    )
+    val_dataset = ml.MultiImageDataset(val_x0, val_xt)
+    val_dataloader = DataLoader(
+        val_dataset,
+        sampler=BatchSampler(SequentialSampler(val_dataset), batch_size, drop_last=True),
+        collate_fn=lambda x: x[0],
     )
 
     test_x0, test_xt, _ = get_data_d(
         D, N, is_torus, diffusion_coef, t, max_temp, n_test, subkey3, data_dir_path / "test"
     )
+    test_dataset = ml.MultiImageDataset(test_x0, test_xt)
+    test_dataloader = DataLoader(
+        test_dataset,
+        sampler=BatchSampler(SequentialSampler(test_dataset), batch_size, drop_last=True),
+        collate_fn=lambda x: x[0],
+    )
+
     if n_test > 0:
         x0_std = jnp.std(test_x0[((), 0)])
         xt_std = jnp.std(test_xt[((), 0)])
         xt_resid_std = jnp.std(test_xt[((), 0)] - test_x0[((), 0)])
         print(f"D={D}, x0:{x0_std:.3e}, xt:{xt_std:.3e}, xt_resid:{xt_resid_std:.3e}")
 
-    return train_x0, train_xt, val_x0, val_xt, test_x0, test_xt, train_generation_time
+    return train_dataloader, val_dataloader, test_dataloader, train_generation_time
 
 
 # an example of currently used script
 # CUDA_VISIBLE_DEVICES=6 time python3 -m scripts.heat_equation --data /data/wgregor4/heat_equation/
-# --n-test 128 --n-val 128 --n-train 128 --train-D-range 1,2 --test-D-range 2,3
+# --n-test 128 --n-val 128 --n-train 128 --train-D-range 1 --test-D-range 2
 # --model-dir /data/wgregor4/runs/heat_equation/
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
@@ -352,8 +370,16 @@ print("Define the models!")
 model_list_d = {}
 for D in full_D_range:
     key, subkey = random.split(key)
-    train_x0, train_xt, _, _, _, _, _ = get_data(
-        D, args.N, True, args.diffusion_coef, args.n_train, 0, 0, subkey, args.data
+    train_x0, train_xt, _ = get_data_d(
+        D,
+        args.N,
+        True,
+        args.diffusion_coef,
+        1,
+        math.sqrt(3),
+        args.n_train,
+        subkey,
+        pathlib.Path(args.data) / "train",
     )
     input_keys = train_x0.get_signature()
     output_keys = train_xt.get_signature()
@@ -576,15 +602,14 @@ for D in full_D_range:
 
 # extended lambda function
 def get_data_lambda(D: int, n_train: int, n_val: int, n_test: int, key: jax.Array) -> tuple[
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
+    DataLoader[ml.MultiImageDataset],
+    DataLoader[ml.MultiImageDataset],
+    DataLoader[ml.MultiImageDataset],
     float,
 ]:
-    return get_data(D, args.N, True, args.diffusion_coef, n_train, n_val, n_test, key, args.data)
+    return get_data(
+        D, args.N, True, args.diffusion_coef, n_train, n_val, n_test, args.batch, key, args.data
+    )
 
 
 key, subkey = random.split(key)

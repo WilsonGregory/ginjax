@@ -1136,16 +1136,3 @@ class MultiImage:
         Helper function to define GeometricImage as a pytree so jax.jit handles it correctly.
         """
         return cls(*children, **aux_data)
-
-
-def concat(multi_images: Sequence[MultiImage]) -> MultiImage:
-    """
-    Concatenate a list of multi images into a single multi image. This implicitly assumes that all
-    images are of the same type.
-    """
-    assert len(multi_images) > 0, "concat: Must be at least one multi image."
-    first = multi_images[0]
-    data = jnp.concat([image.to_scalar_multi_image()[((), 0)] for image in multi_images])
-    return MultiImage(
-        {((), 0): data}, first.D, first.is_torus, first.metric_tensor, first.metric_tensor_inv
-    ).from_scalar_multi_image(first.get_signature())

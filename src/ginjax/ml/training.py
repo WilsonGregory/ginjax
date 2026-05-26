@@ -587,7 +587,7 @@ def train_dl(
         start_time = time.time()
         epoch_loss = None
         n_batches = 0
-        for X_batch, Y_batch in train_dataloader:  # TODO: check, this should go through 1 epoch?
+        for X_batch, Y_batch in train_dataloader:
             n_batches += 1
             model, opt_state, loss_value, aux_data = train_step(
                 map_and_loss,

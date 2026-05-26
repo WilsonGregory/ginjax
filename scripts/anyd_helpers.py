@@ -647,7 +647,7 @@ def run_anyd(
     for train_D in train_D_range:
         key, subkey = random.split(key)
         train_dataloader, val_dataloader, _, pretrain_data_time = get_data(
-            train_D, args.n_train, args.n_val, 1, subkey
+            train_D, args.n_train, args.n_val, 0, subkey
         )
 
         train_data = (train_dataloader, val_dataloader)

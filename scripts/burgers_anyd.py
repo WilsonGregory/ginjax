@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 from jax import random
 import apebench
+from torch.utils.data import BatchSampler, DataLoader, RandomSampler, SequentialSampler
 
 import ginjax.geometric as geom
 from ginjax import models
@@ -180,15 +181,13 @@ def get_data(
     n_train: int,
     n_val: int,
     n_test: int,
+    batch_size: int,
     key: jax.Array,
     data_dir: str,
 ) -> tuple[
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
+    DataLoader[ml.MultiImageDataset],
+    DataLoader[ml.MultiImageDataset],
+    DataLoader[ml.MultiImageDataset],
     float,
 ]:
     """
@@ -203,6 +202,7 @@ def get_data(
         n_train: train dataset size
         n_val: validation dataset size
         n_test: test dataset size
+        batch_size: the training batch size
         key: jax key for randomness
         data_dir: director to save/load the data
 
@@ -223,6 +223,14 @@ def get_data(
         subkey1,
         data_dir_path / "train",
     )
+    train_dataset = ml.MultiImageDataset(train_x0, train_xt)
+    # RandomSampler breaks if the dataset is empty
+    sampler = RandomSampler(train_dataset) if n_train > 0 else SequentialSampler(train_dataset)
+    train_dataloader = DataLoader(
+        train_dataset,
+        sampler=BatchSampler(sampler, batch_size, drop_last=True),
+        collate_fn=lambda x: x[0],
+    )
 
     val_x0, val_xt, _ = get_data_d(
         D,
@@ -234,6 +242,12 @@ def get_data(
         n_val,
         subkey2,
         data_dir_path / "val",
+    )
+    val_dataset = ml.MultiImageDataset(val_x0, val_xt)
+    val_dataloader = DataLoader(
+        val_dataset,
+        sampler=BatchSampler(SequentialSampler(val_dataset), batch_size, drop_last=True),
+        collate_fn=lambda x: x[0],
     )
 
     test_x0, test_xt, _ = get_data_d(
@@ -247,12 +261,18 @@ def get_data(
         subkey3,
         data_dir_path / "test",
     )
+    test_dataset = ml.MultiImageDataset(test_x0, test_xt)
+    test_dataloader = DataLoader(
+        test_dataset,
+        sampler=BatchSampler(SequentialSampler(test_dataset), batch_size, drop_last=True),
+        collate_fn=lambda x: x[0],
+    )
 
-    return train_x0, train_xt, val_x0, val_xt, test_x0, test_xt, train_data_time
+    return train_dataloader, val_dataloader, test_dataloader, train_data_time
 
 
 # Something like
-# CUDA_VISIBLE_DEVICES=0,1 time python3 scripts/burgers_anyd.py --data /data/wgregor4/apebench/burgers/
+# CUDA_VISIBLE_DEVICES=0,1 time python3 -m scripts.burgers_anyd --data /data/wgregor4/apebench/burgers/
 # --n-train 8 --n-val 8 --n-test 8 --batch 2 --model-dir /data/wgregor4/runs/burgers_anyd/
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
@@ -407,7 +427,7 @@ print("Define the models!")
 model_list_d = {}
 for D in full_D_range:
     key, subkey = random.split(key)
-    train_x0, train_xt, _, _, _, _, _ = get_data(
+    train_x0, train_xt, _ = get_data_d(
         D,
         args.N,
         args.diffusion_coef,
@@ -415,10 +435,8 @@ for D in full_D_range:
         args.n_timesteps,
         args.subsample,
         args.n_train,
-        0,
-        0,
         subkey,
-        args.data,
+        pathlib.Path(args.data) / "train",
     )
     input_keys = train_x0.get_signature()
     output_keys = train_xt.get_signature()
@@ -537,12 +555,9 @@ for D in full_D_range:
 
 # extended lambda function
 def get_data_lambda(D: int, n_train: int, n_val: int, n_test: int, key: jax.Array) -> tuple[
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
-    geom.MultiImage,
+    DataLoader[ml.MultiImageDataset],
+    DataLoader[ml.MultiImageDataset],
+    DataLoader[ml.MultiImageDataset],
     float,
 ]:
     return get_data(
@@ -555,6 +570,7 @@ def get_data_lambda(D: int, n_train: int, n_val: int, n_test: int, key: jax.Arra
         n_train,
         n_val,
         n_test,
+        args.batch,
         key,
         args.data,
     )

@@ -37,12 +37,15 @@ def read_one_h5(
     pressure = jax.device_put(
         jnp.array(data_dict["pressure"][traj_idxs][()]), jax.devices("cpu")[0]
     )
-    # (batch,2,timesteps,spatial)
-    density_pressure = jnp.concatenate([density[:, None], pressure[:, None]], axis=1)
-    # (batch,2*timesteps,spatial)
-    density_pressure = density_pressure.reshape(
-        (len(density_pressure), -1) + density_pressure.shape[3:]
-    )
+    if len(density) == 0:
+        density_pressure = jnp.zeros((0, 2 * density.shape[1]) + density.shape[2:])
+    else:
+        # (batch,2,timesteps,spatial)
+        density_pressure = jnp.concatenate([density[:, None], pressure[:, None]], axis=1)
+        # (batch,2*timesteps,spatial)
+        density_pressure = density_pressure.reshape(
+            (len(density_pressure), -1) + density_pressure.shape[3:]
+        )
 
     velocities = []
     for vkey in ["Vx", "Vy", "Vz"][:D]:
@@ -68,9 +71,8 @@ def read_one_h5(
 def open_hdf5(D: int, data_dir: str) -> h5py.File:
     data_dir_path = pathlib.Path(data_dir)
     fnames = {
-        1: "1D_CFD_Rand_Eta0.01_Zeta0.01_periodic_Train.hdf5",
-        2: "2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_128_Train.hdf5",
-        3: "3D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_Train.hdf5",
+        2: "2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_64_Train.hdf5",
+        3: "3D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_64_Train.hdf5",
     }
     return h5py.File(data_dir_path / f"cfd_{D}d" / fnames[D])
 
@@ -198,12 +200,7 @@ def get_data(
     past_steps: int,
     batch_size: int,
     data_dir: str,
-) -> tuple[
-    DataLoader[CFDDataset],
-    DataLoader[CFDDataset],
-    DataLoader[CFDDataset],
-    float,
-]:
+) -> tuple[DataLoader[CFDDataset], DataLoader[CFDDataset], DataLoader[CFDDataset], float]:
     """
     TODO: maybe I can load data as needed? one batch at a time? probably needed for 3d data
     Get data of a particular dimension from a preset list of files in the specified folder.
@@ -232,9 +229,11 @@ def get_data(
     else:
         raise ValueError(f"cfd_anyd::get_data: expects D=2,3, but got D={D}")
 
+    # RandomSampler requires __len__ > 0
+    sampler = RandomSampler(train_dataset) if n_train > 0 else SequentialSampler(train_dataset)
     train_dataloader = DataLoader(
         train_dataset,
-        sampler=BatchSampler(RandomSampler(train_dataset), batch_size, drop_last=True),
+        sampler=BatchSampler(sampler, batch_size, drop_last=True),
         collate_fn=lambda x: x[0],
     )
     val_dataloader = DataLoader(
@@ -371,20 +370,45 @@ for D in full_D_range:
 
     key, *subkeys = random.split(key, num=10)
     model_list = [
+        # (
+        #     f"unetBase_equiv48_D{D}",
+        #     {  # train_kwargs
+        #         "model": models.UNet(
+        #             D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=48,
+        #             activation_f=jax.nn.gelu,
+        #             conv_filters=free_filters_dict[D],
+        #             upsample_filters=upsample_filters_dict[D],
+        #             key=subkeys[2],
+        #         ),
+        #         "lr": {2: {128: 1e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
+        #         # D=3, for all of them (and tuning) its just 1e-4
+        #         **train_kwargs,
+        #     },
+        #     {  # tune and eval kwargs
+        #         "lr": {(2, 3): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
+        #         "rescale": geom.Rescaling.COMPAT_FLEX,
+        #         "conv_filters_dict": free_filters_dict,
+        #         "upsample_filters_dict": upsample_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
         (
-            f"unetBase_equiv48_D{D}",
+            f"unetBase_equiv20_D{D}",
             {  # train_kwargs
                 "model": models.UNet(
                     D,
                     input_keys,
                     output_keys,
-                    depth=48,
+                    depth=20,
                     activation_f=jax.nn.gelu,
                     conv_filters=free_filters_dict[D],
                     upsample_filters=upsample_filters_dict[D],
-                    key=subkeys[2],
+                    key=subkeys[3],
                 ),
-                "lr": {2: {128: 1e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
+                "lr": {2: {128: 5e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
                 # D=3, for all of them (and tuning) its just 1e-4
                 **train_kwargs,
             },
@@ -402,9 +426,9 @@ for D in full_D_range:
 
 # extended lambda function
 def get_data_lambda(D: int, n_train: int, n_val: int, n_test: int, key: jax.Array) -> tuple[
-    DataLoader[ml.MultiImageDataset],
-    DataLoader[ml.MultiImageDataset],
-    DataLoader[ml.MultiImageDataset],
+    DataLoader[ml.MultiImageDataset] | None,
+    DataLoader[ml.MultiImageDataset] | None,
+    DataLoader[ml.MultiImageDataset] | None,
     float,
 ]:
     return get_data(

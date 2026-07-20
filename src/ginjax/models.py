@@ -431,20 +431,6 @@ class AnyDimensionalModel(MultiImageModule):
                 new_weights = jnp.stack(
                     [alpha - (2 / 3) * beta, (1 / 3) * beta, (1 / 3) * beta], axis=2
                 )
-            case (3, 0, 1, 3):
-                # TODO: This is likely incorrect.
-                assert old_weights.shape[2] == 2
-                alpha = old_weights[:, :, 0]
-                beta = old_weights[:, :, 1]
-                new_weights = jnp.stack(
-                    [
-                        alpha + (-28 / 27) * beta,
-                        (-11 / 27) * beta,
-                        (-4 / 27) * beta,
-                        (8 / 27) * beta,
-                    ],
-                    axis=2,
-                )
             case (3, 0, 2, 3):
                 assert old_weights.shape[2] == 3
                 alpha = old_weights[:, :, 0]

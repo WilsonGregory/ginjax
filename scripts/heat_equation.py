@@ -590,7 +590,7 @@ for D in full_D_range:
                     False: {(1, 2): {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 1e-3, 128: 1e-3}},
                     True: {(1, 2): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 5e-4}},
                 }[args.residual],
-                "rescale": geom.Rescaling.COMPAT_FLEX,
+                "rescale": geom.Rescaling.SPIN_EMBED,  # TODO: haven't tuned the weights
                 "conv_filters_dict": free_filters_dict,
                 "upsample_filters_dict": upsample_filters_dict,
                 **test_kwargs,

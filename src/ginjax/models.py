@@ -382,6 +382,138 @@ class AnyDimensionalModel(MultiImageModule):
         return new_weights * ratios
 
     @staticmethod
+    def spin_embed_rescale_weights(
+        old_filter_triple: tuple[jax.Array, jax.Array, int],
+        new_filter_triple: tuple[jax.Array, jax.Array, int],
+        verbose: bool = False,
+    ) -> jax.Array:
+        """
+        The rescaling based on minimizing a quantity of the spin embedding. It is this equation in
+        the notation of the paper.
+        TODO: Currently assuming that all filters are even parity.
+
+        argmin_{alphas} [sum_{i=1}^L_n alpha_i psi(C_i) - sum_{i=1}^L_{n+1} alpha'_i C'_i]
+        s.t. the alpha compatibility requirements are met.
+
+        args:
+            old_filter_triple: tuple of the old filters, (n_filters,spatial,tensor)
+                weights (shape (out_channels,in_channels,num_filters)), the old dimension
+            new_filter_triple: tuple of the new filters, (n_filters,spatial,tensor)
+                weights (shape (out_channels,in_channels,num_filters)), and the new dimension
+            verbose: whether to print the old weights and ratios
+
+        return:
+            jax array of rescaled weights (out_channels,in_channels,num_filters) after rescaling
+        """
+        old_filters, old_weights, old_D = old_filter_triple  # old weights are alpha
+        new_filters, new_weights, new_D = new_filter_triple
+
+        M = old_filters.shape[1]
+        if M == 2:
+            # this is not using the spin embedding
+            return old_weights / (2 ** (new_D - old_D))
+
+        # also implicitly assumes that the filters are normalized with ones
+
+        k = old_filters.ndim - (1 + old_D)
+        assert k == new_filters.ndim - (
+            1 + new_D
+        ), f"spin_embed_rescale_weights: old_filters k={k}, new_filters k={new_filters.ndim - (1 + new_D)}"
+
+        match (M, k, old_D, new_D):
+            case (3, 0, 1, 2):
+                # gamma' = 1/3 beta
+                # beta' = beta - 2 gamma' = 1/3 beta
+                # alpha' = alpha - 2 beta' = alpha - 2 (beta - 2 gamma') = alpha - 2/3 beta
+                assert old_weights.shape[2] == 2
+                alpha = old_weights[:, :, 0]
+                beta = old_weights[:, :, 1]
+                new_weights = jnp.stack(
+                    [alpha - (2 / 3) * beta, (1 / 3) * beta, (1 / 3) * beta], axis=2
+                )
+            case (3, 0, 1, 3):
+                # TODO: This is likely incorrect.
+                assert old_weights.shape[2] == 2
+                alpha = old_weights[:, :, 0]
+                beta = old_weights[:, :, 1]
+                new_weights = jnp.stack(
+                    [
+                        alpha + (-28 / 27) * beta,
+                        (-11 / 27) * beta,
+                        (-4 / 27) * beta,
+                        (8 / 27) * beta,
+                    ],
+                    axis=2,
+                )
+            case (3, 0, 2, 3):
+                assert old_weights.shape[2] == 3
+                alpha = old_weights[:, :, 0]
+                beta = old_weights[:, :, 1]
+                gamma = old_weights[:, :, 2]
+
+                delta_prime = (4 * gamma - beta) / 9
+
+                new_weights = jnp.stack(
+                    [
+                        alpha - 2 * beta + 4 * gamma - 8 * delta_prime,
+                        beta - 2 * gamma + 4 * delta_prime,
+                        gamma - 2 * delta_prime,
+                        delta_prime,
+                    ],
+                    axis=-1,
+                )
+            case (3, 1, 2, 3):
+                assert old_weights.shape[2] == 2
+                alpha = old_weights[:, :, 0]
+                beta = old_weights[:, :, 1]
+
+                gamma_prime = (1 / 3) * beta
+                new_weights = jnp.stack(
+                    [alpha - 2 * beta + 4 * gamma_prime, beta - 2 * gamma_prime, gamma_prime],
+                    axis=-1,
+                )
+            case (3, 2, 2, 3):
+                # For D=2, it is 3 identity weights, 1 along trace, 1 symmetric no trace
+                # For D=3, it is 4 identity weights, 2 symmetric no trace, 2 along trace
+                # so be careful because the order is flipped.
+
+                alpha = old_weights[:, :, 0]
+                beta = old_weights[:, :, 1]
+                gamma = old_weights[:, :, 2]
+
+                delta_prime = (4 * gamma - beta) / 9
+
+                identity_multiple = jnp.stack(
+                    [
+                        alpha - 2 * beta + 4 * gamma - 8 * delta_prime,
+                        beta - 2 * gamma + 4 * delta_prime,
+                        gamma - 2 * delta_prime,
+                        delta_prime,
+                    ],
+                    axis=-1,
+                )
+
+                # Optimal value has new weight as 0.
+                symmetric_traceless = jnp.stack(
+                    [old_weights[..., 4], jnp.zeros(old_weights.shape[:2])], axis=-1
+                )
+                # TODO: this one does not behave nicely with tensor projection. Hmmm.
+                # Maybe if I do it out, it actually ends up being okay some how?
+                along_trace = jnp.stack(
+                    [old_weights[..., 3], jnp.zeros(old_weights.shape[:2])], axis=-1
+                )
+
+                new_weights = jnp.concatenate(
+                    [identity_multiple, symmetric_traceless, along_trace], axis=-1
+                )
+            case _:
+                raise NotImplementedError(
+                    f"spin_embed_rescale_weights: k={k}, old D={old_D}, new D={new_D}"
+                )
+
+        return new_weights
+
+    @staticmethod
     def compat_flex_rescale_weights(
         old_filter_triple: tuple[jax.Array, jax.Array, int],
         new_filter_triple: tuple[jax.Array, jax.Array, int],
@@ -786,7 +918,15 @@ class AnyDimensionalModel(MultiImageModule):
                         updated_weights_block
                     )
                 elif rescale is geom.Rescaling.COMPAT_FLEX:
+                    # new_weights is ignored, so extend weighs is not relevant
                     scaled_weights_block = AnyDimensionalModel.compat_flex_rescale_weights(
+                        (old_filter_block, old_weights_block, old_filters.D),
+                        (new_filter_block, new_weights_block, new_filters.D),
+                        verbose,
+                    )
+                elif rescale is geom.Rescaling.SPIN_EMBED:
+                    # new_weights are unused
+                    scaled_weights_block = AnyDimensionalModel.spin_embed_rescale_weights(
                         (old_filter_block, old_weights_block, old_filters.D),
                         (new_filter_block, new_weights_block, new_filters.D),
                         verbose,

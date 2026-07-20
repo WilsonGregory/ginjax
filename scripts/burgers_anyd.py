@@ -540,7 +540,7 @@ for D in full_D_range:
             },
             {  # tune and eval kwargs
                 "lr": {(2, 3): {0: 1e-4, 1: 1e-4, 4: 1e-4, 8: 1e-4}},
-                "rescale": geom.Rescaling.COMPAT_FLEX,
+                "rescale": geom.Rescaling.SPIN_EMBED,  # TODO: haven't tuned the weights
                 "conv_filters_dict": free_filters_dict,
                 "upsample_filters_dict": upsample_filters_dict,
                 **test_kwargs,

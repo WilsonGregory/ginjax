@@ -252,19 +252,23 @@ def get_data(
     return train_dataloader, val_dataloader, test_dataloader, data_generation_time
 
 
+# possible run
+# CUDA_VISIBLE_DEVICES=0,1 time python3 -m scripts.cfd_anyd --data /data/wgregor4/pdebench/
+# --n-train 128 --n-val 32 --n-test 128
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
         "--n-tune-range",
         help="the number of data points in the tuning set",
         type=lambda s: tuple(int(x) for x in s.split(",")),
-        default="0,1,4,32,128",
+        default="0,1,4,32,64",
     )
     parser.add_argument(
         "--past-steps", help="number of past steps to use as input", type=int, default=4
     )
     parser.add_argument("--batch-train", help="batch size for 2D training", type=int, default=32)
-    parser.add_argument("--batch-tune", help="batch size for 3D tuning", type=int, default=2)
+    # you can do 4 (2 per gpu) with equiv48, but not 8
+    parser.add_argument("--batch-tune", help="batch size for 3D tuning", type=int, default=4)
     parser.add_argument(
         "--find-train-lr",
         help="benchmark trained model over the lr",
@@ -298,7 +302,7 @@ def handleArgs() -> argparse.Namespace:
 # MAIN
 args = handleArgs()
 if args.wandb:
-    print("Use --train-wandb or --test-wandb to control these individually. Exiting.")
+    print("Use --train-wandb or --test-wandb to control these individually, instead of --wandb.")
     exit()
 
 if args.load_model or args.save_model:
@@ -306,7 +310,7 @@ if args.load_model or args.save_model:
     exit()
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
-lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3]
+lr_range = [5e-5, 1e-4, 5e-4]  # this model is very slow, need to tune over a smaller set
 
 # D=1 doesn't make sense for a vector field, so we restrict the problem to only this case
 train_D = 2
@@ -370,51 +374,26 @@ for D in full_D_range:
 
     key, *subkeys = random.split(key, num=10)
     model_list = [
-        # (
-        #     f"unetBase_equiv48_D{D}",
-        #     {  # train_kwargs
-        #         "model": models.UNet(
-        #             D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=48,
-        #             activation_f=jax.nn.gelu,
-        #             conv_filters=free_filters_dict[D],
-        #             upsample_filters=upsample_filters_dict[D],
-        #             key=subkeys[2],
-        #         ),
-        #         "lr": {2: {128: 1e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
-        #         # D=3, for all of them (and tuning) its just 1e-4
-        #         **train_kwargs,
-        #     },
-        #     {  # tune and eval kwargs
-        #         "lr": {(2, 3): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
-        #         "rescale": geom.Rescaling.COMPAT_FLEX,
-        #         "conv_filters_dict": free_filters_dict,
-        #         "upsample_filters_dict": upsample_filters_dict,
-        #         **test_kwargs,
-        #     },
-        # ),
         (
-            f"unetBase_equiv20_D{D}",
+            f"unetBase_equiv48_D{D}",
             {  # train_kwargs
                 "model": models.UNet(
                     D,
                     input_keys,
                     output_keys,
-                    depth=20,
+                    depth=48,
                     activation_f=jax.nn.gelu,
                     conv_filters=free_filters_dict[D],
                     upsample_filters=upsample_filters_dict[D],
-                    key=subkeys[3],
+                    key=subkeys[2],
                 ),
-                "lr": {2: {128: 5e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
+                "lr": {2: {128: 1e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
                 # D=3, for all of them (and tuning) its just 1e-4
                 **train_kwargs,
             },
             {  # tune and eval kwargs
                 "lr": {(2, 3): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
-                "rescale": geom.Rescaling.COMPAT_FLEX,
+                "rescale": geom.Rescaling.SPIN_EMBED,  # TODO: currently tuning weights
                 "conv_filters_dict": free_filters_dict,
                 "upsample_filters_dict": upsample_filters_dict,
                 **test_kwargs,

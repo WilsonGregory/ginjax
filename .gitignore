@@ -27,3 +27,4 @@ MANIFEST
 
 site/
 wandb/
+.vscode/

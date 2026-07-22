@@ -684,6 +684,7 @@ def run_anyd(
                         "rescale": None,
                         "is_wandb": _test_kwargs["is_wandb"],
                         "batch_size": _test_kwargs["batch_size"],
+                        "model_dir": None,  # tmp
                     },
                 )
                 for name, _train_kwargs, _test_kwargs in model_list_d[test_D]

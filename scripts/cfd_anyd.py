@@ -334,7 +334,8 @@ test_kwargs = {
     "residual": False,
     "batch_size": args.batch_tune,
     "epochs": args.epochs,
-    "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
+    # "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
+    "model_dir": None,  # tmp
     "overwrite_save_model": args.overwrite_save_model,
     "images_dir": None,
     "verbose": args.verbose,

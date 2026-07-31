@@ -16,7 +16,9 @@ import ginjax.utils as utils
 from . import anyd_helpers
 
 
-def heat_step(D: int, x0: jax.Array, t: float, k: float, is_torus: bool) -> jax.Array:
+def heat_step(
+    D: int, x0: jax.Array, t: float, k: float, is_torus: bool, anisotropy: jax.Array | None = None
+) -> jax.Array:
     """
     Given the initial temperature, time, and diffusion coefficient, calculate the new heat field.
 
@@ -26,6 +28,8 @@ def heat_step(D: int, x0: jax.Array, t: float, k: float, is_torus: bool) -> jax.
         t: the length of the timestep
         k: diffusion coefficient
         is_torus: whether the data lives on the torus
+        anisotropy: whether the diffusion kernel has particular directions it diffuses better in.
+            Shape (D,D), should still have determinant 1.
 
     returns:
         the heat field after time t
@@ -49,12 +53,20 @@ def heat_step(D: int, x0: jax.Array, t: float, k: float, is_torus: bool) -> jax.
         if is_torus:
             idxs_diff = jnp.abs(idxs - idx[None])
             idxs_diff_wrapped = jnp.stack(spatial_dims).reshape((1, D)) - idxs_diff
-            dist = jnp.where(idxs_diff < idxs_diff_wrapped, idxs_diff, idxs_diff_wrapped)
+            dist_vec = jnp.where(idxs_diff < idxs_diff_wrapped, idxs_diff, idxs_diff_wrapped)
         else:
-            dist = idxs - idx[None]
+            dist_vec = idxs - idx[None]
 
         # (1,spatial_size)
-        heat_kernel = jnp.exp((jnp.linalg.norm(dist, axis=1) ** 2) / (-4 * k * t))[None]
+        if anisotropy is None:
+            dist = jnp.linalg.norm(dist_vec, axis=1)
+        else:
+            assert anisotropy.shape == (D, D)
+            # det=1 requireent could be relaxed by using the proper normalization constant
+            assert jnp.allclose(jnp.linalg.det(anisotropy), 1.0)
+            dist = jnp.sqrt(jnp.einsum("...i,ij,...j", dist_vec, anisotropy, dist_vec))
+
+        heat_kernel = jnp.exp((dist**2) / (-4 * k * t))[None]
 
         x1.append(jnp.sum(heat_kernel * x0_flat, axis=1) / ((4 * jnp.pi * k * t) ** (D / 2)))
 
@@ -71,6 +83,7 @@ def get_data_d(
     batch: int,
     key: jax.Array,
     data_dir: pathlib.Path,
+    anisotropy: jax.Array | None = None,
 ) -> tuple[geom.MultiImage, geom.MultiImage, float]:
     """
     Get an input, output data pair of heat diffusion after t timestep, diffusion coefficient k.
@@ -87,12 +100,16 @@ def get_data_d(
         key: key for randomness
         data_dir: directory
         data_name: name where to save the data
+        anisotropy: whether the diffusion kernel has particular directions it diffuses better in.
+            Shape (D,D), should still have determinant 1.
 
     returns:
         input multi image, output multi image
     """
+    anisotropy_str = "" if anisotropy is None else f"_anisotropy{anisotropy[0,0]}"
     data_dir = (
-        data_dir / f"D{D}_N{N}_istorus{int(is_torus)}_n{batch}_k{k}_t{t}_maxtemp{max_temp}.npy"
+        data_dir
+        / f"D{D}_N{N}_istorus{int(is_torus)}_n{batch}_k{k}_t{t}_maxtemp{max_temp}{anisotropy_str}.npy"
     )
 
     if batch == 0:
@@ -109,7 +126,7 @@ def get_data_d(
         start_time = time.time()
         key, subkey = random.split(key)
         x0 = random.uniform(subkey, shape=(batch,) + (N,) * D, minval=-max_temp, maxval=max_temp)
-        xt = heat_step(D, x0, t, k, is_torus)
+        xt = heat_step(D, x0, t, k, is_torus, anisotropy)
         generation_time = time.time() - start_time
 
         print(f"Finished in {generation_time} seconds.")
@@ -132,6 +149,7 @@ def get_data(
     batch_size: int,
     key: jax.Array,
     data_dir: str,
+    anisotropy: jax.Array | None = None,
 ) -> tuple[
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
@@ -153,6 +171,8 @@ def get_data(
         batch_size: the training batch size
         key: key for randomness
         data_dir: location to save or load the data from
+        anisotropy: whether the diffusion kernel has particular directions it diffuses better in.
+            Shape (D,D), should still have determinant 1.
 
     returns:
         training, validation, and test images for input and output
@@ -161,36 +181,77 @@ def get_data(
     t = 1
     data_dir_path = pathlib.Path(data_dir)
 
+    if anisotropy is not None:
+        if D == 1:
+            anisotropy_matrix = None  # can't be anisotropic, ignore this its for higher D
+        elif D == 2:
+            anisotropy_matrix = jnp.diag(jnp.stack([anisotropy, 1 / anisotropy]))
+        else:
+            raise ValueError()
+    else:
+        anisotropy_matrix = anisotropy
+
     key, subkey1, subkey2, subkey3 = random.split(key, num=4)
     train_x0, train_xt, train_generation_time = get_data_d(
-        D, N, is_torus, diffusion_coef, t, max_temp, n_train, subkey1, data_dir_path / "train"
+        D,
+        N,
+        is_torus,
+        diffusion_coef,
+        t,
+        max_temp,
+        n_train,
+        subkey1,
+        data_dir_path / "train",
+        anisotropy_matrix,
     )
     train_dataset = ml.MultiImageDataset(train_x0, train_xt)
     # RandomSampler breaks if the dataset is empty
     sampler = RandomSampler(train_dataset) if n_train > 0 else SequentialSampler(train_dataset)
     train_dataloader = DataLoader(
         train_dataset,
-        sampler=BatchSampler(sampler, batch_size, drop_last=True),
+        sampler=BatchSampler(sampler, batch_size, drop_last=n_train > batch_size),
         collate_fn=lambda x: x[0],
     )
 
     val_x0, val_xt, _ = get_data_d(
-        D, N, is_torus, diffusion_coef, t, max_temp, n_val, subkey2, data_dir_path / "val"
+        D,
+        N,
+        is_torus,
+        diffusion_coef,
+        t,
+        max_temp,
+        n_val,
+        subkey2,
+        data_dir_path / "val",
+        anisotropy_matrix,
     )
     val_dataset = ml.MultiImageDataset(val_x0, val_xt)
     val_dataloader = DataLoader(
         val_dataset,
-        sampler=BatchSampler(SequentialSampler(val_dataset), batch_size, drop_last=True),
+        sampler=BatchSampler(
+            SequentialSampler(val_dataset), batch_size, drop_last=n_val > batch_size
+        ),
         collate_fn=lambda x: x[0],
     )
 
     test_x0, test_xt, _ = get_data_d(
-        D, N, is_torus, diffusion_coef, t, max_temp, n_test, subkey3, data_dir_path / "test"
+        D,
+        N,
+        is_torus,
+        diffusion_coef,
+        t,
+        max_temp,
+        n_test,
+        subkey3,
+        data_dir_path / "test",
+        anisotropy_matrix,
     )
     test_dataset = ml.MultiImageDataset(test_x0, test_xt)
     test_dataloader = DataLoader(
         test_dataset,
-        sampler=BatchSampler(SequentialSampler(test_dataset), batch_size, drop_last=True),
+        sampler=BatchSampler(
+            SequentialSampler(test_dataset), batch_size, drop_last=n_test > batch_size
+        ),
         collate_fn=lambda x: x[0],
     )
 
@@ -230,6 +291,9 @@ def handleArgs() -> argparse.Namespace:
     parser.add_argument("-N", help="spatial size", type=int, default=64)
     parser.add_argument(
         "--diffusion-coef", help="the diffusion coefficient", type=float, default=1.0
+    )
+    parser.add_argument(
+        "--anisotropy", help="anisotropy of kernel distance", type=float, default=None
     )
     parser.add_argument(
         "--residual",
@@ -280,7 +344,7 @@ if args.load_model or args.save_model:
     exit()
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
-lr_range = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2]
+lr_range = [5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2]
 
 max_pixel_l1 = 2
 M = 5
@@ -365,6 +429,8 @@ for D in full_D_range:
         operators=group_actions,
         scale=geom.FilterScaling.ONE,
     )
+
+anisotropy_str = "" if args.anisotropy is None else f"_anisotropy{args.anisotropy}"
 
 print("Define the models!")
 model_list_d = {}
@@ -563,8 +629,32 @@ for D in full_D_range:
         #         **test_kwargs,
         #     },
         # ),
+        # (
+        #     f"unetBase{anisotropy_str}_D{D}",
+        #     {  # train_kwargs
+        #         "model": models.UNet(
+        #             D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=64,
+        #             use_bias=True,
+        #             activation_f=jax.nn.gelu,
+        #             equivariant=False,
+        #             kernel_size=3,
+        #             padding_mode="CIRCULAR",  # if we are on a torus
+        #             key=subkeys[5],
+        #         ),
+        #         "lr": {1: {128: 1e-3}, 2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-3}},
+        #         **train_kwargs,
+        #     },
+        #     {  # tune and eval kwargs
+        #         "lr": {(1, 2): {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 8e-3, 128: 8e-3}},
+        #         "rescale": None,  # model cannot be rescaled, for baseline only
+        #         **test_kwargs,
+        #     },
+        # ),
         (
-            f"unetBase_equiv48_free_filters_D{D}",
+            f"unetBase_equiv48_free_filters{anisotropy_str}_D{D}",
             {  # train_kwargs
                 "model": models.UNet(
                     D,
@@ -576,26 +666,83 @@ for D in full_D_range:
                     upsample_filters=upsample_filters_dict[D],
                     key=subkeys[2],
                 ),
-                "lr": {
-                    False: {1: {128: 1e-3}, 2: {0: 1e-5, 1: 1e-5, 4: 1e-5, 32: 5e-4, 128: 5e-4}},
-                    True: {
-                        1: {128: 5e-4},
-                        2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-4},
-                    },
-                }[args.residual],
+                "lr": {1: {128: 1e-3}, 2: {0: 1e-5, 1: 1e-5, 4: 1e-5, 32: 5e-4, 128: 5e-4}},
                 **train_kwargs,
             },
             {  # tune and eval kwargs
-                "lr": {
-                    False: {(1, 2): {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 1e-3, 128: 1e-3}},
-                    True: {(1, 2): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 5e-4}},
-                }[args.residual],
-                "rescale": geom.Rescaling.SPIN_EMBED,  # TODO: haven't tuned the weights
+                "lr": {(1, 2): {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 1e-3, 128: 1e-3}},
+                "rescale": geom.Rescaling.SPIN_EMBED,
                 "conv_filters_dict": free_filters_dict,
                 "upsample_filters_dict": upsample_filters_dict,
                 **test_kwargs,
             },
         ),
+        # ( # DO NOT REMOVE: Used for rescaling ablations
+        #     f"unetBase_equiv48_free_filters_D{D}",
+        #     {  # train_kwargs
+        #         "model": models.UNet(
+        #             D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=48,
+        #             activation_f=jax.nn.gelu,
+        #             conv_filters=free_filters_dict[D],
+        #             upsample_filters=upsample_filters_dict[D],
+        #             key=subkeys[2],
+        #         ),
+        #         "lr": {
+        #             False: {1: {128: 1e-3}, 2: {0: 1e-5, 1: 1e-5, 4: 1e-5, 32: 5e-4, 128: 5e-4}},
+        #             True: {
+        #                 1: {128: 5e-4},
+        #                 2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-4},
+        #             },
+        #         }[args.residual],
+        #         **train_kwargs,
+        #     },
+        #     {  # tune and eval kwargs
+        #         "lr": {
+        #             False: {(1, 2): {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 1e-3, 128: 1e-3}},
+        #             True: {(1, 2): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 5e-4}},
+        #         }[args.residual],
+        #         "rescale": geom.Rescaling.COPY,
+        #         "conv_filters_dict": free_filters_dict,
+        #         "upsample_filters_dict": upsample_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
+        # ( # DO NOT REMOVE: Used for rescaling ablations
+        #     f"unetBase_equiv48_free_filters_D{D}",
+        #     {  # train_kwargs
+        #         "model": models.UNet(
+        #             D,
+        #             input_keys,
+        #             output_keys,
+        #             depth=48,
+        #             activation_f=jax.nn.gelu,
+        #             conv_filters=free_filters_dict[D],
+        #             upsample_filters=upsample_filters_dict[D],
+        #             key=subkeys[2],
+        #         ),
+        #         "lr": {
+        #             False: {1: {128: 1e-3}, 2: {0: 1e-5, 1: 1e-5, 4: 1e-5, 32: 5e-4, 128: 5e-4}},
+        #             True: {
+        #                 1: {128: 5e-4},
+        #                 2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-4},
+        #             },
+        #         }[args.residual],
+        #         **train_kwargs,
+        #     },
+        #     {  # tune and eval kwargs
+        #         "lr": {
+        #             False: {(1, 2): {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 1e-3, 128: 1e-3}},
+        #             True: {(1, 2): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 5e-4}},
+        #         }[args.residual],
+        #         "rescale": geom.Rescaling.ZEROS,
+        #         "conv_filters_dict": free_filters_dict,
+        #         "upsample_filters_dict": upsample_filters_dict,
+        #         **test_kwargs,
+        #     },
+        # ),
     ]
     model_list_d[D] = model_list
 
@@ -608,7 +755,17 @@ def get_data_lambda(D: int, n_train: int, n_val: int, n_test: int, key: jax.Arra
     float,
 ]:
     return get_data(
-        D, args.N, True, args.diffusion_coef, n_train, n_val, n_test, args.batch, key, args.data
+        D,
+        args.N,
+        True,
+        args.diffusion_coef,
+        n_train,
+        n_val,
+        n_test,
+        args.batch,
+        key,
+        args.data,
+        args.anisotropy,
     )
 
 

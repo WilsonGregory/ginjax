@@ -546,6 +546,56 @@ for D in full_D_range:
                 **test_kwargs,
             },
         ),
+        (
+            f"unetBase_equiv48_free_filters_D{D}",
+            {  # train_kwargs
+                "model": models.UNet(
+                    D,
+                    input_keys,
+                    output_keys,
+                    depth=48,
+                    activation_f=jax.nn.gelu,
+                    conv_filters=free_filters_dict[D],
+                    upsample_filters=upsample_filters_dict[D],
+                    key=subkeys[2],
+                ),
+                "lr": {2: {8: 1e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 8: 1e-4}},
+                # D=3, for all of them (and tuning) its just 1e-4
+                **train_kwargs,
+            },
+            {  # tune and eval kwargs
+                "lr": {(2, 3): {0: 1e-4, 1: 1e-4, 4: 1e-4, 8: 1e-4}},
+                "rescale": geom.Rescaling.COPY,
+                "conv_filters_dict": free_filters_dict,
+                "upsample_filters_dict": upsample_filters_dict,
+                **test_kwargs,
+            },
+        ),
+        (
+            f"unetBase_equiv48_free_filters_D{D}",
+            {  # train_kwargs
+                "model": models.UNet(
+                    D,
+                    input_keys,
+                    output_keys,
+                    depth=48,
+                    activation_f=jax.nn.gelu,
+                    conv_filters=free_filters_dict[D],
+                    upsample_filters=upsample_filters_dict[D],
+                    key=subkeys[2],
+                ),
+                "lr": {2: {8: 1e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 8: 1e-4}},
+                # D=3, for all of them (and tuning) its just 1e-4
+                **train_kwargs,
+            },
+            {  # tune and eval kwargs
+                "lr": {(2, 3): {0: 1e-4, 1: 1e-4, 4: 1e-4, 8: 1e-4}},
+                "rescale": geom.Rescaling.ZEROS,
+                "conv_filters_dict": free_filters_dict,
+                "upsample_filters_dict": upsample_filters_dict,
+                **test_kwargs,
+            },
+        ),
     ]
     model_list_d[D] = model_list
 

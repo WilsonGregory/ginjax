@@ -254,14 +254,14 @@ def get_data(
 
 # possible run
 # CUDA_VISIBLE_DEVICES=0,1 time python3 -m scripts.cfd_anyd --data /data/wgregor4/pdebench/
-# --n-train 128 --n-val 32 --n-test 128
+# --n-train 128 --n-val 32 --n-test 128 --model-dir /data/wgregor4/runs/cfd_anyd/
 def handleArgs() -> argparse.Namespace:
     parser = utils.get_common_parser()
     parser.add_argument(
         "--n-tune-range",
         help="the number of data points in the tuning set",
         type=lambda s: tuple(int(x) for x in s.split(",")),
-        default="0,1,4,32,64",
+        default="0,1,4,32",
     )
     parser.add_argument(
         "--past-steps", help="number of past steps to use as input", type=int, default=4
@@ -334,8 +334,7 @@ test_kwargs = {
     "residual": False,
     "batch_size": args.batch_tune,
     "epochs": args.epochs,
-    # "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
-    "model_dir": None,  # tmp
+    "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
     "images_dir": None,
     "verbose": args.verbose,
@@ -388,13 +387,13 @@ for D in full_D_range:
                     upsample_filters=upsample_filters_dict[D],
                     key=subkeys[2],
                 ),
-                "lr": {2: {128: 1e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
+                "lr": {2: {128: 1e-4}, 3: {0: 5e-4, 1: 5e-4, 4: 1e-4, 32: 1e-4}},
                 # D=3, for all of them (and tuning) its just 1e-4
                 **train_kwargs,
             },
             {  # tune and eval kwargs
-                "lr": {(2, 3): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 1e-4}},
-                "rescale": geom.Rescaling.SPIN_EMBED,  # TODO: currently tuning weights
+                "lr": {(2, 3): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4}},
+                "rescale": geom.Rescaling.SPIN_EMBED,
                 "conv_filters_dict": free_filters_dict,
                 "upsample_filters_dict": upsample_filters_dict,
                 **test_kwargs,

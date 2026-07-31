@@ -825,6 +825,144 @@ class AnyDimensionalModel(MultiImageModule):
         return alpha_prime
 
     @staticmethod
+    def copy_rescale_weights(
+        old_filter_triple: tuple[jax.Array, jax.Array, int],
+        new_filter_triple: tuple[jax.Array, jax.Array, int],
+        verbose: bool = False,
+    ) -> jax.Array:
+        """
+        Copy the outermost/last weight to the new weights.
+        TODO: Currently assuming that all filters are even parity.
+
+        args:
+            old_filter_triple: tuple of the old filters, (n_filters,spatial,tensor)
+                weights (shape (out_channels,in_channels,num_filters)), the old dimension
+            new_filter_triple: tuple of the new filters, (n_filters,spatial,tensor)
+                weights (shape (out_channels,in_channels,num_filters)), and the new dimension
+            verbose: whether to print the old weights and ratios
+
+        return:
+            jax array of rescaled weights (out_channels,in_channels,num_filters) after rescaling
+        """
+        old_filters, old_weights, old_D = old_filter_triple  # old weights are alpha
+        new_filters, new_weights, new_D = new_filter_triple
+
+        M = old_filters.shape[1]
+        if M == 2:
+            # this is not using the spin embedding
+            return old_weights / (2 ** (new_D - old_D))
+
+        # also implicitly assumes that the filters are normalized with ones
+
+        k = old_filters.ndim - (1 + old_D)
+        assert k == new_filters.ndim - (
+            1 + new_D
+        ), f"spin_embed_rescale_weights: old_filters k={k}, new_filters k={new_filters.ndim - (1 + new_D)}"
+
+        match (M, k, old_D, new_D):
+            case (3, 0, 1, 2):
+                assert old_weights.shape[2] == 2
+                new_weights = jnp.concat([old_weights, old_weights[..., -1:]], axis=-1)
+            case (3, 0, 2, 3):
+                assert old_weights.shape[2] == 3
+                new_weights = jnp.concat([old_weights, old_weights[..., -1:]], axis=-1)
+            case (3, 1, 2, 3):
+                assert old_weights.shape[2] == 2
+                new_weights = jnp.concat([old_weights, old_weights[..., -1:]], axis=-1)
+            case (3, 2, 2, 3):
+                # For D=2, it is 3 identity weights, 1 along trace, 1 symmetric no trace
+                # For D=3, it is 4 identity weights, 2 symmetric no trace, 2 along trace
+                # so be careful because the order is flipped.
+                # we want (0,1,2,3,4) -> (0,1,2,2,4,4,3,3)
+                new_weights = jnp.concat(
+                    [
+                        old_weights[..., :3],
+                        old_weights[..., 2:3],
+                        old_weights[..., 4:5],
+                        old_weights[..., 4:5],
+                        old_weights[..., 3:4],
+                        old_weights[..., 3:4],
+                    ],
+                    axis=-1,
+                )
+            case _:
+                raise NotImplementedError(
+                    f"spin_embed_rescale_weights: k={k}, old D={old_D}, new D={new_D}"
+                )
+
+        return new_weights
+
+    @staticmethod
+    def zero_rescale_weights(
+        old_filter_triple: tuple[jax.Array, jax.Array, int],
+        new_filter_triple: tuple[jax.Array, jax.Array, int],
+        verbose: bool = False,
+    ) -> jax.Array:
+        """
+        Copy the matching weights, set the new weights to 0.
+        TODO: Currently assuming that all filters are even parity.
+
+        args:
+            old_filter_triple: tuple of the old filters, (n_filters,spatial,tensor)
+                weights (shape (out_channels,in_channels,num_filters)), the old dimension
+            new_filter_triple: tuple of the new filters, (n_filters,spatial,tensor)
+                weights (shape (out_channels,in_channels,num_filters)), and the new dimension
+            verbose: whether to print the old weights and ratios
+
+        return:
+            jax array of rescaled weights (out_channels,in_channels,num_filters) after rescaling
+        """
+        old_filters, old_weights, old_D = old_filter_triple  # old weights are alpha
+        new_filters, new_weights, new_D = new_filter_triple
+
+        M = old_filters.shape[1]
+        if M == 2:
+            # this is not using the spin embedding
+            return old_weights / (2 ** (new_D - old_D))
+
+        # also implicitly assumes that the filters are normalized with ones
+
+        k = old_filters.ndim - (1 + old_D)
+        assert k == new_filters.ndim - (
+            1 + new_D
+        ), f"spin_embed_rescale_weights: old_filters k={k}, new_filters k={new_filters.ndim - (1 + new_D)}"
+
+        zeros_shape = old_weights.shape[:2] + (1,)
+
+        match (M, k, old_D, new_D):
+            case (3, 0, 1, 2):
+                assert old_weights.shape[2] == 2
+                new_weights = jnp.concat([old_weights, jnp.zeros(zeros_shape)], axis=-1)
+            case (3, 0, 2, 3):
+                assert old_weights.shape[2] == 3
+                new_weights = jnp.concat([old_weights, jnp.zeros(zeros_shape)], axis=-1)
+            case (3, 1, 2, 3):
+                assert old_weights.shape[2] == 2
+                new_weights = jnp.concat([old_weights, jnp.zeros(zeros_shape)], axis=-1)
+            case (3, 2, 2, 3):
+                # For D=2, it is 3 identity weights, 1 along trace, 1 symmetric no trace
+                # For D=3, it is 4 identity weights, 2 symmetric no trace, 2 along trace
+                # so be careful because the order is flipped.
+                # we want (0,1,2,3,4) -> (0,1,2,2,4,4,3,3)
+                new_weights = jnp.concat(
+                    [
+                        old_weights[..., :3],
+                        jnp.zeros(zeros_shape),
+                        old_weights[..., 4:5],
+                        jnp.zeros(zeros_shape),
+                        old_weights[..., 3:4],
+                        jnp.zeros(zeros_shape),
+                    ],
+                    axis=-1,
+                )
+            case _:
+                raise NotImplementedError(
+                    f"spin_embed_rescale_weights: k={k}, old D={old_D}, new D={new_D}"
+                )
+
+        return new_weights
+
+    @staticmethod
     def _transfer_conv_weights(
         weights: dict[tuple[tuple[bool, ...], int], dict[tuple[tuple[bool, ...], int], jax.Array]],
         old_filters: geom.MultiImage,
@@ -913,6 +1051,20 @@ class AnyDimensionalModel(MultiImageModule):
                 elif rescale is geom.Rescaling.SPIN_EMBED:
                     # new_weights are unused
                     scaled_weights_block = AnyDimensionalModel.spin_embed_rescale_weights(
+                        (old_filter_block, old_weights_block, old_filters.D),
+                        (new_filter_block, new_weights_block, new_filters.D),
+                        verbose,
+                    )
+                elif rescale is geom.Rescaling.COPY:
+                    # new_weights are unused
+                    scaled_weights_block = AnyDimensionalModel.copy_rescale_weights(
+                        (old_filter_block, old_weights_block, old_filters.D),
+                        (new_filter_block, new_weights_block, new_filters.D),
+                        verbose,
+                    )
+                elif rescale is geom.Rescaling.ZEROS:
+                    # new_weights are unused
+                    scaled_weights_block = AnyDimensionalModel.zero_rescale_weights(
                         (old_filter_block, old_weights_block, old_filters.D),
                         (new_filter_block, new_weights_block, new_filters.D),
                         verbose,

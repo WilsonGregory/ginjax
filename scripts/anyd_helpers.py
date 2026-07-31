@@ -684,7 +684,6 @@ def run_anyd(
                         "rescale": None,
                         "is_wandb": _test_kwargs["is_wandb"],
                         "batch_size": _test_kwargs["batch_size"],
-                        "model_dir": None,  # tmp
                     },
                 )
                 for name, _train_kwargs, _test_kwargs in model_list_d[test_D]
@@ -717,6 +716,21 @@ def run_anyd(
                 if train_D == test_D:
                     continue
 
+                # filter out models that are baseline only
+                trained_model_list = list(
+                    filter(lambda x: x[2]["rescale"] is not None, trained_model_list_d[train_D])
+                )
+                if len(trained_model_list) == 0:
+                    continue
+
+                train_model_times = np.stack(
+                    [train_time for _, _, _, train_time in trained_model_list]
+                )
+                train_model_times = np.concat(
+                    [np.zeros((len(train_model_times), n_results - 1)), train_model_times[:, None]],
+                    axis=1,
+                )
+
                 # select the correct learning rate for the tuning based on train and test dimensions
                 trained_model_list = [
                     (
@@ -724,15 +738,8 @@ def run_anyd(
                         func,
                         {**_test_kwargs, "lr": _test_kwargs["lr"][(train_D, test_D)][n_tune]},
                     )
-                    for name, func, _test_kwargs, _ in trained_model_list_d[train_D]
+                    for name, func, _test_kwargs, _ in trained_model_list
                 ]
-                train_model_times = np.stack(
-                    [train_time for _, _, _, train_time in trained_model_list_d[train_D]]
-                )
-                train_model_times = np.concat(
-                    [np.zeros((len(train_model_times), n_results - 1)), train_model_times[:, None]],
-                    axis=1,
-                )
 
                 key, subkey = random.split(key)
                 # (n_trials, benchmark, models, n_results)

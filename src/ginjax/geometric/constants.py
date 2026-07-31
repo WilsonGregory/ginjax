@@ -28,6 +28,8 @@ class Rescaling(enum.Enum):
     COMPATIBILITY = enum.auto()
     COMPAT_FLEX = enum.auto()
     SPIN_EMBED = enum.auto()
+    COPY = enum.auto()
+    ZEROS = enum.auto()
     NO_SCALING = enum.auto()
 
 

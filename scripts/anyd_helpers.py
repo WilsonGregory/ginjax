@@ -141,6 +141,11 @@ def plot_multi_image(
     plt.close(fig)
 
 
+# Options for the variation
+BATCH_STD = "batch_std"
+TRIAL_STD = "trial_std"
+
+
 def plot_results(
     results_dict: dict[int, dict[int, list[jax.Array]]],
     results_labels: list[str],
@@ -148,6 +153,7 @@ def plot_results(
     model_names_d: dict[int, list[str]],
     saveloc: str,
     title: str,
+    variation: str | None,
 ) -> None:
     """
     Plot the results of the heat_equation experiments. For each test_D, create a plot with the
@@ -155,16 +161,18 @@ def plot_results(
 
     args:
         results_dict: The results dict of test_D, train_D, then a list over n_tune, array n_results
-            in this case n_results is smse_mean, smse_std, rel_mean, rel_std
+            in this case n_results is smse_mean, smse_std, rel_mean, rel_std, time
         results_labels: e.g. 'l2', 'relative error'
         n_tune_range: number of fine-tuning points, or training points for the baseline model
         model_names_d: model names for each dimension
         saveloc: beginning of save location
         title: the title of the plot
+        variation: how to handle the variation measure, one of {BATCH_STD, TRIAL_STD, None}
 
     returns:
         none
     """
+    assert variation in {BATCH_STD, TRIAL_STD, None}
     # group the results by model, across all trained dimensions
     grouped_results = {}
     for test_D, results_train_d in results_dict.items():
@@ -202,21 +210,34 @@ def plot_results(
                 for j, (display_name, results_arr) in enumerate(model_results):
 
                     mean_result = jnp.mean(results_arr, axis=1)[:, error_idx * 2]
-                    stdev = jnp.mean(results_arr, axis=1)[:, error_idx * 2 + 1]
                     ax.plot(
                         mean_result,
                         marker="o",
-                        linestyle=linestyles[j],
+                        linestyle=linestyles[j % len(linestyles)],
                         label=display_name,
-                        color=colors[j],  # was i, currently only model
+                        color=colors[j % len(colors)],  # was i, currently only model
                     )
-                    ax.fill_between(
-                        range(len(n_tune_range)),
-                        mean_result - stdev,
-                        mean_result + stdev,
-                        color=colors[j],
-                        alpha=0.2,
-                    )
+
+                    if variation == BATCH_STD:
+                        stdev = jnp.mean(results_arr, axis=1)[:, error_idx * 2 + 1]
+                        ax.fill_between(
+                            range(len(n_tune_range)),
+                            mean_result - stdev,
+                            mean_result + stdev,
+                            color=colors[j % len(colors)],
+                            alpha=0.2,
+                        )
+                    elif variation == TRIAL_STD:
+                        stdev = jnp.std(results_arr, axis=1)[:, error_idx * 2]
+                        ax.fill_between(
+                            range(len(n_tune_range)),
+                            mean_result - stdev,
+                            mean_result + stdev,
+                            color=colors[j % len(colors)],
+                            alpha=0.2,
+                        )
+                    else:
+                        stdev = jnp.zeros_like(mean_result)
 
             ax.legend(fontsize=24)
             ax.set_xlabel("Number of tuning points", fontsize=28)
@@ -298,15 +319,15 @@ def plot_time_results(
                         times,
                         mean_result,
                         marker="o",
-                        linestyle=linestyles[j],
+                        linestyle=linestyles[j % len(linestyles)],
                         label=display_name,
-                        color=colors[j],  # was i, currently only model
+                        color=colors[j % len(colors)],  # was i, currently only model
                     )
                     ax.fill_between(
                         times,
                         mean_result - stdev,
                         mean_result + stdev,
-                        color=colors[j],
+                        color=colors[j % len(colors)],
                         alpha=0.2,
                     )
 
@@ -775,6 +796,7 @@ def run_anyd(
             model_names_d,
             args.images_dir,
             f"By tuning points",  # TODO: want to say what the dimensions are
+            TRIAL_STD,
         )
 
         plot_time_results(

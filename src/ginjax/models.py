@@ -861,33 +861,21 @@ class AnyDimensionalModel(MultiImageModule):
 
         match (M, k, old_D, new_D):
             case (3, 0, 1, 2):
+                # gamma' = beta
+                # beta' = beta - 2 gamma' = -beta
+                # alpha' = alpha - 2 beta' = alpha + 2 beta
                 assert old_weights.shape[2] == 2
-                new_weights = jnp.concat([old_weights, old_weights[..., -1:]], axis=-1)
-            case (3, 0, 2, 3):
-                assert old_weights.shape[2] == 3
-                new_weights = jnp.concat([old_weights, old_weights[..., -1:]], axis=-1)
-            case (3, 1, 2, 3):
-                assert old_weights.shape[2] == 2
-                new_weights = jnp.concat([old_weights, old_weights[..., -1:]], axis=-1)
-            case (3, 2, 2, 3):
-                # For D=2, it is 3 identity weights, 1 along trace, 1 symmetric no trace
-                # For D=3, it is 4 identity weights, 2 symmetric no trace, 2 along trace
-                # so be careful because the order is flipped.
-                # we want (0,1,2,3,4) -> (0,1,2,2,4,4,3,3)
                 new_weights = jnp.concat(
                     [
-                        old_weights[..., :3],
-                        old_weights[..., 2:3],
-                        old_weights[..., 4:5],
-                        old_weights[..., 4:5],
-                        old_weights[..., 3:4],
-                        old_weights[..., 3:4],
+                        old_weights[..., :1] + 2 * old_weights[..., 1:2],
+                        -old_weights[..., 1:2],
+                        old_weights[..., 1:2],
                     ],
                     axis=-1,
                 )
             case _:
                 raise NotImplementedError(
-                    f"spin_embed_rescale_weights: k={k}, old D={old_D}, new D={new_D}"
+                    f"copy_rescale_weights: k={k}, old D={old_D}, new D={new_D}"
                 )
 
         return new_weights
@@ -931,33 +919,21 @@ class AnyDimensionalModel(MultiImageModule):
 
         match (M, k, old_D, new_D):
             case (3, 0, 1, 2):
+                # gamma' = 0
+                # beta' = beta - 2 gamma' = beta
+                # alpha' = alpha - 2 beta' = alpha - 2 beta
                 assert old_weights.shape[2] == 2
-                new_weights = jnp.concat([old_weights, jnp.zeros(zeros_shape)], axis=-1)
-            case (3, 0, 2, 3):
-                assert old_weights.shape[2] == 3
-                new_weights = jnp.concat([old_weights, jnp.zeros(zeros_shape)], axis=-1)
-            case (3, 1, 2, 3):
-                assert old_weights.shape[2] == 2
-                new_weights = jnp.concat([old_weights, jnp.zeros(zeros_shape)], axis=-1)
-            case (3, 2, 2, 3):
-                # For D=2, it is 3 identity weights, 1 along trace, 1 symmetric no trace
-                # For D=3, it is 4 identity weights, 2 symmetric no trace, 2 along trace
-                # so be careful because the order is flipped.
-                # we want (0,1,2,3,4) -> (0,1,2,2,4,4,3,3)
                 new_weights = jnp.concat(
                     [
-                        old_weights[..., :3],
-                        jnp.zeros(zeros_shape),
-                        old_weights[..., 4:5],
-                        jnp.zeros(zeros_shape),
-                        old_weights[..., 3:4],
+                        old_weights[..., :1] - 2 * old_weights[..., 1:2],
+                        old_weights[..., 1:2],
                         jnp.zeros(zeros_shape),
                     ],
                     axis=-1,
                 )
             case _:
                 raise NotImplementedError(
-                    f"spin_embed_rescale_weights: k={k}, old D={old_D}, new D={new_D}"
+                    f"zero_rescale_weights: k={k}, old D={old_D}, new D={new_D}"
                 )
 
         return new_weights

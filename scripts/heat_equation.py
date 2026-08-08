@@ -677,8 +677,8 @@ for D in full_D_range:
                 **test_kwargs,
             },
         ),
-        # ( # DO NOT REMOVE: Used for rescaling ablations
-        #     f"unetBase_equiv48_free_filters_D{D}",
+        # (  # DO NOT REMOVE: Used for rescaling ablations
+        #     f"unetBase_equiv48_free_filters{anisotropy_str}_D{D}",
         #     {  # train_kwargs
         #         "model": models.UNet(
         #             D,
@@ -688,7 +688,7 @@ for D in full_D_range:
         #             activation_f=jax.nn.gelu,
         #             conv_filters=free_filters_dict[D],
         #             upsample_filters=upsample_filters_dict[D],
-        #             key=subkeys[2],
+        #             key=subkeys[3],
         #         ),
         #         "lr": {
         #             False: {1: {128: 1e-3}, 2: {0: 1e-5, 1: 1e-5, 4: 1e-5, 32: 5e-4, 128: 5e-4}},
@@ -710,8 +710,8 @@ for D in full_D_range:
         #         **test_kwargs,
         #     },
         # ),
-        # ( # DO NOT REMOVE: Used for rescaling ablations
-        #     f"unetBase_equiv48_free_filters_D{D}",
+        # (  # DO NOT REMOVE: Used for rescaling ablations
+        #     f"unetBase_equiv48_free_filters{anisotropy_str}_D{D}",
         #     {  # train_kwargs
         #         "model": models.UNet(
         #             D,
@@ -721,7 +721,7 @@ for D in full_D_range:
         #             activation_f=jax.nn.gelu,
         #             conv_filters=free_filters_dict[D],
         #             upsample_filters=upsample_filters_dict[D],
-        #             key=subkeys[2],
+        #             key=subkeys[4],
         #         ),
         #         "lr": {
         #             False: {1: {128: 1e-3}, 2: {0: 1e-5, 1: 1e-5, 4: 1e-5, 32: 5e-4, 128: 5e-4}},

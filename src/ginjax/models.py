@@ -257,6 +257,8 @@ class AnyDimensionalModel(MultiImageModule):
     dimensional input. This also provides the helper functions transfer_weights to get this done.
     """
 
+    D: int = eqx.field(static=True)  # TODO: might need to initialize this in a default constructor
+
     @staticmethod
     def _extend_weights(
         old_weights_block: jax.Array,

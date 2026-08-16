@@ -10,7 +10,7 @@ from typing import Callable, Sequence
 import jax
 import jax.numpy as jnp
 from jax import random
-from jaxtyping import Float, Array
+from jaxtyping import Array, Float, PRNGKeyArray
 import equinox as eqx
 import optax
 from torch.utils.data import DataLoader
@@ -348,7 +348,7 @@ def plot_time_results(
 
 
 def generate_filters(
-    D_range: Sequence[int],
+    D_range: Sequence[int], ks: Sequence[int]
 ) -> tuple[dict[int, geom.MultiImage], dict[int, geom.MultiImage]]:
     """
     For the range of dimensions, generate the free filters (M=3) and upsample filters (M=3) of
@@ -367,7 +367,7 @@ def generate_filters(
         group_actions = geom.make_all_operators(D)
         upsample_filters_dict[D] = geom.get_invariant_filters(
             Ms=[2],
-            ks=[0],
+            ks=ks,
             parities=[0],
             D=D,
             operators=group_actions,
@@ -375,7 +375,7 @@ def generate_filters(
         )
         free_filters_dict[D] = geom.get_invariant_filters(
             Ms=[3],
-            ks=[0],
+            ks=ks,
             parities=[0],
             D=D,
             operators=group_actions,
@@ -383,6 +383,15 @@ def generate_filters(
         )
 
     return free_filters_dict, upsample_filters_dict
+
+
+def trim_trial_name(model_name: str) -> str:
+    """
+    Remove the trial from the model name.
+    """
+    start = model_name.find("_trial")
+    stop = model_name.find("_", start + len("_trial"))
+    return model_name[:start] + model_name[stop:]
 
 
 def train_model(
@@ -458,7 +467,7 @@ def train_model(
                 is_wandb=is_wandb,
                 wandb_project=wandb_project,
                 wandb_entity=wandb_entity,
-                model_name=model_name,
+                model_name=trim_trial_name(model_name),
                 args=args,
             )
         else:
@@ -521,17 +530,19 @@ def train_all_models(
             lr_range = [kwargs["lr"][train_D][n_points]]
 
         for lr in lr_range:
-            _train_kwargs = {
-                **train_kwargs,
+            _kwargs = {
+                **kwargs,
                 "lr": lr,
                 "args": {
                     **vars(args),
+                    "model_name": model_name,
+                    "lr": lr,
                     "D": train_D,
                     "n_points": n_points,
-                    "train_or_tune": ["train", "tune", "tune"][kwargs_idx],
+                    "train_or_tune": ["train", "baseline", "tune"][kwargs_idx],
                 },
             }  # copy kwargs and overwrite lr
-            trained_model, train_time = train_model(data, model_name, model, **_train_kwargs)
+            trained_model, train_time = train_model(data, model_name, model, **_kwargs)
 
             trained_models.append(
                 (
@@ -552,6 +563,7 @@ def convert_and_tune(
     key: jax.Array,
     model_list: list[tuple[str, models.AnyDimensionalModel, dict, dict, dict, float]],
     lr_range: list[float] | None,
+    rescale_list: list[geom.Rescaling],
     n_points: int,
     data_time: float,
     args: argparse.Namespace,
@@ -563,23 +575,13 @@ def convert_and_tune(
     args:
         data: input and output multi images for tune, val, and test data sets
         key: key for randomness
-        model_name: name of the model we are training
-        model: the any dimensional model
-        lr: learning rate
-        conv_filters_dict: dictionary of conv_filters by dimension
-        rescale: how to rescale the convolution filter coefficients
-        train_loss_f: the loss function to use for tuning
-        residual: whether the model is or should learn the residual between input/output
-        batch_size: the batch size
-        epochs: numbers of epochs (full passes through the tune data) to tune for
-        model_dir: path to save or load the model from
-        overwrite_save_model: whether to retrain and save a new tuned model even if there is
-            already one saved
-        images_dir: currently unused
-        upsample_filters_dict: dictionary by dimension of the upsample filters
-        has_aux: whether the model has auxilliary data like batch stats
-        verbose: verbosity level for training
-        is_wandb: whether to turn on wandb tracking
+        model_list: models to convert and tune, tuple of
+            (model_name,model,train_kwargs,baseline_kwargs,test_kwargs,pretrain_time)
+        lr_range: when hyperparameter tuning, list of learning rates to try
+        rescale_list: list of rescalings to perform
+        n_points:
+        data_time:
+        args:
 
     returns:
         tuple of smse_mean, smse_std, relative error mean, relative error std, tuning time
@@ -595,8 +597,7 @@ def convert_and_tune(
     for model_name, model, train_kwargs, baseline_kwargs, test_kwargs, pretrain_time in model_list:
         train_D = model.D
 
-        rescale = test_kwargs["rescale"] if "rescale" in test_kwargs else None
-        if rescale is not None:
+        for rescale in rescale_list:
             start_time = time.time()
 
             conv_filters_d = test_kwargs["conv_filters_dict"]
@@ -613,20 +614,16 @@ def convert_and_tune(
                 upsample_filters=upsample_filters_d[tune_D] if upsample_filters_d else None,
             )
             convert_times.append(time.time() - start_time + pretrain_time)  # this should be tiny
-            model_name += f"_rescale{rescale.name}"
-        else:
-            model_dprime = model
-            convert_times.append(pretrain_time)
+            _model_name = f"{model_name}_rescale{rescale.name}"
 
-        # get the correct learning rate, remove rescale, conv_filters_dict, upsample_filters_dict
-        _test_kwargs = {**test_kwargs, "lr": test_kwargs["lr"][train_D]}
-        _test_kwargs.pop("rescale", None)
-        _test_kwargs.pop("conv_filters_dict", None)
-        _test_kwargs.pop("rescale", None)
+            # get the correct learning rate, remove rescale, conv_filters_dict, upsample_filters_dict
+            _test_kwargs = {**test_kwargs, "lr": test_kwargs["lr"][train_D]}
+            _test_kwargs.pop("conv_filters_dict", None)
+            _test_kwargs.pop("upsample_filters_dict", None)
 
-        converted_model_list.append(
-            (model_name, model_dprime, train_kwargs, baseline_kwargs, _test_kwargs)
-        )
+            converted_model_list.append(
+                (_model_name, model_dprime, train_kwargs, baseline_kwargs, _test_kwargs)
+            )
 
     # Fine tune the converted models
     tuned_models = train_all_models(
@@ -652,10 +649,7 @@ def eval(
 
         tuned_loss = jnp.array([rel_mean, smse_mean, full_train_time])
 
-        start = model_name.find("_trial")
-        stop = model_name.find("_", start + len("_trial"))
-        model_name_trim = model_name[:start] + model_name[stop:]
-        print(model_name_trim)
+        model_name_trim = trim_trial_name(model_name)
         if model_name_trim in models_dict:
             models_dict[model_name_trim].append(tuned_loss)
         else:
@@ -671,7 +665,7 @@ def run_anyd(
     args: argparse.Namespace,
     key: jax.Array,
     get_data: Callable[
-        [int, int, int, int, jax.Array],
+        [int, int, int, int, int, PRNGKeyArray],
         tuple[
             DataLoader[ml.MultiImageDataset],
             DataLoader[ml.MultiImageDataset],
@@ -682,6 +676,8 @@ def run_anyd(
     model_list_d: dict[int, list[tuple[str, models.AnyDimensionalModel, dict, dict, dict]]],
     pretrain_lr_range: list[float] | None,
     finetune_lr_range: list[float] | None,
+    rescale_list: list[geom.Rescaling],
+    batch_size_d: dict[int, int],
 ):
     """
     Run the full battery of the any-dimensional test. Train the models, convert them to higher
@@ -703,7 +699,7 @@ def run_anyd(
     for train_D in train_D_range:
         key, subkey = random.split(key)
         train_dataloader, val_dataloader, _, pretrain_data_time = get_data(
-            train_D, args.n_train, args.n_val, 0, subkey
+            train_D, args.n_train, args.n_val, 0, batch_size_d[train_D], subkey
         )
 
         train_data = (train_dataloader, val_dataloader)
@@ -732,7 +728,7 @@ def run_anyd(
             key, subkey = random.split(key)
             # TODO: as n_tune grows, it may later include data points that were used for val/test
             tune_dl, tune_val_dl, tune_test_dl, tune_data_time = get_data(
-                test_D, n_tune, args.n_val, args.n_test, subkey
+                test_D, n_tune, args.n_val, args.n_test, batch_size_d[test_D], subkey
             )
 
             # need to train the baseline model on tune_x0, etc. aka models without the warmstart
@@ -758,6 +754,7 @@ def run_anyd(
                     subkey,
                     pretrain_model_list_d[train_D],
                     finetune_lr_range,
+                    rescale_list,
                     n_tune,
                     tune_data_time,
                     args,

@@ -311,16 +311,16 @@ def handleArgs() -> argparse.Namespace:
         default=False,
     )
     parser.add_argument(
-        "--pretrain-batch",
+        "--batch-train",
         type=int,
         default=8,
-        help="batch size for low dimensional pretraining, defaults for 2 GPUs",
+        help="batch size for low dimensional pretraining, default is 2 GPUs",
     )
     parser.add_argument(
-        "--finetune-batch",
+        "--batch-tune",
         type=int,
         default=4,
-        help="batch size for higher dimensional finetuning, defaults are for 2 GPUs",
+        help="batch size for higher dimensional finetuning, default is for 2 GPUs",
     )
     parser.add_argument(
         "--pretrain-lr-range",
@@ -366,11 +366,11 @@ key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(
 train_D = 2
 test_D = 3
 full_D_range = (train_D, test_D)
-free_filters_dict, upsample_filters_dict = anyd_helpers.generate_filters(full_D_range, [2])
+free_filters_dict, upsample_filters_dict = anyd_helpers.generate_filters(full_D_range, [0, 2])
 
 train_kwargs = {
     "train_loss_f": geom.Losses.NRMSE,
-    "batch_size": args.pretrain_batch,
+    "batch_size": args.batch_train,
     "epochs": args.epochs,
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
@@ -383,7 +383,7 @@ train_kwargs = {
 
 baseline_kwargs = {
     "train_loss_f": geom.Losses.NRMSE,
-    "batch_size": args.finetune_batch,
+    "batch_size": args.batch_tune,
     "epochs": args.epochs,
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
@@ -396,7 +396,7 @@ baseline_kwargs = {
 
 test_kwargs = {
     "train_loss_f": geom.Losses.NRMSE,
-    "batch_size": args.finetune_batch,
+    "batch_size": args.batch_tune,
     "epochs": args.epochs,
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
@@ -504,5 +504,5 @@ anyd_helpers.run_anyd(
     args.pretrain_lr_range,
     args.finetune_lr_range,
     rescale_list,
-    {2: args.pretrain_batch, 3: args.finetune_batch},
+    {2: args.batch_train, 3: args.batch_tune},
 )

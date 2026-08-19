@@ -278,17 +278,16 @@ def handleArgs() -> argparse.Namespace:
     parser.add_argument("--batch-tune", help="batch size for 3D tuning", type=int, default=4)
     parser.add_argument(
         "--pretrain-lr-range",
-        help="benchmark trained model over the lr",
+        help="benchmark trained model over the lr, turns on wandb",
         type=lambda s: tuple(float(x) for x in s.split(",")) if isinstance(s, str) else None,
         default=None,
     )
     parser.add_argument(
         "--finetune-lr-range",
-        help="benchmark tuned model over the lr",
+        help="benchmark tuned model over the lr, turns on wandb",
         type=lambda s: tuple(float(x) for x in s.split(",")) if isinstance(s, str) else None,
         default=None,
     )
-    # need do to --train-wandb or --tune-wandb to activate
     parser.add_argument("--wandb-project", help="the wandb project", type=str, default="cfd-anyd")
 
     return parser.parse_args()
@@ -319,7 +318,6 @@ key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(
 # D=1 doesn't make sense for a vector field, so we restrict the problem to only this case
 train_D = 2
 test_D = 3
-n_results = 5
 full_D_range = (train_D, test_D)
 free_filters_dict, upsample_filters_dict = anyd_helpers.generate_filters(full_D_range, [0, 1, 2])
 

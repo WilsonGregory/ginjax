@@ -324,17 +324,16 @@ def handleArgs() -> argparse.Namespace:
     )
     parser.add_argument(
         "--pretrain-lr-range",
-        help="benchmark trained model over the lr",
+        help="benchmark trained model over the lr, turns on wandb",
         type=lambda s: tuple(float(x) for x in s.split(",")) if isinstance(s, str) else None,
         default=None,
     )
     parser.add_argument(
         "--finetune-lr-range",
-        help="benchmark tuned model over the lr",
+        help="benchmark tuned model over the lr, turns on wandb",
         type=lambda s: tuple(float(x) for x in s.split(",")) if isinstance(s, str) else None,
         default=None,
     )
-    # need do to --train-wandb or --tune-wandb to activate
     parser.add_argument("--wandb-project", help="the wandb project", type=str, default="burgers")
 
     return parser.parse_args()

@@ -190,12 +190,10 @@ def nrmse_loss(
         average root mean squared error with respect to the second input.
     """
     reduce_options = {"mean", None}
-    assert (
-        reduce in reduce_options
-    ), f"l1_rel_error: reduce={reduce} must be one of {reduce_options}"
+    assert reduce in reduce_options, f"nrmse_loss: reduce={reduce} must be one of {reduce_options}"
     assert (
         multi_image_x.get_n_leading() == multi_image_y.get_n_leading() == 2
-    ), "l1_rel_error: MultiImages must have batch and channel axes"
+    ), "nrmse_loss: MultiImages must have batch and channel axes"
 
     batch = multi_image_x.get_L()
 

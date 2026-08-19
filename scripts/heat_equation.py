@@ -277,16 +277,22 @@ def handleArgs() -> argparse.Namespace:
         default="0,1,4,32,128",
     )
     parser.add_argument(
+        "--rescale-list",
+        help="the types of rescalings to do, defaults to spin_embed, for ablations do spin_embed,copy,zeros",
+        type=lambda s: s.split(","),
+        default="spin_embed",
+    )
+    parser.add_argument(
         "--train-D-range",
         help="a comma separated list of range of dims to train over, e.g. 1,2",
         type=lambda s: tuple(int(x) for x in s.split(",")),
-        default="1,2",
+        default="1",
     )
     parser.add_argument(
         "--test-D-range",
-        help="a comma separated list of range of dims to test over, e.g. 1,2",
+        help="a comma separated list of range of dims to test over, e.g. 2,3",
         type=lambda s: tuple(int(x) for x in s.split(",")),
-        default="2,3",
+        default="2",
     )
     parser.add_argument("-N", help="spatial size", type=int, default=64)
     parser.add_argument(
@@ -296,38 +302,19 @@ def handleArgs() -> argparse.Namespace:
         "--anisotropy", help="anisotropy of kernel distance", type=float, default=None
     )
     parser.add_argument(
-        "--residual",
-        help="learn the residual of the heat equation",
-        action=argparse.BooleanOptionalAction,
-        default=False,
+        "--pretrain-lr-range",
+        help="benchmark trained model over the lr, turns on wandb",
+        type=lambda s: tuple(float(x) for x in s.split(",")) if isinstance(s, str) else None,
+        default=None,
     )
     parser.add_argument(
-        "--find-train-lr",
-        help="benchmark trained model over the lr",
-        action=argparse.BooleanOptionalAction,
-        default=False,
+        "--finetune-lr-range",
+        help="benchmark tuned model over the lr, turns on wandb",
+        type=lambda s: tuple(float(x) for x in s.split(",")) if isinstance(s, str) else None,
+        default=None,
     )
-    parser.add_argument(
-        "--find-tune-lr",
-        help="benchmark tuned model over the lr",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-    )
-    # need do to --train-wandb or --tune-wandb to activate
     parser.add_argument(
         "--wandb-project", help="the wandb project", type=str, default="heat-equation"
-    )
-    parser.add_argument(
-        "--train-wandb",
-        help="whether to use wandb during training",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-    )
-    parser.add_argument(
-        "--tune-wandb",
-        help="whether to use wandb during tuning",
-        action=argparse.BooleanOptionalAction,
-        default=False,
     )
 
     return parser.parse_args()
@@ -336,99 +323,66 @@ def handleArgs() -> argparse.Namespace:
 # MAIN
 args = handleArgs()
 if args.wandb:
-    print("Use --train-wandb or --test-wandb to control these individually. Exiting.")
+    print("This argument is ignored, specify --pretrain-lr-range or --finetune-lr-range.")
     exit()
 
 if args.load_model or args.save_model:
     print("Use --model-dir and possibly --overwrite-save-model instead of --save-model")
     exit()
 
-key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
-lr_range = [5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2]
+rescale_options = {
+    "spin_embed": geom.Rescaling.SPIN_EMBED,
+    "copy": geom.Rescaling.COPY,
+    "zeros": geom.Rescaling.ZEROS,
+}
+rescale_list = [rescale_options[x.lower()] for x in args.rescale_list]
 
-max_pixel_l1 = 2
-M = 5
-n_results = 5
+pretrain_lr = args.pretrain_lr_range is not None
+finetune_lr = args.finetune_lr_range is not None
+
+key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
+
+full_D_range = tuple(set(args.train_D_range).union(set(args.test_D_range)))
+free_filters_dict, upsample_filters_dict = anyd_helpers.generate_filters(full_D_range, [0])
 
 train_kwargs = {
-    "train_loss_f": geom.Losses.SMSE,
-    "residual": args.residual,
+    "train_loss_f": geom.Losses.NRMSE,
     "batch_size": args.batch,
     "epochs": args.epochs,
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
     "images_dir": None,
     "verbose": args.verbose,
-    "is_wandb": args.train_wandb,
+    "is_wandb": pretrain_lr,
+    "wandb_project": args.wandb_project,
+    "wandb_entity": args.wandb_entity,
 }
 
-test_kwargs = {
-    "train_loss_f": geom.Losses.SMSE,
-    "residual": args.residual,
+baseline_kwargs = {
+    "train_loss_f": geom.Losses.NRMSE,
     "batch_size": args.batch,
     "epochs": args.epochs,
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
     "images_dir": args.images_dir,  # currently ignored
     "verbose": args.verbose,
-    "is_wandb": args.tune_wandb,
+    "is_wandb": finetune_lr,
+    "wandb_project": args.wandb_project,
+    "wandb_entity": args.wandb_entity,
 }
 
-one_filters_dict = {}
-normalize_filters_dict = {}
-gaussian_filters_dict = {}
-upsample_filters_dict = {}
-free_filters_dict = {}
-
-full_D_range = tuple(set(args.train_D_range).union(set(args.test_D_range)))
-for D in full_D_range:
-    group_actions = geom.make_all_operators(D)
-    one_filters_dict[D] = geom.get_invariant_filters(
-        Ms=[M],
-        ks=[0],
-        parities=[0],
-        D=D,
-        operators=group_actions,
-        scale=geom.FilterScaling.ONE,
-        max_pixel_l1=max_pixel_l1,
-        combine_equal_l1=True,
-    )
-    normalize_filters_dict[D] = geom.get_invariant_filters(
-        Ms=[M],
-        ks=[0],
-        parities=[0],
-        D=D,
-        operators=group_actions,
-        scale=geom.FilterScaling.NORMALIZE,
-        max_pixel_l1=max_pixel_l1,
-        combine_equal_l1=True,
-    )
-    gaussian_filters_dict[D] = geom.get_invariant_filters(
-        Ms=[M],
-        ks=[0],
-        parities=[0],
-        D=D,
-        operators=group_actions,
-        scale=geom.FilterScaling.GAUSSIAN,
-        max_pixel_l1=max_pixel_l1,
-        combine_equal_l1=True,
-    )
-    upsample_filters_dict[D] = geom.get_invariant_filters(
-        Ms=[2],
-        ks=[0],
-        parities=[0],
-        D=D,
-        operators=group_actions,
-        scale=geom.FilterScaling.ONE,  # for N=2, all pixels are equidistant
-    )
-    free_filters_dict[D] = geom.get_invariant_filters(
-        Ms=[3],
-        ks=[0],
-        parities=[0],
-        D=D,
-        operators=group_actions,
-        scale=geom.FilterScaling.ONE,
-    )
+test_kwargs = {
+    "train_loss_f": geom.Losses.NRMSE,
+    "batch_size": args.batch,
+    "epochs": args.epochs,
+    "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
+    "overwrite_save_model": args.overwrite_save_model,
+    "images_dir": args.images_dir,  # currently ignored
+    "verbose": args.verbose,
+    "is_wandb": finetune_lr,
+    "wandb_project": args.wandb_project,
+    "wandb_entity": args.wandb_entity,
+}
 
 anisotropy_str = "" if args.anisotropy is None else f"_anisotropy{args.anisotropy}"
 
@@ -450,305 +404,72 @@ for D in full_D_range:
     input_keys = train_x0.get_signature()
     output_keys = train_xt.get_signature()
 
-    key, *subkeys = random.split(key, num=10)
-    model_list = [
-        # (
-        #     f"two_layer_gaussian_scaling_D{D}",
-        #     {
-        #         "model": models.SimpleConvSeries(
-        #             input_keys,
-        #             output_keys,
-        #             gaussian_filters_dict[D],
-        #             width=10,
-        #             depth=2,
-        #             use_bias=False,
-        #             key=subkeys[0],
-        #         ),
-        #         "lr": 5e-2,  # best for all dimensions, all n_tune
-        #         **train_kwargs,
-        #     },
-        #     {
-        #         "lr": {(1, 2): 1e-2, (1, 3): 5e-2, (2, 3): 1e-2},
-        #         # n_tune has only a small effect on the error difference, simplicity use n=1 value
-        #         # it is typically lower so this strategy is conservative
-        #         # (1,2): (n=1,1e-2) (n=4,1e-2) (n=32,1e-2) (n=128,1e-2)
-        #         # (1,3): (n=1,5e-2) (n=4,5e-2) (n=32,5e-2) (n=128,5e-2) (pretty large gap for n=1,4)
-        #         # (2,3): (n=1,1e-2) (n=4,1e-2) (n=32,5e-2) (n=128,5e-2) can do 1e-2
-        #         "rescale": geom.Rescaling.VOLUME,
-        #         "conv_filters_dict": gaussian_filters_dict,
-        #         **test_kwargs,
-        #     },
-        # ),
-        # (
-        #     f"two_layer_one_scaling_D{D}",
-        #     {
-        #         "model": models.SimpleConvSeries(
-        #             input_keys,
-        #             output_keys,
-        #             one_filters_dict[D],
-        #             width=10,
-        #             depth=2,
-        #             use_bias=False,
-        #             activation_f="gelu",
-        #             key=subkeys[0],
-        #         ),
-        #         "lr": 5e-2,  # best for all dimensions, all n_tune
-        #         **train_kwargs,
-        #     },
-        #     {
-        #         "lr": {(1, 2): 5e-2, (1, 3): 5e-2, (2, 3): 1e-2},
-        #         # n_tune has only a small effect on the error difference, simplicity use n=1 value
-        #         # it is typically lower so this strategy is conservative
-        #         # (1,2): (n=1,1e-2) (n=4,1e-2) (n=32,1e-2) (n=128,1e-2)
-        #         # (1,3): (n=1,5e-2) (n=4,5e-2) (n=32,5e-2) (n=128,5e-2) (pretty large gap for n=1,4)
-        #         # (2,3): (n=1,1e-2) (n=4,1e-2) (n=32,5e-2) (n=128,5e-2) can do 1e-2
-        #         "rescale": geom.Rescaling.COMPATIBILITY,
-        #         "conv_filters_dict": one_filters_dict,
-        #         **test_kwargs,
-        #     },
-        # ),
-        # (
-        #     f"two_layer_free_filters_D{D}",
-        #     {
-        #         "model": models.SimpleConvSeries(
-        #             input_keys,
-        #             output_keys,
-        #             free_filters_dict[D],
-        #             width=10,
-        #             depth=2,
-        #             use_bias=False,
-        #             activation_f="gelu",
-        #             key=subkeys[0],
-        #         ),
-        #         "lr": 5e-2,  # best for all dimensions, all n_tune
-        #         **train_kwargs,
-        #     },
-        #     {
-        #         "lr": {(1, 2): 5e-2, (1, 3): 5e-2, (2, 3): 1e-2},
-        #         # n_tune has only a small effect on the error difference, simplicity use n=1 value
-        #         # it is typically lower so this strategy is conservative
-        #         # (1,2): (n=1,1e-2) (n=4,1e-2) (n=32,1e-2) (n=128,1e-2)
-        #         # (1,3): (n=1,5e-2) (n=4,5e-2) (n=32,5e-2) (n=128,5e-2) (pretty large gap for n=1,4)
-        #         # (2,3): (n=1,1e-2) (n=4,1e-2) (n=32,5e-2) (n=128,5e-2) can do 1e-2
-        #         "rescale": geom.Rescaling.COMPAT_FLEX,
-        #         "conv_filters_dict": free_filters_dict,
-        #         **test_kwargs,
-        #     },
-        # ),
-        # (
-        #     "lastStepIdentity",
-        #     train_and_eval,
-        #     {
-        #         "model": models.LastStepIdentity(residual=args.residual),
-        #         "lr": 1,
-        #         "conv_filters_dict": normalize_filters_dict,
-        #         **train_kwargs,
-        #     },
-        # ),
-        # (
-        #     f"resnet_equiv_42_gaussian_scaling_D{D}",
-        #     {  # train kwargs
-        #         "model": models.ResNet(
-        #             D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=42,
-        #             conv_filters=gaussian_filters_dict[D],
-        #             use_group_norm=True,
-        #             key=subkeys[1],
-        #         ),
-        #         "lr": {1: 5e-3, 2: 5e-4, 3: 1e-3}[D],
-        #         # (D=1,n=128,5e-3) (D=2,n=1,5e-4) (D=2,n=4,5e-4) (D=2,n=32,5e-4) (D=2,n=128,5e-4)
-        #         # (D=3,n=1,1e-3) (D=3,n=4,1e-3) (D=3,n=32,5e-4) (D=3,n=128,1e-3)
-        #         **train_kwargs,
-        #     },
-        #     {  # tune and eval kwargs
-        #         "lr": {(1, 2): 1e-4, (1, 3): 5e-5, (2, 3): 5e-5},
-        #         # (1,2): (n=1,1e-4) (n=4,1e-4) (n=32,1e-3) (n=128,1e-3)
-        #         # (1,3): (n=1,5e-5) (n=4,5e-5) (n=32,5e-4) (n=128,5e-3)
-        #         # (2,3): (n=1,5e-5) (n=4,5e-5) (n=32,1e-4) (n=128,1e-4)
-        #         "conv_filters_dict": gaussian_filters_dict,
-        #         **test_kwargs,
-        #     },
-        # ),
-        # (
-        #     f"unetBase_equiv48_gaussian_scaling_D{D}",
-        #     {  # train_kwargs
-        #         "model": models.UNet(
-        #             D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=48,
-        #             activation_f=jax.nn.gelu,
-        #             conv_filters=gaussian_filters_dict[D],
-        #             upsample_filters=upsample_filters_dict[D],
-        #             key=subkeys[2],
-        #         ),
-        #         "lr": 1e-3,
-        #         # D=1 (n=128,1e-3)
-        #         # D=2 (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,5e-4 although 1e-3 is close?)
-        #         # D=3 (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,1e-3)
-        #         **train_kwargs,
-        #     },
-        #     {  # tune and eval kwargs
-        #         "lr": {(1, 2): 1e-3, (1, 3): 1e-3, (2, 3): 1e-3},
-        #         # (1,2) (n=1,1e-3) (n=4,1e-3) (n=32,5e-3) (n=128,5e-4 or 1e-3)
-        #         # (1,3) (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,5e-3,1e-3,5e-4)
-        #         # (2,3) (n=1,1e-3) (n=4,1e-3) (n=32,1e-3) (n=128,1e-3 works)
-        #         "conv_filters_dict": gaussian_filters_dict,
-        #         "upsample_filters_dict": upsample_filters_dict,
-        #         **test_kwargs,
-        #     },
-        # ),
-        # (
-        #     f"unetBase_equiv48_one_scaling_D{D}",
-        #     {  # train_kwargs
-        #         "model": models.UNet(
-        #             D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=48,
-        #             activation_f=jax.nn.gelu,
-        #             conv_filters=one_filters_dict[D],
-        #             upsample_filters=upsample_filters_dict[D],
-        #             key=subkeys[2],
-        #         ),
-        #         "lr": {1: 1e-3, 2: 1e-4, 3: 1e-4}[D],
-        #         # D=1 (n=128,1e-3)
-        #         # D=2 (n=128,1e-4)
-        #         **train_kwargs,
-        #     },
-        #     {  # tune and eval kwargs
-        #         "lr": {(1, 2): 1e-3, (1, 3): 1e-3, (2, 3): 1e-3},
-        #         # (1,2)
-        #         # (1,3)
-        #         # (2,3)
-        #         "rescale": geom.Rescaling.COMPATIBILITY,
-        #         "conv_filters_dict": one_filters_dict,
-        #         "upsample_filters_dict": upsample_filters_dict,
-        #         **test_kwargs,
-        #     },
-        # ),
-        # (
-        #     f"unetBase{anisotropy_str}_D{D}",
-        #     {  # train_kwargs
-        #         "model": models.UNet(
-        #             D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=64,
-        #             use_bias=True,
-        #             activation_f=jax.nn.gelu,
-        #             equivariant=False,
-        #             kernel_size=3,
-        #             padding_mode="CIRCULAR",  # if we are on a torus
-        #             key=subkeys[5],
-        #         ),
-        #         "lr": {1: {128: 1e-3}, 2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-3}},
-        #         **train_kwargs,
-        #     },
-        #     {  # tune and eval kwargs
-        #         "lr": {(1, 2): {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 8e-3, 128: 8e-3}},
-        #         "rescale": None,  # model cannot be rescaled, for baseline only
-        #         **test_kwargs,
-        #     },
-        # ),
-        (
-            f"unetBase_equiv48_free_filters{anisotropy_str}_D{D}",
-            {  # train_kwargs
-                "model": models.UNet(
-                    D,
-                    input_keys,
-                    output_keys,
-                    depth=48,
-                    activation_f=jax.nn.gelu,
-                    conv_filters=free_filters_dict[D],
-                    upsample_filters=upsample_filters_dict[D],
-                    key=subkeys[2],
+    model_list = []
+    for trial in range(args.n_trials):
+        key, *subkeys = random.split(key, num=10)
+        model_list.extend(
+            [
+                # (
+                #     f"unetBase{anisotropy_str}_D{D}_t{trial}",
+                #     {  # train_kwargs
+                #         "model": models.UNet(
+                #             D,
+                #             input_keys,
+                #             output_keys,
+                #             depth=64,
+                #             use_bias=True,
+                #             activation_f=jax.nn.gelu,
+                #             equivariant=False,
+                #             kernel_size=3,
+                #             padding_mode="CIRCULAR",  # if we are on a torus
+                #             key=subkeys[5],
+                #         ),
+                #         "lr": {1: {128: 1e-3}, 2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-3}},
+                #         **train_kwargs,
+                #     },
+                #     {  # tune and eval kwargs
+                #         "lr": {(1, 2): {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 8e-3, 128: 8e-3}},
+                #         "rescale": None,  # model cannot be rescaled, for baseline only
+                #         **test_kwargs,
+                #     },
+                # ),
+                (
+                    f"unetBase_equiv48{anisotropy_str}_trial{trial}",
+                    models.UNet(
+                        D,
+                        input_keys,
+                        output_keys,
+                        depth=48,
+                        activation_f=jax.nn.gelu,
+                        conv_filters=free_filters_dict[D],
+                        upsample_filters=upsample_filters_dict[D],
+                        key=subkeys[2],
+                    ),
+                    {  # train_kwargs
+                        "lr": {1: {128: 1e-3}, 2: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 5e-4}},
+                        **train_kwargs,
+                    },
+                    {
+                        "lr": {1: {128: 1e-3}, 2: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 5e-4}},
+                        **baseline_kwargs,
+                    },
+                    {  # tune and eval kwargs
+                        "lr": {1: {2: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 5e-4}}},
+                        "conv_filters_dict": free_filters_dict,
+                        "upsample_filters_dict": upsample_filters_dict,
+                        **test_kwargs,
+                    },
                 ),
-                "lr": {1: {128: 1e-3}, 2: {0: 1e-5, 1: 1e-5, 4: 1e-5, 32: 5e-4, 128: 5e-4}},
-                **train_kwargs,
-            },
-            {  # tune and eval kwargs
-                "lr": {(1, 2): {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 1e-3, 128: 1e-3}},
-                "rescale": geom.Rescaling.SPIN_EMBED,
-                "conv_filters_dict": free_filters_dict,
-                "upsample_filters_dict": upsample_filters_dict,
-                **test_kwargs,
-            },
-        ),
-        # (  # DO NOT REMOVE: Used for rescaling ablations
-        #     f"unetBase_equiv48_free_filters{anisotropy_str}_D{D}",
-        #     {  # train_kwargs
-        #         "model": models.UNet(
-        #             D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=48,
-        #             activation_f=jax.nn.gelu,
-        #             conv_filters=free_filters_dict[D],
-        #             upsample_filters=upsample_filters_dict[D],
-        #             key=subkeys[3],
-        #         ),
-        #         "lr": {
-        #             False: {1: {128: 1e-3}, 2: {0: 1e-5, 1: 1e-5, 4: 1e-5, 32: 5e-4, 128: 5e-4}},
-        #             True: {
-        #                 1: {128: 5e-4},
-        #                 2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-4},
-        #             },
-        #         }[args.residual],
-        #         **train_kwargs,
-        #     },
-        #     {  # tune and eval kwargs
-        #         "lr": {
-        #             False: {(1, 2): {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 1e-3, 128: 1e-3}},
-        #             True: {(1, 2): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 5e-4}},
-        #         }[args.residual],
-        #         "rescale": geom.Rescaling.COPY,
-        #         "conv_filters_dict": free_filters_dict,
-        #         "upsample_filters_dict": upsample_filters_dict,
-        #         **test_kwargs,
-        #     },
-        # ),
-        # (  # DO NOT REMOVE: Used for rescaling ablations
-        #     f"unetBase_equiv48_free_filters{anisotropy_str}_D{D}",
-        #     {  # train_kwargs
-        #         "model": models.UNet(
-        #             D,
-        #             input_keys,
-        #             output_keys,
-        #             depth=48,
-        #             activation_f=jax.nn.gelu,
-        #             conv_filters=free_filters_dict[D],
-        #             upsample_filters=upsample_filters_dict[D],
-        #             key=subkeys[4],
-        #         ),
-        #         "lr": {
-        #             False: {1: {128: 1e-3}, 2: {0: 1e-5, 1: 1e-5, 4: 1e-5, 32: 5e-4, 128: 5e-4}},
-        #             True: {
-        #                 1: {128: 5e-4},
-        #                 2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-4},
-        #             },
-        #         }[args.residual],
-        #         **train_kwargs,
-        #     },
-        #     {  # tune and eval kwargs
-        #         "lr": {
-        #             False: {(1, 2): {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 1e-3, 128: 1e-3}},
-        #             True: {(1, 2): {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4, 128: 5e-4}},
-        #         }[args.residual],
-        #         "rescale": geom.Rescaling.ZEROS,
-        #         "conv_filters_dict": free_filters_dict,
-        #         "upsample_filters_dict": upsample_filters_dict,
-        #         **test_kwargs,
-        #     },
-        # ),
-    ]
+            ]
+        )
+
     model_list_d[D] = model_list
 
 
 # extended lambda function
-def get_data_lambda(D: int, n_train: int, n_val: int, n_test: int, key: jax.Array) -> tuple[
+def get_data_lambda(
+    D: int, n_train: int, n_val: int, n_test: int, batch_size: int, key: jax.Array
+) -> tuple[
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
@@ -762,7 +483,7 @@ def get_data_lambda(D: int, n_train: int, n_val: int, n_test: int, key: jax.Arra
         n_train,
         n_val,
         n_test,
-        args.batch,
+        batch_size,
         key,
         args.data,
         args.anisotropy,
@@ -778,5 +499,8 @@ anyd_helpers.run_anyd(
     subkey,
     get_data_lambda,
     model_list_d,
-    lr_range,
+    args.pretrain_lr_range,
+    args.finetune_lr_range,
+    rescale_list,
+    {1: args.batch, 2: args.batch},
 )

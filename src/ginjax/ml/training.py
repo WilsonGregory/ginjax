@@ -522,6 +522,95 @@ def train_step(
     return model, opt_state, loss, aux_data
 
 
+def train_dl_wandb(
+    train_dataloader: DataLoader,
+    map_and_loss: Callable[
+        [models.MultiImageModule, geom.MultiImage, geom.MultiImage, eqx.nn.State | None],
+        tuple[jax.Array, eqx.nn.State | None],
+    ],
+    model: models.MultiImageModule,
+    stop_condition: StopCondition,
+    optimizer: optax.GradientTransformation,
+    val_dataloader: DataLoader | None = None,
+    val_map_and_loss: (
+        Callable[
+            [models.MultiImageModule, geom.MultiImage, geom.MultiImage, eqx.nn.State | None],
+            tuple[jax.Array, eqx.nn.State | None],
+        ]
+        | None
+    ) = None,
+    save_model: str | None = None,
+    aux_data: eqx.nn.State | None = None,
+    is_wandb: bool = False,
+    wandb_project: str = "",
+    wandb_entity: str = "",
+    model_name: str = "",
+    args: dict = {},
+) -> tuple[models.MultiImageModule, eqx.nn.State | None, ArrayLike | None, ArrayLike | None, float]:
+    """
+    A wrapper around train_dl that initializes and wandb, runs train_dl, and tears down wandb. If
+    is_wandb is false, this function is the same as train_dl.
+
+    args:
+        train_dataloader: dataloader for train input and target data. Each is a MultiImage by k of
+            (images, channels, (N,)*D, (D,)*k)
+        map_and_loss: function that takes in model, X_batch, Y_batch, and aux_data and
+            returns the loss and aux_data.
+        model: Model pytree
+        stop_condition: when to stop the training process, currently only 1 condition
+            at a time
+        batch_size: the size of each mini-batch in SGD
+        optimizer: optimizer
+        val_dataloader: dataloader for val input and target data. Each is a MultiImage by k of
+            (images, channels, (N,)*D, (D,)*k)
+        save_model: if string, save model every 10 epochs, defaults to None
+        aux_data: initial aux data passed in to map_and_loss when has_aux is true.
+        is_wandb: whether wandb experiment tracking has been initiated and should be logged to
+
+    returns:
+        A tuple of best model in inference mode, aux_data, epoch loss, val loss, and train_time
+    """
+    if is_wandb:
+        wandb.init(
+            project=wandb_project,
+            entity=wandb_entity,
+            name=model_name,
+            settings=wandb.Settings(start_method="fork"),
+        )
+        type_list = [str, int, float, bool]
+
+        def display_val(val):
+            if isinstance(val, enum.Enum):
+                return val.name
+            elif type(val) in type_list or val is None:
+                return val
+            else:
+                return type(val)
+
+        wandb.config.update(
+            {key: display_val(val) for key, val in args.items()},
+            allow_val_change=True,
+        )
+
+    out = train_dl(
+        train_dataloader,
+        map_and_loss,
+        model,
+        stop_condition,
+        optimizer,
+        val_dataloader,
+        val_map_and_loss,
+        save_model,
+        aux_data,
+        is_wandb,
+    )
+
+    if is_wandb:
+        wandb.finish()
+
+    return out
+
+
 def train_dl(
     train_dataloader: DataLoader,
     map_and_loss: Callable[

@@ -918,15 +918,14 @@ def max_pool(
     dimension_numbers = ("N" + spatial_l + "C", "OI" + spatial_l, "NC" + spatial_l)
 
     # TODO: use the batch dimension of dilated_patches correctly
+    # out shape (1,tensor_flat,spatial) -> (tensor_flat,spatial)
     patches = jax.lax.conv_general_dilated_patches(
         image_data.reshape((1,) + spatial_dims + (-1,)).astype("float32"),  # NHWDC
         filter_shape=(patch_len,) * D,  # filter_shape
         window_strides=(patch_len,) * D,
         padding=((0, 0),) * D,  # padding
         dimension_numbers=dimension_numbers,
-    )[
-        0
-    ]  # no batch. Out shape (batch,channels,spatial)
+    )[0]
 
     new_spatial_dims = patches.shape[1:]
     patches = patches.reshape((D**k, patch_len**D, -1))  # (tensor,patch,num_patches)
@@ -942,6 +941,7 @@ def max_pool(
         )[0]
         comparator_patches = comparator_patches.reshape((patch_len**D, -1))
     elif use_norm:
+        # flops: N**D * D**k * 2
         comparator_patches = jnp.linalg.norm(patches, axis=0)  # (patch,num_patches)
     else:
         assert len(patches) == 1  # can only use image as your comparator if its a scalar image

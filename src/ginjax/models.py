@@ -199,6 +199,12 @@ class MultiImageModule(eqx.Module):
         """
         return x, aux_data
 
+    def get_flops(self: Self, **kwargs) -> int:
+        """
+        An estimate of the number of flops for one forward pass of one sample through the model.
+        """
+        raise NotImplementedError(f"{self.__class__}::get_flops: Not implemented.")
+
 
 def get_scaled_filters(D: int, filter_block: jax.Array, weights: jax.Array) -> jax.Array:
     """
@@ -1151,11 +1157,11 @@ class ConvBlock(MultiImageModule):
         D: int,
         input_keys: geom.Signature,
         output_keys: geom.Signature,
-        use_bias: Union[bool, str] = "auto",
-        activation_f: Optional[Union[Callable, str]] = jax.nn.gelu,
+        use_bias: bool | str = "auto",
+        activation_f: Callable | str | None = jax.nn.gelu,
         equivariant: bool = True,
-        conv_filters: Optional[geom.MultiImage] = None,
-        kernel_size: Optional[Union[int, Sequence[int]]] = None,
+        conv_filters: geom.MultiImage | None = None,
+        kernel_size: int | Sequence[int] | None = None,
         use_group_norm: bool = False,
         use_batch_norm: bool = False,
         preactivation_order: bool = False,
@@ -1256,6 +1262,32 @@ class ConvBlock(MultiImageModule):
 
         return x, batch_stats
 
+    def get_flops(self: Self, **kwargs) -> int:
+        flops = 0
+        spatial_size = math.prod(kwargs["spatial_dims"])
+        if isinstance(self.conv, eqx.nn.Conv):
+            # TODO: currently ignores dilations, stride?
+            flops = (
+                math.prod(self.conv.kernel_size)
+                * self.conv.in_channels
+                * self.conv.out_channels
+                * spatial_size
+            )
+            flops += spatial_size * self.conv.out_channels if self.conv.use_bias else 0
+        else:
+            flops = self.conv.get_flops(**kwargs)
+
+        flops += 0 if self.group_norm is None else self.group_norm.get_flops(**kwargs)
+        flops += 0 if self.batch_norm is None else self.batch_norm.get_flops(**kwargs)
+
+        if isinstance(self.nonlinearity, layers.MultiImageLayer):
+            flops += self.nonlinearity.get_flops(**kwargs)
+        else:
+            for k, in_c in kwargs["input_keys"]:
+                flops += spatial_size * in_c * (len(kwargs["spatial_dims"]) ** len(k))
+
+        return flops
+
 
 class UNet(AnyDimensionalModel):
     """
@@ -1287,15 +1319,15 @@ class UNet(AnyDimensionalModel):
         depth: int,
         num_downsamples: int = 4,
         num_conv: int = 2,
-        use_bias: Union[bool, str] = "auto",
+        use_bias: bool | str = "auto",
         activation_f: Callable | str | None = jax.nn.gelu,
         equivariant: bool = True,
-        conv_filters: Optional[geom.MultiImage] = None,
-        upsample_filters: Optional[geom.MultiImage] = None,
-        kernel_size: Optional[Union[int, Sequence[int]]] = None,
+        conv_filters: geom.MultiImage | None = None,
+        upsample_filters: geom.MultiImage | None = None,
+        kernel_size: int | Sequence[int] | None = None,
         use_group_norm: bool = False,
         use_batch_norm: bool = False,
-        mid_keys: Optional[geom.Signature] = None,
+        mid_keys: geom.Signature | None = None,
         padding_mode: str = "ZEROS",
         key: Any = None,
     ) -> None:
@@ -1575,6 +1607,45 @@ class UNet(AnyDimensionalModel):
             out = geom.MultiImage.from_scalar_multi_image(x, self.output_keys)
 
         return out, batch_stats
+
+    def get_flops(self: Self, **kwargs) -> int:
+        flops = 0
+
+        out_keys = None
+        for layer in self.embedding:
+            flops += layer.get_flops(**kwargs)
+            if not isinstance(layer.conv, layers.ConvContract):
+                raise NotImplementedError("Unet::get_flops: Non-equivariant U-Net not implemented.")
+
+            out_keys = layer.conv.target_keys
+
+        spatial_dims_curr = kwargs["spatial_dims"]
+        for max_pool_layer, conv_blocks in self.downsample_blocks:
+            flops += max_pool_layer.get_flops(**{**kwargs, "input_keys": out_keys})
+            spatial_dims_curr = tuple(x / 2 for x in spatial_dims_curr)
+            kwargs = {**kwargs, "spatial_dims": spatial_dims_curr}
+
+            for layer in conv_blocks:
+                flops += layer.get_flops(**kwargs)
+                if not isinstance(layer.conv, layers.ConvContract):
+                    raise NotImplementedError(
+                        "Unet::get_flops: Non-equivariant U-Net not implemented."
+                    )
+
+                out_keys = layer.conv.target_keys
+
+        for upsample_layer, conv_blocks in self.upsample_blocks:
+            flops += upsample_layer.get_flops(**kwargs)
+
+            spatial_dims_curr = tuple(x * 2 for x in spatial_dims_curr)
+            kwargs = {**kwargs, "spatial_dims": spatial_dims_curr}
+
+            for layer in conv_blocks:
+                flops += layer.get_flops(**kwargs)
+
+        flops += self.decode.get_flops(**kwargs)
+
+        return flops
 
 
 class DilResNet(AnyDimensionalModel):

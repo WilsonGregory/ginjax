@@ -272,10 +272,12 @@ def get_data(
     return train_dataloader, val_dataloader, test_dataloader, train_data_time
 
 
-# Something like
-# CUDA_VISIBLE_DEVICES=0,1 time python3 -m scripts.burgers_anyd --data /data/wgregor4/apebench/burgers/
-# --n-train 8 --n-val 8 --n-test 8 --model-dir /data/wgregor4/runs/burgers_anyd/
 def handleArgs() -> argparse.Namespace:
+    """
+    CUDA_VISIBLE_DEVICES=0,1 time python3 -m scripts.burgers_anyd \
+    --data /data/wgregor4/apebench/burgers/ \
+    --n-train 8 --n-val 8 --n-test 8 --model-dir /data/wgregor4/runs/burgers_anyd/
+    """
     parser = utils.get_common_parser()
     parser.add_argument(
         "--n-tune-range",

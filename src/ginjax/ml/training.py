@@ -135,8 +135,11 @@ class MultiImageDataset(Dataset):
 
         return X_batch, Y_batch
 
+    def get_spatial_dims(self: Self) -> tuple[int, ...]:
+        return self.X.get_spatial_dims()
+
     def get_N(self: Self) -> int:
-        return self.X.get_spatial_dims()[0]
+        return self.get_spatial_dims()[0]
 
 
 def get_batches(

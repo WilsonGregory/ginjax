@@ -5,7 +5,8 @@ from matplotlib.axes import Axes
 import numpy as np
 import pathlib
 import time
-from typing import Callable, Sequence
+from dataclasses import dataclass
+from typing import Callable, Self, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -142,103 +143,77 @@ def plot_multi_image(
     plt.close(fig)
 
 
-# Options for the variation
-BATCH_STD = "batch_std"
-TRIAL_STD = "trial_std"
-
-
 def plot_results(
-    results_dict: dict[int, dict[int, list[jax.Array]]],
+    results_test_d: dict[int, dict[int, list[dict[str, Float[Array, "n_trials n_results"]]]]],
     results_labels: list[str],
     n_tune_range: tuple[int, ...],
     model_names_d: dict[int, list[str]],
     saveloc: str,
     title: str,
-    variation: str | None,
 ) -> None:
     """
     Plot the results of the heat_equation experiments. For each test_D, create a plot with the
     number of tuning points on the x-axis and the error (either l2 or relative) on the y-axis.
 
     args:
-        results_dict: The results dict of test_D, train_D, then a list over n_tune, array n_results
-            in this case n_results is smse_mean, smse_std, rel_mean, rel_std, time
+        results_test_d: The results dict of test_D, train_D, then list (over n_tune_range) of dict
+            of key:model_name, val: array of n_trials, n_results.
+            The results are l2 error, relative error, train time, train flops
         results_labels: e.g. 'l2', 'relative error'
         n_tune_range: number of fine-tuning points, or training points for the baseline model
         model_names_d: model names for each dimension
         saveloc: beginning of save location
         title: the title of the plot
-        variation: how to handle the variation measure, one of {BATCH_STD, TRIAL_STD, None}
 
     returns:
         none
     """
-    assert variation in {BATCH_STD, TRIAL_STD, None}
     # group the results by model, across all trained dimensions
-    grouped_results = {}
-    for test_D, results_train_d in results_dict.items():
-        grouped_results[test_D] = {}
-        for train_D, results in results_train_d.items():
-            for i, name in enumerate(model_names_d[train_D]):
-                name_trimmed = name[:-3]  # this assumes that all models end in _D1, _D2, or _D3
-                display_name = "UNet Baseline" if train_D == test_D else "UNet Pretrained"
+    for test_D, results_train_d in results_test_d.items():
+        grouped_results = {}
+        for results_n_tune_ls in results_train_d.values():
+            for results_name in results_n_tune_ls:
+                for name, results in results_name.items():
+                    print(name, results.shape, name in grouped_results)
+                    # might want to swap to display name
+                    if name in grouped_results:
+                        grouped_results[name].append(results)
+                    else:
+                        grouped_results[name] = [results]
 
-                if name_trimmed in grouped_results[test_D]:
-                    # (n_tune,n_trials,n_results)
-                    grouped_results[test_D][name_trimmed].append(
-                        (display_name, jnp.stack(results)[:, :, 0, i])
-                    )
-                else:
-                    grouped_results[test_D][name_trimmed] = [
-                        (display_name, jnp.stack(results)[:, :, 0, i])
-                    ]
+        linestyles = ["solid", "dotted", "dashed", "dashdot"]
+        colors = ["b", "g", "r", "c", "m", "y"]
 
-    # figsize is 8 per col, 6 per row, (cols,rows)
-    nrows = len(list(grouped_results.keys()))
-    ncols = len(results_labels)
-    linestyles = ["solid", "dotted", "dashed", "dashdot"]
-    colors = ["b", "g", "r", "c", "m", "y"]
-
-    for test_D, results_by_model in grouped_results.items():
         for error_idx, ylabel in zip(range(len(results_labels)), results_labels):
 
             # do them individually
+            # figsize is 8 per col, 6 per row, (cols,rows)
             _, ax = plt.subplots(nrows=1, ncols=1, figsize=(8 * 1, 6 * 1))
             assert isinstance(ax, Axes)
 
             # looping over 'two_layer_gaussian', 'resnet_equiv_42', ...
-            for i, model_results in enumerate(results_by_model.values()):
-                for j, (display_name, results_arr) in enumerate(model_results):
+            for i, (display_name, results) in enumerate(grouped_results.items()):
+                results_arr = jnp.stack(results)  # (n_tune_range,n_trials,n_results)
+                print(display_name, results_arr.shape)
 
-                    mean_result = jnp.mean(results_arr, axis=1)[:, error_idx * 2]
-                    ax.plot(
-                        mean_result,
-                        marker="o",
-                        linestyle=linestyles[j % len(linestyles)],
-                        label=display_name,
-                        color=colors[j % len(colors)],  # was i, currently only model
-                    )
-
-                    if variation == BATCH_STD:
-                        stdev = jnp.mean(results_arr, axis=1)[:, error_idx * 2 + 1]
-                        ax.fill_between(
-                            range(len(n_tune_range)),
-                            mean_result - stdev,
-                            mean_result + stdev,
-                            color=colors[j % len(colors)],
-                            alpha=0.2,
-                        )
-                    elif variation == TRIAL_STD:
-                        stdev = jnp.std(results_arr, axis=1)[:, error_idx * 2]
-                        ax.fill_between(
-                            range(len(n_tune_range)),
-                            mean_result - stdev,
-                            mean_result + stdev,
-                            color=colors[j % len(colors)],
-                            alpha=0.2,
-                        )
-                    else:
-                        stdev = jnp.zeros_like(mean_result)
+                # take the mean over trials
+                mean_result = jnp.mean(results_arr, axis=1)[:, error_idx]
+                ax.plot(
+                    mean_result,
+                    marker="o",
+                    linestyle=linestyles[i % len(linestyles)],
+                    label=display_name,
+                    color=colors[i % len(colors)],  # was i, currently only model
+                )
+                # plot stdev range over n_trials
+                stdev = jnp.std(results_arr, axis=1)[:, error_idx]
+                ax.fill_between(
+                    range(len(n_tune_range)),
+                    mean_result - stdev,
+                    mean_result + stdev,
+                    color=colors[i % len(colors)],
+                    alpha=0.2,
+                )
 
             ax.legend(fontsize=24)
             ax.set_xlabel("Number of tuning points", fontsize=28)
@@ -411,7 +386,7 @@ def train_model(
     wandb_project: str = "",
     wandb_entity: str = "",
     args: dict = {},
-) -> tuple[models.MultiImageModule, float]:
+) -> tuple[models.MultiImageModule, float, int]:
     """
     Train the model.
 
@@ -430,12 +405,16 @@ def train_model(
         has_aux: whether the model has auxilliary data like batch stats
         verbose: verbosity level for training
         is_wandb: whether to turn on wandb tracking
+
+    returns:
+        tuple of the trained model, the train wall clock time, and the train flops estimate
     """
     if has_aux:
         raise NotImplementedError(f"train_model: got has_aux={has_aux} which is not implemented.")
 
     train_dataloader, val_dataloader = data
     assert isinstance(train_dataloader.dataset, ml.MultiImageDataset)
+    assert isinstance(val_dataloader.dataset, ml.MultiImageDataset)
 
     D = train_dataloader.dataset.D
     L = len(train_dataloader.dataset)
@@ -491,7 +470,16 @@ def train_model(
             "burgers",
         )
 
-    return trained_model, train_time
+    spatial_dims = train_dataloader.dataset.get_spatial_dims()
+    # flops/sample * number of samples * epochs
+    flops = trained_model.get_flops(**{"spatial_dims": spatial_dims})
+    total_train_flops = flops * L * epochs
+    print(
+        f"L={L}, epochs={epochs}: {flops / 1_000_000_000:,.3f} gflops/sample, "
+        f"{total_train_flops / 1_000_000_000:,.3f} total gflops"
+    )
+
+    return trained_model, train_time, total_train_flops
 
 
 def train_all_models(
@@ -502,7 +490,7 @@ def train_all_models(
     n_points: int,
     data_time: float,
     args: argparse.Namespace,
-) -> list[tuple[str, models.AnyDimensionalModel, dict, dict, dict, float]]:
+) -> list[tuple[str, models.AnyDimensionalModel, dict, dict, dict, float, int]]:
     """
     Train all the models in the model list.
 
@@ -542,7 +530,7 @@ def train_all_models(
                     "train_or_tune": ["train", "baseline", "tune"][kwargs_idx],
                 },
             }  # copy kwargs and overwrite lr
-            trained_model, train_time = train_model(data, model_name, model, **_kwargs)
+            trained_model, train_time, train_flops = train_model(data, model_name, model, **_kwargs)
 
             trained_models.append(
                 (
@@ -552,6 +540,7 @@ def train_all_models(
                     baseline_kwargs,
                     test_kwargs,
                     train_time + data_time,
+                    train_flops,
                 )
             )
 
@@ -561,13 +550,13 @@ def train_all_models(
 def convert_and_tune(
     data: tuple[DataLoader[ml.MultiImageDataset], DataLoader[ml.MultiImageDataset]],
     key: jax.Array,
-    model_list: list[tuple[str, models.AnyDimensionalModel, dict, dict, dict, float]],
+    model_list: list[tuple[str, models.AnyDimensionalModel, dict, dict, dict, float, int]],
     lr_range: list[float] | None,
     rescale_list: list[geom.Rescaling],
     n_points: int,
     data_time: float,
     args: argparse.Namespace,
-) -> list[tuple[str, models.AnyDimensionalModel, dict, dict, dict, float]]:
+) -> list[tuple[str, models.AnyDimensionalModel, dict, dict, dict, float, int]]:
     """
     For a given model, convert lower dimensional model to a higher one, then tune (train) the model
     on the tuning data.
@@ -594,7 +583,16 @@ def convert_and_tune(
     # Convert the models that need converting
     converted_model_list = []
     convert_times = []
-    for model_name, model, train_kwargs, baseline_kwargs, test_kwargs, pretrain_time in model_list:
+    pretrain_flops = []
+    for (
+        model_name,
+        model,
+        train_kwargs,
+        baseline_kwargs,
+        test_kwargs,
+        pretrain_time,
+        pretrain_flop,
+    ) in model_list:
         train_D = model.D
 
         for rescale in rescale_list:
@@ -614,6 +612,8 @@ def convert_and_tune(
                 upsample_filters=upsample_filters_d[tune_D] if upsample_filters_d else None,
             )
             convert_times.append(time.time() - start_time + pretrain_time)  # this should be tiny
+            # convert flops is equal to about the number of params of the lower dimensional model
+            pretrain_flops.append(pretrain_flop + models.count_params(model))
             _model_name = f"{model_name}_rescale{rescale.name}"
 
             # get the correct learning rate, remove rescale, conv_filters_dict, upsample_filters_dict
@@ -629,25 +629,28 @@ def convert_and_tune(
     tuned_models = train_all_models(
         data, converted_model_list, lr_range, 2, n_points, data_time, args
     )
-    return [
-        (a, b, c, d, e, train_time + convert_time)
-        for (a, b, c, d, e, train_time), convert_time in zip(tuned_models, convert_times)
-    ]
+    merged_data = []
+    for (a, b, c, d, e, train_time, train_flops), convert_time, pretrain_flop in zip(
+        tuned_models, convert_times, pretrain_flops
+    ):
+        merged_data.append((a, b, c, d, e, train_time + convert_time, train_flops + pretrain_flop))
+
+    return merged_data
 
 
 def eval(
     test_dataloader: DataLoader[ml.MultiImageDataset],
-    model_list: list[tuple[str, models.AnyDimensionalModel, dict, dict, dict, float]],
-) -> dict[str, Float[Array, "n_trials 3"]]:
+    model_list: list[tuple[str, models.AnyDimensionalModel, dict, dict, dict, float, int]],
+) -> dict[str, Float[Array, "n_trials n_results"]]:
     models_dict = {}
-    for model_name, model, _, _, _, full_train_time in model_list:
+    for model_name, model, _, _, _, train_time, train_flops in model_list:
         # (losses,)
         rel_mean, smse_mean = ml.map_loss_in_batches_dl(
             ml.Mapper([geom.Losses.L2_REL, geom.Losses.SMSE], eps=1e-9), model, test_dataloader
         )
         print(f"Eval {model_name}: {smse_mean:.3e} ({rel_mean:.3f}%)\n")
 
-        tuned_loss = jnp.array([rel_mean, smse_mean, full_train_time])
+        tuned_loss = jnp.array([rel_mean, smse_mean, train_time, train_flops])
 
         model_name_trim = trim_trial_name(model_name)
         if model_name_trim in models_dict:
@@ -742,7 +745,7 @@ def run_anyd(
                 args,
             )
             # do the eval
-            results_dict[test_D][test_D] = eval(tune_test_dl, baseline_trained_models)
+            results_dict[test_D][test_D].append(eval(tune_test_dl, baseline_trained_models))
 
             for train_D in train_D_range:
                 if train_D == test_D:
@@ -761,9 +764,8 @@ def run_anyd(
                 )
 
                 key, subkey = random.split(key)
-                results_dict[test_D][train_D] = eval(tune_test_dl, finetuned_models)
+                results_dict[test_D][train_D].append(eval(tune_test_dl, finetuned_models))
 
-    # TODO: this needs to be rewritten
     # if args.images_dir is not None:
     #     model_names_d = {D: [x[0] for x in model_list] for D, model_list in model_list_d.items()}
     #     plot_results(
@@ -773,7 +775,6 @@ def run_anyd(
     #         model_names_d,
     #         args.images_dir,
     #         f"By tuning points",  # TODO: want to say what the dimensions are
-    #         TRIAL_STD,
     #     )
 
     #     plot_time_results(

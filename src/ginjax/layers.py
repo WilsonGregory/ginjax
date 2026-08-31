@@ -77,7 +77,28 @@ def _group_norm_K1(
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Layers ~~~~~~~~~~~~~~~~~~~~~~
-class ConvContract(eqx.Module):
+class MultiImageLayer(eqx.Module):
+    """
+    A layer takes a MultiImage as input and outputs a MultiImage.
+    """
+
+    def __call__(self: Self, x: geom.MultiImage) -> geom.MultiImage:
+        """
+        Layer callable
+
+        args:
+            x: the input
+
+        returns:
+            the output MultiImage
+        """
+        return x
+
+    def get_flops(self: Self, **kwargs) -> int:
+        raise NotImplementedError(f"{self.__class__}::get_flops: Not implemented.")
+
+
+class ConvContract(MultiImageLayer):
     """
     A layer then performs the convolution followed by contraction.
     """
@@ -444,8 +465,35 @@ class ConvContract(eqx.Module):
         else:
             return x
 
+    def get_flops(self: Self, **kwargs) -> int:
+        spatial_size = math.prod(kwargs["spatial_dims"])
+        flops = 0
+        for (in_k, in_p), in_c in self.input_keys:
+            for (out_k, out_p), weight_block in self.weights[(in_k, in_p)].items():
+                filter_key = ((False,) * (len(in_k) + len(out_k)), (in_p + out_p) % 2)
+                filter_block = self.invariant_filters[filter_key]
+                # construct the combined filter block
+                flops += math.prod(weight_block.shape[:2]) * filter_block.size
 
-class GroupNorm(eqx.Module):
+                # now get an estimate of the convolve_contract. This may be slightly low
+                flops += (
+                    math.prod(weight_block.shape[:2])
+                    * spatial_size
+                    * math.prod(filter_block.shape[1:])
+                )
+
+        if self.use_bias:
+            for (k, p), out_c in self.target_keys:
+                if (k, p) == ((), 0) and (self.use_bias == "scalar" or self.use_bias == "auto"):
+                    flops += spatial_size * self.bias[(k, p)].size
+                elif ((k, p) != ((), 0) and self.use_bias == "auto") or self.use_bias == "mean":
+                    # 3 because we take the mean, then we scale and add
+                    flops += 3 * spatial_size * out_c
+
+        return flops
+
+
+class GroupNorm(MultiImageLayer):
     """
     Implementation of GroupNorm for equivariant and non-equivariant models.
     """
@@ -548,7 +596,7 @@ class LayerNorm(GroupNorm):
         super(LayerNorm, self).__init__(input_keys, D, 1, eps)
 
 
-class VectorNeuronNonlinear(eqx.Module):
+class VectorNeuronNonlinear(MultiImageLayer):
     """
     The vector nonlinearity in the Vector Neurons paper: https://arxiv.org/pdf/2104.12229.pdf
     Basically use the channels of a vector to get a direction vector. Use the direction vector
@@ -636,8 +684,20 @@ class VectorNeuronNonlinear(eqx.Module):
 
         return out_x
 
+    def get_flops(self: Self, **kwargs) -> int:
+        flops = 0
+        spatial_size = math.prod(kwargs["spatial_dims"])
+        for (k, p), weight_block in self.weights.items():
+            in_c = len(weight_block)
+            if (k, p) == ((), 0):
+                flops += spatial_size * in_c
+            else:
+                flops += spatial_size * in_c * (self.D ** len(k)) * 6  # rough count of all ops
 
-class MaxNormPool(eqx.Module):
+        return flops
+
+
+class MaxNormPool(MultiImageLayer):
     """
     Layer that performs that MaxPool based on the norm of the tensor.
     """
@@ -675,8 +735,17 @@ class MaxNormPool(eqx.Module):
 
         return out_x
 
+    def get_flops(self: Self, **kwargs) -> int:
+        flops = 0
+        spatial_size = math.prod(kwargs["spatial_dims"])
+        D = len(kwargs["spatial_dims"])
+        for k, in_c in kwargs["input_keys"]:
+            flops += spatial_size * in_c * (D ** len(k)) * 2
 
-class LayerWrapper(eqx.Module):
+        return flops
+
+
+class LayerWrapper(MultiImageLayer):
     """
     Wrapper class for any module which takes an image and converts it to taking and producing a
     MultiImage.
@@ -761,3 +830,6 @@ class LayerWrapperAux(eqx.Module):
             out.append(k, p, out_image)
 
         return out, aux_data
+
+    def get_flops(self: Self, **kwargs) -> int:
+        raise NotImplementedError("LayerWrapperAux::get_flops: Not implemented.")

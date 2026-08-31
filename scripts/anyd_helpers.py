@@ -2,11 +2,9 @@ import argparse
 import math
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
-import numpy as np
 import pathlib
 import time
-from dataclasses import dataclass
-from typing import Callable, Self, Sequence
+from typing import Callable, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -414,7 +412,6 @@ def train_model(
 
     train_dataloader, val_dataloader = data
     assert isinstance(train_dataloader.dataset, ml.MultiImageDataset)
-    assert isinstance(val_dataloader.dataset, ml.MultiImageDataset)
 
     D = train_dataloader.dataset.D
     L = len(train_dataloader.dataset)

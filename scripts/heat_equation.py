@@ -264,11 +264,13 @@ def get_data(
     return train_dataloader, val_dataloader, test_dataloader, train_generation_time
 
 
-# an example of currently used script
-# CUDA_VISIBLE_DEVICES=6 time python3 -m scripts.heat_equation --data /data/wgregor4/heat_equation/
-# --n-test 128 --n-val 128 --n-train 128 --train-D-range 1 --test-D-range 2
-# --model-dir /data/wgregor4/runs/heat_equation/
 def handleArgs() -> argparse.Namespace:
+    """
+    CUDA_VISIBLE_DEVICES=6 time python3 -m scripts.heat_equation \
+    --data /data/wgregor4/heat_equation/ \
+    --n-test 128 --n-val 128 --n-train 128 --train-D-range 1 \
+    --test-D-range 2 --model-dir /data/wgregor4/runs/heat_equation/ \
+    """
     parser = utils.get_common_parser()
     parser.add_argument(
         "--n-tune-range",
@@ -364,7 +366,7 @@ baseline_kwargs = {
     "epochs": args.epochs,
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
-    "images_dir": args.images_dir,  # currently ignored
+    "images_dir": None,
     "verbose": args.verbose,
     "is_wandb": finetune_lr,
     "wandb_project": args.wandb_project,
@@ -377,7 +379,7 @@ test_kwargs = {
     "epochs": args.epochs,
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
-    "images_dir": args.images_dir,  # currently ignored
+    "images_dir": None,
     "verbose": args.verbose,
     "is_wandb": finetune_lr,
     "wandb_project": args.wandb_project,

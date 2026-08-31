@@ -323,14 +323,13 @@ free_filters_dict, upsample_filters_dict = anyd_helpers.generate_filters(full_D_
 
 train_kwargs = {
     "train_loss_f": geom.Losses.NRMSE,
-    "residual": False,
     "batch_size": args.batch_train,
     "epochs": args.epochs,
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
     "images_dir": None,
     "verbose": args.verbose,
-    "is_wandb": args.pretrain_lr,
+    "is_wandb": pretrain_lr,
     "wandb_project": args.wandb_project,
     "wandb_entity": args.wandb_entity,
 }
@@ -350,14 +349,13 @@ baseline_kwargs = {
 
 test_kwargs = {
     "train_loss_f": geom.Losses.NRMSE,
-    "residual": False,
     "batch_size": args.batch_tune,
     "epochs": args.epochs,
     "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
     "images_dir": None,
     "verbose": args.verbose,
-    "is_wandb": args.finetune_lr,
+    "is_wandb": finetune_lr,
     "wandb_project": args.wandb_project,
     "wandb_entity": args.wandb_entity,
 }

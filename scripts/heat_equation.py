@@ -267,9 +267,9 @@ def get_data(
 def handleArgs() -> argparse.Namespace:
     """
     CUDA_VISIBLE_DEVICES=6 time python3 -m scripts.heat_equation \
-    --data /data/wgregor4/heat_equation/ \
-    --n-test 128 --n-val 128 --n-train 128 --train-D-range 1 \
-    --test-D-range 2 --model-dir /data/wgregor4/runs/heat_equation/ \
+    --data /data/wgregor4/heat_equation/ --n-test 128 --n-val 128 --n-train 128 \
+    --train-D-range 1 --test-D-range 2 -t 5 --rescale-list spin_embed,copy,zeros \
+    --model-dir /data/wgregor4/runs/heat_equation/ --images-dir /data/wgregor4/images/heat_equation/
     """
     parser = utils.get_common_parser()
     parser.add_argument(
@@ -436,7 +436,7 @@ for D in full_D_range:
                 #     },
                 # ),
                 (
-                    f"unetBase_equiv48{anisotropy_str}_trial{trial}",
+                    anyd_helpers.ModelLabel(f"unetBase_equiv48{anisotropy_str}", trial),
                     models.UNet(
                         D,
                         input_keys,

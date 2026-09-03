@@ -189,6 +189,9 @@ class CFDDatasetLazy(ml.MultiImageDataset):
 
         return X, Y
 
+    def get_spatial_dims(self: Self) -> tuple[int, ...]:
+        return self.data_dict["density"].shape[2 : 2 + self.D]
+
     def get_N(self: Self) -> int:
         return self.data_dict["density"].shape[2]
 
@@ -253,10 +256,12 @@ def get_data(
     return train_dataloader, val_dataloader, test_dataloader, data_generation_time
 
 
-# possible run
-# CUDA_VISIBLE_DEVICES=0,1 time python3 -m scripts.cfd_anyd --data /data/wgregor4/pdebench/
-# --n-train 128 --n-val 32 --n-test 128 --model-dir /data/wgregor4/runs/cfd_anyd/
 def handleArgs() -> argparse.Namespace:
+    """
+    CUDA_VISIBLE_DEVICES=2,6 time python3 -m scripts.cfd_anyd \
+    --data /data/wgregor4/pdebench/ --n-train 128 --n-val 32 --n-test 32 -t 5 \
+    --model-dir /data/wgregor4/runs/cfd_anyd/ --images-dir /data/wgregor4/images/pdebench/cfd_anyd/
+    """
     parser = utils.get_common_parser()
     parser.add_argument(
         "--n-tune-range",
@@ -374,7 +379,7 @@ for D in full_D_range:
         model_list.extend(
             [
                 (
-                    f"unetBase_equiv48_trial{trial}",
+                    anyd_helpers.ModelLabel("unetBase_equiv48", trial),
                     models.UNet(
                         D,
                         input_keys,

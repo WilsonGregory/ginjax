@@ -400,7 +400,7 @@ for D in full_D_range:
                         **baseline_kwargs,
                     },
                     {  # tune and eval kwargs
-                        "lr": {2: {3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4}}},
+                        "lr": {2: {3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 5e-5}}},
                         "conv_filters_dict": free_filters_dict,
                         "upsample_filters_dict": upsample_filters_dict,
                         **test_kwargs,

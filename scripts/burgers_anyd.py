@@ -277,7 +277,9 @@ def handleArgs() -> argparse.Namespace:
     CUDA_VISIBLE_DEVICES=6,7 time python3 -m scripts.burgers_anyd \
     --data /data/wgregor4/apebench/burgers/ --n-train 8 --n-val 8 --n-test 8 \
     -t 5 \
-    --model-dir /data/wgregor4/runs/burgers_anyd/ --images-dir /data/wgregor4/images/apebench/burgers/
+    --model-dir /data/wgregor4/runs/burgers_anyd/ \
+    --results-dir /data/wgregor4/runs/burgers_anyd/ \
+    --images-dir /data/wgregor4/images/apebench/burgers/burgers_
     """
     parser = utils.get_common_parser()
     parser.add_argument(
@@ -330,6 +332,9 @@ def handleArgs() -> argparse.Namespace:
         help="benchmark trained model over the lr, turns on wandb",
         type=lambda s: tuple(float(x) for x in s.split(",")) if isinstance(s, str) else None,
         default=None,
+    )
+    parser.add_argument(
+        "--results-dir", type=str, default=None, help="directory to save the full results"
     )
     parser.add_argument(
         "--finetune-lr-range",
@@ -507,4 +512,6 @@ anyd_helpers.run_anyd(
     args.finetune_lr_range,
     rescale_list,
     {2: args.batch_train, 3: args.batch_tune},
+    "Burgers' equation",
+    pathlib.Path(args.results_dir) if args.results_dir else None,
 )

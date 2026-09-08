@@ -269,7 +269,9 @@ def handleArgs() -> argparse.Namespace:
     CUDA_VISIBLE_DEVICES=6 time python3 -m scripts.heat_equation \
     --data /data/wgregor4/heat_equation/ --n-test 128 --n-val 128 --n-train 128 \
     --train-D-range 1 --test-D-range 2 -t 5 --rescale-list spin_embed,copy,zeros \
-    --model-dir /data/wgregor4/runs/heat_equation/ --images-dir /data/wgregor4/images/heat_equation/
+    --model-dir /data/wgregor4/runs/heat_equation/ \
+    --results-dir /data/wgregor4/runs/heat_equation/ \
+    --images-dir /data/wgregor4/images/heat_equation/heat_
     """
     parser = utils.get_common_parser()
     parser.add_argument(
@@ -314,6 +316,9 @@ def handleArgs() -> argparse.Namespace:
         help="benchmark tuned model over the lr, turns on wandb",
         type=lambda s: tuple(float(x) for x in s.split(",")) if isinstance(s, str) else None,
         default=None,
+    )
+    parser.add_argument(
+        "--results-dir", type=str, default=None, help="directory to save the full results"
     )
     parser.add_argument(
         "--wandb-project", help="the wandb project", type=str, default="heat-equation"
@@ -505,4 +510,6 @@ anyd_helpers.run_anyd(
     args.finetune_lr_range,
     rescale_list,
     {1: args.batch, 2: args.batch},
+    "Heat equation",
+    pathlib.Path(args.results_dir) if args.results_dir else None,
 )

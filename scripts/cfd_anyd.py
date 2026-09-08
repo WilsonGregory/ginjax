@@ -258,9 +258,11 @@ def get_data(
 
 def handleArgs() -> argparse.Namespace:
     """
-    CUDA_VISIBLE_DEVICES=2,6 time python3 -m scripts.cfd_anyd \
+    CUDA_VISIBLE_DEVICES=4,5 time python3 -m scripts.cfd_anyd \
     --data /data/wgregor4/pdebench/ --n-train 128 --n-val 32 --n-test 32 -t 5 \
-    --model-dir /data/wgregor4/runs/cfd_anyd/ --images-dir /data/wgregor4/images/pdebench/cfd_anyd/
+    --model-dir /data/wgregor4/runs/cfd_anyd/ \
+    --results-dir /data/wgregor4/runs/cfd_anyd/ \
+    --images-dir /data/wgregor4/images/pdebench/cfd_anyd/cfd_
     """
     parser = utils.get_common_parser()
     parser.add_argument(
@@ -292,6 +294,9 @@ def handleArgs() -> argparse.Namespace:
         help="benchmark tuned model over the lr, turns on wandb",
         type=lambda s: tuple(float(x) for x in s.split(",")) if isinstance(s, str) else None,
         default=None,
+    )
+    parser.add_argument(
+        "--results-dir", type=str, default=None, help="directory to save the full results"
     )
     parser.add_argument("--wandb-project", help="the wandb project", type=str, default="cfd-anyd")
 
@@ -400,7 +405,7 @@ for D in full_D_range:
                         **baseline_kwargs,
                     },
                     {  # tune and eval kwargs
-                        "lr": {2: {3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 1e-4}}},
+                        "lr": {2: {3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 5e-5}}},
                         "conv_filters_dict": free_filters_dict,
                         "upsample_filters_dict": upsample_filters_dict,
                         **test_kwargs,
@@ -437,4 +442,6 @@ anyd_helpers.run_anyd(
     args.finetune_lr_range,
     rescale_list,
     {2: args.batch_train, 3: args.batch_tune},
+    "Compressible Navier-Stokes",
+    pathlib.Path(args.results_dir) if args.results_dir else None,
 )

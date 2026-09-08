@@ -44,11 +44,13 @@ class ModelLabel:
         return f"{self.name}{trial_str}{pretrain_str}{rescale_str}{tune_str}"
 
     def display_name(self: Self) -> str:
-        if self.rescale is not None:
-            return self.rescale.name.title()
-        else:
+        if self.rescale is None:
             assert self.pretrain_D is None
             return "Baseline"
+        elif self.rescale == geom.Rescaling.SPIN_EMBED:
+            return "Warmstart"
+        else:
+            return self.rescale.name.title()
 
 
 def plot_multi_image(
@@ -176,7 +178,7 @@ def plot_multi_image(
 def plot_results(
     test_D: int,
     grouped_results: dict[ModelLabel, Float[Array, "n_trials n_tune_range n_results"]],
-    results_labels: list[str],
+    losses: list[geom.Losses],
     n_tune_range: tuple[int, ...],
     x_axis_type: Literal["ntune", "gflops"],
     saveloc: str,
@@ -204,7 +206,8 @@ def plot_results(
     """
     linestyles = ["solid", "dotted", "dashed", "dashdot"]
     colors = ["b", "g", "r", "c", "m", "y"]
-    for error_idx, ylabel in enumerate(results_labels):
+    for error_idx, loss_enum in enumerate(losses):
+        print(f"~~~~~~~~~~~~~ {loss_enum.name} ~~~~~~~~~~~~~")
 
         # do them individually
         _, ax = plt.subplots(figsize=(8, 6))  # figsize is (cols,rows)
@@ -227,6 +230,8 @@ def plot_results(
                 middle_result = jnp.median(results_arr, axis=0)
                 lower_bound = jnp.quantile(results_arr, 0.25, axis=0)
                 upper_bound = jnp.quantile(results_arr, 0.75, axis=0)
+
+            print(model_label, middle_result)
 
             ax.plot(
                 x_axis,
@@ -256,20 +261,27 @@ def plot_results(
 
         ax.legend(fontsize=12)
 
+        if loss_enum == geom.Losses.L2_REL:
+            ylabel = "Relative error (%)"
+        elif loss_enum == geom.Losses.SMSE:
+            ylabel = "L2 error"
+        else:
+            raise ValueError(f"plot_results: loss_enum={loss_enum}")
+
         ax.set_ylabel(ylabel, fontsize=24)
         ax.set_yscale("log")
         if x_axis_type == "ntune":
             ax.set_xticks(range(len(n_tune_range)), [str(x) for x in n_tune_range])
             ax.set_xlabel("Number of tuning points", fontsize=24)
         elif x_axis_type == "gflops":
-            ax.set_xlabel("Number of gigaflops", fontsize=24)
+            ax.set_xlabel("Gigaflops", fontsize=24)
 
         ax.set_title(title, fontsize=24)
 
         plt.xticks(fontsize=12)
         plt.yticks(fontsize=12)
         plt.savefig(
-            f"{saveloc}warmstart_plot_{x_axis_type}_{middle_metric}_{test_D}D_{''.join(ylabel.split()).lower()}.png"
+            f"{saveloc}warmstart_plot_{x_axis_type}_{middle_metric}_{test_D}D_{loss_enum.name}.png"
         )
         plt.close()
 
@@ -598,6 +610,7 @@ def convert_and_tune(
 def eval(
     test_dataloader: DataLoader[ml.MultiImageDataset],
     model_list: list[tuple[ModelLabel, models.AnyDimensionalModel, dict, dict, dict, float, int]],
+    losses: list[geom.Losses],
 ) -> dict[ModelLabel, Float[Array, "n_trials n_results"]]:
     """
     Evaluate the models against the test dataset, then stack each model by trials.
@@ -606,7 +619,7 @@ def eval(
     for model_label, model, _, _, _, train_time, train_flops in model_list:
         # (losses,)
         rel_mean, smse_mean = ml.map_loss_in_batches_dl(
-            ml.Mapper([geom.Losses.L2_REL, geom.Losses.SMSE], eps=1e-9), model, test_dataloader
+            ml.Mapper(losses, eps=1e-9), model, test_dataloader
         )
         print(f"Eval {model_label}: {smse_mean:.3e} ({rel_mean:.3f}%)\n")
         tuned_loss = jnp.array([rel_mean, smse_mean, train_time, train_flops])
@@ -648,6 +661,8 @@ def run_anyd(
     finetune_lr_range: list[float] | None,
     rescale_list: list[geom.Rescaling],
     batch_size_d: dict[int, int],
+    plot_title: str,
+    results_dir: pathlib.Path | None,
 ):
     """
     Run the full battery of the any-dimensional test. Train the models, convert them to higher
@@ -662,7 +677,7 @@ def run_anyd(
             input and output multi images for train, val, and test, as well data generation time for train
     """
     pretrain_lr = pretrain_lr_range is not None
-    n_results = 4
+    eval_losses = [geom.Losses.L2_REL, geom.Losses.SMSE]
     # train the models, i.e. the warmstart lower dimensional models
     print("Train the models (warmstart)!")
     pretrain_model_list_d = {}
@@ -690,47 +705,61 @@ def run_anyd(
     # evaluate the models
     print("Tune and evaluate the models!")
     for test_D in test_D_range:
-        results_dict = {}
-        for n_tune in n_tune_range:
-            print(f"D={test_D}, n_tune={n_tune}.\n")
-            # the data is saved, so this is still reasonably efficient
-            key, subkey = random.split(key)
-            # TODO: as n_tune grows, it may later include data points that were used for val/test
-            tune_dl, tune_val_dl, tune_test_dl, tune_data_time = get_data(
-                test_D, n_tune, args.n_val, args.n_test, batch_size_d[test_D], subkey
-            )
-
-            # need to train the baseline model on tune_x0, etc. aka models without the warmstart
-            baseline_trained_models = train_all_models(
-                (tune_dl, tune_val_dl),
-                model_list_d[test_D],
-                finetune_lr_range,
-                1,
-                n_tune,
-                tune_data_time,
-                args,
-            )
-            # do the eval
-            results_dict = {**results_dict, **eval(tune_test_dl, baseline_trained_models)}
-
-            for train_D in train_D_range:
-                if train_D == test_D:
-                    continue
-
+        results_file = None if results_dir is None else results_dir / f"results_D{test_D}.npy"
+        if results_file is not None and results_file.is_file():
+            print(f"Loading results from {results_file}")
+            results_dict = jnp.load(results_file, allow_pickle=True).item()
+        else:
+            results_dict = {}
+            for n_tune in n_tune_range:
+                print(f"D={test_D}, n_tune={n_tune}.\n")
+                # the data is saved, so this is still reasonably efficient
                 key, subkey = random.split(key)
-                finetuned_models = convert_and_tune(
+                # TODO: as n_tune grows, it may later include data points that were used for val/test
+                tune_dl, tune_val_dl, tune_test_dl, tune_data_time = get_data(
+                    test_D, n_tune, args.n_val, args.n_test, batch_size_d[test_D], subkey
+                )
+
+                # need to train the baseline model on tune_x0, etc. aka models without the warmstart
+                baseline_trained_models = train_all_models(
                     (tune_dl, tune_val_dl),
-                    subkey,
-                    pretrain_model_list_d[train_D],
+                    model_list_d[test_D],
                     finetune_lr_range,
-                    rescale_list,
+                    1,
                     n_tune,
                     tune_data_time,
                     args,
                 )
+                # do the eval
+                results_dict = {
+                    **results_dict,
+                    **eval(tune_test_dl, baseline_trained_models, eval_losses),
+                }
 
-                key, subkey = random.split(key)
-                results_dict = {**results_dict, **eval(tune_test_dl, finetuned_models)}
+                for train_D in train_D_range:
+                    if train_D == test_D:
+                        continue
+
+                    key, subkey = random.split(key)
+                    finetuned_models = convert_and_tune(
+                        (tune_dl, tune_val_dl),
+                        subkey,
+                        pretrain_model_list_d[train_D],
+                        finetune_lr_range,
+                        rescale_list,
+                        n_tune,
+                        tune_data_time,
+                        args,
+                    )
+
+                    key, subkey = random.split(key)
+                    results_dict = {
+                        **results_dict,
+                        **eval(tune_test_dl, finetuned_models, eval_losses),
+                    }
+
+            if results_file is not None:
+                jnp.save(results_file, results_dict)  # error but it works fine
 
         # stack over n_tune_range
         grouped_results = {}
@@ -757,11 +786,11 @@ def run_anyd(
             plot_results(
                 test_D,
                 grouped_results,
-                ["Relative error", "L2 error"],
+                eval_losses,
                 n_tune_range,
                 "ntune",
                 args.images_dir,
-                f"By tuning points",
+                f"{plot_title}, by tuning points",
                 middle_metric="median",
                 include_points=True,
             )
@@ -769,11 +798,11 @@ def run_anyd(
             plot_results(
                 test_D,
                 grouped_results,
-                ["Relative error", "L2 error"],
+                eval_losses,
                 n_tune_range,
                 "gflops",
                 args.images_dir,
-                f"By flops",
+                f"{plot_title}, by flops",
                 middle_metric="median",
                 include_points=True,
             )

@@ -217,6 +217,7 @@ def plot_results(
                 x_axis = range(len(n_tune_range))
             elif x_axis_type == "gflops":
                 x_axis = jnp.mean(results_arr, axis=0)[:, -1] / 1_000_000
+                print("Gigaflops", x_axis)
 
             results_arr = results_arr[..., error_idx]
 

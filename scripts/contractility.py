@@ -5,11 +5,13 @@ import os
 import pathlib
 import time
 from typing import Literal
+from PIL import Image
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Bool, Float, PRNGKeyArray
+import matplotlib.pyplot as plt
 import optax
 from torch.utils.data import BatchSampler, DataLoader, RandomSampler, SequentialSampler
 
@@ -20,13 +22,139 @@ import ginjax.utils as utils
 from ginjax.data import batch_time_series
 
 
+def plot_multi_image(
+    test_multi_image: geom.MultiImage,
+    actual_multi_image: geom.MultiImage,
+    save_loc: pathlib.Path,
+    col_titles: list[str],
+):
+    """
+    Plot all timesteps of a particular component of two MultiImages, and the differences between them.
+    args:
+        test_multi_image: the predicted MultiImage
+        actual_multi_image: the ground truth MultiImage
+        save_loc: file location to save the image
+        future_steps: the number future time steps in the MultiImage
+        component: index of the component to plot, default to 0
+        show_power: whether to also plot the power spectrum
+        title: additional str to add to title, will be "test {title} {col}"
+            "actual {title} {col}"
+        minimal: if minimal, no titles, colorbars, or axes labels
+    """
+    if test_multi_image.get_n_leading() == 2:
+        test_multi_image = test_multi_image.get_one(keepdims=False)
+
+    if actual_multi_image.get_n_leading() == 2:
+        actual_multi_image = actual_multi_image.get_one(keepdims=False)
+
+    # (channels,spatial)
+    test_components = test_multi_image.to_scalar_multi_image()[((), 0)]
+    actual_components = actual_multi_image.to_scalar_multi_image()[((), 0)]
+
+    nrows = 3
+    ncols = len(test_components)
+
+    # max for field component
+    zyxin_max = jnp.max(jnp.abs(jnp.stack([test_components[0], actual_components[0]])))
+    actin_max = jnp.max(jnp.abs(jnp.stack([test_components[1], actual_components[1]])))
+    force_max = jnp.max(
+        jnp.abs(
+            jnp.stack(
+                [test_components[2], actual_components[2], test_components[3], actual_components[3]]
+            )
+        )
+    )
+
+    max_vals = [zyxin_max, actin_max, force_max, force_max]
+    fig, axs = plt.subplots(nrows, ncols, figsize=(2 * ncols, 2 * nrows), dpi=144)
+    for i, (test_field, actual_field, title, max_val) in enumerate(
+        zip(test_components, actual_components, col_titles, max_vals)
+    ):
+        print(f"Plotting component {i}:{title}")
+        geom.GeometricImage(test_field, 0, D).plot(
+            axs[0][i],
+            f"predicted {title}",
+            vmin=-float(max_val),
+            vmax=float(max_val),
+            colorbar=True,
+        )
+        geom.GeometricImage(actual_field, 0, D).plot(
+            axs[1][i], f"target {title}", vmin=-float(max_val), vmax=float(max_val), colorbar=True
+        )
+        geom.GeometricImage(test_field - actual_field, 0, D).plot(
+            axs[2][i], f"diff {title}", vmin=-float(max_val), vmax=float(max_val), colorbar=True
+        )
+
+    plt.tight_layout()
+    plt.savefig(save_loc)
+    plt.close(fig)
+
+
+def plot_gif(
+    fields: list[Float[Array, "time spatial tensor"]], titles: list[str], save_loc: str
+) -> None:
+    """
+    Plot a gif of timesteps, by component for vectors.
+
+    args:
+        fields: list of fields to plot
+    """
+    D = 2
+
+    # -> (time, spatial, all_tensor_flat)
+    flat_fields = jnp.concat(
+        [field.reshape(field.shape[: D + 1] + (-1,)) for field in fields], axis=-1
+    )
+    flat_fields = jnp.moveaxis(flat_fields, -1, 1)  # -> (time, all_tensor_flat, spatial)
+
+    nrows = 1
+    ncols = flat_fields.shape[1]
+
+    # max for field component
+    max_vals = jnp.max(jnp.abs(flat_fields), axis=(0,) + tuple(range(2, 2 + D)))
+    for frame, flat_fields_frame in enumerate(flat_fields):
+        _, axs = plt.subplots(nrows, ncols, figsize=(2 * ncols, 2 * nrows), dpi=144)
+        for ax, field, title, max_val in zip(axs, flat_fields_frame, titles, max_vals):
+            geom.GeometricImage(field, 0, D).plot(
+                ax, title, vmin=-float(max_val), vmax=float(max_val), colorbar=True
+            )
+
+        print(f"Saving at: {save_loc}_frame{frame}.png")
+        plt.savefig(f"{save_loc}_frame{frame}.png")
+        plt.close()
+
+    images = []
+    frame_images = [x for x in os.listdir(save_loc) if "frame" in x]
+    for file_name in sorted(
+        frame_images, key=lambda x: int(x[x.rfind("frame") + len("frame") : x.rfind(".png")])
+    ):
+        file_path = os.path.join(save_loc, file_name)
+        images.append(Image.open(file_path))
+
+    # 2. Save as an animated GIF
+    images[0].save(
+        f"{save_loc}_animation.gif",
+        save_all=True,  # Ensures all frames are included, not just the first one
+        append_images=images[1:],  # Appends the rest of the frames
+        optimize=False,
+        duration=200,  # Duration of each frame in milliseconds (e.g., 200ms = 5 FPS)
+        loop=0,  # 0 means infinite loop; omit or change for specific iterations
+    )
+
+
+def plot_hist(image: Float[Array, " ..."], save_loc: pathlib.Path) -> None:
+    plt.hist(image.ravel(), bins=50, log=True)
+    plt.savefig(save_loc)
+    plt.close()
+
+
 def read_one(
     fname: pathlib.Path,
 ) -> tuple[
     Float[Array, " spatial"],
     Float[Array, " spatial"],
     Float[Array, "spatial D"],
-    Float[Array, " spatial"],
+    Bool[Array, " spatial"],
 ]:
     # shape (channels,spatial)
     data = jnp.array(np.load(fname), device=jax.devices("cpu")[0])
@@ -37,25 +165,9 @@ def read_one(
     fy = data[3]
     force = jnp.stack([fx, fy], axis=-1)  # (spatial,tensor)
 
-    # make is (spatial,) of 0 for outside cell, 255 for inside cell. Convert to 0 and 1.
-    mask = (data[4] != 0).astype(int)
-
-    # compare mask and force mask
-    print(
-        "mean force inside",
-        jnp.mean(
-            jnp.linalg.norm(jnp.stack([fx[data[4] != 0], fy[data[4] != 0]], axis=-1), axis=-1)
-        ),
-    )
-    print(
-        "mean force outside",
-        jnp.mean(
-            jnp.linalg.norm(jnp.stack([fx[data[4] == 0], fy[data[4] == 0]], axis=-1), axis=-1)
-        ),
-    )
-
-    print(jnp.sum(jnp.abs(data[4] - data[5])))
-    exit()
+    # mask is (spatial,) of 0 for outside cell, 255 for inside cell.
+    # Convert to bool, true for inside the cell, false for outside
+    mask = data[4] != 0
 
     return zyxin, actin, force, mask
 
@@ -82,19 +194,20 @@ def read_cell(
         force_ls.append(force)
         mask_ls.append(mask)
 
-        if len(mask_ls) > 1:
-            latest_mask = mask_ls[-1]
-            prev_mask = mask_ls[-2]
-            print("expanded", jnp.sum((latest_mask - prev_mask) > 0))
-            print("contracted", jnp.sum((prev_mask - latest_mask) > 0))
+    zyxin = jnp.stack(zyxin_ls)
+    actin = jnp.stack(actin_ls)
+    force = jnp.stack(force_ls)
+    mask = jnp.stack(mask_ls)
 
-    exit()
-
-    return jnp.stack(zyxin_ls), jnp.stack(actin_ls), jnp.stack(force_ls), jnp.stack(mask_ls)
+    return zyxin, actin, force, mask
 
 
 def read_cells(
-    D: int, cell_dirs: list[pathlib.Path], normalize: Literal["previous", "mean_std"]
+    D: int,
+    cell_dirs: list[pathlib.Path],
+    normalize: Literal["previous", "mean_std", "log1p"],
+    images_dir: pathlib.Path | None,
+    plot_histograms: bool,
 ) -> geom.MultiImage:
     """
     Read the cells and create a multi image out of them.
@@ -112,13 +225,19 @@ def read_cells(
     for cell_dir in cell_dirs:  # do they all have the same number of timesteps?
         zyxin, actin, force, mask = read_cell(cell_dir)
 
+        if plot_histograms:
+            assert images_dir is not None
+            for field, name in [(zyxin, "zyxin"), (actin, "actin"), (force, "force")]:
+                plot_hist(field, images_dir / f"{cell_dir.name}_{name}_hist.png")
+                plot_hist(field[mask], images_dir / f"{cell_dir.name}_{name}_masked_hist.png")
+
         if normalize == "previous":
             # follow the normalization done in the previous paper
-            zyxin = (zyxin - jnp.mean(zyxin[mask == 0])) / (
-                jnp.mean(zyxin[mask != 0]) - jnp.mean(zyxin[mask == 0])
+            zyxin = (zyxin - jnp.mean(zyxin[mask])) / (
+                jnp.mean(zyxin[mask]) - jnp.mean(zyxin[mask])
             )
             actin = (actin - jnp.mean(actin[mask == 0])) / (
-                jnp.mean(actin[mask != 0]) - jnp.mean(actin[mask == 0])
+                jnp.mean(actin[mask]) - jnp.mean(actin[mask])
             )
             force_norm = jnp.linalg.norm(force, axis=-1)  # (steps,spatial)
             # TODO: do I need to use the mask here?
@@ -127,13 +246,20 @@ def read_cells(
             zyxin = (zyxin - jnp.mean(zyxin)) / jnp.std(zyxin)
             actin = (actin - jnp.mean(actin)) / jnp.std(actin)
             force = force / jnp.std(jnp.linalg.norm(force, axis=-1))
+        elif normalize == "log1p":
+            zyxin = jnp.log1p(zyxin)
+            actin = jnp.log1p(actin)
+            force_norm = jnp.linalg.norm(force, axis=-1, keepdims=True)  # (steps,spatial,1)
+            force = (jnp.log1p(force_norm) / force_norm) * force
 
-        # print(jnp.mean(zyxin), jnp.std(zyxin))
-        # print(jnp.mean(actin), jnp.std(actin))
-        # print(
-        #     jnp.mean(jnp.linalg.norm(force, axis=-1)),
-        #     jnp.std(jnp.linalg.norm(force, axis=-1)),
-        # )
+        if plot_histograms:
+            assert images_dir is not None
+            for field, name in [(zyxin, "zyxin"), (actin, "actin"), (force, "force")]:
+                plot_hist(field, images_dir / f"{cell_dir.name}_{normalize}_{name}_hist.png")
+                plot_hist(
+                    field[mask], images_dir / f"{cell_dir.name}_{normalize}_{name}_masked_hist.png"
+                )
+
         zyxin_ls.append(zyxin)
         actin_ls.append(actin)
         force_ls.append(force)
@@ -142,7 +268,6 @@ def read_cells(
     zyxins = jnp.stack(zyxin_ls)
     actins = jnp.stack(actin_ls)
     forces = jnp.stack(force_ls)
-    # TODO: does mask ever grow, or does the cell only contract and get smaller?
 
     # (batch,channel,time,spatial,tensor) -> (batch,channel*time,spatial,tensor)
     scalars = jnp.stack([zyxins, actins], axis=1).reshape(len(cell_dirs), -1, *zyxins.shape[2:])
@@ -158,7 +283,8 @@ def get_data(
     past_steps: int,
     future_steps: int,
     batch_size: int,
-    normalize: Literal["previous", "mean_std"],
+    normalize: Literal["previous", "mean_std", "log1p"],
+    images_dir: pathlib.Path | None,
 ) -> tuple[
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
@@ -169,7 +295,6 @@ def get_data(
     """
     Load the data and put it into multi image datasets.
     """
-    # TODO: Probably going to want some kind of normalization
 
     # use cell_1 as the test, as in the repo?
 
@@ -181,8 +306,8 @@ def get_data(
     test_cells = cell_dirs[-1:]  # [cell_1]
     cells = cell_dirs[:-1]  # [cell_0, cell_2, cell_3]
 
-    train_val = read_cells(D, cells, normalize)
-    test = read_cells(D, test_cells, normalize)
+    train_val = read_cells(D, cells, normalize, images_dir, False)
+    test = read_cells(D, test_cells, normalize, images_dir, False)
     total_timesteps = train_val[((False,), 0)].shape[1]
 
     train_val_x, train_val_y = batch_time_series(
@@ -248,6 +373,7 @@ def train_and_eval(
     rollout_steps: int,
     model_dir: pathlib.Path | None,
     overwrite_save_model: bool,
+    images_dir: pathlib.Path | None,
     has_aux: bool = False,
     verbose: int = 1,
     is_wandb: bool = False,
@@ -287,22 +413,41 @@ def train_and_eval(
             # TODO: need to save batch_stats as well
             ml.save_plus(model_path, trained_model, {"train_time": train_time})
 
-    train_loss = ml.map_loss_in_batches_dl(mapper, model, train_dl)
-    val_loss = ml.map_loss_in_batches_dl(mapper, model, val_dl)
-    test_loss = ml.map_loss_in_batches_dl(mapper, model, test_dl)
+    train_loss = ml.map_loss_in_batches_dl(mapper, trained_model, train_dl)
+    val_loss = ml.map_loss_in_batches_dl(mapper, trained_model, val_dl)
+    test_loss = ml.map_loss_in_batches_dl(mapper, trained_model, test_dl)
 
+    print(f"Train Loss: {train_loss}")
+    print(f"Val Loss: {val_loss}")
     print(f"Test Loss: {test_loss}")
     # rollout_mapper = ml.Mapper()
     # TODO: rollout loss
+
+    if images_dir is not None:
+        val_x_one, val_y_one = next(iter(val_dl))
+        assert isinstance(val_x_one, geom.MultiImage)
+        assert isinstance(val_y_one, geom.MultiImage)
+        val_x_one = val_x_one.get_one(keepdims=False).get_one()
+        val_y_one = val_y_one.get_one(keepdims=False).get_one()
+        pred_y, _ = mapper.map(trained_model, val_x_one, batch_stats)
+        one_loss, _ = mapper(trained_model, val_x_one, val_y_one)
+        print(f"One Loss: {one_loss}")
+        components = ["zyxin", "actin", "force_x", "force_y"]
+        plot_multi_image(pred_y, val_y_one, images_dir / f"{model_name}_e{epochs}.png", components)
 
     return train_loss, val_loss, test_loss
 
 
 def handleArgs() -> argparse.Namespace:
     """
-    CUDA_VISIBLE_DEVICES=3 time python3 -m scripts.contractility \
+    CUDA_VISIBLE_DEVICES=2 time python3 -m scripts.contractility \
     --data /data/wgregor4/contractility/ZyxAct_16kPa_small/ \
-    --n-train 256 --n-val 128 --n-test 8 -b 2
+    --n-train 256 --n-val 32 --n-test 8 -b 2 -e 50 \
+    --model-dir /data/wgregor4/runs/contractility/ \
+    --images-dir /data/wgregor4/images/contractility/ \
+    --normalize-type log1p
+
+    Can do --n-val 128, but for speed do this
     """
     parser = utils.get_common_parser()
     parser.add_argument(
@@ -315,12 +460,12 @@ def handleArgs() -> argparse.Namespace:
         "--rollout-steps",
         help="number of steps to rollout in test",
         type=int,
-        default=5,
+        default=0,
     )
     parser.add_argument(
         "--normalize-type",
         help="type of normalization, `previous` of the method from the earlier paper",
-        choices=["previous", "mean_std"],
+        choices=["previous", "mean_std", "log1p"],
         default="previous",
     )
     # need do to --wandb to activate, also need --wandb-entity your_wandb_name_here
@@ -338,6 +483,7 @@ args = handleArgs()
 # reshaping timesteps into batches.
 D = 2
 data_dir = pathlib.Path(args.data)
+images_dir = pathlib.Path(args.images_dir) if args.images_dir else None
 
 train_dl, val_dl, test_dl, input_keys, output_keys = get_data(
     D,
@@ -349,6 +495,7 @@ train_dl, val_dl, test_dl, input_keys, output_keys = get_data(
     args.future_steps,
     args.batch,
     args.normalize_type,
+    images_dir,
 )
 
 if args.load_model or args.save_model:
@@ -370,54 +517,55 @@ train_kwargs = {
     "batch_size": args.batch,
     "epochs": args.epochs,
     "rollout_steps": args.rollout_steps,
-    "model_dir": args.model_dir,
+    "model_dir": pathlib.Path(args.model_dir) if args.model_dir else None,
     "overwrite_save_model": args.overwrite_save_model,
+    "images_dir": images_dir,
     "verbose": args.verbose,
     "is_wandb": args.wandb,
 }
 
 key, *subkeys = jax.random.split(key, num=13)
 model_list = [
-    # (
-    #     # batch=2 works, batch=4 fails
-    #     "unetBase_equiv20",
-    #     train_and_eval,
-    #     {
-    #         "model": models.UNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=20,
-    #             activation_f=jax.nn.gelu,
-    #             conv_filters=conv_filters,
-    #             upsample_filters=upsample_filters,
-    #             key=subkeys[8],
-    #         ),
-    #         "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-    #         **train_kwargs,
-    #     },
-    # ),
     (
-        "unetBase",
+        # batch=2 works, batch=4 fails
+        "unetBase_equiv20",
         train_and_eval,
         {
             "model": models.UNet(
                 D,
                 input_keys,
                 output_keys,
-                depth=64,
-                use_bias=True,
+                depth=20,
                 activation_f=jax.nn.gelu,
-                equivariant=False,
-                kernel_size=3,
-                use_group_norm=False,
-                padding_mode="ZEROS",
-                key=subkeys[6],
+                conv_filters=conv_filters,
+                upsample_filters=upsample_filters,
+                key=subkeys[8],
             ),
-            "lr": 8e-4,
+            "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
             **train_kwargs,
         },
     ),
+    # (
+    #     "unetBase",
+    #     train_and_eval,
+    #     {
+    #         "model": models.UNet(
+    #             D,
+    #             input_keys,
+    #             output_keys,
+    #             depth=64,
+    #             use_bias=True,
+    #             activation_f=jax.nn.gelu,
+    #             equivariant=False,
+    #             kernel_size=3,
+    #             use_group_norm=False,
+    #             padding_mode="ZEROS",
+    #             key=subkeys[6],
+    #         ),
+    #         "lr": 8e-4,
+    #         **train_kwargs,
+    #     },
+    # ),
 ]
 
 key, subkey = jax.random.split(key)

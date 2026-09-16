@@ -258,9 +258,10 @@ def get_data(
 
 def handleArgs() -> argparse.Namespace:
     """
-    CUDA_VISIBLE_DEVICES=4,5 time python3 -m scripts.cfd_anyd \
+    CUDA_VISIBLE_DEVICES=0,1 time python3 -m scripts.cfd_anyd \
     --data /data/wgregor4/pdebench/ --n-train 128 --n-val 32 --n-test 32 -t 5 \
     --model-dir /data/wgregor4/runs/cfd_anyd/ \
+    --rescale-list spin_embed,nepo \
     --results-dir /data/wgregor4/runs/cfd_anyd/ \
     --images-dir /data/wgregor4/images/pdebench/cfd_anyd/cfd_
     """
@@ -269,7 +270,7 @@ def handleArgs() -> argparse.Namespace:
         "--n-tune-range",
         help="the number of data points in the tuning set",
         type=lambda s: tuple(int(x) for x in s.split(",")),
-        default="0,1,4,32",
+        default="0,1,4,8,32",
     )
     parser.add_argument(
         "--rescale-list",
@@ -315,6 +316,7 @@ if args.load_model or args.save_model:
 
 rescale_options = {
     "spin_embed": geom.Rescaling.SPIN_EMBED,
+    "nepo": geom.Rescaling.NEPO,
     "copy": geom.Rescaling.COPY,
     "zeros": geom.Rescaling.ZEROS,
 }
@@ -396,16 +398,16 @@ for D in full_D_range:
                         key=subkeys[2],
                     ),
                     {  # train_kwargs
-                        "lr": {2: {128: 1e-4}, 3: {0: 5e-4, 1: 5e-4, 4: 1e-4, 32: 1e-4}},
+                        "lr": {2: {128: 1e-4}, 3: {0: 5e-4, 1: 5e-4, 4: 1e-4, 8: 1e-4, 32: 1e-4}},
                         # D=3, for all of them (and tuning) its just 1e-4
                         **train_kwargs,
                     },
                     {  # train_kwargs
-                        "lr": {2: {128: 1e-4}, 3: {0: 5e-4, 1: 5e-4, 4: 1e-4, 32: 1e-4}},
+                        "lr": {2: {128: 1e-4}, 3: {0: 5e-4, 1: 5e-4, 4: 1e-4, 8: 1e-4, 32: 1e-4}},
                         **baseline_kwargs,
                     },
                     {  # tune and eval kwargs
-                        "lr": {2: {3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 32: 5e-5}}},
+                        "lr": {2: {3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 8: 1e-4, 32: 5e-5}}},
                         "conv_filters_dict": free_filters_dict,
                         "upsample_filters_dict": upsample_filters_dict,
                         **test_kwargs,

@@ -266,7 +266,7 @@ def get_data(
 
 def handleArgs() -> argparse.Namespace:
     """
-    CUDA_VISIBLE_DEVICES=6 time python3 -m scripts.heat_equation \
+    CUDA_VISIBLE_DEVICES=3 time python3 -m scripts.heat_equation \
     --data /data/wgregor4/heat_equation/ --n-test 128 --n-val 128 --n-train 128 \
     --train-D-range 1 --test-D-range 2 -t 5 --rescale-list spin_embed,copy,zeros \
     --model-dir /data/wgregor4/runs/heat_equation/ \
@@ -278,7 +278,7 @@ def handleArgs() -> argparse.Namespace:
         "--n-tune-range",
         help="the number of data points in the tuning set",
         type=lambda s: tuple(int(x) for x in s.split(",")),
-        default="0,1,4,32,128",
+        default="0,1,4,8,32,128",
     )
     parser.add_argument(
         "--rescale-list",
@@ -453,15 +453,21 @@ for D in full_D_range:
                         key=subkeys[2],
                     ),
                     {  # train_kwargs
-                        "lr": {1: {128: 1e-3}, 2: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 5e-4}},
+                        "lr": {
+                            1: {128: 1e-3},
+                            2: {0: 5e-4, 1: 5e-4, 4: 5e-4, 8: 5e-4, 32: 5e-4, 128: 5e-4},
+                        },
                         **train_kwargs,
                     },
                     {
-                        "lr": {1: {128: 1e-3}, 2: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 5e-4}},
+                        "lr": {
+                            1: {128: 1e-3},
+                            2: {0: 5e-4, 1: 5e-4, 4: 5e-4, 8: 5e-4, 32: 5e-4, 128: 5e-4},
+                        },
                         **baseline_kwargs,
                     },
                     {  # tune and eval kwargs
-                        "lr": {1: {2: {0: 5e-4, 1: 5e-4, 4: 5e-4, 32: 5e-4, 128: 5e-4}}},
+                        "lr": {1: {2: {0: 5e-4, 1: 5e-4, 4: 5e-4, 8: 5e-4, 32: 5e-4, 128: 5e-4}}},
                         "conv_filters_dict": free_filters_dict,
                         "upsample_filters_dict": upsample_filters_dict,
                         **test_kwargs,

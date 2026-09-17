@@ -277,11 +277,11 @@ def handleArgs() -> argparse.Namespace:
     CUDA_VISIBLE_DEVICES=3,4 time python3 -m scripts.burgers_anyd \
     --data /data/wgregor4/apebench/burgers/ --n-train 8 --n-val 8 --n-test 8 \
     -t 5 \
+    --rescale-list spin_embed,nepo \
     --model-dir /data/wgregor4/runs/burgers_anyd/ \
-    --rescale-list spin_embed,nepo
+    --results-dir /data/wgregor4/runs/burgers_anyd/ \
+    --images-dir /data/wgregor4/images/apebench/burgers/burgers_
     """
-    # --results-dir /data/wgregor4/runs/burgers_anyd/ \
-    # --images-dir /data/wgregor4/images/apebench/burgers/burgers_
     parser = utils.get_common_parser()
     parser.add_argument(
         "--n-tune-range",
@@ -452,16 +452,16 @@ for D in full_D_range:
                         key=subkeys[2],
                     ),
                     {  # train_kwargs
-                        "lr": {2: {8: 1e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 8: 1e-4, 32: 1e-4}},
+                        "lr": {2: {8: 1e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 8: 1e-4}},
                         # D=3, for all of them (and tuning) its just 1e-4
                         **train_kwargs,
                     },
                     {  # train_kwargs
-                        "lr": {2: {8: 1e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 8: 1e-4, 32: 1e-4}},
+                        "lr": {2: {8: 1e-4}, 3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 8: 1e-4}},
                         **baseline_kwargs,
                     },
                     {  # tune and eval kwargs
-                        "lr": {2: {3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 8: 1e-4, 32: 1e-4}}},
+                        "lr": {2: {3: {0: 1e-4, 1: 1e-4, 4: 1e-4, 8: 1e-4}}},
                         "conv_filters_dict": free_filters_dict,
                         "upsample_filters_dict": upsample_filters_dict,
                         **test_kwargs,

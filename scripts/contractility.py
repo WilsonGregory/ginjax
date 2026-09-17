@@ -187,7 +187,7 @@ def read_cell(
     actin_ls = []
     force_ls = []
     mask_ls = []
-    for frame_file in sorted_frames:  # these need to be sorted properly
+    for frame_file in sorted_frames:
         zyxin, actin, force, mask = read_one(cell_dir / frame_file)
         zyxin_ls.append(zyxin)
         actin_ls.append(actin)
@@ -222,7 +222,7 @@ def read_cells(
     zyxin_ls = []
     actin_ls = []
     force_ls = []
-    for cell_dir in cell_dirs:  # do they all have the same number of timesteps?
+    for cell_dir in cell_dirs:  # requires they have equal number of timesteps, currently do
         zyxin, actin, force, mask = read_cell(cell_dir)
 
         if plot_histograms:
@@ -420,7 +420,6 @@ def train_and_eval(
     print(f"Train Loss: {train_loss}")
     print(f"Val Loss: {val_loss}")
     print(f"Test Loss: {test_loss}")
-    # rollout_mapper = ml.Mapper()
     # TODO: rollout loss
 
     if images_dir is not None:
@@ -479,6 +478,10 @@ def handleArgs() -> argparse.Namespace:
 # MAIN
 args = handleArgs()
 
+if args.load_model or args.save_model:
+    print("Use --model-dir and possibly --overwrite-save-model instead of --save-model")
+    exit()
+
 # Since we only have 4 trajectories, n_train and n_val refer to the number of data points after
 # reshaping timesteps into batches.
 D = 2
@@ -497,11 +500,6 @@ train_dl, val_dl, test_dl, input_keys, output_keys = get_data(
     args.normalize_type,
     images_dir,
 )
-
-if args.load_model or args.save_model:
-    print("Use --model-dir and possibly --overwrite-save-model instead of --save-model")
-    exit()
-
 
 key = jax.random.PRNGKey(time.time_ns()) if (args.seed is None) else jax.random.PRNGKey(args.seed)
 

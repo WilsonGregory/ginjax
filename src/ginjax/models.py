@@ -429,46 +429,69 @@ class AnyDimensionalModel(MultiImageModule):
 
         match (M, k, old_D, new_D):
             case (3, 0, 1, 2):
-                # gamma' = 1/3 beta
-                # beta' = beta - 2 gamma' = 1/3 beta
-                # alpha' = alpha - 2 beta' = alpha - 2 (beta - 2 gamma') = alpha - 2/3 beta
-                assert old_weights.shape[2] == 2
-                alpha = old_weights[:, :, 0]
-                beta = old_weights[:, :, 1]
-                new_weights = jnp.stack(
-                    [alpha - (2 / 3) * beta, (1 / 3) * beta, (1 / 3) * beta], axis=2
-                )
-            case (3, 0, 2, 3):
-                assert old_weights.shape[2] == 3
-                alpha = old_weights[:, :, 0]
-                beta = old_weights[:, :, 1]
-                gamma = old_weights[:, :, 2]
+                # b2 = (1/3)a1
 
-                delta_prime = (4 * gamma - beta) / 9
+                # b0 = a0 - 2 b1 = a0 - 2 (a1 - 2 b2) = a0 - 2/3 b1
+                # b1 = a1 - 2 b2 = (1/3) a1
+                assert old_weights.shape[2] == 2
+
+                a0 = old_weights[:, :, 0]
+                a1 = old_weights[:, :, 1]
+
+                b2 = (1 / 3) * a1
+
+                new_weights = jnp.stack([a0 - 2 * a1 + 4 * b2, a1 - 2 * b2, b2], axis=2)
+            case (3, 0, 2, 3):
+                # b3 = (-a1 + 4a2)/9
+
+                # b0 = a0 -2a1 + 4a2 -8(-a1 + 4a2)/9 = a0 - (10/9)a1 + (4/9)a2
+                # b1 =  a1 - 2a2 - (4/9)a1 + (16/9)a2 = (5a1 - 2a2)/9
+                # b2 = (2a1 + a2)/9
+                assert old_weights.shape[2] == 3
+                a0 = old_weights[:, :, 0]
+                a1 = old_weights[:, :, 1]
+                a2 = old_weights[:, :, 2]
+
+                b3 = (-a1 + 4 * a2) / 9
 
                 new_weights = jnp.stack(
                     [
-                        alpha - 2 * beta + 4 * gamma - 8 * delta_prime,
-                        beta - 2 * gamma + 4 * delta_prime,
-                        gamma - 2 * delta_prime,
-                        delta_prime,
+                        a0 - 2 * a1 + 4 * a2 - 8 * b3,
+                        a1 - 2 * a2 + 4 * b3,
+                        a2 - 2 * b3,
+                        b3,
                     ],
                     axis=-1,
                 )
             case (3, 1, 2, 3):
-                assert old_weights.shape[2] == 2
-                alpha = old_weights[:, :, 0]
-                beta = old_weights[:, :, 1]
+                # b2 = (1/3)a1
 
-                gamma_prime = (1 / 3) * beta
-                new_weights = jnp.stack(
-                    [alpha - 2 * beta + 4 * gamma_prime, beta - 2 * gamma_prime, gamma_prime],
-                    axis=-1,
-                )
+                # b0 = a0 - 2 b1 = a0 - 2 (a1 - 2 b2) = a0 - 2/3 b1
+                # b1 = a1 - 2 b2 = (1/3) a1
+                assert old_weights.shape[2] == 2
+                a0 = old_weights[:, :, 0]
+                a1 = old_weights[:, :, 1]
+
+                b2 = (1 / 3) * a1
+                new_weights = jnp.stack([a0 - 2 * a1 + 4 * b2, a1 - 2 * b2, b2], axis=-1)
             case (3, 2, 2, 3):
                 # For D=2, it is 3 identity weights, 1 along trace, 1 symmetric no trace
                 # For D=3, it is 4 identity weights, 2 symmetric no trace, 2 along trace
                 # so be careful because the order is flipped.
+
+                # b3 = (1 / 3) * a2
+                # b5 = 0
+                # b7 = (2 * a1 - 2 * a2 - 2 * a3) / 9
+
+                # b0 = a0 - 2a1 + 4a2 + 2a3 - 8b3 + 6b7 = a0 - 2a1 + 4a2 + 2a3 - (8/3)a2 + (12a1 -12a2 -12a3)/9
+                #    = a0 - (2/3)a1 + (2/3)a3
+                # b1 = a1 - 2a2 - (1/3)a3 + 4b3 - 2b7 = a1 -2a2 - (1/3)a3 + (4/3)a2 - (4/9)a1 + (4/9)a2 + (4/9)a3
+                #    = (5/9)a1 - (2/9)a2 + (1/9)a3
+                # b2 = a2 - 2b3 + (1/2)b7 = a2 - (2/3)a2 + (1/9)a1 - (1/9)a2 - (1/9)a3
+                #    = (1/9)a1 + (2/9)a2 - (1/9)a3
+                # b4 = a4 + 2b5 = a4
+                # b6 = (-4/3)a3 - 2b7 = (-4/3)a3 - (4/9)a1 + (4/9)a2 + (4/9)a3
+                #    = -(4/9)a1 + (4/9)a2 - (8/9)a3
 
                 a0 = old_weights[:, :, 0]
                 a1 = old_weights[:, :, 1]

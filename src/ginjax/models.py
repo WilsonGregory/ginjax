@@ -390,6 +390,142 @@ class AnyDimensionalModel(MultiImageModule):
         return new_weights * ratios
 
     @staticmethod
+    def nepo_rescale_weights(
+        old_filter_triple: tuple[jax.Array, jax.Array, int],
+        new_filter_triple: tuple[jax.Array, jax.Array, int],
+        verbose: bool = False,
+    ) -> jax.Array:
+        """
+        The rescaling based on minimizing a quantity derived in the paper.
+        TODO: Currently assuming that all filters are even parity.
+
+        argmin_{alphas} [sum_{i=1}^L_n alpha_i psi(C_i) - sum_{i=1}^L_{n+1} alpha'_i C'_i]
+        s.t. the alpha compatibility requirements are met.
+
+        args:
+            old_filter_triple: tuple of the old filters, (n_filters,spatial,tensor)
+                weights (shape (out_channels,in_channels,num_filters)), the old dimension
+            new_filter_triple: tuple of the new filters, (n_filters,spatial,tensor)
+                weights (shape (out_channels,in_channels,num_filters)), and the new dimension
+            verbose: whether to print the old weights and ratios
+
+        return:
+            jax array of rescaled weights (out_channels,in_channels,num_filters) after rescaling
+        """
+        old_filters, old_weights, old_D = old_filter_triple  # old weights are alpha
+        new_filters, new_weights, new_D = new_filter_triple
+
+        M = old_filters.shape[1]
+        if M == 2:
+            # this is not using the spin embedding
+            return old_weights / (2 ** (new_D - old_D))
+
+        # also implicitly assumes that the filters are normalized with ones
+
+        k = old_filters.ndim - (1 + old_D)
+        assert k == new_filters.ndim - (
+            1 + new_D
+        ), f"nepo_rescale_weights: old_filters k={k}, new_filters k={new_filters.ndim - (1 + new_D)}"
+
+        match (M, k, old_D, new_D):
+            case (3, 0, 1, 2):
+                # b2 = (1/3)a1
+
+                # b0 = a0 - 2 b1 = a0 - 2 (a1 - 2 b2) = a0 - 2/3 b1
+                # b1 = a1 - 2 b2 = (1/3) a1
+                assert old_weights.shape[2] == 2
+
+                a0 = old_weights[:, :, 0]
+                a1 = old_weights[:, :, 1]
+
+                b2 = (1 / 3) * a1
+
+                new_weights = jnp.stack([a0 - 2 * a1 + 4 * b2, a1 - 2 * b2, b2], axis=2)
+            case (3, 0, 2, 3):
+                # b3 = (-a1 + 4a2)/9
+
+                # b0 = a0 -2a1 + 4a2 -8(-a1 + 4a2)/9 = a0 - (10/9)a1 + (4/9)a2
+                # b1 =  a1 - 2a2 - (4/9)a1 + (16/9)a2 = (5a1 - 2a2)/9
+                # b2 = (2a1 + a2)/9
+                assert old_weights.shape[2] == 3
+                a0 = old_weights[:, :, 0]
+                a1 = old_weights[:, :, 1]
+                a2 = old_weights[:, :, 2]
+
+                b3 = (-a1 + 4 * a2) / 9
+
+                new_weights = jnp.stack(
+                    [
+                        a0 - 2 * a1 + 4 * a2 - 8 * b3,
+                        a1 - 2 * a2 + 4 * b3,
+                        a2 - 2 * b3,
+                        b3,
+                    ],
+                    axis=-1,
+                )
+            case (3, 1, 2, 3):
+                # b2 = (1/3)a1
+
+                # b0 = a0 - 2 b1 = a0 - 2 (a1 - 2 b2) = a0 - 2/3 b1
+                # b1 = a1 - 2 b2 = (1/3) a1
+                assert old_weights.shape[2] == 2
+                a0 = old_weights[:, :, 0]
+                a1 = old_weights[:, :, 1]
+
+                b2 = (1 / 3) * a1
+                new_weights = jnp.stack([a0 - 2 * a1 + 4 * b2, a1 - 2 * b2, b2], axis=-1)
+            case (3, 2, 2, 3):
+                # For D=2, it is 3 identity weights, 1 along trace, 1 symmetric no trace
+                # For D=3, it is 4 identity weights, 2 symmetric no trace, 2 along trace
+                # so be careful because the order is flipped.
+
+                # b3 = (1 / 3) * a2
+                # b5 = 0
+                # b7 = (2 * a1 - 2 * a2 - 2 * a3) / 9
+
+                # b0 = a0 - 2a1 + 4a2 + 2a3 - 8b3 + 6b7 = a0 - 2a1 + 4a2 + 2a3 - (8/3)a2 + (12a1 -12a2 -12a3)/9
+                #    = a0 - (2/3)a1 + (2/3)a3
+                # b1 = a1 - 2a2 - (1/3)a3 + 4b3 - 2b7 = a1 -2a2 - (1/3)a3 + (4/3)a2 - (4/9)a1 + (4/9)a2 + (4/9)a3
+                #    = (5/9)a1 - (2/9)a2 + (1/9)a3
+                # b2 = a2 - 2b3 + (1/2)b7 = a2 - (2/3)a2 + (1/9)a1 - (1/9)a2 - (1/9)a3
+                #    = (1/9)a1 + (2/9)a2 - (1/9)a3
+                # b4 = a4 + 2b5 = a4
+                # b6 = (-4/3)a3 - 2b7 = (-4/3)a3 - (4/9)a1 + (4/9)a2 + (4/9)a3
+                #    = -(4/9)a1 + (4/9)a2 - (8/9)a3
+
+                a0 = old_weights[:, :, 0]
+                a1 = old_weights[:, :, 1]
+                a2 = old_weights[:, :, 2]
+                a3 = old_weights[:, :, 3]
+                a4 = old_weights[:, :, 4]
+
+                # these are the optimal values.
+                b3 = (1 / 3) * a2
+                b5 = jnp.zeros_like(a0)
+                b7 = (2 * a1 - 2 * a2 - 2 * a3) / 9
+
+                # the ones derived below are the compatibility constraints
+                new_weights = jnp.stack(
+                    [
+                        a0 - 2 * a1 + 4 * a2 + 2 * a3 - 8 * b3 + 6 * b7,
+                        a1 - 2 * a2 - (1 / 3) * a3 + 4 * b3 - 2 * b7,
+                        a2 - 2 * b3 + (1 / 2) * b7,
+                        b3,
+                        a4 + 2 * b5,
+                        b5,
+                        (-4 / 3) * a3 - 2 * b7,
+                        b7,
+                    ],
+                    axis=-1,
+                )
+            case _:
+                raise NotImplementedError(
+                    f"nepo_rescale_weights: k={k}, old D={old_D}, new D={new_D}"
+                )
+
+        return new_weights
+
+    @staticmethod
     def spin_embed_rescale_weights(
         old_filter_triple: tuple[jax.Array, jax.Array, int],
         new_filter_triple: tuple[jax.Array, jax.Array, int],
@@ -1035,6 +1171,13 @@ class AnyDimensionalModel(MultiImageModule):
                 elif rescale is geom.Rescaling.SPIN_EMBED:
                     # new_weights are unused
                     scaled_weights_block = AnyDimensionalModel.spin_embed_rescale_weights(
+                        (old_filter_block, old_weights_block, old_filters.D),
+                        (new_filter_block, new_weights_block, new_filters.D),
+                        verbose,
+                    )
+                elif rescale is geom.Rescaling.NEPO:
+                    # new_weights are unused
+                    scaled_weights_block = AnyDimensionalModel.nepo_rescale_weights(
                         (old_filter_block, old_weights_block, old_filters.D),
                         (new_filter_block, new_weights_block, new_filters.D),
                         verbose,

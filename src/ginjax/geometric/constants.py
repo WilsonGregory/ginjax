@@ -30,6 +30,7 @@ class Rescaling(enum.Enum):
     SPIN_EMBED = enum.auto()
     COPY = enum.auto()
     ZEROS = enum.auto()
+    NEPO = enum.auto()
     NO_SCALING = enum.auto()
 
 

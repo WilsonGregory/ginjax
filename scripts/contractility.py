@@ -925,25 +925,25 @@ train_kwargs = {
 
 key, *subkeys = jax.random.split(key, num=13)
 model_list = [
-    # (
-    #     # batch=2 works, batch=4 fails
-    #     "unetBase_equiv20",
-    #     train_and_eval,
-    #     {
-    #         "model": models.UNet(
-    #             D,
-    #             input_keys,
-    #             output_keys,
-    #             depth=20,
-    #             activation_f=jax.nn.gelu,
-    #             conv_filters=conv_filters,
-    #             upsample_filters=upsample_filters,
-    #             key=subkeys[8],
-    #         ),
-    #         "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-    #         **train_kwargs,
-    #     },
-    # ),
+    (
+        # batch=2 works, batch=4 fails
+        "unetBase_equiv20",
+        train_and_eval,
+        {
+            "model": models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=20,
+                activation_f=jax.nn.gelu,
+                conv_filters=conv_filters,
+                upsample_filters=upsample_filters,
+                key=subkeys[8],
+            ),
+            "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
+            **train_kwargs,
+        },
+    ),
     (
         "lastStepIdentity",
         train_and_eval,

@@ -470,9 +470,21 @@ class TestMultiImage:
         assert multi_image2.D == D
         assert multi_image2.is_torus == (True,) * D
 
-        # try to multiply two multi_images together
-        with pytest.raises(AssertionError):
-            assert multi_image1 * multi_image1
+        key, subkey1, subkey2 = random.split(key, 3)
+        multi_image4 = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(channels,) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(channels,) + (N,) * D + (D,)),
+            },
+            D,
+            True,
+        )
+
+        prod = multi_image1 * multi_image4
+        assert prod.D == multi_image1.D == multi_image4.D
+        assert prod.is_torus == multi_image1.is_torus == multi_image4.is_torus
+        for (k, p), prod_image_block in prod.items():
+            assert jnp.allclose(multi_image1[k, p] * multi_image4[k, p], prod_image_block)
 
     def testDiv(self):
         key = random.PRNGKey(0)
@@ -503,9 +515,21 @@ class TestMultiImage:
         assert multi_image2.D == D
         assert multi_image2.is_torus == (True,) * D
 
-        # try to multiply two multi_images together
-        with pytest.raises(AssertionError):
-            assert multi_image1 * multi_image1
+        key, subkey1, subkey2 = random.split(key, 3)
+        multi_image4 = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(channels,) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(channels,) + (N,) * D + (D,)),
+            },
+            D,
+            True,
+        )
+
+        div = multi_image1 / multi_image4
+        assert div.D == multi_image1.D == multi_image4.D
+        assert div.is_torus == multi_image1.is_torus == multi_image4.is_torus
+        for (k, p), div_image_block in div.items():
+            assert jnp.allclose(multi_image1[k, p] / multi_image4[k, p], div_image_block)
 
     def testSize(self):
         D = 2
@@ -1457,9 +1481,21 @@ class TestBatchMultiImage:
         assert multi_image2.D == D
         assert multi_image2.is_torus == (True,) * D
 
-        # try to multiply two multi_images together
-        with pytest.raises(AssertionError):
-            assert multi_image1 * multi_image1
+        key, subkey1, subkey2 = random.split(key, 3)
+        multi_image4 = geom.MultiImage(
+            {
+                (0, 0): random.normal(subkey1, shape=(batch, channels) + (N,) * D),
+                (1, 0): random.normal(subkey2, shape=(batch, channels) + (N,) * D + (D,)),
+            },
+            D,
+            True,
+        )
+
+        prod = multi_image1 * multi_image4
+        assert prod.D == multi_image1.D == multi_image4.D
+        assert prod.is_torus == multi_image1.is_torus == multi_image4.is_torus
+        for (k, p), prod_image_block in prod.items():
+            assert jnp.allclose(multi_image1[k, p] * multi_image4[k, p], prod_image_block)
 
     def testToFromScalarMultiImage(self):
         D = 2

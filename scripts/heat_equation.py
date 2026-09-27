@@ -266,9 +266,9 @@ def get_data(
 
 def handleArgs() -> argparse.Namespace:
     """
-    CUDA_VISIBLE_DEVICES=3 time python3 -m scripts.heat_equation \
+    CUDA_VISIBLE_DEVICES=2 time python3 -m scripts.heat_equation \
     --data /data/wgregor4/heat_equation/ --n-test 128 --n-val 128 --n-train 128 \
-    --train-D-range 1 --test-D-range 2 -t 5 --rescale-list spin_embed,copy,zeros \
+    --train-D-range 1 --test-D-range 2 -t 5 --rescale-list nepo,copy,zeros \
     --model-dir /data/wgregor4/runs/heat_equation/ \
     --results-dir /data/wgregor4/runs/heat_equation/ \
     --images-dir /data/wgregor4/images/heat_equation/heat_
@@ -284,7 +284,7 @@ def handleArgs() -> argparse.Namespace:
         "--rescale-list",
         help="the types of rescalings to do, defaults to spin_embed, for ablations do spin_embed,copy,zeros",
         type=lambda s: s.split(","),
-        default="spin_embed",
+        default="nepo",
     )
     parser.add_argument(
         "--train-D-range",
@@ -341,6 +341,7 @@ rescale_options = {
     "spin_embed": geom.Rescaling.SPIN_EMBED,
     "copy": geom.Rescaling.COPY,
     "zeros": geom.Rescaling.ZEROS,
+    "nepo": geom.Rescaling.NEPO,
 }
 rescale_list = [rescale_options[x.lower()] for x in args.rescale_list]
 

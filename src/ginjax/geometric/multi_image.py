@@ -378,11 +378,18 @@ class MultiImage:
             self.metric_tensor == other.metric_tensor
         ), f"{self.__class__}::__add__: Metric tensors do not match"
 
-        return self.__class__.from_vector(self.to_vector() + other.to_vector(), self)
+        out = self.empty()
+        for ((k_a, p_a), image_a), ((k_b, p_b), image_b) in zip(self.items(), other.items()):
+            assert k_a == k_b
+            assert p_a == p_b
+
+            out.append(k_a, p_a, image_a + image_b)
+
+        return out
 
     def __sub__(self: Self, other: Self) -> Self:
         """
-        Subtraction operator for MultiImages, must have the same types of MultiImages, adds them together
+        Subtraction operator for MultiImages, must have the same types of MultiImages
 
         args:
             other: other MultiImage to subtract from this one
@@ -406,11 +413,19 @@ class MultiImage:
             self.metric_tensor == other.metric_tensor
         ), f"{self.__class__}::__sub__: Metric tensors do not match"
 
-        return self.__class__.from_vector(self.to_vector() - other.to_vector(), self)
+        out = self.empty()
+        for ((k_a, p_a), image_a), ((k_b, p_b), image_b) in zip(self.items(), other.items()):
+            assert k_a == k_b
+            assert p_a == p_b
 
-    def __mul__(self: Self, other: Union[Self, float]) -> Self:
+            out.append(k_a, p_a, image_a - image_b)
+
+        return out
+
+    def __mul__(self: Self, other: Self | float) -> Self:
         """
-        Multiplication operator for a MultiImage and a scalar
+        Multiplication operator for a MultiImage and MultiImage, or MultiImage and scalar.
+        If it is two multi images, they are multiplied elementwise.
 
         args:
             other: other MultiImage or float to multiply this MultiImage by
@@ -418,15 +433,35 @@ class MultiImage:
         returns:
             a new MultiImage that is the product of this and other
         """
-        assert not isinstance(
-            other, MultiImage
-        ), f"MultiImage multiplication is only implemented for numbers, got {type(other)}."
+        if not isinstance(other, MultiImage):
+            return self.__class__.from_vector(self.to_vector() * other, self)
 
-        return self.__class__.from_vector(self.to_vector() * other, self)
+        assert (
+            self.D == other.D
+        ), f"{self.__class__}::__sub__: Dimension of MultiImages must match, had {self.D} and {other.D}"
+        assert (
+            self.is_torus == other.is_torus
+        ), f"{self.__class__}::__sub__: is_torus of MultiImages must match, had {self.is_torus} and {other.is_torus}"
+        assert (
+            self.keys() == other.keys()
+        ), f"{self.__class__}::__sub__: Must have same types of images, had {self.keys()} and {other.keys()}"
+        assert (
+            self.metric_tensor == other.metric_tensor
+        ), f"{self.__class__}::__sub__: Metric tensors do not match"
 
-    def __truediv__(self: Self, other: float) -> Self:
+        out = self.empty()
+        for ((k_a, p_a), image_a), ((k_b, p_b), image_b) in zip(self.items(), other.items()):
+            assert k_a == k_b
+            assert p_a == p_b
+
+            out.append(k_a, p_a, image_a * image_b)
+
+        return out
+
+    def __truediv__(self: Self, other: Self | float) -> Self:
         """
-        True division (a/b) for a MultiImage and a scalar.
+        True division (a/b) for a MultiImage and MultiImage, or MultiImage and scalar.
+        If it is two multi images, they are divided elementwise.
 
         args:
             other: number to divide this MultiImage by
@@ -434,7 +469,30 @@ class MultiImage:
         returns:
             a new MultiImage divided by other
         """
-        return self * (1.0 / other)
+        if not isinstance(other, MultiImage):
+            return self * (1.0 / other)
+
+        assert (
+            self.D == other.D
+        ), f"{self.__class__}::__sub__: Dimension of MultiImages must match, had {self.D} and {other.D}"
+        assert (
+            self.is_torus == other.is_torus
+        ), f"{self.__class__}::__sub__: is_torus of MultiImages must match, had {self.is_torus} and {other.is_torus}"
+        assert (
+            self.keys() == other.keys()
+        ), f"{self.__class__}::__sub__: Must have same types of images, had {self.keys()} and {other.keys()}"
+        assert (
+            self.metric_tensor == other.metric_tensor
+        ), f"{self.__class__}::__sub__: Metric tensors do not match"
+
+        out = self.empty()
+        for ((k_a, p_a), image_a), ((k_b, p_b), image_b) in zip(self.items(), other.items()):
+            assert k_a == k_b
+            assert p_a == p_b
+
+            out.append(k_a, p_a, image_a / image_b)
+
+        return out
 
     def concat(self: Self, other: Self, axis: int = 0) -> Self:
         """

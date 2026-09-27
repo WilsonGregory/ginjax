@@ -431,7 +431,7 @@ class AnyDimensionalModel(MultiImageModule):
             case (3, 0, 1, 2):
                 # b2 = (1/3)a1
 
-                # b0 = a0 - 2 b1 = a0 - 2 (a1 - 2 b2) = a0 - 2/3 b1
+                # b0 = a0 - 2 b1 = a0 - 2 (a1 - 2 b2) = a0 - 2/3 a1
                 # b1 = a1 - 2 b2 = (1/3) a1
                 assert old_weights.shape[2] == 2
 
@@ -466,7 +466,7 @@ class AnyDimensionalModel(MultiImageModule):
             case (3, 1, 2, 3):
                 # b2 = (1/3)a1
 
-                # b0 = a0 - 2 b1 = a0 - 2 (a1 - 2 b2) = a0 - 2/3 b1
+                # b0 = a0 - 2 b1 = a0 - 2 (a1 - 2 b2) = a0 - 2/3 a1
                 # b1 = a1 - 2 b2 = (1/3) a1
                 assert old_weights.shape[2] == 2
                 a0 = old_weights[:, :, 0]
@@ -2548,8 +2548,11 @@ class Climate1D(MultiImageModule):
 class LastStepIdentity(AnyDimensionalModel):
 
     residual: bool = eqx.field(static=True)
+    past_steps: int = eqx.field(static=True)
 
-    def __init__(self: Self, residual: bool = False):
+    def __init__(self: Self, D: int, past_steps: int, residual: bool = False):
+        self.D = D
+        self.past_steps = past_steps
         self.residual = residual
 
     def convertD(
@@ -2575,20 +2578,23 @@ class LastStepIdentity(AnyDimensionalModel):
         Callable function.
 
         args:
-            x: the input MultiImage
+            x: the input MultiImage, shape (channels*past_steps,spatial,tensor)
             batch_stats: batch stats for BatchNorm if present
 
         returns:
             the output MultiImage and batch_stats
         """
+        x = x.expand(0, self.past_steps)  # (channels,past_steps,spatial,tensor)
 
         out = x.empty()
         for (k, parity), img_block in x.items():
             # If it is a residual model, make it all zeros to add it
-            out_img_block = jnp.zeros_like(img_block[-1:]) if self.residual else img_block[-1:]
+            out_img_block = (
+                jnp.zeros_like(img_block[:, -1:]) if self.residual else img_block[:, -1:]
+            )
             out.append(k, parity, out_img_block)
 
-        return out, batch_stats
+        return out.combine_axes([0, 1]), batch_stats
 
 
 class SimpleConvSeries(AnyDimensionalModel):

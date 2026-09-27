@@ -277,7 +277,7 @@ def handleArgs() -> argparse.Namespace:
     CUDA_VISIBLE_DEVICES=3,4 time python3 -m scripts.burgers_anyd \
     --data /data/wgregor4/apebench/burgers/ --n-train 8 --n-val 8 --n-test 8 \
     -t 5 \
-    --rescale-list spin_embed,nepo \
+    --rescale-list nepo \
     --model-dir /data/wgregor4/runs/burgers_anyd/ \
     --results-dir /data/wgregor4/runs/burgers_anyd/ \
     --images-dir /data/wgregor4/images/apebench/burgers/burgers_

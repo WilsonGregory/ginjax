@@ -239,11 +239,11 @@ def autoregressive_step(
 def autoregressive_map(
     model: models.MultiImageModule,
     x: geom.MultiImage,
-    aux_data: Optional[eqx.nn.State] = None,
+    aux_data: eqx.nn.State | None = None,
     past_steps: int = 1,
     autoregressive_steps: int = 1,
     constant_fields: dict[tuple[tuple[bool, ...], int], int] = {},
-) -> tuple[geom.MultiImage, Optional[eqx.nn.State]]:
+) -> tuple[geom.MultiImage, eqx.nn.State | None]:
     """
     Given a model, perform an autoregressive step n times, and return the output
     steps in a single MultiImage. Currently the model must output a single time step.
@@ -973,14 +973,14 @@ class Mapper:
     residual or not.
     """
 
-    losses: list[geom.Losses]
+    losses: Sequence[geom.Losses]
     residual: bool
     reduce: str | None
     eps: float
 
     def __init__(
         self: Self,
-        losses: list[geom.Losses],
+        losses: Sequence[geom.Losses],
         residual: bool = False,
         reduce: str | None = "mean",
         eps: float = 0,
@@ -989,7 +989,7 @@ class Mapper:
         Docstring for __init__
 
         args:
-            losses: a list of losses, must be at least 1
+            losses: a sequence of losses, must be at least 1
             residual: Whether the network should learn the residual, defaults to False
             reduce: How to reduce the batch dimension, defaults to 'mean' but can also be None
             eps: epsilon value to use for nrmse and lr_rel, avoid dividing by 0

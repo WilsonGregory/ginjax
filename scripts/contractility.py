@@ -1,16 +1,17 @@
 import argparse
+import itertools as it
 import math
 import numpy as np
 import os
 import pathlib
 import time
-from typing import Literal, Self
+from typing import Literal, Self, Sequence
 from PIL import Image
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, Float, PRNGKeyArray
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 import matplotlib.pyplot as plt
 import optax
 from torch.utils.data import BatchSampler, DataLoader, RandomSampler, SequentialSampler
@@ -30,49 +31,6 @@ PreprocessChoices = Literal[
     "log1p_proteins",
     "log1p_force",
 ]
-
-
-def plot_input_output(
-    input: list[Float[Array, "timesteps spatial tensor"]],
-    output: list[Float[Array, "timesteps spatial tensor"]],
-    col_titles: list[str],
-    save_loc: str,
-) -> None:
-    """
-    Plot fields as rows and timesteps as columns, two images one for input and one for output.
-    """
-    for fields, name in [(input, "input"), (output, "output")]:
-        flat_fields = [field.reshape(field.shape[:3] + (-1,)) for field in fields]
-        max_vals = jnp.concat(
-            [
-                jnp.max(jnp.abs(flat_field)) * jnp.ones(flat_field.shape[-1])
-                for flat_field in flat_fields
-            ]
-        )
-        flat_fields = jnp.concat(flat_fields, axis=-1)  # (timesteps,spatial,all_flat_tensor)
-        nrows = flat_fields.shape[-1]  # total channel components
-        ncols = flat_fields.shape[0]  # number of timesteps
-
-        fig, axs = plt.subplots(nrows, ncols, figsize=(2 * ncols, 2 * nrows), dpi=144)
-        for row, (title, max_val) in enumerate(zip(col_titles, max_vals)):
-            if title == "zyxin" or title == "actin":
-                max_val = jnp.log1p(max_val)
-
-            for col, flat_field in enumerate(flat_fields):
-                if title == "zyxin" or title == "actin":
-                    flat_field = jnp.log1p(flat_field)  # hacky, oh well
-
-                print(f"Plotting {title} {col}")
-                geom.GeometricImage(flat_field[..., row], 0, D).plot(
-                    axs[row][col] if ncols > 1 else axs[row],
-                    f"{title} {col}",
-                    vmin=-float(max_val),
-                    vmax=float(max_val),
-                )
-
-        plt.tight_layout()
-        plt.savefig(f"{save_loc}_{name}.png")
-        plt.close(fig)
 
 
 def plot_multi_image(
@@ -119,6 +77,27 @@ def plot_multi_image(
         )
     )
 
+    test_image_norms = [
+        jnp.linalg.norm(test_multi_image[(), 0][0]),
+        jnp.linalg.norm(test_multi_image[(), 0][1]),
+        jnp.linalg.norm(test_multi_image[(), 0][2]),
+        jnp.linalg.norm(test_multi_image[(False,), 0][0]),
+        jnp.linalg.norm(test_multi_image[(False,), 0][0]),
+    ]
+    actual_image_norms = [
+        jnp.linalg.norm(actual_multi_image[(), 0][0]),
+        jnp.linalg.norm(actual_multi_image[(), 0][1]),
+        jnp.linalg.norm(actual_multi_image[(), 0][2]),
+        jnp.linalg.norm(actual_multi_image[(False,), 0][0]),
+        jnp.linalg.norm(actual_multi_image[(False,), 0][0]),
+    ]
+    diff_image_norms = [
+        jnp.linalg.norm((test_multi_image - actual_multi_image)[(), 0][0]),
+        jnp.linalg.norm((test_multi_image - actual_multi_image)[(), 0][1]),
+        jnp.linalg.norm((test_multi_image - actual_multi_image)[(), 0][2]),
+        jnp.linalg.norm((test_multi_image - actual_multi_image)[(False,), 0][0]),
+        jnp.linalg.norm((test_multi_image - actual_multi_image)[(False,), 0][0]),
+    ]
     max_vals = [zyxin_max, actin_max, mask_max, force_max, force_max]
     fig, axs = plt.subplots(nrows, ncols, figsize=(2 * ncols, 2 * nrows), dpi=144)
     for i, (test_field, actual_field, title, max_val) in enumerate(
@@ -127,79 +106,29 @@ def plot_multi_image(
         print(f"Plotting component {i}:{title}")
         geom.GeometricImage(test_field, 0, D).plot(
             axs[0][i],
-            f"predicted {title}",
+            f"predicted {title} ({test_image_norms[i]:.2e})",
             vmin=-float(max_val),
             vmax=float(max_val),
             colorbar=True,
         )
         geom.GeometricImage(actual_field, 0, D).plot(
-            axs[1][i], f"target {title}", vmin=-float(max_val), vmax=float(max_val), colorbar=True
+            axs[1][i],
+            f"target {title} ({actual_image_norms[i]:.2e})",
+            vmin=-float(max_val),
+            vmax=float(max_val),
+            colorbar=True,
         )
         geom.GeometricImage(test_field - actual_field, 0, D).plot(
-            axs[2][i], f"diff {title}", vmin=-float(max_val), vmax=float(max_val), colorbar=True
+            axs[2][i],
+            f"diff {title} ({diff_image_norms[i]:.3e})",
+            vmin=-float(max_val),
+            vmax=float(max_val),
+            colorbar=True,
         )
 
     plt.tight_layout()
     plt.savefig(save_loc)
     plt.close(fig)
-
-
-def plot_gif(
-    fields: list[Float[Array, "time spatial tensor"]], titles: list[str], save_loc: str
-) -> None:
-    """
-    Plot a gif of timesteps, by component for vectors.
-
-    args:
-        fields: list of fields to plot
-    """
-    D = 2
-
-    # -> (time, spatial, all_tensor_flat)
-    flat_fields = jnp.concat(
-        [field.reshape(field.shape[: D + 1] + (-1,)) for field in fields], axis=-1
-    )
-    flat_fields = jnp.moveaxis(flat_fields, -1, 1)  # -> (time, all_tensor_flat, spatial)
-
-    nrows = 1
-    ncols = flat_fields.shape[1]
-
-    # max for field component
-    max_vals = jnp.max(jnp.abs(flat_fields), axis=(0,) + tuple(range(2, 2 + D)))
-    for frame, flat_fields_frame in enumerate(flat_fields):
-        _, axs = plt.subplots(nrows, ncols, figsize=(2 * ncols, 2 * nrows), dpi=144)
-        for ax, field, title, max_val in zip(axs, flat_fields_frame, titles, max_vals):
-            geom.GeometricImage(field, 0, D).plot(
-                ax, title, vmin=-float(max_val), vmax=float(max_val), colorbar=True
-            )
-
-        print(f"Saving at: {save_loc}_frame{frame}.png")
-        plt.savefig(f"{save_loc}_frame{frame}.png")
-        plt.close()
-
-    # images = []
-    # frame_images = [x for x in os.listdir(save_loc) if "frame" in x]
-    # for file_name in sorted(
-    #     frame_images, key=lambda x: int(x[x.rfind("frame") + len("frame") : x.rfind(".png")])
-    # ):
-    #     file_path = os.path.join(save_loc, file_name)
-    #     images.append(Image.open(file_path))
-
-    # # 2. Save as an animated GIF
-    # images[0].save(
-    #     f"{save_loc}_animation.gif",
-    #     save_all=True,  # Ensures all frames are included, not just the first one
-    #     append_images=images[1:],  # Appends the rest of the frames
-    #     optimize=False,
-    #     duration=200,  # Duration of each frame in milliseconds (e.g., 200ms = 5 FPS)
-    #     loop=0,  # 0 means infinite loop; omit or change for specific iterations
-    # )
-
-
-def plot_hist(image: Float[Array, " ..."], save_loc: pathlib.Path) -> None:
-    plt.hist(image.ravel(), bins=50, log=True)
-    plt.savefig(save_loc)
-    plt.close()
 
 
 def read_one(
@@ -208,7 +137,8 @@ def read_one(
     Float[Array, " spatial"],
     Float[Array, " spatial"],
     Float[Array, "spatial D"],
-    Bool[Array, " spatial"],
+    Int[Array, " spatial"],
+    Int[Array, " spatial D"],
 ]:
     # shape (channels,spatial)
     data = jnp.array(np.load(fname), device=jax.devices("cpu")[0])
@@ -222,30 +152,9 @@ def read_one(
     # mask is (spatial,) of 0 for outside cell, 255 for inside cell.
     # Convert to 1 for inside the cell, 0 for outside
     mask = (data[4] != 0).astype(int)
-    force_mask = (data[5] != 0).astype(int)
+    force_mask = jnp.full(force.shape, (data[5] != 0).astype(int)[..., None])
 
-    # plot_gif(
-    #     [zyxin[None], actin[None], fx[None], fy[None], mask[None], force_mask[None]],
-    #     ["zyxin", "actin", "force_x", "force_y", "mask", "force_mask"],
-    #     "/data/wgregor4/images/contractility/example",
-    # )
-
-    # force_norm = jnp.linalg.norm(force, axis=-1)
-    # plot_gif(
-    #     [
-    #         jnp.log1p(zyxin[None]),
-    #         jnp.log1p(actin[None]),
-    #         (jnp.log1p(force_norm) / force_norm) * fx[None],
-    #         (jnp.log1p(force_norm) / force_norm) * fy[None],
-    #         mask[None],
-    #         force_mask[None],
-    #     ],
-    #     ["zyxin", "actin", "force_x", "force_y", "mask", "force_mask"],
-    #     "/data/wgregor4/images/contractility/example_log1p",
-    # )
-    # exit()
-
-    return zyxin, actin, force, mask
+    return zyxin, actin, force, mask, force_mask
 
 
 def read_cell(
@@ -255,6 +164,7 @@ def read_cell(
     Float[Array, "steps spatial"],
     Float[Array, "steps spatial D"],
     Float[Array, "steps spatial"],
+    Float[Array, "steps spatial D"],
 ]:
     frame_files = os.listdir(cell_dir)
     # sort by the frame number, files are "yadayada_<frame>.npy".
@@ -263,26 +173,22 @@ def read_cell(
     actin_ls = []
     force_ls = []
     mask_ls = []
+    force_mask_ls = []
     for frame_file in sorted_frames:
-        zyxin, actin, force, mask = read_one(cell_dir / frame_file)
+        zyxin, actin, force, mask, force_mask = read_one(cell_dir / frame_file)
         zyxin_ls.append(zyxin)
         actin_ls.append(actin)
         force_ls.append(force)
         mask_ls.append(mask)
+        force_mask_ls.append(force_mask)
 
     zyxin = jnp.stack(zyxin_ls)
     actin = jnp.stack(actin_ls)
     force = jnp.stack(force_ls)
     mask = jnp.stack(mask_ls)
+    force_mask = jnp.stack(force_mask_ls)
 
-    # plot_input_output(
-    #     [zyxin[:4], actin[:4], mask[:4], force[:4]],
-    #     [zyxin[4:5], actin[4:5], mask[4:5], force[4:5]],
-    #     ["zyxin", "actin", "mask", "force_x", "force_y"],
-    #     "/data/wgregor4/images/contractility/setup",
-    # )
-
-    return zyxin, actin, force, mask
+    return zyxin, actin, force, mask, force_mask
 
 
 class Preprocessor:
@@ -299,13 +205,14 @@ class Preprocessor:
     def __call__(
         self: Self,
         x: geom.MultiImage,
-        mask: Float[Array, "batch timesteps spatial"],
+        mask: geom.MultiImage,
         timesteps: int,
     ) -> geom.MultiImage:
         """
         Input shape (batch,channels*steps,spatial,tensor)
         """
         x = x.expand(1, timesteps)  # now (batch,channels,steps,spatial,tensor)
+        # mask still has shape (batch,timesteps,spatial,tensor)
 
         for preprocess_step in self.preprocess_steps:
             out = x.empty()
@@ -323,7 +230,7 @@ class Preprocessor:
                 vmap_nonmask_mean = jax.vmap(jax.vmap(nonmask_mean, in_axes=(0, None)))
                 out = x.copy()
                 # set negative values to 0 with the relu
-                out[((), 0)] = jax.nn.relu(vmap_nonmask_mean(out[((), 0)], mask))
+                out[((), 0)] = jax.nn.relu(vmap_nonmask_mean(out[((), 0)], mask[((), 0)]))
             elif preprocess_step == "percell_nonmask_scale":
                 # follow the normalization done in the previous paper
                 # vmap over batch for both, then channels for field
@@ -331,11 +238,13 @@ class Preprocessor:
                     field: Float[Array, "timesteps spatial"],
                     mask: Float[Array, "timesteps spatial"],
                 ) -> Float[Array, "timesteps spatial"]:
-                    return field / (jnp.mean(field[mask != 0]) - jnp.mean(field[mask == 0]))
+                    out_mask_mean = jnp.sum(jnp.where(mask != 0, field, 0.0)) / jnp.sum(mask != 0)
+                    in_mask_mean = jnp.sum(jnp.where(mask == 0, field, 0.0)) / jnp.sum(mask == 0)
+                    return field / (out_mask_mean - in_mask_mean)
 
                 vmap_nonmask_scale = jax.vmap(jax.vmap(nonmask_scale, in_axes=(0, None)))
                 out = x.copy()
-                out[((), 0)] = vmap_nonmask_scale(out[((), 0)], mask)
+                out[((), 0)] = vmap_nonmask_scale(out[((), 0)], mask[((), 0)])
 
                 # (batch,steps,spatial,1)
                 force_norm = jnp.linalg.norm(out[((False,), 0)], axis=-1, keepdims=True)
@@ -353,10 +262,14 @@ class Preprocessor:
                                 axis=(0,) + tuple(range(2, image_block.ndim)),
                                 keepdims=True,
                             )
-                            # construct mean with batch=1 so it broadcasts with any batch
-                            self.mean[k, p] = jnp.full((1,) + image_block.shape[1:], mean)
+                            # construct mean with batch=1 so it broadcasts with any batch, steps
+                            # (1,channels,1,spatial)
+                            self.mean[k, p] = jnp.full(mean.shape[:3] + image_block.shape[3:], mean)
                         else:
-                            self.mean[k, p] = jnp.zeros((1,) + image_block.shape[1:])
+                            # (1,channels,1,spatial,tensor)
+                            self.mean[k, p] = jnp.zeros(
+                                (1, image_block.shape[1], 1) + image_block.shape[3:]
+                            )
 
                 out = x - self.mean
             elif preprocess_step == "std":
@@ -371,7 +284,8 @@ class Preprocessor:
                                 axis=(0,) + tuple(range(2, image_block.ndim)),
                                 keepdims=True,
                             )
-                            self.std[k, p] = jnp.full((1,) + image_block.shape[1:], std)
+                            # (1,channels,1,spatial)
+                            self.std[k, p] = jnp.full(std.shape[:3] + image_block.shape[3:], std)
                         else:
                             norm_image_block = jnp.linalg.norm(
                                 image_block,
@@ -383,7 +297,8 @@ class Preprocessor:
                                 axis=(0,) + tuple(range(2, image_block.ndim)),
                                 keepdims=True,
                             )
-                            self.std[k, p] = jnp.full((1,) + image_block.shape[1:], std)
+                            # (1,channels,1,spatial,tensor)
+                            self.std[k, p] = jnp.full(std.shape[:3] + image_block.shape[3:], std)
 
                 out = x / self.std
             elif preprocess_step == "log1p_proteins":
@@ -440,7 +355,7 @@ class Preprocessor:
 
 def read_cells(
     D: int, cell_dirs: list[pathlib.Path], images_dir: pathlib.Path | None, plot_histograms: bool
-) -> tuple[geom.MultiImage, Float[Array, "batch timesteps spatial"]]:
+) -> tuple[geom.MultiImage, geom.MultiImage]:
     """
     Read the cells and create a multi image out of them.
 
@@ -455,30 +370,30 @@ def read_cells(
     actin_ls = []
     force_ls = []
     mask_ls = []
+    force_mask_ls = []
     for cell_dir in cell_dirs:  # requires they have equal number of timesteps, currently do
-        zyxin, actin, force, mask = read_cell(cell_dir)
-
-        if plot_histograms:
-            assert images_dir is not None
-            for field, name in [(zyxin, "zyxin"), (actin, "actin"), (force, "force")]:
-                plot_hist(field, images_dir / f"{cell_dir.name}_{name}_hist.png")
-                plot_hist(field[mask != 0], images_dir / f"{cell_dir.name}_{name}_masked_hist.png")
+        zyxin, actin, force, mask, force_mask = read_cell(cell_dir)
 
         zyxin_ls.append(zyxin)
         actin_ls.append(actin)
         force_ls.append(force)
         mask_ls.append(mask)
+        force_mask_ls.append(force_mask)
 
     # (batch,time,spatial,tensor)
     zyxins = jnp.stack(zyxin_ls)
     actins = jnp.stack(actin_ls)
     forces = jnp.stack(force_ls)
     masks = jnp.stack(mask_ls)
+    force_masks = jnp.stack(force_mask_ls)
 
     # (batch,channel,time,spatial,tensor) -> (batch,channel*time,spatial,tensor)
     scalars = jnp.stack([zyxins, actins], axis=1).reshape(len(cell_dirs), -1, *zyxins.shape[2:])
 
-    return geom.MultiImage({((), 0): scalars, ((False,), 0): forces}, D, is_torus=False), masks
+    return (
+        geom.MultiImage({((), 0): scalars, ((False,), 0): forces}, D, is_torus=False),
+        geom.MultiImage({((), 0): masks, ((False,), 0): force_masks}, D, is_torus=False),
+    )
 
 
 def get_data(
@@ -489,11 +404,13 @@ def get_data(
     n_test: int,
     past_steps: int,
     future_steps: int,
+    rollout_steps: int,
     batch_size: int,
     preprocess: list[PreprocessChoices],
     images_dir: pathlib.Path | None,
     plot_histograms: bool,
 ) -> tuple[
+    DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
@@ -533,20 +450,14 @@ def get_data(
     # Add the mask after preprocessing
     train_val = (
         train_val.expand(1, total_timesteps)
-        .append((), 0, train_val_mask[:, None], axis=1)
+        .concat(train_val_mask.expand(1, total_timesteps), axis=1)
         .combine_axes([1, 2])
     )
     test = (
         test.expand(1, total_timesteps)
-        .append((), 0, test_mask[:, None], axis=1)
+        .concat(test_mask.expand(1, total_timesteps), axis=1)
         .combine_axes([1, 2])
     )
-
-    # if plot_histograms:
-    #     assert images_dir is not None
-    #     for field, name in [(zyxins, "zyxin"), (actins, "actin"), (forces, "force")]:
-    #         plot_hist(field, images_dir / f"{preprocessor}_{name}_hist.png")
-    #         plot_hist(field[masks != 0], images_dir / f"{preprocessor}_{name}_masked_hist.png")
 
     train_val_x, train_val_y = batch_time_series(
         train_val, geom.MultiImage({}, D, False), total_timesteps, past_steps, future_steps
@@ -561,9 +472,14 @@ def get_data(
         test, geom.MultiImage({}, D, False), total_timesteps, past_steps, future_steps
     )
 
+    test_rollout_x, test_rollout_y = batch_time_series(
+        test, test.empty(), total_timesteps, past_steps, rollout_steps
+    )
+
     train_dataset = ml.MultiImageDataset(train_x, train_y)
     val_dataset = ml.MultiImageDataset(val_x, val_y)
     test_dataset = ml.MultiImageDataset(test_x, test_y)
+    test_rollout_dataset = ml.MultiImageDataset(test_rollout_x, test_rollout_y)
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -586,11 +502,19 @@ def get_data(
         ),
         collate_fn=lambda x: x[0],
     )
+    test_rollout_dataloader = DataLoader(
+        test_rollout_dataset,
+        sampler=BatchSampler(
+            SequentialSampler(test_rollout_dataset), batch_size, drop_last=n_test > batch_size
+        ),
+        collate_fn=lambda x: x[0],
+    )
 
     return (
         train_dataloader,
         val_dataloader,
         test_dataloader,
+        test_rollout_dataloader,
         x_sig,
         y_sig,
         preprocessor,
@@ -602,20 +526,24 @@ class ContractilityMapper(ml.Mapper):
     A mapper for the contractility data
     """
 
-    reverse_preprocess: list[bool]
+    reverse_preprocess: Sequence[bool]
+    mask_loss: Sequence[bool]
     preprocessor: Preprocessor
     past_steps: int
     future_steps: int
-    has_mask: bool
+    rollout_steps: int
+    mask_sig: geom.Signature
 
     def __init__(
         self: Self,
-        losses: list[geom.Losses],
-        reverse_preprocess: list[bool],
+        losses: Sequence[geom.Losses],
+        reverse_preprocess: Sequence[bool],
+        mask_loss: Sequence[bool],
         preprocessor: Preprocessor,
         past_steps: int,
         future_steps: int,
-        has_mask: bool = True,
+        rollout_steps: int,
+        mask_sig: geom.Signature,
         residual: bool = False,
         reduce: str | None = "mean",
         eps: float = 0,
@@ -627,17 +555,47 @@ class ContractilityMapper(ml.Mapper):
                 computing the loss
             preprocessor: the preprocessor used to reverse the preprocessing as necessary
             past_steps: the number of historical steps in the input
-            has_mask: whether the last channel of the scalars input and output is a mask
+            future_steps: the number of future time steps the model will output
+            rollout_steps: the number of autoregressive steps to take
+            mask_sig: the mask signature to separate the mask from the input/output.
             residual: whether to calculate the residual loss, and hence the model will learn
             reduce: how to reduce over the batch, the default is mean
             eps: epsilon used for normalized losses
         """
         super().__init__(losses, residual, reduce, eps)
+        if future_steps > 1:
+            raise NotImplementedError(f"future_steps must be 1, got {future_steps}")
+
         self.reverse_preprocess = reverse_preprocess
+        self.mask_loss = mask_loss
         self.preprocessor = preprocessor
         self.past_steps = past_steps
         self.future_steps = future_steps
-        self.has_mask = has_mask
+        self.rollout_steps = rollout_steps
+        self.mask_sig = mask_sig
+
+    @eqx.filter_jit
+    def map(
+        self: Self,
+        model: models.MultiImageModule,
+        multi_image_x: geom.MultiImage,
+        aux_data: eqx.nn.State | None = None,
+    ) -> tuple[geom.MultiImage, eqx.nn.State | None]:
+        vmap_autoregressive = jax.vmap(
+            ml.autoregressive_map,
+            in_axes=(None, 0, None, None, None),
+            out_axes=(0, None),
+            axis_name="batch",
+        )
+        out, aux_data = vmap_autoregressive(
+            model,
+            multi_image_x,
+            aux_data,
+            self.past_steps,
+            self.rollout_steps,
+        )
+
+        return out, aux_data
 
     @eqx.filter_jit
     def map_plus_loss(
@@ -650,45 +608,44 @@ class ContractilityMapper(ml.Mapper):
         """
         Like the __call__, but also returned the mapped pred_y. Its also unreduced.
         """
-        if self.has_mask:
-            x_expanded = multi_image_x.expand(1, self.past_steps)
-            multi_image_x = x_expanded.empty()
-            input_mask = x_expanded[((), 0)][:, -1:]  # (batch,1,past_steps,spatial)
-            for (k, p), image_block in x_expanded.items():
-                if len(k) == 0:
-                    multi_image_x.append(k, p, image_block[:, :-1])
-                else:
-                    multi_image_x.append(k, p, image_block)
+        total_out_steps = self.future_steps * self.rollout_steps
 
-            multi_image_x = multi_image_x.combine_axes([1, 2])
+        x_expanded, _ = multi_image_x.expand(1, self.past_steps).concat_inverse(self.mask_sig, 1)
+        y_expanded, out_mask = multi_image_y.expand(1, total_out_steps).concat_inverse(
+            self.mask_sig, 1
+        )
+        for key, image_block in y_expanded.items():
+            out_mask[key] = jnp.full(image_block.shape, out_mask[key])
 
-            y_expanded = multi_image_y.expand(1, self.future_steps)
-            multi_image_y = y_expanded.empty()
-            output_mask = y_expanded[((), 0)][:, -1:]  # (batch,1,future_steps,spatial)
-            for (k, p), image_block in y_expanded.items():
-                if len(k) == 0:
-                    multi_image_y.append(k, p, image_block[:, :-1])
-                else:
-                    multi_image_y.append(k, p, image_block)
-
-            multi_image_y = multi_image_y.combine_axes([1, 2])
+        multi_image_x = x_expanded.combine_axes([1, 2])
+        multi_image_y = y_expanded.combine_axes([1, 2])
+        out_mask = out_mask.combine_axes([1, 2])
 
         pred_y, aux_data = self.map(model, multi_image_x, aux_data)
-        # TODO: its getting broadcast the wrong way during the reverse
-        pred_y_reversed = self.preprocessor.reverse(pred_y, self.future_steps)
-        multi_image_y_reversed = self.preprocessor.reverse(multi_image_y, self.future_steps)
+        pred_y_reversed = self.preprocessor.reverse(pred_y, total_out_steps)
+        multi_image_y_reversed = self.preprocessor.reverse(multi_image_y, total_out_steps)
 
         loss_outputs = []
-        for loss, reverse in zip(self.losses, self.reverse_preprocess):  # the order is important
+        # the order is important
+        for loss, reverse, use_mask in zip(self.losses, self.reverse_preprocess, self.mask_loss):
 
             pred_y_ = pred_y_reversed if reverse else pred_y
             multi_image_y_ = multi_image_y_reversed if reverse else multi_image_y
+            mask = out_mask if use_mask else None
 
             if loss is geom.Losses.SMSE:
                 loss_outputs.append(ml.smse_loss(pred_y_, multi_image_y_, self.reduce))
             elif loss is geom.Losses.NRMSE:
                 loss_outputs.append(
-                    ml.nrmse_loss(pred_y_, multi_image_y_, self.reduce, eps=self.eps)
+                    ml.timestep_nrmse_loss(
+                        pred_y_,
+                        multi_image_y_,
+                        self.reduce,
+                        self.eps,
+                        mask,
+                        total_out_steps,
+                        "mean" if total_out_steps == 1 else None,
+                    )
                 )
             elif loss is geom.Losses.NRMSE_PER_PIXEL:
                 loss_outputs.append(
@@ -734,6 +691,7 @@ def train_and_eval(
         DataLoader[ml.MultiImageDataset],
         DataLoader[ml.MultiImageDataset],
         DataLoader[ml.MultiImageDataset],
+        DataLoader[ml.MultiImageDataset],
     ],
     key: PRNGKeyArray,
     model_name: str,
@@ -752,17 +710,36 @@ def train_and_eval(
     verbose: int = 1,
     is_wandb: bool = False,
 ) -> tuple[Float[Array, ""], ...]:
-    train_dl, val_dl, test_dl = data
+    assert future_steps == 1
+    train_dl, val_dl, test_dl, test_rollout_dl = data
     assert isinstance(train_dl.dataset, ml.MultiImageDataset)
     batch_stats = eqx.nn.State(model) if has_aux else None
 
     print(f"Model params: {models.count_params(model):,}")
 
+    mask_sig = geom.Signature(((((), 0), 1), (((False,), 0), 1)))
+
     train_mapper = ContractilityMapper(
-        [geom.Losses.NRMSE], [False], preprocessor, past_steps, future_steps, eps=1e-5
+        [geom.Losses.NRMSE],
+        [False],
+        [True],
+        preprocessor,
+        past_steps,
+        future_steps,
+        1,
+        mask_sig,
+        eps=1e-5,
     )
     val_mapper = ContractilityMapper(
-        [geom.Losses.NRMSE], [True], preprocessor, past_steps, future_steps, eps=1e-5
+        [geom.Losses.NRMSE],
+        [True],
+        [True],
+        preprocessor,
+        past_steps,
+        future_steps,
+        1,
+        mask_sig,
+        eps=1e-5,
     )
 
     model_name_extended = f"{model_name}_{preprocessor}_L{len(train_dl.dataset)}_e{epochs}"
@@ -793,22 +770,42 @@ def train_and_eval(
             # TODO: need to save batch_stats as well
             ml.save_plus(model_path, trained_model, {"train_time": train_time})
 
+    eval_losses_f = list(it.product([geom.Losses.NRMSE], [True], [False, True]))
+    print("Losses", eval_losses_f)
+    losses, reverse_preprocess, mask_loss = list(zip(*eval_losses_f))
     eval_mapper = ContractilityMapper(
-        [geom.Losses.NRMSE, geom.Losses.NRMSE, geom.Losses.SMSE, geom.Losses.SMSE],
-        [False, True, False, True],
+        losses,
+        reverse_preprocess,
+        mask_loss,
         preprocessor,
         past_steps,
         future_steps,
+        1,
+        mask_sig,
         eps=1e-5,
     )
     train_loss = ml.map_loss_in_batches_dl(eval_mapper, trained_model, train_dl)
-    val_loss = ml.map_loss_in_batches_dl(eval_mapper, trained_model, val_dl)
-    test_loss = ml.map_loss_in_batches_dl(eval_mapper, trained_model, test_dl)
-
     print(f"Train Loss: {train_loss}")
+    val_loss = ml.map_loss_in_batches_dl(eval_mapper, trained_model, val_dl)
     print(f"Val Loss: {val_loss}")
+    test_loss = ml.map_loss_in_batches_dl(eval_mapper, trained_model, test_dl)
     print(f"Test Loss: {test_loss}")
-    # TODO: rollout loss
+
+    rollout_eval_mapper = ContractilityMapper(
+        losses,
+        reverse_preprocess,
+        mask_loss,
+        preprocessor,
+        past_steps,
+        future_steps,
+        rollout_steps,
+        mask_sig,
+        eps=1e-5,
+    )
+    test_rollout_loss = ml.map_loss_in_batches_dl(
+        rollout_eval_mapper, trained_model, test_rollout_dl
+    )
+    print(f"Test Rollout Loss: {test_rollout_loss}")
 
     if images_dir is not None:
         val_x_one, val_y_one = next(iter(val_dl))
@@ -817,25 +814,37 @@ def train_and_eval(
         # (1,channels*future_steps,spatial,tensor)
         val_x_one = val_x_one.get_one(keepdims=False).get_one()
         val_y_one = val_y_one.get_one(keepdims=False).get_one()
-        pred_y, one_loss, _ = train_mapper.map_plus_loss(
-            trained_model, val_x_one, val_y_one, batch_stats
+        # train_mapper doesn't reverse the preprocessing
+        mapper = ContractilityMapper(
+            [geom.Losses.NRMSE],
+            [False],
+            [True],
+            preprocessor,
+            past_steps,
+            future_steps,
+            1,
+            mask_sig,
+            eps=1e-5,
         )
+        pred_y, one_loss, _ = mapper.map_plus_loss(trained_model, val_x_one, val_y_one, batch_stats)
         pred_y.append((), 0, val_y_one[(), 0][:, -1:], axis=1)  # add the mask back to pred_y
         print(f"One Loss: {one_loss}")
         components = ["zyxin", "actin", "mask", "force_x", "force_y"]
-        # plot_multi_image(pred_y, val_y_one, images_dir / f"{model_name_extended}.png", components)
+        plot_multi_image(pred_y, val_y_one, images_dir / f"{model_name_extended}.png", components)
 
     return train_loss[0], val_loss[0], test_loss[0]
 
 
 def handleArgs() -> argparse.Namespace:
     """
-    CUDA_VISIBLE_DEVICES=3 time python3 -m scripts.contractility \
+    CUDA_VISIBLE_DEVICES=2,3 time python3 -m scripts.contractility \
     --data /data/wgregor4/contractility/ZyxAct_16kPa_small/ \
-    --n-train 232 --n-val 112 --n-test 8 -b 2 -e 10 \
+    --n-train 232 --n-val 112 --n-test 8 -b 4 -e 10 \
+    --rollout-steps 5 \
+    --preprocess percell_nonmask_mean,percell_nonmask_scale,mean,std
+    
     --model-dir /data/wgregor4/runs/contractility/ \
     --images-dir /data/wgregor4/images/contractility/ \
-    --preprocess percell_nonmask_mean,log1p_proteins,std
 
     Can do --n-val 128, but for speed do this
     """
@@ -850,7 +859,7 @@ def handleArgs() -> argparse.Namespace:
         "--rollout-steps",
         help="number of output future steps to evaluate with",
         type=int,
-        default=0,
+        default=1,
     )
     parser.add_argument(
         "--preprocess",
@@ -885,7 +894,7 @@ D = 2
 data_dir = pathlib.Path(args.data)
 images_dir = pathlib.Path(args.images_dir) if args.images_dir else None
 
-train_dl, val_dl, test_dl, input_keys, output_keys, preprocessor = get_data(
+train_dl, val_dl, test_dl, test_rollout_dl, input_keys, output_keys, preprocessor = get_data(
     D,
     data_dir,
     args.n_train,
@@ -893,6 +902,7 @@ train_dl, val_dl, test_dl, input_keys, output_keys, preprocessor = get_data(
     args.n_test,
     args.past_steps,
     args.future_steps,
+    args.rollout_steps,
     args.batch,
     args.preprocess,
     images_dir,
@@ -925,67 +935,67 @@ train_kwargs = {
 
 key, *subkeys = jax.random.split(key, num=13)
 model_list = [
-    (
-        # batch=2 works, batch=4 fails
-        "unetBase_equiv20",
-        train_and_eval,
-        {
-            "model": models.UNet(
-                D,
-                input_keys,
-                output_keys,
-                depth=20,
-                activation_f=jax.nn.gelu,
-                conv_filters=conv_filters,
-                upsample_filters=upsample_filters,
-                key=subkeys[8],
-            ),
-            "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
-            **train_kwargs,
-        },
-    ),
-    (
-        "lastStepIdentity",
-        train_and_eval,
-        {
-            "model": models.LastStepIdentity(D, args.past_steps),
-            "lr": 3e-4,  # unused
-            **train_kwargs,
-        },
-    ),
     # (
-    #     "unetBase",
+    #     "lastStepIdentity",
+    #     train_and_eval,
+    #     {
+    #         "model": models.LastStepIdentity(D, args.past_steps),
+    #         "lr": 3e-4,  # unused
+    #         **train_kwargs,
+    #     },
+    # ),
+    # (
+    #     # batch=2 works, batch=4 fails
+    #     "unetBase_equiv20",
     #     train_and_eval,
     #     {
     #         "model": models.UNet(
     #             D,
     #             input_keys,
     #             output_keys,
-    #             depth=64,
-    #             use_bias=True,
+    #             depth=20,
     #             activation_f=jax.nn.gelu,
-    #             equivariant=False,
-    #             kernel_size=3,
-    #             use_group_norm=False,
-    #             padding_mode="ZEROS",
-    #             key=subkeys[6],
+    #             conv_filters=conv_filters,
+    #             upsample_filters=upsample_filters,
+    #             key=subkeys[8],
     #         ),
-    #         "lr": 8e-4,
+    #         "lr": 4e-4,  # 4e-4 to 6e-4 works, larger sometimes explodes
     #         **train_kwargs,
     #     },
     # ),
+    (  # slightly worse but faster
+        "unetBase",
+        train_and_eval,
+        {
+            "model": models.UNet(
+                D,
+                input_keys,
+                output_keys,
+                depth=64,
+                use_bias=True,
+                activation_f=jax.nn.gelu,
+                equivariant=False,
+                kernel_size=3,
+                use_group_norm=False,
+                padding_mode="ZEROS",
+                key=subkeys[6],
+            ),
+            "lr": 8e-4,
+            **train_kwargs,
+        },
+    ),
 ]
 
 key, subkey = jax.random.split(key)
 
 # Use this for benchmarking the models with known learning rates.
 results = ml.benchmark_lr(
-    lambda _: (train_dl, val_dl, test_dl),
+    lambda _: (train_dl, val_dl, test_dl, test_rollout_dl),
     model_list,
     subkey,
     [],  # lr_range
     num_trials=args.n_trials,
-    num_results=3 + args.rollout_steps,
+    num_results=3,  # TODO: currently not returning rollout losses, will want to add those
     is_wandb=args.wandb,
     wandb_project=args.wandb_project,
     wandb_entity=args.wandb_entity,

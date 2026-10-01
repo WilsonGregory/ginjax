@@ -1,4 +1,4 @@
-from typing_extensions import Optional, Union
+from typing_extensions import Optional
 import numpy as np
 
 import jax
@@ -166,6 +166,82 @@ def nrmse_per_pixel_loss(
     error_per_batch = jnp.mean(error_per_batch, axis=1)  # mean over channels, spatial -> (batch,)
 
     return jnp.mean(error_per_batch) if reduce == "mean" else error_per_batch
+
+
+def timestep_nrmse_loss(
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
+    reduce_batch: str | None = "mean",
+    eps: float = 0,
+    mask: geom.MultiImage | None = None,
+    n_steps: int = 1,
+    reduce_steps: str | None = "mean",
+) -> jax.Array:
+    """
+    The normalized root mean squared error. This definition follows the standard one used in
+    literature where the norm is taken over the entire difference image and reference image
+    before doing the division diff / reference.
+
+    This version can also take in a mask to only calculate the loss over the mask, and take in
+    n_steps to optionally not reduce over timesteps.
+
+    args:
+        multi_image_x: predicted data, image_blocks are shape (batch,channels,spatial,tensor)
+        multi_image_y: target data, image_blocks are shape (batch,channels,spatial,tensor)
+        reduce: how to reduce over batch. Either "mean" or None.
+        eps: epsilon to add to the denominator to avoid divide by zero errors
+        mask: mask to only calculate the loss on a particular region of the image. Should be a
+            multi image that is the same shape as x and y.
+
+    returns:
+        average root mean squared error with respect to the second input.
+    """
+    reduce_options = {"mean", None}
+    assert (
+        reduce_batch in reduce_options
+    ), f"nrmse_loss: reduce={reduce_batch} must be one of {reduce_options}"
+    assert (
+        reduce_steps in reduce_options
+    ), f"nrmse_loss: reduce_steps={reduce_steps} must be one of {reduce_options}"
+    assert (
+        multi_image_x.get_n_leading() == multi_image_y.get_n_leading() == 2
+    ), "nrmse_loss: MultiImages must have batch and channel axes"
+
+    batch = multi_image_x.get_L()
+
+    # (batch,channels,timesteps,spatial,tensor)
+    multi_image_x = multi_image_x.expand(1, n_steps)
+    multi_image_y = multi_image_y.expand(1, n_steps)
+    mask = None if mask is None else mask.expand(1, n_steps)
+
+    error = jnp.zeros((batch, 0, n_steps))
+    for (key_a, image_a), (key_b, image_b) in zip(multi_image_x.items(), multi_image_y.items()):
+        assert key_a == key_b
+        if mask is not None:
+            mask_arr = mask[key_a]
+            assert (
+                mask_arr.shape == image_a.shape == image_b.shape
+            ), f"mask:{mask_arr.shape}, image_a:{image_a.shape}, image_b:{image_b.shape}"
+            image_a = jnp.where(mask_arr != 0, image_a, 0)
+            image_b = jnp.where(mask_arr != 0, image_b, 0)
+
+        # reshape to (batch,channels,timesteps,spatial*tensor)
+        image_a = image_a.reshape(image_a.shape[:3] + (-1,))
+        image_b = image_b.reshape(image_b.shape[:3] + (-1,))
+
+        diff_norms = jnp.linalg.norm(image_a - image_b, axis=3)
+        target_norms = jnp.linalg.norm(image_b, axis=3)
+        error = jnp.concatenate([error, diff_norms / (target_norms + eps)], axis=1)
+
+    if reduce_steps == "mean":
+        error = jnp.mean(error, axis=2)  # (batch,channels)
+
+    error = jnp.mean(error, axis=1)  # mean over channels
+
+    if reduce_batch == "mean":
+        error = jnp.mean(error, axis=0)  # mean over batch
+
+    return error
 
 
 def nrmse_loss(

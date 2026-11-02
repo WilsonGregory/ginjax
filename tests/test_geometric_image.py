@@ -1,11 +1,11 @@
+import itertools as it
 import math
 import time
+
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
-import itertools as it
-
-import jax.numpy as jnp
-import jax
 from jax import random
 
 import ginjax.geometric as geom
@@ -1605,9 +1605,24 @@ class TestGeometricImage:
         nontorus_image = geom.GeometricImage(
             jnp.array([[0, 1, 2], [3, 4, 5], [6, 7, 8]]), 0, D, is_torus=False
         )
-        # cannot translate non-torus images
-        with pytest.raises(AssertionError):
-            nontorus_image.translate(jnp.array([0, 1]))
+        translated_nontorus_image1 = nontorus_image.translate(jnp.array([1, -1]))
+        assert jnp.allclose(
+            translated_nontorus_image1.data, jnp.array([[0, 0, 0], [1, 2, 0], [4, 5, 0]])
+        )
+
+        translated_nontorus_image2 = nontorus_image.translate(jnp.array([0, 0]))
+        assert translated_nontorus_image2 == nontorus_image
+
+        translated_nontorus_image3 = nontorus_image.translate(jnp.array([3, 3]))
+        assert translated_nontorus_image3 == geom.GeometricImage.zeros(3, 0, 0, D, is_torus=False)
+
+        semitorus_image = geom.GeometricImage(
+            jnp.array([[0, 1, 2], [3, 4, 5], [6, 7, 8]]), 0, D, is_torus=(True, False)
+        )
+        translated_semitorus_image1 = semitorus_image.translate(jnp.array([1, -1]))
+        assert jnp.allclose(
+            translated_semitorus_image1.data, jnp.array([[7, 8, 0], [1, 2, 0], [4, 5, 0]])
+        )
 
     def testNonsquareImageTranslate(self):
         # now try to translate a non-square image
@@ -1620,3 +1635,10 @@ class TestGeometricImage:
 
         translated_image2 = nonsquare_image.translate(jnp.array([2, 3]))
         assert translated_image2 == nonsquare_image
+
+        nontorus_nonsquare_image = geom.GeometricImage(
+            jnp.array([[0, 1, 2], [3, 4, 5]]), 0, D, is_torus=False
+        )
+
+        translated_nontorus_image1 = nontorus_nonsquare_image.translate(jnp.array([1, -1]))
+        assert jnp.allclose(translated_nontorus_image1.data, jnp.array([[0, 0, 0], [1, 2, 0]]))

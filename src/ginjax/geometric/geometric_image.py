@@ -1132,11 +1132,14 @@ class GeometricFilter(GeometricImage):
                     < 0
                 ):
                     return self.times_scalar(-1)
-            elif (
-                self.D == 2
-                and jnp.sum(jnp.cross(self.key_array().reshape(self.shape()), self.data)) < 0
-            ):
-                return self.times_scalar(-1)
+            elif self.D == 2:
+                # jnp.cross for 2D vectors is deprecated, pad them to 3d and the pseudoscalar is
+                # in the 3rd coordinate
+                key_array = self.key_array().reshape(self.shape())  # (spatial,2)
+                first = jnp.concat([key_array, jnp.zeros_like(key_array[..., -1:])], axis=-1)
+                second = jnp.concat([self.data, jnp.zeros_like(key_array[..., -1:])], axis=-1)
+                if jnp.sum(jnp.cross(first, second)) < 0:
+                    return self.times_scalar(-1)
 
         return self
 

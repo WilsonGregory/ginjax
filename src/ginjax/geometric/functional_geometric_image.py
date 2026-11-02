@@ -4,16 +4,15 @@
 # such as vmaps, loops, jit, and so on. All functions in this section take in images as their jnp.array data
 # only, and return them as that as well.
 
-import itertools as it
 import functools
+import itertools as it
 import math
-import numpy as np
-from typing_extensions import Optional, Union
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import ArrayLike
-import equinox as eqx
+import numpy as np
+from jaxtyping import Array, ArrayLike, Float, Int
 
 from ginjax.geometric.constants import LETTERS, TINY
 
@@ -131,7 +130,7 @@ def get_torus_expanded(
 def get_same_padding(
     filter_spatial_dims: tuple[int, ...],
     rhs_dilation: tuple[int, ...],
-    pad_dims: Optional[tuple[bool, ...]] = None,
+    pad_dims: tuple[bool, ...] | None = None,
 ) -> tuple[tuple[int, int], ...]:
     """
     Calculate the padding for each dimension D necessary for 'SAME' padding, including rhs_dilation.
@@ -162,7 +161,7 @@ def pre_tensor_product_expand(
     image_b: jax.Array,
     a_offset: int = 0,
     b_offset: int = 0,
-    dtype: Optional[jnp.dtype] = None,
+    dtype: jnp.dtype | None = None,
 ) -> tuple[jax.Array, jax.Array]:
     """
     Rather than take a tensor product of two tensors, we can first take a tensor product of each with a tensor of
@@ -262,13 +261,13 @@ def mul(
 @eqx.filter_jit
 def convolve(
     D: int,
-    image: jax.Array,
+    image: Float[Array, "batch in_c spatial tensor"],
     filter_image: jax.Array,
-    is_torus: Union[tuple[bool, ...], bool],
-    stride: Union[int, tuple[int, ...]] = 1,
-    padding: Optional[Union[str, int, tuple[tuple[int, int], ...]]] = None,
-    lhs_dilation: Optional[tuple[int, ...]] = None,
-    rhs_dilation: Union[int, tuple[int, ...]] = 1,
+    is_torus: tuple[bool, ...] | bool,
+    stride: int | tuple[int, ...] = 1,
+    padding: str | int | tuple[tuple[int, int], ...] | None = None,
+    lhs_dilation: tuple[int, ...] | None = None,
+    rhs_dilation: int | tuple[int, ...] = 1,
     tensor_expand: bool = True,
 ) -> jax.Array:
     """
@@ -351,11 +350,11 @@ def convolve_ravel(
     D: int,
     image: jax.Array,
     filter_image: jax.Array,
-    is_torus: Union[tuple[bool, ...], bool],
-    stride: Union[int, tuple[int, ...]] = 1,
-    padding: Optional[Union[str, int, tuple[tuple[int, int], ...]]] = None,
-    lhs_dilation: Optional[tuple[int, ...]] = None,
-    rhs_dilation: Union[int, tuple[int, ...]] = 1,
+    is_torus: tuple[bool, ...] | bool,
+    stride: int | tuple[int, ...] = 1,
+    padding: str | int | tuple[tuple[int, int], ...] | None = None,
+    lhs_dilation: tuple[int, ...] | None = None,
+    rhs_dilation: int | tuple[int, ...] = 1,
 ) -> jax.Array:
     """
     Raveled verson of convolution. Assumes the channels are all lined up correctly for the tensor
@@ -446,11 +445,11 @@ def convolve_contract(
     D: int,
     image: jax.Array,
     filter_image: jax.Array,
-    is_torus: Union[bool, tuple[bool, ...]],
-    stride: Union[int, tuple[int, ...]] = 1,
-    padding: Optional[Union[str, int, tuple[tuple[int, int], ...]]] = None,
-    lhs_dilation: Optional[tuple[int, ...]] = None,
-    rhs_dilation: Union[int, tuple[int, ...]] = 1,
+    is_torus: bool | tuple[bool, ...],
+    stride: int | tuple[int, ...] = 1,
+    padding: str | int | tuple[tuple[int, int], ...] | None = None,
+    lhs_dilation: tuple[int, ...] | None = None,
+    rhs_dilation: int | tuple[int, ...] = 1,
 ) -> jax.Array:
     """
     Given an input k image and a k+k' filter, take the tensor convolution that contract k times with one index
@@ -521,7 +520,7 @@ def get_contraction_indices(
 
     tuple_pairs = it.combinations(it.combinations(range(initial_k), 2), (initial_k - final_k) // 2)
     rows = np.array([np.array(pair).reshape((initial_k - final_k,)) for pair in tuple_pairs])
-    unique_rows = np.array([True if len(np.unique(row)) == len(row) else False for row in rows])
+    unique_rows = np.array([len(np.unique(row)) == len(row) for row in rows])
     unique_pairs = rows[unique_rows]  # remove rows which have an index multiple times
 
     # replace every element of the second term of the swappable pair with the first term
@@ -585,7 +584,7 @@ def raise_lower(
     metric_tensor_inv: jax.Array,
     from_axes: tuple[bool, ...],
     to_axes: tuple[bool, ...],
-    precision: Optional[jax.lax.Precision] = None,
+    precision: jax.lax.Precision | None = None,
 ) -> jax.Array:
     """
     Raise or lower the axes of a tensor or tensor image according to the metric tensor and axes.
@@ -652,7 +651,7 @@ def get_rotated_keys(D: int, spatial_dims: tuple[int, ...], gg: np.ndarray) -> n
     rot_centering_coords = (np.array(rotated_spatial_dims).reshape((1, D)) - 1) / 2
 
     # rotated keys will need to have the rotated_spatial_dims numbers
-    key_array = np.array([key for key in it.product(*list(range(N) for N in rotated_spatial_dims))])
+    key_array = np.array([key for key in it.product(*[range(N) for N in rotated_spatial_dims])])
     shifted_key_array = key_array - rot_centering_coords
     return np.rint((shifted_key_array @ gg) + centering_coords).astype(int)
 
@@ -663,7 +662,7 @@ def times_group_element(
     parity: int,
     gg: np.ndarray,
     covariant_axes: tuple[bool, ...],
-    precision: Optional[jax.lax.Precision] = None,
+    precision: jax.lax.Precision | None = None,
 ) -> jax.Array:
     """
     Apply a group element of O(d) to the geometric image. First apply the action to the
@@ -694,7 +693,7 @@ def times_group_element(
     # hash, then reshape keys
     vmap_hash = jax.vmap(lambda x: x[hash(D, spatial_dims, rotated_keys)])
     rotated_pixels = vmap_hash(data.reshape((-1,) + spatial_dims + (D,) * k)).reshape(
-        (data.shape[:n_lead] + rotated_spatial_dims + (D,) * k)
+        data.shape[:n_lead] + rotated_spatial_dims + (D,) * k
     )
 
     if k == 0:
@@ -726,7 +725,7 @@ def times_D8_element(
     parity: int,
     gg: np.ndarray,
     covariant_axes: tuple[bool, ...],
-    precision: Optional[jax.lax.Precision] = None,
+    precision: jax.lax.Precision | None = None,
 ) -> jax.Array:
     """
     For the very limited case of a 3x3 GeometricImage, we define the group action of D8 as treating
@@ -757,7 +756,7 @@ def times_D8_element(
     centering_coords = (np.array(spatial_dims).reshape((1, D)) - 1) / 2
 
     # (3**D,D)
-    key_array = np.array([key for key in it.product(*list(range(N) for N in spatial_dims))])
+    key_array = np.array([key for key in it.product(*[range(N) for N in spatial_dims])])
     shifted_key_array = key_array - centering_coords
     rotated_keys = shifted_key_array @ gg
     # leave the all zeros center key alone, but scale the others so the max value is 1
@@ -771,7 +770,7 @@ def times_D8_element(
     # hash, then reshape keys
     vmap_hash = jax.vmap(lambda x: x[hash(D, spatial_dims, rotated_keys)])
     rotated_pixels = vmap_hash(data.reshape((-1,) + spatial_dims + (D,) * k)).reshape(
-        (data.shape[:n_lead] + spatial_dims + (D,) * k)
+        data.shape[:n_lead] + spatial_dims + (D,) * k
     )
 
     if k == 0:
@@ -797,7 +796,7 @@ def tensor_times_gg(
     tensor: jax.Array,
     parity: int,
     gg: np.ndarray,
-    precision: Optional[jax.lax.Precision] = None,
+    precision: jax.lax.Precision | None = None,
 ) -> jax.Array:
     """
     Apply a group element of SO(2) or SO(3) to a single tensor.
@@ -830,33 +829,50 @@ def tensor_times_gg(
     return newdata
 
 
-def translate(D: int, data: jax.Array, tau: jax.Array, n_lead: int = 0) -> jax.Array:
+def translate(
+    D: int,
+    data: Float[Array, "... spatial tensor"],
+    is_torus: tuple[bool, ...],
+    tau: Int[Array, " D"],
+    n_lead: int = 0,
+) -> Float[Array, "... spatial tensor"]:
     """
-    Translate an image by translation tau, on the torus. Translations on the data matrix are ij
-    ordering. For example, a translation of [1,-1] moves the down one row, then to the left one
+    Translate an image by translation tau, on or off the torus. Translations on the data matrix are
+    ij ordering. For example, a translation of [1,-1] moves the down one row, then to the left one
     column.
 
     args:
         D: dimension of the image
         data: image data with n_lead batch axes, followed by spatial then tensor
+        is_torus: which spatial sides are on a torus
         tau: the translation
         n_lead: number of leading batch axes
 
     returns:
         translated image data
     """
-    spatial_dims, k = parse_shape(data.shape[n_lead:], D)
-    # does key array need to be a numpy array?
-    key_array = jnp.array(
-        np.array([key for key in it.product(*list(range(N) for N in spatial_dims))])
-    )
-    translated_keys = key_array - tau
+    _, k = parse_shape(data.shape[n_lead:], D)
 
-    # hash, then reshape keys
-    vmap_hash = jax.vmap(lambda x: x[hash(D, spatial_dims, translated_keys)])
-    translated_pixels = vmap_hash(data.reshape((-1,) + spatial_dims + (D,) * k)).reshape(
-        (data.shape[:n_lead] + spatial_dims + (D,) * k)
+    block_is_torus = (False,) * n_lead + is_torus + (False,) * k
+    block_tau = jnp.concat([jnp.zeros(n_lead), tau, jnp.zeros(k)]).astype(int)
+    block_torus_tau = jnp.stack([t if torus else 0 for t, torus in zip(block_tau, block_is_torus)])
+    block_nontorus_tau = jnp.stack(
+        [0 if torus else t for t, torus in zip(block_tau, block_is_torus)]
     )
+
+    # pad the beginning by positive t and the end by the negative t
+    padded_data = jnp.pad(
+        data, tuple((jax.nn.relu(t), jax.nn.relu(-t)) for t in block_torus_tau), mode="wrap"
+    )
+    padded_data = jnp.pad(
+        padded_data, tuple((jax.nn.relu(t), jax.nn.relu(-t)) for t in block_nontorus_tau)
+    )
+
+    # slice the end off, back to [0...N]
+    translated_pixels = padded_data[
+        *(slice(t, N + t) for N, t in zip(data.shape, jax.nn.relu(-block_tau).astype(int)))
+    ]
+
     return translated_pixels
 
 
@@ -893,7 +909,7 @@ def max_pool(
     image_data: jax.Array,
     patch_len: int,
     use_norm: bool = True,
-    comparator_image: Optional[jax.Array] = None,
+    comparator_image: jax.Array | None = None,
 ) -> jax.Array:
     """
     Perform a max pooling operation where the length of the side of each patch is patch_len. Max is

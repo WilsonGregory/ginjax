@@ -1,16 +1,19 @@
-import itertools as it
 import functools
-import numpy as np
-import matplotlib.axes
-import matplotlib.colors
-from typing_extensions import Any, Callable, Generator, Optional, Self, Sequence, Union
+import itertools as it
+from collections.abc import Callable, Sequence
+from typing import Any, Self
 
 import jax
 import jax.numpy as jnp
+import matplotlib.axes
+import matplotlib.colors
+import numpy as np
 from jax.tree_util import register_pytree_node_class
 from jaxtyping import ArrayLike
+from typing_extensions import Generator
 
-from ginjax.geometric.constants import LeviCivitaSymbol, KroneckerDeltaSymbol, TINY, LETTERS
+from ginjax import utils
+from ginjax.geometric.constants import TINY, KroneckerDeltaSymbol, LeviCivitaSymbol
 from ginjax.geometric.functional_geometric_image import (
     average_pool,
     convolve,
@@ -27,7 +30,6 @@ from ginjax.geometric.functional_geometric_image import (
     times_group_element,
     translate,
 )
-import ginjax.utils as utils
 
 
 @register_pytree_node_class
@@ -51,12 +53,12 @@ class GeometricImage:
     @classmethod
     def zeros(
         cls,
-        N: Union[int, tuple[int, ...]],
+        N: int | tuple[int, ...],
         k: int,
         parity: int,
         D: int,
-        is_torus: Union[bool, tuple[bool]] = True,
-        covariant_axes: Union[bool, tuple[bool, ...]] = False,
+        is_torus: bool | tuple[bool, ...] = True,
+        covariant_axes: bool | tuple[bool, ...] = False,
     ) -> Self:
         """
         Zero constructor for GeometricImage.
@@ -80,12 +82,12 @@ class GeometricImage:
     @classmethod
     def fill(
         cls,
-        N: Union[int, tuple[int, ...]],
+        N: int | tuple[int, ...],
         parity: int,
         D: int,
-        fill: Union[jax.Array, float],
-        is_torus: Union[bool, tuple[bool, ...]] = True,
-        covariant_axes: Union[bool, tuple[bool, ...]] = False,
+        fill: jax.Array | float,
+        is_torus: bool | tuple[bool, ...] = True,
+        covariant_axes: bool | tuple[bool, ...] = False,
     ) -> Self:
         """
         Fill constructor to construct a geometric image every pixel as fill
@@ -105,11 +107,7 @@ class GeometricImage:
         spatial_dims = N if isinstance(N, tuple) else (N,) * D
         assert len(spatial_dims) == D
 
-        k = (
-            len(fill.shape)
-            if (isinstance(fill, jnp.ndarray) or isinstance(fill, np.ndarray))
-            else 0
-        )
+        k = len(fill.shape) if (isinstance(fill, (jnp.ndarray, np.ndarray))) else 0
         data = jnp.stack([fill for _ in range(np.multiply.reduce(spatial_dims))]).reshape(
             spatial_dims + (D,) * k
         )
@@ -120,8 +118,8 @@ class GeometricImage:
         data: jnp.ndarray,
         parity: int,
         D: int,
-        is_torus: Union[bool, tuple[bool, ...]] = True,
-        covariant_axes: Union[bool, tuple[bool, ...]] = False,
+        is_torus: bool | tuple[bool, ...] = True,
+        covariant_axes: bool | tuple[bool, ...] = False,
     ) -> None:
         """
         Constructor for GeometricImage. It will be (N^D x D^k), so if N=100, D=2, k=1, then it's
@@ -222,7 +220,7 @@ class GeometricImage:
         """
         return self.data.shape
 
-    def image_shape(self: Self, plus_Ns: Optional[tuple[int, ...]] = None) -> tuple[int, ...]:
+    def image_shape(self: Self, plus_Ns: tuple[int, ...] | None = None) -> tuple[int, ...]:
         """
         Return the shape of the data block that is not the ktensor shape, but what comes before that.
 
@@ -264,22 +262,14 @@ class GeometricImage:
         returns:
             the string representation of the GeometricImage
         """
-        return "<{} object in D={} with spatial_dims={}, k={}, parity={}, is_torus={}, covariant_axes={}>".format(
-            self.__class__,
-            self.D,
-            self.spatial_dims,
-            self.k,
-            self.parity,
-            self.is_torus,
-            self.covariant_axes,
-        )
+        return f"<{self.__class__} object in D={self.D} with spatial_dims={self.spatial_dims}, k={self.k}, parity={self.parity}, is_torus={self.is_torus}, covariant_axes={self.covariant_axes}>"
 
     # itertools does not have type hints, but it will be a product[tuple[int,...]]
     def keys(self: Self) -> Any:
         """
         Iterate over the keys of GeometricImage
         """
-        return it.product(*list(range(N) for N in self.spatial_dims))
+        return it.product(*[range(N) for N in self.spatial_dims])
 
     def key_array(self: Self) -> jax.Array:
         """
@@ -379,7 +369,7 @@ class GeometricImage:
             self.data - other.data, self.parity, self.D, self.is_torus, self.covariant_axes
         )
 
-    def __mul__(self: Self, other: Union[Self, float, int]) -> Self:
+    def __mul__(self: Self, other: Self | float) -> Self:
         """
         If other is a scalar, do scalar multiplication of the data. If it is another GeometricImage, do the tensor
         product at each pixel. Return the result as a new GeometricImage.
@@ -406,7 +396,7 @@ class GeometricImage:
                 self.data * other, self.parity, self.D, self.is_torus, self.covariant_axes
             )
 
-    def __rmul__(self: Self, other: Union[Self, float, int]) -> Self:
+    def __rmul__(self: Self, other: Self | float) -> Self:
         """
         If other is a scalar, multiply the data by the scalar. This is necessary for doing scalar * image, and it
         should only be called in that case.
@@ -442,14 +432,13 @@ class GeometricImage:
             new_covariant_axes,
         )
 
-    @functools.partial(jax.jit, static_argnums=[2, 3, 4, 5])
     def convolve_with(
         self: Self,
         filter_image: Self,
-        stride: Union[int, tuple[int, ...]] = 1,
-        padding: Optional[tuple[tuple[int, int]]] = None,
-        lhs_dilation: Optional[tuple[int, ...]] = None,
-        rhs_dilation: Union[int, tuple[int, ...]] = 1,
+        stride: int | tuple[int, ...] = 1,
+        padding: tuple[tuple[int, int], ...] | None = None,
+        lhs_dilation: tuple[int, ...] | None = None,
+        rhs_dilation: int | tuple[int, ...] = 1,
     ) -> Self:
         """
         See [convolve](functional_geometric_image.md#ginjax.geometric.functional_geometric_image.convolve)
@@ -541,7 +530,7 @@ class GeometricImage:
         grow_filter = GeometricImage(jnp.ones((patch_len,) * self.D), 0, self.D)
         return self.convolve_with(
             grow_filter,
-            padding=((patch_len - 1,) * 2,) * self.D,
+            padding=((patch_len - 1, patch_len - 1),) * self.D,
             lhs_dilation=(patch_len,) * self.D,
         )
 
@@ -634,7 +623,7 @@ class GeometricImage:
         """
         assert self.k >= 2
         idx_shift = len(self.image_shape())
-        sorted_idxs = sorted(list(sum(indices, ())))
+        sorted_idxs = sorted(sum(indices, ()))
         new_cov_axes = tuple(
             self.covariant_axes[prev + 1 : next]
             for prev, next in zip([-1] + sorted_idxs, sorted_idxs + [self.k])
@@ -647,7 +636,7 @@ class GeometricImage:
             sum(new_cov_axes, ()),
         )
 
-    def levi_civita_contract(self: Self, indices: Union[tuple[int, ...], int]) -> Self:
+    def levi_civita_contract(self: Self, indices: tuple[int, ...] | int) -> Self:
         """
         Perform the Levi-Civita contraction. Outer product with the Levi-Civita Symbol, then perform D-1 contractions.
         Resulting image has k= self.k - self.D + 2
@@ -687,7 +676,7 @@ class GeometricImage:
         metric_tensor: Self,
         metric_tensor_inv: Self,
         axes: tuple[bool, ...],
-        precision: Optional[jax.lax.Precision] = None,
+        precision: jax.lax.Precision | None = None,
     ) -> Self:
         """
         Raise or lower the axes of the tensor according the the metric tensor and axes.
@@ -736,7 +725,7 @@ class GeometricImage:
     def times_group_element(
         self: Self,
         gg: np.ndarray,
-        precision: Optional[jax.lax.Precision] = None,
+        precision: jax.lax.Precision | None = None,
     ) -> Self:
         """
         Apply a group element of O(d) to the geometric image. First apply the action to the location
@@ -787,14 +776,11 @@ class GeometricImage:
             a geometric image that has been translated
         """
         assert (
-            self.is_torus == (True,) * self.D
-        ), f"GeometricImage::translate: Image must be a torus, but got {self.is_torus}"
-        assert (
             len(tau) == self.D
         ), f"GeometricImage::translate: {self.D}D image received {len(tau)}D translation"
 
         return self.__class__(
-            translate(self.D, self.data, tau, 0),
+            translate(self.D, self.data, self.is_torus, tau),
             self.parity,
             self.D,
             self.is_torus,
@@ -803,13 +789,13 @@ class GeometricImage:
 
     def plot(
         self: Self,
-        ax: Optional[matplotlib.axes.Axes] = None,
+        ax: matplotlib.axes.Axes | None = None,
         title: str = "",
         boxes: bool = False,
         fill: bool = True,
         symbols: bool = False,
-        vmin: Optional[float] = None,
-        vmax: Optional[float] = None,
+        vmin: float | None = None,
+        vmax: float | None = None,
         colorbar: bool = False,
         cmap: matplotlib.colors.Colormap | str | None = None,
         vector_scaling: float = 0.5,
@@ -836,7 +822,7 @@ class GeometricImage:
             )
             return
         if self.k == 2 and self.D == 3:
-            print(f"GeometricImage::plot: Cannot plot D=3, k=2 geometric images.")
+            print("GeometricImage::plot: Cannot plot D=3, k=2 geometric images.")
             return
 
         ax = utils.setup_plot() if ax is None else ax
@@ -917,7 +903,7 @@ class GeometricImage:
 
     def tree_flatten(
         self: Self,
-    ) -> tuple[tuple[jnp.ndarray], dict[str, Union[int, Union[bool, tuple[bool]]]]]:
+    ) -> tuple[tuple[jax.Array, ...], dict[str, int | bool | tuple[bool, ...]]]:
         """
         Helper function to define GeometricImage as a pytree so jax.jit handles it correctly. Children and aux_data
         must contain all the variables that are passed in __init__()
@@ -951,8 +937,8 @@ class GeometricFilter(GeometricImage):
         data: jnp.ndarray,
         parity: int,
         D: int,
-        is_torus: Union[bool, tuple[bool, ...]] = True,
-        covariant_axes: Union[bool, tuple[bool, ...]] = False,
+        is_torus: bool | tuple[bool, ...] = True,
+        covariant_axes: bool | tuple[bool, ...] = False,
     ) -> None:
         """
         Constructor for GeometricFilter.
@@ -1146,20 +1132,23 @@ class GeometricFilter(GeometricImage):
                     < 0
                 ):
                     return self.times_scalar(-1)
-            elif self.D == 2:
-                if jnp.sum(jnp.cross(self.key_array().reshape(self.shape()), self.data)) < 0:
-                    return self.times_scalar(-1)
+            elif (
+                self.D == 2
+                and jnp.sum(jnp.cross(self.key_array().reshape(self.shape()), self.data)) < 0
+            ):
+                return self.times_scalar(-1)
+
         return self
 
     def plot(
         self: Self,
-        ax: Optional[Any] = None,
+        ax: Any | None = None,
         title: str = "",
         boxes: bool = True,
         fill: bool = True,
         symbols: bool = True,
-        vmin: Optional[float] = None,
-        vmax: Optional[float] = None,
+        vmin: float | None = None,
+        vmax: float | None = None,
         colorbar: bool = False,
         cmap: matplotlib.colors.Colormap | str | None = None,
         vector_scaling: float = 0.33,
@@ -1201,13 +1190,14 @@ def get_kronecker_delta_image(N: int, D: int) -> GeometricImage:
     returns:
         a new GeometricImage.
     """
+    # covariant_axes could also be False,True, its symmetric.
     return GeometricImage(
         jnp.stack([KroneckerDeltaSymbol.get(D, 2) for _ in range(N**D)]).reshape(
-            ((N,) * D + (D,) * 2)
+            (N,) * D + (D,) * 2
         ),
         0,
         D,
-        covariant_axes=(True, False),  # could also be False,True, its symmetric.
+        covariant_axes=(True, False),
     )
 
 

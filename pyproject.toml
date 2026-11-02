@@ -10,7 +10,7 @@ author = [
 license = { file = "LICENSE" }
 description = "Package for building Convolutional Neural Networks on images of tensors."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 url = {repository = "https://github.com/WilsonGregory/ginjax"}
 dependencies = [
     "equinox>=0.11.11",
@@ -32,6 +32,9 @@ docs = [
     "mkdocs==1.6.1",
     "mkdocstrings[python]==0.27.0",
     "pymdown-extensions==10.12",
+]
+dev = [
+    "pytest>=9.2.0",
 ]
 
 

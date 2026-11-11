@@ -268,8 +268,9 @@ def handleArgs() -> argparse.Namespace:
     """
     CUDA_VISIBLE_DEVICES=2 time python3 -m scripts.heat_equation \
     --data /data/wgregor4/heat_equation/ --n-test 128 --n-val 128 --n-train 128 \
-    --train-D-range 1 --test-D-range 2 -t 5 --rescale-list nepo,copy,zeros \
+    --train-D-range 1 --test-D-range 2 -t 5 \
     --model-dir /data/wgregor4/runs/heat_equation/ \
+    --rescale-list nepo,copy,zeros \
     --results-dir /data/wgregor4/runs/heat_equation/ \
     --images-dir /data/wgregor4/images/heat_equation/heat_
     """
@@ -396,6 +397,7 @@ anisotropy_str = "" if args.anisotropy is None else f"_anisotropy{args.anisotrop
 
 print("Define the models!")
 model_list_d = {}
+bl_model_list_d = {}
 for D in full_D_range:
     key, subkey = random.split(key)
     train_x0, train_xt, _ = get_data_d(
@@ -479,6 +481,56 @@ for D in full_D_range:
 
     model_list_d[D] = model_list
 
+    bl_model_list = []
+    for trial in range(args.n_trials):
+        key, *subkeys = random.split(key, num=10)
+        bl_model_list.extend(
+            [
+                (
+                    anyd_helpers.ModelLabel(f"unetBase{anisotropy_str}", trial),
+                    models.UNet(
+                        D,
+                        input_keys,
+                        output_keys,
+                        depth=64,
+                        use_bias=True,
+                        activation_f=jax.nn.gelu,
+                        equivariant=False,
+                        kernel_size=3,
+                        use_group_norm=True,  # could also remove this
+                        key=subkeys[0],
+                    ),
+                    {},
+                    {
+                        "lr": {2: {0: 5e-4, 1: 5e-4, 4: 5e-4, 8: 5e-4, 32: 5e-3, 128: 5e-3}},
+                        **baseline_kwargs,
+                    },
+                    {},
+                ),
+                (  # this model performs kinda poorly, at best 55% error. TODO: Try 64_4 again
+                    anyd_helpers.ModelLabel(f"FNO128_8_modes8{anisotropy_str}", trial),
+                    models.FNOWrapper(
+                        D,
+                        input_keys,
+                        output_keys,
+                        128,
+                        8,
+                        (8,) * D,
+                        normalization=None,
+                        key=subkeys[1],
+                    ),
+                    {},
+                    {
+                        "lr": {2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 8: 1e-3, 32: 1e-3, 128: 5e-3}},
+                        **baseline_kwargs,
+                    },
+                    {},
+                ),
+            ]
+        )
+
+    bl_model_list_d[D] = bl_model_list
+
 
 # extended lambda function
 def get_data_lambda(
@@ -513,6 +565,7 @@ anyd_helpers.run_anyd(
     subkey,
     get_data_lambda,
     model_list_d,
+    bl_model_list_d,
     args.pretrain_lr_range,
     args.finetune_lr_range,
     rescale_list,

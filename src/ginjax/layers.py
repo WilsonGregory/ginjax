@@ -739,7 +739,7 @@ class MaxNormPool(MultiImageLayer):
         flops = 0
         spatial_size = math.prod(kwargs["spatial_dims"])
         D = len(kwargs["spatial_dims"])
-        for k, in_c in kwargs["input_keys"]:
+        for (k, _), in_c in kwargs["input_keys"]:
             flops += spatial_size * in_c * (D ** len(k)) * 2
 
         return flops
@@ -784,6 +784,33 @@ class LayerWrapper(MultiImageLayer):
             out.append(k, p, self.modules[(k, p)](image))
 
         return out
+
+    def get_flops(self: Self, **kwargs) -> int:
+        spatial_size = math.prod(kwargs["spatial_dims"])
+        flops = 0
+        for (k, p), module in self.modules.items():
+            assert len(k) == 0 and p == 0
+            if isinstance(module, (eqx.nn.Conv, eqx.nn.ConvTranspose)):
+                # TODO: currently ignores dilations, stride?
+                flops += (
+                    math.prod(module.kernel_size)
+                    * module.in_channels
+                    * module.out_channels
+                    * spatial_size
+                )
+                flops += spatial_size * module.out_channels if module.use_bias else 0
+            elif isinstance(module, eqx.nn.GroupNorm):
+                assert module.channels is not None
+                # this is a rough estimate based on subtracting the mean, scaling by variance, etc
+                flops += spatial_size * module.channels * 8
+            elif isinstance(module, eqx.nn.Identity):
+                continue
+            else:
+                raise NotImplementedError(
+                    f"LayerWrapper::get_flops: Flops for {type(module)} module not implemented."
+                )
+
+        return flops
 
 
 class LayerWrapperAux(eqx.Module):

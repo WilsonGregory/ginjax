@@ -1,13 +1,14 @@
 import math
 import numpy as np
-from typing import Any, Callable, Optional, Sequence, Union
+from typing import Any, Callable, Literal, Optional, Sequence, Union
 from typing_extensions import Self
 
 import jax
 import jax.numpy as jnp
 import jax.random as random
-from jaxtyping import ArrayLike
 import equinox as eqx
+from jaxtyping import ArrayLike, PRNGKeyArray
+from neojax.models import FNO
 
 import ginjax.geometric as geom
 from ginjax import layers
@@ -202,6 +203,7 @@ class MultiImageModule(eqx.Module):
     def get_flops(self: Self, **kwargs) -> int:
         """
         An estimate of the number of flops for one forward pass of one sample through the model.
+        TODO: Swap to XLA compiled flops calculation, like the FNO model.
         """
         raise NotImplementedError(f"{self.__class__}::get_flops: Not implemented.")
 
@@ -1408,26 +1410,17 @@ class ConvBlock(MultiImageModule):
     def get_flops(self: Self, **kwargs) -> int:
         flops = 0
         spatial_size = math.prod(kwargs["spatial_dims"])
-        if isinstance(self.conv, eqx.nn.Conv):
-            # TODO: currently ignores dilations, stride?
-            flops = (
-                math.prod(self.conv.kernel_size)
-                * self.conv.in_channels
-                * self.conv.out_channels
-                * spatial_size
-            )
-            flops += spatial_size * self.conv.out_channels if self.conv.use_bias else 0
-        else:
-            flops = self.conv.get_flops(**kwargs)
-
+        flops += self.conv.get_flops(**kwargs)
         flops += 0 if self.group_norm is None else self.group_norm.get_flops(**kwargs)
         flops += 0 if self.batch_norm is None else self.batch_norm.get_flops(**kwargs)
 
-        if isinstance(self.nonlinearity, layers.MultiImageLayer):
+        if isinstance(self.nonlinearity, layers.VectorNeuronNonlinear):
             flops += self.nonlinearity.get_flops(**kwargs)
         else:
-            for k, in_c in kwargs["input_keys"]:
-                flops += spatial_size * in_c * (len(kwargs["spatial_dims"]) ** len(k))
+            assert isinstance(self.conv, layers.LayerWrapper)
+            conv = next(iter(self.conv.modules.values()))
+            assert isinstance(conv, eqx.nn.Conv)
+            flops += spatial_size * conv.out_channels
 
         return flops
 
@@ -1757,10 +1750,16 @@ class UNet(AnyDimensionalModel):
         out_keys = None
         for layer in self.embedding:
             flops += layer.get_flops(**kwargs)
-            if not isinstance(layer.conv, layers.ConvContract):
-                raise NotImplementedError("Unet::get_flops: Non-equivariant U-Net not implemented.")
-
-            out_keys = layer.conv.target_keys
+            if isinstance(layer.conv, layers.ConvContract):
+                out_keys = layer.conv.target_keys
+            elif isinstance(layer.conv, layers.LayerWrapper):
+                conv = next(iter(layer.conv.modules.values()))
+                assert isinstance(conv, eqx.nn.Conv)
+                out_keys = geom.Signature(((((), 0), conv.out_channels),))
+            else:
+                raise NotImplementedError(
+                    f"Unet::get_flops: layer.conv is {type(layer.conv)}, not implemented."
+                )
 
         spatial_dims_curr = kwargs["spatial_dims"]
         for max_pool_layer, conv_blocks in self.downsample_blocks:
@@ -1770,12 +1769,16 @@ class UNet(AnyDimensionalModel):
 
             for layer in conv_blocks:
                 flops += layer.get_flops(**kwargs)
-                if not isinstance(layer.conv, layers.ConvContract):
+                if isinstance(layer.conv, layers.ConvContract):
+                    out_keys = layer.conv.target_keys
+                elif isinstance(layer.conv, layers.LayerWrapper):
+                    conv = next(iter(layer.conv.modules.values()))
+                    assert isinstance(conv, eqx.nn.Conv)
+                    out_keys = geom.Signature(((((), 0), conv.out_channels),))
+                else:
                     raise NotImplementedError(
-                        "Unet::get_flops: Non-equivariant U-Net not implemented."
+                        f"Unet::get_flops: layer.conv is {type(layer.conv)}, not implemented."
                     )
-
-                out_keys = layer.conv.target_keys
 
         for upsample_layer, conv_blocks in self.upsample_blocks:
             flops += upsample_layer.get_flops(**kwargs)
@@ -2691,3 +2694,68 @@ class SimpleConvSeries(AnyDimensionalModel):
             x, aux_data = layer(x, aux_data)
 
         return x, aux_data
+
+
+class FNOWrapper(MultiImageModule):
+    """
+    A wrapper of a neojax FNO so that it inputs and outputs multi images.
+    """
+
+    D: int = eqx.field(static=True)
+    input_keys: geom.Signature = eqx.field(static=True)
+    output_keys: geom.Signature = eqx.field(static=True)
+
+    fno: FNO
+
+    def __init__(
+        self: Self,
+        D: int,
+        input_keys: geom.Signature,
+        output_keys: geom.Signature,
+        hidden_channels: int,
+        n_layers: int,
+        modes: tuple[int, ...],
+        activation_f: Callable = jax.nn.gelu,
+        normalization: Literal["layer", "instance", "group"] | None = "layer",
+        key: PRNGKeyArray | None = None,
+    ) -> None:
+        assert key is not None
+        assert len(modes) == D  # I think this is what it is
+
+        self.D = D
+        self.input_keys = input_keys
+        self.output_keys = output_keys
+        in_channels = sum([(D ** len(k)) * in_c for (k, _), in_c in input_keys])
+        out_channels = sum([(D ** len(k)) * out_c for (k, _), out_c in output_keys])
+
+        self.fno = FNO(
+            key,
+            in_channels,
+            out_channels,
+            hidden_channels,
+            n_layers,
+            modes,
+            activation_f,
+            use_local_operator_bias=True,
+            normalization=normalization,
+        )
+
+    def __call__(
+        self: Self, x: geom.MultiImage, batch_stats: eqx.nn.State | None = None
+    ) -> tuple[geom.MultiImage, eqx.nn.State | None]:
+
+        data = x.to_scalar_multi_image()[((), 0)]  # (channels_flat,spatial)
+        data = self.fno(data)
+        out = geom.MultiImage({((), 0): data}, x.D, x.is_torus)
+        out = geom.MultiImage.from_scalar_multi_image(out, self.output_keys)
+
+        return out, batch_stats
+
+    def get_flops(self: Self, **kwargs) -> int:
+        in_channels = sum([(self.D ** len(k)) * in_c for (k, _), in_c in self.input_keys])
+        spatial_dims = kwargs["spatial_dims"]
+        dummy_inputs = jnp.ones((in_channels,) + spatial_dims)
+        _, summary = self.fno.profile_compile(dummy_inputs)
+        flops = summary["compiled_cost_analysis"]["flops"]
+
+        return flops

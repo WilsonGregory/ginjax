@@ -328,7 +328,7 @@ def generate_filters(
 def train_model(
     data: tuple[DataLoader[ml.MultiImageDataset], DataLoader[ml.MultiImageDataset]],
     model_label: ModelLabel,
-    model: models.AnyDimensionalModel,
+    model: models.MultiImageModule,
     lr: float,
     train_loss_f: geom.Losses,
     batch_size: int,
@@ -435,13 +435,13 @@ def train_model(
 
 def train_all_models(
     data: tuple[DataLoader[ml.MultiImageDataset], DataLoader[ml.MultiImageDataset]],
-    model_list: list[tuple[ModelLabel, models.AnyDimensionalModel, dict, dict, dict]],
+    model_list: Sequence[tuple[ModelLabel, models.MultiImageModule, dict, dict, dict]],
     lr_range: list[float] | None,
     kwargs_idx: int,
     n_points: int,
     data_time: float,
     args: argparse.Namespace,
-) -> list[tuple[ModelLabel, models.AnyDimensionalModel, dict, dict, dict, float, int]]:
+) -> list[tuple[ModelLabel, models.MultiImageModule, dict, dict, dict, float, int]]:
     """
     Train all the models in the model list.
 
@@ -610,7 +610,7 @@ def convert_and_tune(
 
 def eval(
     test_dataloader: DataLoader[ml.MultiImageDataset],
-    model_list: list[tuple[ModelLabel, models.AnyDimensionalModel, dict, dict, dict, float, int]],
+    model_list: Sequence[tuple[ModelLabel, models.MultiImageModule, dict, dict, dict, float, int]],
     losses: list[geom.Losses],
 ) -> dict[ModelLabel, Float[Array, "n_trials n_results"]]:
     """
@@ -658,6 +658,7 @@ def run_anyd(
         ],
     ],
     model_list_d: dict[int, list[tuple[ModelLabel, models.AnyDimensionalModel, dict, dict, dict]]],
+    bl_model_list_d: dict[int, list[tuple[ModelLabel, models.MultiImageModule, dict, dict, dict]]],
     pretrain_lr_range: list[float] | None,
     finetune_lr_range: list[float] | None,
     rescale_list: list[geom.Rescaling],
@@ -676,6 +677,8 @@ def run_anyd(
         key: jax key for randomness
         get_data: a function that takes dimension, n_train, n_val, n_test, and random key, returns
             input and output multi images for train, val, and test, as well data generation time for train
+        model_list_d: The any-dimensional models to test
+        bl_model_list_d: Additional baseline models where we only train on test_D and evaluate
     """
     pretrain_lr = pretrain_lr_range is not None
     eval_losses = [geom.Losses.L2_REL, geom.Losses.SMSE]
@@ -724,7 +727,7 @@ def run_anyd(
                 # need to train the baseline model on tune_x0, etc. aka models without the warmstart
                 baseline_trained_models = train_all_models(
                     (tune_dl, tune_val_dl),
-                    model_list_d[test_D],
+                    model_list_d[test_D] + bl_model_list_d[test_D],
                     finetune_lr_range,
                     1,
                     n_tune,

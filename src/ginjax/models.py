@@ -8,7 +8,6 @@ import jax.numpy as jnp
 import jax.random as random
 import equinox as eqx
 from jaxtyping import ArrayLike, PRNGKeyArray
-from neojax.models import FNO
 
 import ginjax.geometric as geom
 from ginjax import layers
@@ -477,6 +476,10 @@ class AnyDimensionalModel(MultiImageModule):
                 b2 = (1 / 3) * a1
                 new_weights = jnp.stack([a0 - 2 * a1 + 4 * b2, a1 - 2 * b2, b2], axis=-1)
             case (3, 2, 2, 3):
+                # TODO: These are the coefficients when the input_k = 1 or 2.
+                # For input_k =0, the compatibility constraints don't work for equivariant
+                # 2-tensor filters, so we have to do something else.
+
                 # For D=2, it is 3 identity weights, 1 along trace, 1 symmetric no trace
                 # For D=3, it is 4 identity weights, 2 symmetric no trace, 2 along trace
                 # so be careful because the order is flipped.
@@ -2705,7 +2708,7 @@ class FNOWrapper(MultiImageModule):
     input_keys: geom.Signature = eqx.field(static=True)
     output_keys: geom.Signature = eqx.field(static=True)
 
-    fno: FNO
+    fno: eqx.Module
 
     def __init__(
         self: Self,
@@ -2721,6 +2724,10 @@ class FNOWrapper(MultiImageModule):
     ) -> None:
         assert key is not None
         assert len(modes) == D  # I think this is what it is
+
+        # This is hacky and bad practice, but I don't want to make this a dependency of my entire
+        # package so I am just going to import it here.
+        from neojax.models import FNO
 
         self.D = D
         self.input_keys = input_keys
@@ -2743,6 +2750,7 @@ class FNOWrapper(MultiImageModule):
     def __call__(
         self: Self, x: geom.MultiImage, batch_stats: eqx.nn.State | None = None
     ) -> tuple[geom.MultiImage, eqx.nn.State | None]:
+        assert callable(self.fno)
 
         data = x.to_scalar_multi_image()[((), 0)]  # (channels_flat,spatial)
         data = self.fno(data)
@@ -2755,7 +2763,7 @@ class FNOWrapper(MultiImageModule):
         in_channels = sum([(self.D ** len(k)) * in_c for (k, _), in_c in self.input_keys])
         spatial_dims = kwargs["spatial_dims"]
         dummy_inputs = jnp.ones((in_channels,) + spatial_dims)
-        _, summary = self.fno.profile_compile(dummy_inputs)
+        _, summary = self.fno.profile_compile(dummy_inputs)  # type: ignore
         flops = summary["compiled_cost_analysis"]["flops"]
 
         return flops

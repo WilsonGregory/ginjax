@@ -27,6 +27,7 @@ def get_data_d(
     convection_coef: float,
     n_timesteps: int,
     subsample: int,  # new
+    future_steps: int,
     n_batch: int,
     key: jax.Array,
     data_dir: pathlib.Path,
@@ -166,7 +167,11 @@ def get_data_d(
 
     constant_fields = geom.MultiImage({}, D, is_torus)
     x0, xt = gc_data.batch_time_series(
-        geom.MultiImage({(1, 0): train_data}, D, is_torus), constant_fields, n_timesteps, 1, 1
+        geom.MultiImage({(1, 0): train_data}, D, is_torus),
+        constant_fields,
+        n_timesteps,
+        1,
+        future_steps,
     )
 
     return x0, xt, data_generation_time
@@ -179,6 +184,7 @@ def get_data(
     convection_coef: float,
     n_timesteps: int,
     subsample: int,  # new
+    rollout_steps: int,
     n_train: int,
     n_val: int,
     n_test: int,
@@ -186,6 +192,7 @@ def get_data(
     key: jax.Array,
     data_dir: str,
 ) -> tuple[
+    DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
@@ -212,7 +219,7 @@ def get_data(
     """
     data_dir_path = pathlib.Path(data_dir)
 
-    key, subkey1, subkey2, subkey3 = random.split(key, num=4)
+    key, subkey1, subkey2, subkey3, subkey4 = random.split(key, num=5)
     train_x0, train_xt, train_data_time = get_data_d(
         D,
         N,
@@ -220,6 +227,7 @@ def get_data(
         convection_coef,
         n_timesteps,
         subsample,
+        1,
         n_train,
         subkey1,
         data_dir_path / "train",
@@ -240,6 +248,7 @@ def get_data(
         convection_coef,
         n_timesteps,
         subsample,
+        1,
         n_val,
         subkey2,
         data_dir_path / "val",
@@ -258,6 +267,7 @@ def get_data(
         convection_coef,
         n_timesteps,
         subsample,
+        1,
         n_test,
         subkey3,
         data_dir_path / "test",
@@ -269,7 +279,32 @@ def get_data(
         collate_fn=lambda x: x[0],
     )
 
-    return train_dataloader, val_dataloader, test_dataloader, train_data_time
+    test_rollout_x0, test_rollout_xt, _ = get_data_d(
+        D,
+        N,
+        diffusion_coef,
+        convection_coef,
+        n_timesteps,
+        subsample,
+        rollout_steps,
+        n_test,
+        subkey4,
+        data_dir_path / "test",
+    )
+    test_rollout_dataset = ml.MultiImageDataset(test_rollout_x0, test_rollout_xt)
+    test_rollout_dataloader = DataLoader(
+        test_rollout_dataset,
+        sampler=BatchSampler(SequentialSampler(test_rollout_dataset), batch_size, drop_last=True),
+        collate_fn=lambda x: x[0],
+    )
+
+    return (
+        train_dataloader,
+        val_dataloader,
+        test_dataloader,
+        test_rollout_dataloader,
+        train_data_time,
+    )
 
 
 def handleArgs() -> argparse.Namespace:
@@ -309,6 +344,12 @@ def handleArgs() -> argparse.Namespace:
     )
     parser.add_argument(
         "--n-timesteps", help="the number of timesteps in each trajectory", type=int, default=50
+    )
+    parser.add_argument(
+        "--past-steps", help="number of past steps to use as input", type=int, default=1
+    )
+    parser.add_argument(
+        "--rollout-steps", help="number of rollout steps during evaluation", type=int, default=10
     )
     parser.add_argument(
         "--residual",
@@ -428,6 +469,7 @@ for D in full_D_range:
         args.convection_coef,
         args.n_timesteps,
         args.subsample,
+        1,
         args.n_train,
         subkey,
         pathlib.Path(args.data) / "train",
@@ -515,6 +557,16 @@ for D in full_D_range:
                     },
                     {},
                 ),
+                (
+                    anyd_helpers.ModelLabel(f"LastStepIdentity", trial),
+                    models.LastStepIdentity(D, 1),
+                    {},
+                    {  # needs an lr so it doesn't break, but nothing is learned
+                        "lr": {2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 8: 1e-3, 32: 1e-3, 128: 1e-3}},
+                        **baseline_kwargs,
+                    },
+                    {},
+                ),
             ]
         )
 
@@ -531,6 +583,7 @@ def get_data_lambda(
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
+    DataLoader[ml.MultiImageDataset],
     float,
 ]:
     return get_data(
@@ -540,6 +593,7 @@ def get_data_lambda(
         args.convection_coef,
         args.n_timesteps,
         args.subsample,
+        args.rollout_steps,
         n_train,
         n_val,
         n_test,

@@ -442,7 +442,7 @@ for D in full_D_range:
                     {"lr": {3: {0: 5e-4, 1: 5e-4, 4: 5e-4, 8: 5e-4, 32: 1e-3}}, **baseline_kwargs},
                     {},
                 ),
-                (  # this model performs kinda poorly, at best 55% error
+                (
                     anyd_helpers.ModelLabel(f"FNO64_4_modes8", trial),
                     models.FNOWrapper(
                         D,
@@ -456,7 +456,17 @@ for D in full_D_range:
                     ),
                     {},
                     {
-                        "lr": {3: {0: 1e-2, 1: 1e-2, 4: 5e-3, 8: 5e-3, 32: 5e-3}},  # TODO
+                        "lr": {3: {0: 1e-2, 1: 5e-3, 4: 1e-3, 8: 1e-3, 32: 5e-3}},
+                        **baseline_kwargs,
+                    },
+                    {},
+                ),
+                (
+                    anyd_helpers.ModelLabel(f"LastStepIdentity", trial),
+                    models.LastStepIdentity(D, 1),
+                    {},
+                    {  # needs an lr so it doesn't break, but nothing is learned
+                        "lr": {2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 8: 1e-3, 32: 1e-3, 128: 1e-3}},
                         **baseline_kwargs,
                     },
                     {},

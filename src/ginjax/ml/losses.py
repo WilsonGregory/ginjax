@@ -1,5 +1,5 @@
-from typing_extensions import Optional
 import numpy as np
+from typing import Literal, Optional
 
 import jax
 import jax.numpy as jnp
@@ -11,7 +11,7 @@ def timestep_smse_loss(
     multi_image_x: geom.MultiImage,
     multi_image_y: geom.MultiImage,
     n_steps: int,
-    reduce: Optional[str] = "mean",
+    reduce: Literal["mean", "max"] | None = "mean",
 ) -> jax.Array:
     """
     Returns loss for each timestep. Loss is summed over the channels, and mean over spatial dimensions
@@ -171,11 +171,11 @@ def nrmse_per_pixel_loss(
 def timestep_nrmse_loss(
     multi_image_x: geom.MultiImage,
     multi_image_y: geom.MultiImage,
-    reduce_batch: str | None = "mean",
+    reduce_batch: Literal["mean"] | None = "mean",
     eps: float = 0,
     mask: geom.MultiImage | None = None,
     n_steps: int = 1,
-    reduce_steps: str | None = "mean",
+    reduce_steps: Literal["mean"] | None = "mean",
 ) -> jax.Array:
     """
     The normalized root mean squared error. This definition follows the standard one used in

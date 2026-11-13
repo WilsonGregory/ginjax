@@ -526,6 +526,16 @@ for D in full_D_range:
                     },
                     {},
                 ),
+                (
+                    anyd_helpers.ModelLabel(f"LastStepIdentity", trial),
+                    models.LastStepIdentity(D, 1),
+                    {},
+                    {  # needs an lr so it doesn't break, but nothing is learned
+                        "lr": {2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 8: 1e-3, 32: 1e-3, 128: 1e-3}},
+                        **baseline_kwargs,
+                    },
+                    {},
+                ),
             ]
         )
 

@@ -2553,6 +2553,7 @@ class Climate1D(MultiImageModule):
 
 class LastStepIdentity(AnyDimensionalModel):
 
+    D: int = eqx.field(static=True)
     residual: bool = eqx.field(static=True)
     past_steps: int = eqx.field(static=True)
 
@@ -2575,7 +2576,7 @@ class LastStepIdentity(AnyDimensionalModel):
         returns:
             a new model with new filters but the old weights
         """
-        return self.__class__(self.residual)
+        return self.__class__(self.D, self.past_steps, self.residual)
 
     def __call__(
         self: Self, x: geom.MultiImage, batch_stats: eqx.nn.State | None = None
@@ -2601,6 +2602,9 @@ class LastStepIdentity(AnyDimensionalModel):
             out.append(k, parity, out_img_block)
 
         return out.combine_axes([0, 1]), batch_stats
+
+    def get_flops(self: Self, **kwargs) -> int:
+        return 0
 
 
 class SimpleConvSeries(AnyDimensionalModel):

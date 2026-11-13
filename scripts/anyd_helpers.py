@@ -608,22 +608,143 @@ def convert_and_tune(
     return merged_data
 
 
+class AutoregressiveMapper(ml.Mapper):
+    """
+    A mapper for the contractility data
+    """
+
+    past_steps: int
+    rollout_steps: int
+
+    def __init__(
+        self: Self,
+        losses: Sequence[geom.Losses],
+        past_steps: int,
+        rollout_steps: int,
+        residual: bool = False,
+        reduce: str | None = "mean",
+        eps: float = 0,
+    ) -> None:
+        """
+        args:
+            losses: the list of losses
+            past_steps: the number of historical steps in the input
+            future_steps: the number of future time steps the model will output
+            rollout_steps: the number of autoregressive steps to take
+            residual: whether to calculate the residual loss, and hence the model will learn
+            reduce: how to reduce over the batch, the default is mean
+            eps: epsilon used for normalized losses
+        """
+        super().__init__(losses, residual, reduce, eps)
+
+        self.past_steps = past_steps
+        self.rollout_steps = rollout_steps
+
+    @eqx.filter_jit
+    def map(
+        self: Self,
+        model: models.MultiImageModule,
+        multi_image_x: geom.MultiImage,
+        aux_data: eqx.nn.State | None = None,
+    ) -> tuple[geom.MultiImage, eqx.nn.State | None]:
+        vmap_autoregressive = jax.vmap(
+            ml.autoregressive_map,
+            in_axes=(None, 0, None, None, None),
+            out_axes=(0, None),
+            axis_name="batch",
+        )
+        out, aux_data = vmap_autoregressive(
+            model,
+            multi_image_x,
+            aux_data,
+            self.past_steps,
+            self.rollout_steps,
+        )
+
+        return out, aux_data
+
+    @eqx.filter_jit
+    def map_plus_loss(
+        self: Self,
+        model: models.MultiImageModule,
+        multi_image_x: geom.MultiImage,
+        multi_image_y: geom.MultiImage,
+        aux_data: eqx.nn.State | None = None,
+    ) -> tuple[geom.MultiImage, Float[Array, "n_losses rollout_steps"], eqx.nn.State | None]:
+        """
+        Like the __call__, but also returned the mapped pred_y. Its also unreduced.
+        """
+        pred_y, aux_data = self.map(model, multi_image_x, aux_data)
+
+        loss_outputs = []
+        # the order is important
+        for loss in self.losses:
+
+            if loss is geom.Losses.SMSE:
+                loss_outputs.append(
+                    ml.timestep_smse_loss(pred_y, multi_image_y, self.rollout_steps)
+                )
+            elif loss is geom.Losses.NRMSE:
+                loss_outputs.append(
+                    ml.timestep_nrmse_loss(
+                        pred_y,
+                        multi_image_y,
+                        eps=self.eps,
+                        n_steps=self.rollout_steps,
+                        reduce_steps=None,
+                    )
+                )
+
+        return pred_y, jnp.stack(loss_outputs), aux_data
+
+    @eqx.filter_jit
+    def __call__(
+        self: Self,
+        model: models.MultiImageModule,
+        multi_image_x: geom.MultiImage,
+        multi_image_y: geom.MultiImage,
+        aux_data: eqx.nn.State | None = None,
+    ) -> tuple[Float[Array, "n_losses rollout_steps"], eqx.nn.State | None]:
+        """
+        Equivalent of the map_and_loss function.
+        """
+        _, losses, aux_data = self.map_plus_loss(model, multi_image_x, multi_image_y, aux_data)
+        return losses, aux_data
+
+
 def eval(
-    test_dataloader: DataLoader[ml.MultiImageDataset],
+    test_dl: DataLoader[ml.MultiImageDataset],
+    test_rollout_dl: DataLoader[ml.MultiImageDataset],
     model_list: Sequence[tuple[ModelLabel, models.MultiImageModule, dict, dict, dict, float, int]],
     losses: list[geom.Losses],
+    past_steps: int,
+    rollout_steps: int,
 ) -> dict[ModelLabel, Float[Array, "n_trials n_results"]]:
     """
     Evaluate the models against the test dataset, then stack each model by trials.
     """
+    autoregressive_mapper = AutoregressiveMapper(
+        losses, eps=1e-9, past_steps=past_steps, rollout_steps=rollout_steps
+    )
     models_dict = {}
     for model_label, model, _, _, _, train_time, train_flops in model_list:
         # (losses,)
-        rel_mean, smse_mean = ml.map_loss_in_batches_dl(
-            ml.Mapper(losses, eps=1e-9), model, test_dataloader
-        )
+        rel_mean, smse_mean = ml.map_loss_in_batches_dl(ml.Mapper(losses, eps=1e-9), model, test_dl)
         print(f"Eval {model_label}: {smse_mean:.3e} ({rel_mean:.3f}%)\n")
-        tuned_loss = jnp.array([rel_mean, smse_mean, train_time, train_flops])
+
+        rollout_rel_mean, rollout_smse_mean = ml.map_loss_in_batches_dl(
+            autoregressive_mapper, model, test_rollout_dl
+        )
+        print(
+            f"Eval {model_label}: {jnp.mean(rollout_smse_mean):.3e} ({jnp.mean(rollout_rel_mean):.3f}%)\n"
+        )
+        tuned_loss = jnp.concat(
+            [
+                jnp.array([rel_mean, smse_mean, train_time, train_flops]),
+                rollout_rel_mean,
+                rollout_smse_mean,
+            ]
+        )
 
         trialless_label = ModelLabel(
             model_label.name,
@@ -651,6 +772,7 @@ def run_anyd(
     get_data: Callable[
         [int, int, int, int, int, PRNGKeyArray],
         tuple[
+            DataLoader[ml.MultiImageDataset],
             DataLoader[ml.MultiImageDataset],
             DataLoader[ml.MultiImageDataset],
             DataLoader[ml.MultiImageDataset],
@@ -687,7 +809,7 @@ def run_anyd(
     pretrain_model_list_d = {}
     for train_D in train_D_range:
         key, subkey = random.split(key)
-        train_dataloader, val_dataloader, _, pretrain_data_time = get_data(
+        train_dataloader, val_dataloader, _, _, pretrain_data_time = get_data(
             train_D, args.n_train, args.n_val, 0, batch_size_d[train_D], subkey
         )
 
@@ -720,7 +842,7 @@ def run_anyd(
                 # the data is saved, so this is still reasonably efficient
                 key, subkey = random.split(key)
                 # TODO: as n_tune grows, it may later include data points that were used for val/test
-                tune_dl, tune_val_dl, tune_test_dl, tune_data_time = get_data(
+                tune_dl, tune_val_dl, test_dl, test_rollout_dl, tune_data_time = get_data(
                     test_D, n_tune, args.n_val, args.n_test, batch_size_d[test_D], subkey
                 )
 
@@ -737,7 +859,14 @@ def run_anyd(
                 # do the eval
                 results_dict = {
                     **results_dict,
-                    **eval(tune_test_dl, baseline_trained_models, eval_losses),
+                    **eval(
+                        test_dl,
+                        test_rollout_dl,
+                        baseline_trained_models,
+                        eval_losses,
+                        args.past_steps,
+                        args.rollout_steps,
+                    ),
                 }
 
                 for train_D in train_D_range:
@@ -759,7 +888,14 @@ def run_anyd(
                     key, subkey = random.split(key)
                     results_dict = {
                         **results_dict,
-                        **eval(tune_test_dl, finetuned_models, eval_losses),
+                        **eval(
+                            test_dl,
+                            test_rollout_dl,
+                            finetuned_models,
+                            eval_losses,
+                            args.past_steps,
+                            args.rollout_steps,
+                        ),
                     }
 
             if results_file is not None:
@@ -787,6 +923,7 @@ def run_anyd(
         grouped_results = {k: jnp.stack(v, axis=1) for k, v in grouped_results.items()}
 
         if args.images_dir is not None:
+            # TODO: update plot_results now that we added the rollout losses
             plot_results(
                 test_D,
                 grouped_results,

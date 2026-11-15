@@ -41,6 +41,9 @@ class Losses(enum.Enum):
     NRMSE_PER_PIXEL = enum.auto()
     L2_REL = enum.auto()
     L2_REL_PER_PIXEL = enum.auto()
+    COMPONENT_MSE = enum.auto()
+    COMPONENT_NRMSE = enum.auto()
+    COMPONENT_L2_REL = enum.auto()
 
 
 class KroneckerDeltaSymbol:

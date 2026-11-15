@@ -20,6 +20,7 @@ from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler, S
 import ginjax.geometric as geom
 from ginjax.ml.stopping_conditions import StopCondition, ValLoss
 from ginjax.ml.losses import (
+    component_l2_rel,
     smse_loss,
     nrmse_loss,
     nrmse_per_pixel_loss,
@@ -1040,22 +1041,26 @@ class Mapper:
         loss_outputs = []
         for loss in self.losses:  # the order is important
             if loss is geom.Losses.SMSE:
-                loss_outputs.append(smse_loss(pred_y, multi_image_y, self.reduce))
+                loss_val = smse_loss(pred_y, multi_image_y, self.reduce)
             elif loss is geom.Losses.NRMSE:
-                loss_outputs.append(nrmse_loss(pred_y, multi_image_y, self.reduce, eps=self.eps))
+                loss_val = nrmse_loss(pred_y, multi_image_y, self.reduce, eps=self.eps)
             elif loss is geom.Losses.NRMSE_PER_PIXEL:
-                loss_outputs.append(
-                    nrmse_per_pixel_loss(pred_y, multi_image_y, self.reduce, eps=self.eps)
-                )
+                loss_val = nrmse_per_pixel_loss(pred_y, multi_image_y, self.reduce, eps=self.eps)
             elif loss is geom.Losses.L2_REL:
-                loss_outputs.append(l2_rel_error(pred_y, multi_image_y, self.reduce, eps=self.eps))
+                loss_val = l2_rel_error(pred_y, multi_image_y, self.reduce, eps=self.eps)
             elif loss is geom.Losses.L2_REL_PER_PIXEL:
-                loss_outputs.append(
-                    l2_per_pixel_rel_error(pred_y, multi_image_y, self.reduce, eps=self.eps)
-                )
+                loss_val = l2_per_pixel_rel_error(pred_y, multi_image_y, self.reduce, eps=self.eps)
+            elif loss is geom.Losses.COMPONENT_L2_REL:
+                loss_val = component_l2_rel(pred_y, multi_image_y, eps=self.eps)
+            else:
+                raise NotImplementedError(f"Mapper::__call__: {loss} is not implemented.")
+
+            loss_outputs.append(
+                loss_val.reshape((len(loss_val), -1) if self.reduce is None else (-1,))
+            )
 
         # if we aren't reducing the batch dimension, we don't want to squeeze it out
-        loss_outputs = jnp.stack(loss_outputs, axis=-1)
+        loss_outputs = jnp.concat(loss_outputs, axis=-1)  # (batch,loss_vals) or (loss_vals,)
         if len(self.losses) == 1:
             squeeze_outputs = jnp.squeeze(loss_outputs, axis=1 if self.reduce is None else 0)
         else:

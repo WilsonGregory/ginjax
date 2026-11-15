@@ -89,6 +89,31 @@ def smse_loss(
     return jnp.mean(loss_per_batch) if reduce == "mean" else loss_per_batch
 
 
+def component_mse(
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
+    batch_reduce: Literal["mean"] | None = "mean",
+) -> jax.Array:
+    """
+    The mse of each individual component.
+    """
+    assert (
+        multi_image_x.get_n_leading() == multi_image_x.get_n_leading() == 2
+    ), "component_mse: MultiImages must have batch and channel axes"
+
+    spatial_size = np.multiply.reduce(multi_image_x.get_spatial_dims())
+
+    scalar_x = multi_image_x.to_scalar_multi_image()
+    scalar_y = multi_image_y.to_scalar_multi_image()
+    loss_outputs = []
+    for image_a, image_b in zip(scalar_x.values(), scalar_y.values()):
+        loss = jnp.sum((image_a - image_b) ** 2, axis=tuple(range(2, image_a.ndim))) / spatial_size
+        loss_outputs.append(loss)
+
+    component_loss = jnp.concat(loss_outputs, axis=1)  # (batch,channels*tensor)
+    return jnp.mean(component_loss, axis=0) if batch_reduce == "mean" else component_loss
+
+
 def normalized_smse_loss(
     multi_image_x: geom.MultiImage,
     multi_image_y: geom.MultiImage,
@@ -287,6 +312,43 @@ def nrmse_loss(
     error_per_batch = jnp.mean(error_per_batch, axis=1)  # (batch,channels) -> (batch,)
 
     return jnp.mean(error_per_batch) if reduce == "mean" else error_per_batch
+
+
+def component_nrmse(
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
+    batch_reduce: Literal["mean"] | None = "mean",
+    eps: float = 0,
+) -> jax.Array:
+    """
+    The nrmse of each individual component.
+    """
+    assert (
+        multi_image_x.get_n_leading() == multi_image_x.get_n_leading() == 2
+    ), "component_nrmse: MultiImages must have batch and channel axes"
+
+    scalar_x = multi_image_x.to_scalar_multi_image()
+    scalar_y = multi_image_y.to_scalar_multi_image()
+    loss_outputs = []
+    for image_a, image_b in zip(scalar_x.values(), scalar_y.values()):
+        # reshape to (batch,channels*tensor,spatial)
+        image_a = image_a.reshape(image_a.shape[:2] + (-1,))
+        image_b = image_b.reshape(image_b.shape[:2] + (-1,))
+        diff_norms = jnp.linalg.norm(image_a - image_b, axis=2)
+        target_norms = jnp.linalg.norm(image_b, axis=2)
+        loss_outputs.append(diff_norms / (target_norms + eps))
+
+    component_loss = jnp.concat(loss_outputs, axis=1)  # (batch,channels*tensor)
+    return jnp.mean(component_loss, axis=0) if batch_reduce == "mean" else component_loss
+
+
+def component_l2_rel(
+    multi_image_x: geom.MultiImage,
+    multi_image_y: geom.MultiImage,
+    batch_reduce: Literal["mean"] | None = "mean",
+    eps: float = 0,
+) -> jax.Array:
+    return component_nrmse(multi_image_x, multi_image_y, batch_reduce, eps) * 100
 
 
 def l2_rel_error(

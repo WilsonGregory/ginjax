@@ -154,6 +154,7 @@ def get_data(
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
+    DataLoader[ml.MultiImageDataset],
     float,
 ]:
     """
@@ -255,24 +256,38 @@ def get_data(
         collate_fn=lambda x: x[0],
     )
 
+    # dummy dataloader, this one doesn't have rollouts so we just include this to not break things
+    test_rollout_dataloader = DataLoader(
+        test_dataset,
+        sampler=BatchSampler(SequentialSampler(test_dataset), batch_size, drop_last=True),
+        collate_fn=lambda x: x[0],
+    )
+
     if n_test > 0:
         x0_std = jnp.std(test_x0[((), 0)])
         xt_std = jnp.std(test_xt[((), 0)])
         xt_resid_std = jnp.std(test_xt[((), 0)] - test_x0[((), 0)])
         print(f"D={D}, x0:{x0_std:.3e}, xt:{xt_std:.3e}, xt_resid:{xt_resid_std:.3e}")
 
-    return train_dataloader, val_dataloader, test_dataloader, train_generation_time
+    return (
+        train_dataloader,
+        val_dataloader,
+        test_dataloader,
+        test_rollout_dataloader,
+        train_generation_time,
+    )
 
 
 def handleArgs() -> argparse.Namespace:
     """
-    CUDA_VISIBLE_DEVICES=2 time python3 -m scripts.heat_equation \
+    CUDA_VISIBLE_DEVICES=3 time python3 -m scripts.heat_equation \
     --data /data/wgregor4/heat_equation/ --n-test 128 --n-val 128 --n-train 128 \
     --train-D-range 1 --test-D-range 2 -t 5 \
     --model-dir /data/wgregor4/runs/heat_equation/ \
-    --rescale-list nepo,copy,zeros \
     --results-dir /data/wgregor4/runs/heat_equation/ \
     --images-dir /data/wgregor4/images/heat_equation/heat_
+
+    --rescale-list nepo,copy,zeros \
     """
     parser = utils.get_common_parser()
     parser.add_argument(
@@ -307,6 +322,15 @@ def handleArgs() -> argparse.Namespace:
         "--anisotropy", help="anisotropy of kernel distance", type=float, default=None
     )
     parser.add_argument(
+        "--past-steps", help="number of past steps to use as input, must be 1", type=int, default=1
+    )
+    parser.add_argument(
+        "--rollout-steps",
+        help="number of rollout steps during evaluation, must be 1",
+        type=int,
+        default=1,
+    )
+    parser.add_argument(
         "--pretrain-lr-range",
         help="benchmark trained model over the lr, turns on wandb",
         type=lambda s: tuple(float(x) for x in s.split(",")) if isinstance(s, str) else None,
@@ -337,6 +361,8 @@ if args.wandb:
 if args.load_model or args.save_model:
     print("Use --model-dir and possibly --overwrite-save-model instead of --save-model")
     exit()
+
+assert args.past_steps == 1 and args.rollout_steps == 1
 
 rescale_options = {
     "spin_embed": geom.Rescaling.SPIN_EMBED,
@@ -398,6 +424,7 @@ anisotropy_str = "" if args.anisotropy is None else f"_anisotropy{args.anisotrop
 print("Define the models!")
 model_list_d = {}
 bl_model_list_d = {}
+n_components = {}
 for D in full_D_range:
     key, subkey = random.split(key)
     train_x0, train_xt, _ = get_data_d(
@@ -413,38 +440,17 @@ for D in full_D_range:
     )
     input_keys = train_x0.get_signature()
     output_keys = train_xt.get_signature()
+    n_components[D] = geom.count_components(D, output_keys)
 
     model_list = []
     for trial in range(args.n_trials):
         key, *subkeys = random.split(key, num=10)
         model_list.extend(
             [
-                # (
-                #     f"unetBase{anisotropy_str}_D{D}_t{trial}",
-                #     {  # train_kwargs
-                #         "model": models.UNet(
-                #             D,
-                #             input_keys,
-                #             output_keys,
-                #             depth=64,
-                #             use_bias=True,
-                #             activation_f=jax.nn.gelu,
-                #             equivariant=False,
-                #             kernel_size=3,
-                #             padding_mode="CIRCULAR",  # if we are on a torus
-                #             key=subkeys[5],
-                #         ),
-                #         "lr": {1: {128: 1e-3}, 2: {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 5e-4, 128: 1e-3}},
-                #         **train_kwargs,
-                #     },
-                #     {  # tune and eval kwargs
-                #         "lr": {(1, 2): {0: 1e-3, 1: 1e-3, 4: 1e-3, 32: 8e-3, 128: 8e-3}},
-                #         "rescale": None,  # model cannot be rescaled, for baseline only
-                #         **test_kwargs,
-                #     },
-                # ),
                 (
-                    anyd_helpers.ModelLabel(f"unetBase_equiv48{anisotropy_str}", trial),
+                    anyd_helpers.ModelLabel(
+                        f"unetBase_equiv48{anisotropy_str}", "UNet (Equiv)", trial
+                    ),
                     models.UNet(
                         D,
                         input_keys,
@@ -487,7 +493,7 @@ for D in full_D_range:
         bl_model_list.extend(
             [
                 (
-                    anyd_helpers.ModelLabel(f"unetBase{anisotropy_str}", trial),
+                    anyd_helpers.ModelLabel(f"unetBase{anisotropy_str}", "UNet", trial),
                     models.UNet(
                         D,
                         input_keys,
@@ -508,7 +514,7 @@ for D in full_D_range:
                     {},
                 ),
                 (  # this model performs kinda poorly, at best 55% error. TODO: Try 64_4 again
-                    anyd_helpers.ModelLabel(f"FNO128_8_modes8{anisotropy_str}", trial),
+                    anyd_helpers.ModelLabel(f"FNO128_8_modes8{anisotropy_str}", "FNO", trial),
                     models.FNOWrapper(
                         D,
                         input_keys,
@@ -527,7 +533,7 @@ for D in full_D_range:
                     {},
                 ),
                 (
-                    anyd_helpers.ModelLabel(f"LastStepIdentity", trial),
+                    anyd_helpers.ModelLabel(f"LastStepIdentity", "Persistence", trial),
                     models.LastStepIdentity(D, 1),
                     {},
                     {  # needs an lr so it doesn't break, but nothing is learned
@@ -546,6 +552,7 @@ for D in full_D_range:
 def get_data_lambda(
     D: int, n_train: int, n_val: int, n_test: int, batch_size: int, key: jax.Array
 ) -> tuple[
+    DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
@@ -580,6 +587,8 @@ anyd_helpers.run_anyd(
     args.finetune_lr_range,
     rescale_list,
     {1: args.batch, 2: args.batch},
+    [geom.Losses.L2_REL, geom.Losses.SMSE],
+    n_components,
     "Heat equation",
     pathlib.Path(args.results_dir) if args.results_dir else None,
 )

@@ -28,6 +28,10 @@ def signature_union(signature_a: Signature, signature_b: Signature, num_channels
     return Signature(tuple((k_p, num_channels) for k_p in key_union))
 
 
+def count_components(D: int, sig: Signature) -> int:
+    return sum([D ** len(k_p[0]) * channels for k_p, channels in sig])
+
+
 @register_pytree_node_class
 class MultiImage:
     """

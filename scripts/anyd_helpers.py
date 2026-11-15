@@ -24,6 +24,7 @@ from ginjax import ml
 class ModelLabel:
 
     name: str
+    display_name: str
     trial: int | None = None
     pretrain_D: int | None = None
     pretrain_L: int | None = None
@@ -43,14 +44,12 @@ class ModelLabel:
         tune_str = f"_D{self.tune_D}_L{self.tune_L}" if self.tune_D is not None else ""
         return f"{self.name}{trial_str}{pretrain_str}{rescale_str}{tune_str}"
 
-    def display_name(self: Self) -> str:
+    def get_display_name(self: Self) -> str:
         if self.rescale is None:
             assert self.pretrain_D is None
-            return "Baseline"
-        elif self.rescale == geom.Rescaling.SPIN_EMBED:
-            return "Warmstart"
+            return self.display_name
         else:
-            return self.rescale.name.title()
+            return f"{self.rescale.name.title()} {self.display_name}"
 
 
 def plot_multi_image(
@@ -179,6 +178,8 @@ def plot_results(
     test_D: int,
     grouped_results: dict[ModelLabel, Float[Array, "n_trials n_tune_range n_results"]],
     losses: list[geom.Losses],
+    n_components: int,
+    rollout_steps: int,
     n_tune_range: tuple[int, ...],
     x_axis_type: Literal["ntune", "gflops"],
     saveloc: str,
@@ -192,77 +193,108 @@ def plot_results(
 
     args:
         test_D: the dimension of the space
-        results_test_d: The results dict of test_D, train_D, then list (over n_tune_range) of dict
-            of key:model_name, val: array of n_trials, n_results.
-            The results are l2 error, relative error, train time, train flops
-        results_labels: e.g. 'l2', 'relative error'
+        grouped_results: array mapping ModelLabel to [n_trials, n_tune_range, n_results] where
+            n_results are the results in losses, then train_time, train_flops
+        losses: list of losses
+        n_componenets: the number of components in the output
+        rollout_steps: the number of rollout steps
         n_tune_range: number of fine-tuning points, or training points for the baseline model
-        model_names_d: model names for each dimension
+        x_axis_type: either ntune or gflops
         saveloc: beginning of save location
         title: the title of the plot
+        middle_metric: what to use as the measure of central tendency, either mean or median
+        include: whether to include all the points
 
     returns:
         none
     """
+    n_results_per_loss = {
+        geom.Losses.COMPONENT_L2_REL.name: n_components,
+        geom.Losses.L2_REL.name: 1,
+        geom.Losses.SMSE.name: 1,
+    }
+    n_one_step_results = sum([n_results_per_loss[loss.name] for loss in losses])
+    n_rollout_results = sum([n_results_per_loss[loss.name] * rollout_steps for loss in losses])
+
     linestyles = ["solid", "dotted", "dashed", "dashdot"]
     colors = ["b", "g", "r", "c", "m", "y"]
-    for error_idx, loss_enum in enumerate(losses):
+    error_idx = 0
+    for loss_enum in losses:
         print(f"~~~~~~~~~~~~~ {loss_enum.name} ~~~~~~~~~~~~~")
 
         # do them individually
         _, ax = plt.subplots(figsize=(8, 6))  # figsize is (cols,rows)
         assert isinstance(ax, Axes)
         for i, (model_label, results_arr) in enumerate(grouped_results.items()):
+            one_step_results = results_arr[..., :n_one_step_results]
+            rollout_results = results_arr[..., n_one_step_results:n_rollout_results]
+            # train_time = results_arr[..., -2]  # unused
+            train_gflops = results_arr[..., -1]
+
             if x_axis_type == "ntune":
                 x_axis = range(len(n_tune_range))
             elif x_axis_type == "gflops":
-                x_axis = jnp.mean(results_arr, axis=0)[:, -1] / 1_000_000
+                x_axis = jnp.mean(train_gflops, axis=0) / 1_000_000
                 print("Gigaflops", x_axis)
 
-            results_arr = results_arr[..., error_idx]
+            if loss_enum is geom.Losses.COMPONENT_L2_REL:
+                one_step_results = one_step_results[..., error_idx : error_idx + n_components]
+            else:
+                one_step_results = one_step_results[..., error_idx]
 
             if middle_metric == "mean":
                 # take the mean over trials
-                middle_result = jnp.mean(results_arr, axis=0)
-                stdev = jnp.std(results_arr, axis=0)
+                middle_result = jnp.mean(one_step_results, axis=0)
+                stdev = jnp.std(one_step_results, axis=0)
                 lower_bound = middle_result - stdev
                 upper_bound = middle_result + stdev
             elif middle_metric == "median":
-                middle_result = jnp.median(results_arr, axis=0)
-                lower_bound = jnp.quantile(results_arr, 0.25, axis=0)
-                upper_bound = jnp.quantile(results_arr, 0.75, axis=0)
+                middle_result = jnp.median(one_step_results, axis=0)
+                lower_bound = jnp.quantile(one_step_results, 0.25, axis=0)
+                upper_bound = jnp.quantile(one_step_results, 0.75, axis=0)
 
             print(model_label, middle_result)
 
-            ax.plot(
-                x_axis,
-                middle_result,
-                marker="x",
-                linestyle=linestyles[i % len(linestyles)],
-                label=model_label.display_name(),
-                color=colors[i % len(colors)],  # was i, currently only model
-            )
-            # plot bounds range
-            ax.fill_between(
-                x_axis,
-                lower_bound,
-                upper_bound,
-                color=colors[i % len(colors)],
-                alpha=0.2,
-            )
+            if loss_enum is geom.Losses.COMPONENT_L2_REL:
+                continue
 
-            if include_points:
-                for results_trial in results_arr:
-                    ax.scatter(
-                        x_axis,
-                        results_trial,
-                        marker=".",
-                        color=colors[i % len(colors)],
-                    )
+            if model_label.get_display_name() == "Persistence":
+                ax.axhline(
+                    float(jnp.mean(middle_result)),
+                    linestyle="dashed",
+                    label=model_label.get_display_name(),
+                    color=colors[i % len(colors)],
+                )
+            else:
+                ax.plot(
+                    x_axis,
+                    middle_result,
+                    marker="x",
+                    linestyle=linestyles[i % len(linestyles)],
+                    label=model_label.get_display_name(),
+                    color=colors[i % len(colors)],  # was i, currently only model
+                )
+                # plot bounds range
+                ax.fill_between(
+                    x_axis,
+                    lower_bound,
+                    upper_bound,
+                    color=colors[i % len(colors)],
+                    alpha=0.2,
+                )
+
+                if include_points:
+                    for results_trial in one_step_results:
+                        ax.scatter(
+                            x_axis,
+                            results_trial,
+                            marker=".",
+                            color=colors[i % len(colors)],
+                        )
 
         ax.legend(fontsize=12)
 
-        if loss_enum == geom.Losses.L2_REL:
+        if loss_enum == geom.Losses.L2_REL or loss_enum == geom.Losses.COMPONENT_L2_REL:
             ylabel = "Relative error (%)"
         elif loss_enum == geom.Losses.SMSE:
             ylabel = "L2 error"
@@ -285,6 +317,11 @@ def plot_results(
             f"{saveloc}warmstart_plot_{x_axis_type}_{middle_metric}_{test_D}D_{loss_enum.name}.png"
         )
         plt.close()
+
+        if loss_enum is geom.Losses.COMPONENT_L2_REL:
+            error_idx += n_components
+        else:
+            error_idx += 1
 
 
 def generate_filters(
@@ -465,6 +502,7 @@ def train_all_models(
         # update model label with train information
         model_label = ModelLabel(
             model_label.name,
+            model_label.display_name,
             model_label.trial,
             pretrain_D=train_D if kwargs_idx == 0 else model_label.pretrain_D,
             pretrain_L=L if kwargs_idx == 0 else model_label.pretrain_L,
@@ -578,6 +616,7 @@ def convert_and_tune(
 
             _model_label = ModelLabel(
                 model_label.name,
+                model_label.display_name,
                 model_label.trial,
                 model_label.pretrain_D,
                 model_label.pretrain_L,
@@ -610,7 +649,7 @@ def convert_and_tune(
 
 class AutoregressiveMapper(ml.Mapper):
     """
-    A mapper for the contractility data
+    An autoregressive mapper.
     """
 
     past_steps: int
@@ -622,7 +661,6 @@ class AutoregressiveMapper(ml.Mapper):
         past_steps: int,
         rollout_steps: int,
         residual: bool = False,
-        reduce: str | None = "mean",
         eps: float = 0,
     ) -> None:
         """
@@ -632,10 +670,9 @@ class AutoregressiveMapper(ml.Mapper):
             future_steps: the number of future time steps the model will output
             rollout_steps: the number of autoregressive steps to take
             residual: whether to calculate the residual loss, and hence the model will learn
-            reduce: how to reduce over the batch, the default is mean
             eps: epsilon used for normalized losses
         """
-        super().__init__(losses, residual, reduce, eps)
+        super().__init__(losses, residual, None, eps)
 
         self.past_steps = past_steps
         self.rollout_steps = rollout_steps
@@ -681,11 +718,9 @@ class AutoregressiveMapper(ml.Mapper):
         for loss in self.losses:
 
             if loss is geom.Losses.SMSE:
-                loss_outputs.append(
-                    ml.timestep_smse_loss(pred_y, multi_image_y, self.rollout_steps)
-                )
-            elif loss is geom.Losses.NRMSE:
-                loss_outputs.append(
+                loss_val = ml.timestep_smse_loss(pred_y, multi_image_y, self.rollout_steps)
+            elif loss is geom.Losses.L2_REL:
+                loss_val = (
                     ml.timestep_nrmse_loss(
                         pred_y,
                         multi_image_y,
@@ -693,9 +728,20 @@ class AutoregressiveMapper(ml.Mapper):
                         n_steps=self.rollout_steps,
                         reduce_steps=None,
                     )
+                    * 100
+                )
+            elif loss is geom.Losses.COMPONENT_L2_REL:
+                loss_val = jnp.zeros(
+                    (geom.count_components(pred_y.D, pred_y.get_signature()), self.rollout_steps)
+                )
+            else:
+                raise NotImplementedError(
+                    f"AutoregressiveMapper::map_plus_loss: {loss} not implemented."
                 )
 
-        return pred_y, jnp.stack(loss_outputs), aux_data
+            loss_outputs.append(loss_val.reshape(-1, self.rollout_steps))
+
+        return pred_y, jnp.concat(loss_outputs, axis=0), aux_data
 
     @eqx.filter_jit
     def __call__(
@@ -717,6 +763,7 @@ def eval(
     test_rollout_dl: DataLoader[ml.MultiImageDataset],
     model_list: Sequence[tuple[ModelLabel, models.MultiImageModule, dict, dict, dict, float, int]],
     losses: list[geom.Losses],
+    n_components: int,
     past_steps: int,
     rollout_steps: int,
 ) -> dict[ModelLabel, Float[Array, "n_trials n_results"]]:
@@ -729,25 +776,38 @@ def eval(
     models_dict = {}
     for model_label, model, _, _, _, train_time, train_flops in model_list:
         # (losses,)
-        rel_mean, smse_mean = ml.map_loss_in_batches_dl(ml.Mapper(losses, eps=1e-9), model, test_dl)
-        print(f"Eval {model_label}: {smse_mean:.3e} ({rel_mean:.3f}%)\n")
+        one_step_results = ml.map_loss_in_batches_dl(ml.Mapper(losses, eps=1e-9), model, test_dl)
+        rollout_results = ml.map_loss_in_batches_dl(autoregressive_mapper, model, test_rollout_dl)
 
-        rollout_rel_mean, rollout_smse_mean = ml.map_loss_in_batches_dl(
-            autoregressive_mapper, model, test_rollout_dl
-        )
-        print(
-            f"Eval {model_label}: {jnp.mean(rollout_smse_mean):.3e} ({jnp.mean(rollout_rel_mean):.3f}%)\n"
-        )
+        print(f"\nEval {model_label}:")
+        i = 0
+        for loss_enum in losses:
+            if loss_enum is geom.Losses.SMSE:
+                print(
+                    f"{loss_enum} (one step, rollout): ({one_step_results[i]:.3e}, "
+                    f"{jnp.mean(rollout_results[i]):.3e})"
+                )
+                i += 1
+            elif loss_enum is geom.Losses.L2_REL:
+                print(
+                    f"{loss_enum} (one step, rollout): ({one_step_results[i]:.3f}%, "
+                    f"{jnp.mean(rollout_results[i]):.3f}%)"
+                )
+                i += 1
+            elif loss_enum is geom.Losses.COMPONENT_L2_REL:
+                print(f"{loss_enum} one step: ", one_step_results[i : i + n_components])
+                # ignore for rollout cause its not implemented
+                i += n_components
+            else:
+                raise NotImplementedError(f"eval: {loss_enum} not implemented.")
+
         tuned_loss = jnp.concat(
-            [
-                jnp.array([rel_mean, smse_mean, train_time, train_flops]),
-                rollout_rel_mean,
-                rollout_smse_mean,
-            ]
+            [one_step_results, rollout_results.ravel(), jnp.array([train_time, train_flops])]
         )
 
         trialless_label = ModelLabel(
             model_label.name,
+            model_label.display_name,
             None,
             model_label.pretrain_D,
             model_label.pretrain_L,
@@ -785,6 +845,8 @@ def run_anyd(
     finetune_lr_range: list[float] | None,
     rescale_list: list[geom.Rescaling],
     batch_size_d: dict[int, int],
+    eval_losses: list[geom.Losses],
+    n_components: dict[int, int],
     plot_title: str,
     results_dir: pathlib.Path | None,
 ):
@@ -803,7 +865,6 @@ def run_anyd(
         bl_model_list_d: Additional baseline models where we only train on test_D and evaluate
     """
     pretrain_lr = pretrain_lr_range is not None
-    eval_losses = [geom.Losses.L2_REL, geom.Losses.SMSE]
     # train the models, i.e. the warmstart lower dimensional models
     print("Train the models (warmstart)!")
     pretrain_model_list_d = {}
@@ -864,6 +925,7 @@ def run_anyd(
                         test_rollout_dl,
                         baseline_trained_models,
                         eval_losses,
+                        n_components[test_D],
                         args.past_steps,
                         args.rollout_steps,
                     ),
@@ -893,6 +955,7 @@ def run_anyd(
                             test_rollout_dl,
                             finetuned_models,
                             eval_losses,
+                            n_components[test_D],
                             args.past_steps,
                             args.rollout_steps,
                         ),
@@ -907,6 +970,7 @@ def run_anyd(
             assert model_label.trial is None  # should be already stacked over trials
             model_label = ModelLabel(
                 model_label.name,
+                model_label.display_name,
                 model_label.trial,
                 model_label.pretrain_D,
                 model_label.pretrain_L,
@@ -928,6 +992,8 @@ def run_anyd(
                 test_D,
                 grouped_results,
                 eval_losses,
+                n_components[test_D],
+                args.rollout_steps,
                 n_tune_range,
                 "ntune",
                 args.images_dir,
@@ -940,6 +1006,8 @@ def run_anyd(
                 test_D,
                 grouped_results,
                 eval_losses,
+                n_components[test_D],
+                args.rollout_steps,
                 n_tune_range,
                 "gflops",
                 args.images_dir,

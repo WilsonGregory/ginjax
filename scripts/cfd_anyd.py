@@ -20,7 +20,12 @@ from . import anyd_helpers
 
 
 def read_one_h5(
-    D: int, is_torus: bool, past_steps: int, data_dict: h5py.File, traj_idxs: np.ndarray | slice
+    D: int,
+    is_torus: bool,
+    past_steps: int,
+    rollout_steps: int,
+    data_dict: h5py.File,
+    traj_idxs: np.ndarray | slice,
 ) -> tuple[geom.MultiImage, geom.MultiImage]:
     """
     Given a dimension and filename, read the data and return as jax arrays.
@@ -63,18 +68,24 @@ def read_one_h5(
         constant_fields,
         velocity.shape[1],
         past_steps,
-        1,
+        rollout_steps,
     )
 
     return X, Y
 
 
-def open_hdf5(D: int, data_dir: str) -> h5py.File:
+def open_hdf5(D: int, data_dir: str, mach1: bool) -> h5py.File:
     data_dir_path = pathlib.Path(data_dir)
-    fnames = {
-        2: "2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_64_Train.hdf5",
-        3: "3D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_64_Train.hdf5",
-    }
+    if mach1:
+        fnames = {
+            2: "2D_CFD_Rand_M1.0_Eta1e-08_Zeta1e-08_periodic_64_Train.hdf5",
+            3: "3D_CFD_Rand_M1.0_Eta1e-08_Zeta1e-08_periodic_64_Train.hdf5",
+        }
+    else:
+        fnames = {
+            2: "2D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_64_Train.hdf5",
+            3: "3D_CFD_Rand_M0.1_Eta1e-08_Zeta1e-08_periodic_64_Train.hdf5",
+        }
     return h5py.File(data_dir_path / f"cfd_{D}d" / fnames[D])
 
 
@@ -94,15 +105,19 @@ class CFDDataset(ml.MultiImageDataset):
         n_data: int,
         idx_shift: int,
         past_steps: int,
+        rollout_steps: int,
         data_dir: str,
+        mach1: bool,
         devices: list[jax.Device] | None = None,
         use_devices: bool = True,
         is_torus: bool = True,
     ) -> None:
         self.D = D
 
-        data_dict = open_hdf5(D, data_dir)
-        X, Y = read_one_h5(D, is_torus, past_steps, data_dict, slice(idx_shift, idx_shift + n_data))
+        data_dict = open_hdf5(D, data_dir, mach1)
+        X, Y = read_one_h5(
+            D, is_torus, past_steps, rollout_steps, data_dict, slice(idx_shift, idx_shift + n_data)
+        )
         data_dict.close()
 
         self.X = X
@@ -124,6 +139,7 @@ class CFDDatasetLazy(ml.MultiImageDataset):
     n_data: int
     idx_shift: int
     past_steps: int
+    rollout_steps: int
     samples_per_traj: int
     data_dict: h5py.File
     devices: list[jax.Device]
@@ -136,7 +152,9 @@ class CFDDatasetLazy(ml.MultiImageDataset):
         n_data: int,
         idx_shift: int,
         past_steps: int,
+        rollout_steps: int,
         data_dir: str,
+        mach1: bool,
         devices: list[jax.Device] | None = None,
         use_devices: bool = True,
         is_torus: bool = True,
@@ -145,9 +163,10 @@ class CFDDatasetLazy(ml.MultiImageDataset):
         self.n_data = n_data
         self.idx_shift = idx_shift
         self.past_steps = past_steps
+        self.rollout_steps = rollout_steps
         self.samples_per_traj = 21 - args.past_steps
 
-        self.data_dict = open_hdf5(D, data_dir)
+        self.data_dict = open_hdf5(D, data_dir, mach1)
 
         self.devices = devices if devices else jax.devices()
         self.use_devices = use_devices
@@ -160,8 +179,12 @@ class CFDDatasetLazy(ml.MultiImageDataset):
         # all of these are shape (num_trajectories, timesteps, spatial, tensor)
         # 1D: (10K,101,1024,tensor)
         # 2D: (1K,21,512,512,tensor) or (10K,21,128,128,tensor)
-        # 2D: my janky homebrew is (9990,21,128,128,tensor)
-        # 3D: (100,21,128,128,128,tensor)
+
+        # My janky homebrew
+        # 2D: (600,21,64,64,tensor)
+        # 3D: (388,21,64,64,64,tensor)
+        # 2D Mach 1.0: (200,21,64,64,tensor)
+        # 3D Mach 1.0: (98,21,64,64,64,tensor)
 
         # TODO: may be a way to do this better with a memory mask
 
@@ -174,7 +197,9 @@ class CFDDatasetLazy(ml.MultiImageDataset):
             shifted_idxs // self.samples_per_traj, return_counts=True
         )
 
-        X, Y = read_one_h5(self.D, self.is_torus, self.past_steps, self.data_dict, traj_idxs)
+        X, Y = read_one_h5(
+            self.D, self.is_torus, self.past_steps, self.rollout_steps, self.data_dict, traj_idxs
+        )
 
         # get the row numbers of loaded data, e.g. [14,15,35,171] -> [0,0,1,2]
         row_numbers = np.repeat(np.arange(len(traj_idxs)), idxs_counts)
@@ -202,9 +227,17 @@ def get_data(
     n_val: int,
     n_test: int,
     past_steps: int,
+    rollout_steps: int,
     batch_size: int,
     data_dir: str,
-) -> tuple[DataLoader[CFDDataset], DataLoader[CFDDataset], DataLoader[CFDDataset], float]:
+    mach1: bool,
+) -> tuple[
+    DataLoader[CFDDataset],
+    DataLoader[CFDDataset],
+    DataLoader[CFDDataset],
+    DataLoader[CFDDataset],
+    float,
+]:
     """
     TODO: maybe I can load data as needed? one batch at a time? probably needed for 3d data
     Get data of a particular dimension from a preset list of files in the specified folder.
@@ -223,13 +256,19 @@ def get_data(
             for train
     """
     if D == 2:
-        train_dataset = CFDDataset(D, n_train, 0, past_steps, data_dir)
-        val_dataset = CFDDataset(D, n_val, n_train, past_steps, data_dir)
-        test_dataset = CFDDataset(D, n_test, n_train + n_test, past_steps, data_dir)
+        train_dataset = CFDDataset(D, n_train, 0, past_steps, 1, data_dir, mach1)
+        val_dataset = CFDDataset(D, n_val, n_train, past_steps, 1, data_dir, mach1)
+        test_dataset = CFDDataset(D, n_test, n_train + n_test, past_steps, 1, data_dir, mach1)
+        test_rollout_dataset = CFDDataset(
+            D, n_test, n_train + n_test, past_steps, rollout_steps, data_dir, mach1
+        )
     elif D == 3:
-        train_dataset = CFDDatasetLazy(D, n_train, 0, past_steps, data_dir)
-        val_dataset = CFDDatasetLazy(D, n_val, n_train, past_steps, data_dir)
-        test_dataset = CFDDatasetLazy(D, n_test, n_train + n_test, past_steps, data_dir)
+        train_dataset = CFDDatasetLazy(D, n_train, 0, past_steps, 1, data_dir, mach1)
+        val_dataset = CFDDatasetLazy(D, n_val, n_train, past_steps, 1, data_dir, mach1)
+        test_dataset = CFDDatasetLazy(D, n_test, n_train + n_test, past_steps, 1, data_dir, mach1)
+        test_rollout_dataset = CFDDatasetLazy(
+            D, n_test, n_train + n_test, past_steps, rollout_steps, data_dir, mach1
+        )
     else:
         raise ValueError(f"cfd_anyd::get_data: expects D=2,3, but got D={D}")
 
@@ -251,21 +290,41 @@ def get_data(
         collate_fn=lambda x: x[0],
     )
 
+    test_rollout_dataloader = DataLoader(
+        test_rollout_dataset,
+        sampler=BatchSampler(SequentialSampler(test_rollout_dataset), batch_size, drop_last=True),
+        collate_fn=lambda x: x[0],
+    )
+
     data_generation_time = 0.0  # TODO: fix this
 
-    return train_dataloader, val_dataloader, test_dataloader, data_generation_time
+    return (
+        train_dataloader,
+        val_dataloader,
+        test_dataloader,
+        test_rollout_dataloader,
+        data_generation_time,
+    )
 
 
 def handleArgs() -> argparse.Namespace:
     """
-    CUDA_VISIBLE_DEVICES=0,1 time python3 -m scripts.cfd_anyd \
+    CUDA_VISIBLE_DEVICES=4,5 time python3 -m scripts.cfd_anyd \
     --data /data/wgregor4/pdebench/ --n-train 128 --n-val 32 --n-test 32 -t 5 \
-    --model-dir /data/wgregor4/runs/cfd_anyd/ \
+    --mach1 \
+    --model-dir /data/wgregor4/runs/cfd_anyd/ 
+    
     --rescale-list spin_embed,nepo \
     --results-dir /data/wgregor4/runs/cfd_anyd/ \
     --images-dir /data/wgregor4/images/pdebench/cfd_anyd/cfd_
     """
     parser = utils.get_common_parser()
+    parser.add_argument(
+        "--mach1",
+        help="if true, use the Mach 1.0 data instead of Mach 0.1",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument(
         "--n-tune-range",
         help="the number of data points in the tuning set",
@@ -280,6 +339,9 @@ def handleArgs() -> argparse.Namespace:
     )
     parser.add_argument(
         "--past-steps", help="number of past steps to use as input", type=int, default=4
+    )
+    parser.add_argument(
+        "--rollout-steps", help="number of rollout steps during evaluation", type=int, default=10
     )
     parser.add_argument("--batch-train", help="batch size for 2D training", type=int, default=32)
     # you can do 4 (2 per gpu) with equiv48, but not 8
@@ -324,6 +386,7 @@ rescale_list = [rescale_options[x.lower()] for x in args.rescale_list]
 
 pretrain_lr = args.pretrain_lr_range is not None
 finetune_lr = args.finetune_lr_range is not None
+mach1_str = "_mach1" if args.mach1 else ""
 
 key = random.PRNGKey(time.time_ns()) if (args.seed is None) else random.PRNGKey(args.seed)
 
@@ -375,11 +438,15 @@ test_kwargs = {
 print("Define the models!")
 model_list_d = {}
 bl_model_list_d = {}
+n_components = {}
 for D in full_D_range:
     key, subkey = random.split(key)
-    train_x0, train_xt = CFDDataset(D, 1, 0, args.past_steps, args.data, use_devices=False)[[0]]
+    train_x0, train_xt = CFDDataset(
+        D, 1, 0, args.past_steps, 1, args.data, args.mach1, use_devices=False
+    )[[0]]
     input_keys = train_x0.get_signature()
     output_keys = train_xt.get_signature()
+    n_components[D] = geom.count_components(D, output_keys)
 
     model_list = []
     for trial in range(args.n_trials):
@@ -387,7 +454,7 @@ for D in full_D_range:
         model_list.extend(
             [
                 (
-                    anyd_helpers.ModelLabel("unetBase_equiv48", trial),
+                    anyd_helpers.ModelLabel(f"unetBase_equiv48{mach1_str}", "UNet (Equiv)", trial),
                     models.UNet(
                         D,
                         input_keys,
@@ -425,7 +492,7 @@ for D in full_D_range:
         bl_model_list.extend(
             [
                 (
-                    anyd_helpers.ModelLabel("unetBase", trial),
+                    anyd_helpers.ModelLabel(f"unetBase{mach1_str}", "UNet", trial),
                     models.UNet(
                         D,
                         input_keys,
@@ -443,7 +510,7 @@ for D in full_D_range:
                     {},
                 ),
                 (
-                    anyd_helpers.ModelLabel(f"FNO64_4_modes8", trial),
+                    anyd_helpers.ModelLabel(f"FNO64_4_modes8{mach1_str}", "FNO", trial),
                     models.FNOWrapper(
                         D,
                         input_keys,
@@ -462,7 +529,7 @@ for D in full_D_range:
                     {},
                 ),
                 (
-                    anyd_helpers.ModelLabel(f"LastStepIdentity", trial),
+                    anyd_helpers.ModelLabel(f"LastStepIdentity{mach1_str}", "Persistence", trial),
                     models.LastStepIdentity(D, 1),
                     {},
                     {  # needs an lr so it doesn't break, but nothing is learned
@@ -484,9 +551,20 @@ def get_data_lambda(
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
     DataLoader[ml.MultiImageDataset],
+    DataLoader[ml.MultiImageDataset],
     float,
 ]:
-    return get_data(D, n_train, n_val, n_test, args.past_steps, batch_size, args.data)
+    return get_data(
+        D,
+        n_train,
+        n_val,
+        n_test,
+        args.past_steps,
+        args.rollout_steps,
+        batch_size,
+        args.data,
+        args.mach1,
+    )
 
 
 key, subkey = random.split(key)
@@ -503,6 +581,8 @@ anyd_helpers.run_anyd(
     args.finetune_lr_range,
     rescale_list,
     {2: args.batch_train, 3: args.batch_tune},
+    [geom.Losses.L2_REL, geom.Losses.SMSE, geom.Losses.COMPONENT_L2_REL],
+    n_components,
     "Compressible Navier-Stokes",
     pathlib.Path(args.results_dir) if args.results_dir else None,
 )

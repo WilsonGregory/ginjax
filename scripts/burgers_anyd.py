@@ -309,10 +309,9 @@ def get_data(
 
 def handleArgs() -> argparse.Namespace:
     """
-    CUDA_VISIBLE_DEVICES=3,4 time python3 -m scripts.burgers_anyd \
+    CUDA_VISIBLE_DEVICES=2,3 time python3 -m scripts.burgers_anyd \
     --data /data/wgregor4/apebench/burgers/ --n-train 8 --n-val 8 --n-test 8 \
     -t 5 \
-    --rescale-list nepo \
     --model-dir /data/wgregor4/runs/burgers_anyd/ \
     --results-dir /data/wgregor4/runs/burgers_anyd/ \
     --images-dir /data/wgregor4/images/apebench/burgers/burgers_
@@ -326,9 +325,9 @@ def handleArgs() -> argparse.Namespace:
     )
     parser.add_argument(
         "--rescale-list",
-        help="the types of rescalings to do, defaults to spin_embed, for ablations do spin_embed,copy,zeros",
+        help="the types of rescalings to do, defaults to spin_embed, for ablations do nepo,copy,zeros",
         type=lambda s: s.split(","),
-        default="spin_embed",
+        default="nepo",
     )
     parser.add_argument(
         "--subsample", help="how much to subsample the trajectories", type=int, default=1
@@ -460,6 +459,7 @@ test_kwargs = {
 print("Define the models!")
 model_list_d = {}
 bl_model_list_d = {}
+n_components = {}
 for D in full_D_range:
     key, subkey = random.split(key)
     train_x0, train_xt, _ = get_data_d(
@@ -476,6 +476,7 @@ for D in full_D_range:
     )
     input_keys = train_x0.get_signature()
     output_keys = train_xt.get_signature()
+    n_components[D] = geom.count_components(D, output_keys)
 
     model_list = []
     for trial in range(args.n_trials):
@@ -483,7 +484,7 @@ for D in full_D_range:
         model_list.extend(
             [
                 (
-                    anyd_helpers.ModelLabel("unetBase_equiv48", trial),
+                    anyd_helpers.ModelLabel("unetBase_equiv48", "UNet (Equiv)", trial),
                     models.UNet(
                         D,
                         input_keys,
@@ -521,7 +522,7 @@ for D in full_D_range:
         bl_model_list.extend(
             [
                 (
-                    anyd_helpers.ModelLabel("unetBase_groupnorm", trial),
+                    anyd_helpers.ModelLabel("unetBase_groupnorm", "UNet", trial),
                     models.UNet(
                         D,
                         input_keys,
@@ -539,7 +540,7 @@ for D in full_D_range:
                     {},
                 ),
                 (  # this model performs kinda poorly, at best 55% error
-                    anyd_helpers.ModelLabel(f"FNO64_4_modes8", trial),
+                    anyd_helpers.ModelLabel(f"FNO64_4_modes8", "FNO", trial),
                     models.FNOWrapper(
                         D,
                         input_keys,
@@ -558,7 +559,7 @@ for D in full_D_range:
                     {},
                 ),
                 (
-                    anyd_helpers.ModelLabel(f"LastStepIdentity", trial),
+                    anyd_helpers.ModelLabel(f"LastStepIdentity", "Persistence", trial),
                     models.LastStepIdentity(D, 1),
                     {},
                     {  # needs an lr so it doesn't break, but nothing is learned
@@ -617,6 +618,8 @@ anyd_helpers.run_anyd(
     args.finetune_lr_range,
     rescale_list,
     {2: args.batch_train, 3: args.batch_tune},
+    [geom.Losses.L2_REL, geom.Losses.SMSE, geom.Losses.COMPONENT_L2_REL],
+    n_components,
     "Burgers' equation",
     pathlib.Path(args.results_dir) if args.results_dir else None,
 )
